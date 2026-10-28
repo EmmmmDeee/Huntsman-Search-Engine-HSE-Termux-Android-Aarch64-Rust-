@@ -1,0 +1,1 @@
+- `apk FILE` now grades target and minimum SDK version risks: flags target SDK below 28 as HIGH risk (lacking Android 9.0+ hardening), target SDK 28-30 as MEDIUM risk (predating Android 12 protections), and minimum SDK below 21 as MEDIUM risk (compatibility with obsolete Android versions). The manifest declares SDK levels, not confirmed runtime versions.

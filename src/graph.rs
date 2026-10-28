@@ -513,9 +513,12 @@ mod tests {
         let middle = graph.index_of(&b.uid).unwrap();
         let right = graph.index_of(&c.uid).unwrap();
         assert_eq!(graph.edge_count(), 2);
-        assert_eq!(graph.edge(left, middle).unwrap().max_confidence, 1.0);
-        assert_eq!(graph.edge(middle, left).unwrap().max_confidence, 1.0);
-        assert_eq!(graph.edge(middle, right).unwrap().max_confidence, 0.4);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(graph.edge(left, middle).unwrap().max_confidence, 1.0);
+            assert_eq!(graph.edge(middle, left).unwrap().max_confidence, 1.0);
+            assert_eq!(graph.edge(middle, right).unwrap().max_confidence, 0.4);
+        }
         assert_eq!(graph.bfs_levels(left)[right], 2);
     }
 
@@ -533,7 +536,10 @@ mod tests {
         let graph = Graph::build(&[a.clone(), b.clone()], &[relation]);
         let left = graph.index_of(&a.uid).unwrap();
         let right = graph.index_of(&b.uid).unwrap();
-        assert_eq!(graph.edge(left, right).unwrap().max_confidence, 0.0);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(graph.edge(left, right).unwrap().max_confidence, 0.0);
+        }
     }
 
     #[test]
@@ -575,10 +581,13 @@ mod tests {
                     .all(|window| window[0] < window[1])
             );
             for &right in first.neighbours(left) {
-                assert_eq!(
-                    first.edge(left, right).unwrap().max_confidence,
-                    first.edge(right, left).unwrap().max_confidence
-                );
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(
+                        first.edge(left, right).unwrap().max_confidence,
+                        first.edge(right, left).unwrap().max_confidence
+                    );
+                }
             }
         }
     }

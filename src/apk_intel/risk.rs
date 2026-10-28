@@ -88,11 +88,57 @@ const SENSITIVE_PERMISSIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Parse an Android SDK level string (typically "30", "31", etc.) to an integer.
+fn parse_sdk(sdk_str: &str) -> Option<u32> {
+    sdk_str.trim().parse().ok()
+}
+
+/// Check SDK version risks (target and minimum) and return flags.
+fn check_sdk_versions(manifest: &Manifest) -> Vec<Flag> {
+    let mut sdk_flags = Vec::new();
+    if let Some(target_sdk_str) = manifest.target_sdk.as_deref() {
+        if let Some(target_sdk) = parse_sdk(target_sdk_str) {
+            if target_sdk < 28 {
+                sdk_flags.push(Flag {
+                    risk: Risk::High,
+                    id: "target_sdk_too_old",
+                    detail: format!("the application targets Android SDK {target_sdk} (below 9.0/API 28); it does not benefit from modern platform hardening, container isolation, scoped storage and other protections introduced in Android 9 and later"),
+                });
+            } else if target_sdk < 31 {
+                let api_name = if target_sdk == 29 {
+                    "10 (Q)"
+                } else if target_sdk == 30 {
+                    "11 (R)"
+                } else {
+                    "9 (P)"
+                };
+                sdk_flags.push(Flag {
+                    risk: Risk::Medium,
+                    id: "target_sdk_not_current",
+                    detail: format!("the application targets Android SDK {target_sdk} (API {api_name}); it does not receive protections from Android 12 and later, including restricted implicit intents, package visibility, and restricted non-SDK interfaces"),
+                });
+            }
+        }
+    }
+    if let Some(min_sdk_str) = manifest.min_sdk.as_deref() {
+        if let Some(min_sdk) = parse_sdk(min_sdk_str) {
+            if min_sdk < 21 {
+                sdk_flags.push(Flag {
+                    risk: Risk::Medium,
+                    id: "min_sdk_too_old",
+                    detail: format!("the application declares a minimum SDK {min_sdk} (below 5.0/API 21); it is compatible with Android versions that lack modern platform security features"),
+                });
+            }
+        }
+    }
+    sdk_flags
+}
+
 /// The manifest's security-posture flags, highest risk first. Empty when the manifest declares
 /// nothing of note.
 #[must_use]
 pub fn flags(manifest: &Manifest) -> Vec<Flag> {
-    let mut flags = Vec::new();
+    let mut flags = check_sdk_versions(manifest);
     let mut add =
         |risk: Risk, id: &'static str, detail: String| flags.push(Flag { risk, id, detail });
 
@@ -175,8 +221,67 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
             );
         }
     }
+    if let Some(provider_flag) = check_provider_authorities(manifest) {
+        add(provider_flag.risk, provider_flag.id, provider_flag.detail);
+    }
     flags.sort_by(|a, b| a.risk.cmp(&b.risk).then_with(|| a.id.cmp(b.id)));
     flags
+}
+
+/// Check for reachable content providers with sensitive data and return a flag if found.
+fn check_provider_authorities(manifest: &Manifest) -> Option<Flag> {
+    let reachable_providers = manifest
+        .reachable_components
+        .iter()
+        .filter(|comp| comp.kind == "provider")
+        .count();
+    if reachable_providers > 0 && !manifest.provider_authorities.is_empty() {
+        let sensitive_count = manifest
+            .provider_authorities
+            .iter()
+            .filter(|auth| is_sensitive_authority(auth))
+            .count();
+        if sensitive_count > 0 {
+            return Some(Flag {
+                risk: Risk::Medium,
+                id: "reachable_content_provider",
+                detail: format!(
+                    "{reachable_providers} content provider{} accessible via intent; {} {} potentially sensitive data (contacts, calendar, SMS, call log, email)",
+                    if reachable_providers == 1 { "" } else { "s" },
+                    sensitive_count,
+                    if sensitive_count == 1 {
+                        "controls"
+                    } else {
+                        "control"
+                    }
+                ),
+            });
+        }
+    }
+    None
+}
+
+/// Whether a content provider authority is likely to grant access to sensitive data.
+fn is_sensitive_authority(authority: &str) -> bool {
+    let lower = authority.to_ascii_lowercase();
+    [
+        "contacts",
+        "sms",
+        "mms",
+        "calendar",
+        "call_log",
+        "calllog",
+        "email",
+        "gmail",
+        "mtp",
+        "media",
+        "files",
+        "document",
+        "clipboard",
+        "settings",
+    ]
+    .iter()
+    .any(|sensitive| lower.contains(sensitive))
 }
 
 /// The highest risk among `flags`, for a one-line summary; `None` when there are none.
@@ -289,5 +394,133 @@ mod tests {
         let manifest = Manifest::default();
         let flags = flags(&manifest);
         assert!(flags.iter().any(|flag| flag.id == "backup_allowed"));
+    }
+
+    #[test]
+    fn reachable_providers_with_sensitive_data_are_flagged() {
+        let manifest = Manifest {
+            reachable_components: vec![Component {
+                kind: "provider".to_owned(),
+                name: ".ContentProvider".to_owned(),
+                exposure: Exposure::Exported,
+            }],
+            provider_authorities: vec!["com.example.contacts".to_owned()],
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider")
+        );
+        let provider_flag = observed
+            .iter()
+            .find(|flag| flag.id == "reachable_content_provider")
+            .unwrap();
+        assert_eq!(provider_flag.risk, Risk::Medium);
+        assert!(provider_flag.detail.contains("potentially sensitive data"));
+    }
+
+    #[test]
+    fn providers_without_sensitive_authorities_are_not_flagged() {
+        let manifest = Manifest {
+            reachable_components: vec![Component {
+                kind: "provider".to_owned(),
+                name: ".DataProvider".to_owned(),
+                exposure: Exposure::Exported,
+            }],
+            provider_authorities: vec!["com.example.data".to_owned()],
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            !observed
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider")
+        );
+    }
+
+    #[test]
+    fn is_sensitive_authority_detects_contact_calendar_sms_email_patterns() {
+        assert!(is_sensitive_authority("com.android.contacts.provider"));
+        assert!(is_sensitive_authority("com.android.calendar"));
+        assert!(is_sensitive_authority("com.android.sms"));
+        assert!(is_sensitive_authority("com.android.call_log"));
+        assert!(is_sensitive_authority(
+            "com.google.android.gm.email.provider"
+        ));
+        assert!(!is_sensitive_authority("com.example.data"));
+        assert!(!is_sensitive_authority("com.example.appdata"));
+    }
+
+    #[test]
+    fn target_sdk_too_old_is_flagged_as_high_risk() {
+        let manifest = Manifest {
+            target_sdk: Some("27".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "target_sdk_too_old" && flag.risk == Risk::High),
+            "target SDK 27 should be flagged as HIGH risk"
+        );
+    }
+
+    #[test]
+    fn target_sdk_between_28_and_30_is_flagged_as_medium_risk() {
+        let manifest = Manifest {
+            target_sdk: Some("29".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "target_sdk_not_current" && flag.risk == Risk::Medium),
+            "target SDK 29 should be flagged as MEDIUM risk"
+        );
+    }
+
+    #[test]
+    fn target_sdk_31_or_above_does_not_trigger_sdk_flags() {
+        let manifest = Manifest {
+            target_sdk: Some("31".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            !observed.iter().any(|flag| flag.id.contains("target_sdk")),
+            "target SDK 31 should not trigger SDK flags"
+        );
+    }
+
+    #[test]
+    fn min_sdk_below_21_is_flagged() {
+        let manifest = Manifest {
+            min_sdk: Some("19".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "min_sdk_too_old" && flag.risk == Risk::Medium),
+            "min SDK 19 should be flagged as MEDIUM risk"
+        );
+    }
+
+    #[test]
+    fn min_sdk_21_or_above_does_not_trigger_min_sdk_flag() {
+        let manifest = Manifest {
+            min_sdk: Some("21".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            !observed.iter().any(|flag| flag.id == "min_sdk_too_old"),
+            "min SDK 21 should not trigger min_sdk_too_old flag"
+        );
     }
 }
