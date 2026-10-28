@@ -378,7 +378,6 @@ struct Reader {
     application_enabled: Option<bool>,
     open: Option<Open>,
     intent_filter: Option<IntentFilterState>,
-    seen_filters: BTreeSet<String>,
 }
 
 /// Preserve each provider's authority claims separately from the manifest-wide inventory.
@@ -545,10 +544,6 @@ impl Reader {
         let Some(open) = self.open.as_ref() else {
             return;
         };
-        let key = format!("{}/{}", open.name, filter.actions.join(","));
-        if !self.seen_filters.insert(key) {
-            return;
-        }
         if self.manifest.intent_filters.len() < MAX_LISTED {
             let kind = match open.kind.as_str() {
                 "activity-alias" => "activity",
@@ -1042,6 +1037,47 @@ pub(super) mod tests {
         .end("application")
         .end("manifest");
         axml
+    }
+
+    #[test]
+    fn distinct_filters_with_the_same_action_preserve_both_hosts() {
+        let mut axml = Axml::new(&["name", "scheme", "host"]);
+        axml.start("manifest", &[])
+            .start("application", &[])
+            .start("activity", &[("name", Val::Str(".Link"))])
+            .start("intent-filter", &[])
+            .start("action", &[("name", Val::Str("android.intent.action.VIEW"))])
+            .end("action")
+            .start(
+                "data",
+                &[
+                    ("scheme", Val::Str("https")),
+                    ("host", Val::Str("one.example")),
+                ],
+            )
+            .end("data")
+            .end("intent-filter")
+            .start("intent-filter", &[])
+            .start("action", &[("name", Val::Str("android.intent.action.VIEW"))])
+            .end("action")
+            .start(
+                "data",
+                &[
+                    ("scheme", Val::Str("https")),
+                    ("host", Val::Str("two.example")),
+                ],
+            )
+            .end("data")
+            .end("intent-filter")
+            .end("activity")
+            .end("application")
+            .end("manifest");
+
+        let parsed = manifest(&axml.build()).expect("manifest");
+        assert_eq!(parsed.intent_filters.len(), 2);
+        assert_eq!(parsed.intent_filters[0].hosts, ["one.example"]);
+        assert_eq!(parsed.intent_filters[1].hosts, ["two.example"]);
+        assert_eq!(parsed.intent_filters_omitted, 0);
     }
 
     #[test]
