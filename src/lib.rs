@@ -103,6 +103,7 @@ pub mod gravatar;
 pub mod greynoise;
 pub mod hackertarget;
 pub mod hibp;
+pub mod html_text;
 pub mod http;
 pub mod hudsonrock;
 pub mod hunter;
