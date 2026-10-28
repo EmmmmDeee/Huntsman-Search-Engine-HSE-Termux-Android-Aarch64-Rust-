@@ -1,0 +1,1 @@
+- `apk FILE` now grades content provider security: flags exported or intent-filter-reachable content providers that declare access to sensitive data (contacts, calendar, SMS, call log, email, files). The manifest's claim of an authority is not proof of what data it controls. Reported as `reachable_content_provider` in risk flags.

@@ -175,8 +175,55 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
             );
         }
     }
+    let reachable_providers = manifest
+        .reachable_components
+        .iter()
+        .filter(|comp| comp.kind == "provider")
+        .count();
+    if reachable_providers > 0 && !manifest.provider_authorities.is_empty() {
+        let sensitive_count = manifest
+            .provider_authorities
+            .iter()
+            .filter(|auth| is_sensitive_authority(auth))
+            .count();
+        if sensitive_count > 0 {
+            add(
+                Risk::Medium,
+                "reachable_content_provider",
+                format!(
+                    "{reachable_providers} content provider{} accessible via intent; {} {} potentially sensitive data (contacts, calendar, SMS, call log, email)",
+                    if reachable_providers == 1 { "" } else { "s" },
+                    sensitive_count,
+                    if sensitive_count == 1 { "controls" } else { "control" }
+                ),
+            );
+        }
+    }
     flags.sort_by(|a, b| a.risk.cmp(&b.risk).then_with(|| a.id.cmp(b.id)));
     flags
+}
+
+/// Whether a content provider authority is likely to grant access to sensitive data.
+fn is_sensitive_authority(authority: &str) -> bool {
+    let lower = authority.to_ascii_lowercase();
+    [
+        "contacts",
+        "sms",
+        "mms",
+        "calendar",
+        "call_log",
+        "calllog",
+        "email",
+        "gmail",
+        "mtp",
+        "media",
+        "files",
+        "document",
+        "clipboard",
+        "settings",
+    ]
+    .iter()
+    .any(|sensitive| lower.contains(sensitive))
 }
 
 /// The highest risk among `flags`, for a one-line summary; `None` when there are none.
@@ -289,5 +336,56 @@ mod tests {
         let manifest = Manifest::default();
         let flags = flags(&manifest);
         assert!(flags.iter().any(|flag| flag.id == "backup_allowed"));
+    }
+
+    #[test]
+    fn reachable_providers_with_sensitive_data_are_flagged() {
+        let manifest = Manifest {
+            reachable_components: vec![Component {
+                kind: "provider".to_owned(),
+                name: ".ContentProvider".to_owned(),
+                exposure: Exposure::Exported,
+            }],
+            provider_authorities: vec!["com.example.contacts".to_owned()],
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(observed
+            .iter()
+            .any(|flag| flag.id == "reachable_content_provider"));
+        let provider_flag = observed
+            .iter()
+            .find(|flag| flag.id == "reachable_content_provider")
+            .unwrap();
+        assert_eq!(provider_flag.risk, Risk::Medium);
+        assert!(provider_flag.detail.contains("potentially sensitive data"));
+    }
+
+    #[test]
+    fn providers_without_sensitive_authorities_are_not_flagged() {
+        let manifest = Manifest {
+            reachable_components: vec![Component {
+                kind: "provider".to_owned(),
+                name: ".DataProvider".to_owned(),
+                exposure: Exposure::Exported,
+            }],
+            provider_authorities: vec!["com.example.data".to_owned()],
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(!observed
+            .iter()
+            .any(|flag| flag.id == "reachable_content_provider"));
+    }
+
+    #[test]
+    fn is_sensitive_authority_detects_contact_calendar_sms_email_patterns() {
+        assert!(is_sensitive_authority("com.android.contacts.provider"));
+        assert!(is_sensitive_authority("com.android.calendar"));
+        assert!(is_sensitive_authority("com.android.sms"));
+        assert!(is_sensitive_authority("com.android.call_log"));
+        assert!(is_sensitive_authority("com.google.android.gm.email.provider"));
+        assert!(!is_sensitive_authority("com.example.data"));
+        assert!(!is_sensitive_authority("com.example.appdata"));
     }
 }
