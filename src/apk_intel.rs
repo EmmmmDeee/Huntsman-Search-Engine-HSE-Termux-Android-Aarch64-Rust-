@@ -75,6 +75,8 @@ pub struct Inventory {
     pub v1_signing_artifacts_omitted: usize,
     pub apk_signing_block_present: bool,
     pub signing_scheme_ids_detected_unverified: Vec<String>,
+    /// Scheme IDs repeated in one signing block; signer claims from these IDs are withheld.
+    pub duplicate_signing_scheme_ids: Vec<String>,
     pub compressed_entries: usize,
     pub encrypted_entries: usize,
     pub suspicious_paths: usize,
@@ -196,6 +198,7 @@ fn suspicious(name: &str) -> bool {
 struct SigningBlock<'a> {
     present: bool,
     schemes: BTreeSet<&'static str>,
+    duplicates: BTreeSet<&'static str>,
     /// Each signature scheme's value, for the certificates its signers present.
     values: Vec<(&'static str, &'a [u8])>,
 }
@@ -245,12 +248,20 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock<'_> {
             _ => None,
         };
         if let Some(scheme) = scheme {
-            found.schemes.insert(scheme);
-            found.values.push((scheme, &data[pos + 12..next]));
+            if !found.schemes.insert(scheme) {
+                found.duplicates.insert(scheme);
+            } else {
+                found.values.push((scheme, &data[pos + 12..next]));
+            }
         }
         pos = next;
     }
     found.present = pos == footer_at;
+    // A repeated scheme ID is ambiguous. Do not promote certificates from either copy.
+    // Other, uniquely identified schemes remain available as unverified observations.
+    found
+        .values
+        .retain(|(scheme, _)| !found.duplicates.contains(scheme));
     found
 }
 
@@ -543,6 +554,11 @@ fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
         apk_signing_block_present: sig.present,
         signing_scheme_ids_detected_unverified: if sig.present {
             sig.schemes.into_iter().map(str::to_owned).collect()
+        } else {
+            Vec::new()
+        },
+        duplicate_signing_scheme_ids: if sig.present {
+            sig.duplicates.into_iter().map(str::to_owned).collect()
         } else {
             Vec::new()
         },
@@ -949,6 +965,10 @@ fn document_evidence(
     .with_attr(
         "apk_signing_block_detected_unverified",
         inventory.apk_signing_block_present.to_string(),
+    )
+    .with_attr(
+        "apk_signing_scheme_duplicate_ids",
+        inventory.duplicate_signing_scheme_ids.join(","),
     )
     .with_attr(
         "apk_compressed_entries",
@@ -1476,6 +1496,45 @@ mod tests {
         bytes[old_directory] ^= 1;
         let parsed = inventory(&bytes).unwrap();
         assert!(!parsed.apk_signing_block_present);
+    }
+
+    #[test]
+    fn repeated_signing_scheme_ids_withhold_ambiguous_signer_evidence() {
+        let mut bytes = sample(&["AndroidManifest.xml"]);
+        let directory = usize::try_from(le32(&bytes, bytes.len() - 22 + 16).unwrap()).unwrap();
+        let certificate = signer::tests::certificate_der("Ambiguous Signer");
+        let value = signer::tests::signing_value(&certificate);
+        let mut pairs = Vec::new();
+        for id in [0x7109_871a_u32, 0x7109_871a, 0xf053_68c0] {
+            pairs.extend_from_slice(&u64::try_from(value.len() + 4).unwrap().to_le_bytes());
+            pairs.extend_from_slice(&id.to_le_bytes());
+            pairs.extend_from_slice(&value);
+        }
+        let size = u64::try_from(pairs.len() + 24).unwrap();
+        let mut block = size.to_le_bytes().to_vec();
+        block.extend_from_slice(&pairs);
+        block.extend_from_slice(&size.to_le_bytes());
+        block.extend_from_slice(APK_SIG_MAGIC);
+        let block_len = block.len();
+        bytes.splice(directory..directory, block);
+        let end = bytes.len() - 22;
+        put32(
+            &mut bytes,
+            end + 16,
+            u32::try_from(directory + block_len).unwrap(),
+        );
+
+        let (inventory, archive) = walk(&bytes).unwrap();
+        assert!(inventory.apk_signing_block_present);
+        assert_eq!(inventory.signing_scheme_ids_detected_unverified, ["v2", "v3"]);
+        assert_eq!(inventory.duplicate_signing_scheme_ids, ["v2"]);
+        assert_eq!(
+            archive.signing_values.iter().map(|(scheme, _)| *scheme).collect::<Vec<_>>(),
+            ["v3"]
+        );
+        let analysis = analyse(&bytes, &archive);
+        assert_eq!(analysis.signers.len(), 1);
+        assert_eq!(analysis.signers[0].scheme, "v3");
     }
 
     /// One member of a built APK: its name, bytes and ZIP compression method (8 deflates it).
