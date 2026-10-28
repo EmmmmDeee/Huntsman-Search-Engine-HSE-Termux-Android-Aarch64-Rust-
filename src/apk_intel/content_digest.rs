@@ -104,6 +104,8 @@ pub(super) fn compare(
                 computed = Some(actual);
                 actual
             };
+            let signature_verification =
+                signer::verify_sha256_signature(value, scheme, signer_index, algorithm_id);
             checks.push(ContentDigestCheck {
                 scheme: (*scheme).to_owned(),
                 signer_index,
@@ -111,15 +113,8 @@ pub(super) fn compare(
                 declared_sha256: hex32(&declared),
                 computed_sha256: hex32(&actual),
                 matches: declared == actual,
-                signature_authenticated: declared == actual
-                    && signer::verify_sha256_signature(value, scheme, signer_index, algorithm_id)
-                        == "verified",
-                signature_verification: signer::verify_sha256_signature(
-                    value,
-                    scheme,
-                    signer_index,
-                    algorithm_id,
-                ),
+                signature_authenticated: declared == actual && signature_verification == "verified",
+                signature_verification,
             });
         }
     }

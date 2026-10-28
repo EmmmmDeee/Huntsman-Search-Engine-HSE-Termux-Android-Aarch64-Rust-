@@ -405,7 +405,6 @@ pub(super) fn sha256_digests(value: &[u8], scheme: &str) -> Option<Vec<(usize, u
     Some(found)
 }
 
-
 /// Return the APK signing-record authentication state for a SHA-256 digest claim.
 /// This verifies the signature over signed-data, not Android installability or a CA chain.
 pub(super) fn verify_sha256_signature(
@@ -442,8 +441,7 @@ pub(super) fn verify_sha256_signature(
         "v3" | "v3.1" => data_end.saturating_add(8),
         _ => return "unsupported",
     };
-    let Some((signatures_start, signatures_end)) =
-        prefixed_one(value, signatures_at, signer_end)
+    let Some((signatures_start, signatures_end)) = prefixed_one(value, signatures_at, signer_end)
     else {
         return "malformed";
     };
@@ -453,16 +451,14 @@ pub(super) fn verify_sha256_signature(
     if key_end != signer_end {
         return "malformed";
     }
-    let Some(signature) =
-        matching_signature(value, signatures_start, signatures_end, algorithm_id)
+    let Some(signature) = matching_signature(value, signatures_start, signatures_end, algorithm_id)
     else {
         return "malformed";
     };
     let Some(signature) = signature else {
         return "missing";
     };
-    let Some(public_key) = signing_public_key(&value[key_start..key_end], algorithm_id)
-    else {
+    let Some(public_key) = signing_public_key(&value[key_start..key_end], algorithm_id) else {
         return "unsupported";
     };
     let signed_data = &value[data_start..data_end];
@@ -708,7 +704,6 @@ pub(super) mod tests {
         prefix(&[&prefix(&[&signer])])
     }
 
-
     /// A real P-256 signature authenticates the exact v2 signed-data bytes.
     #[test]
     fn ecdsa_signed_data_authenticates_and_tampering_fails() {
@@ -763,9 +758,15 @@ pub(super) mod tests {
         signature_record.extend(prefix(&[signature.as_ref()]));
         let signer = prefix(&[&signed_data, &prefix(&[&signature_record]), &spki]);
         let mut value = prefix(&[&prefix(&[&signer])]);
-        assert_eq!(sha256_digests(&value, "v2"), Some(vec![(0, 0x0201, digest)]));
+        assert_eq!(
+            sha256_digests(&value, "v2"),
+            Some(vec![(0, 0x0201, digest)])
+        );
         assert_eq!(verify_sha256_signature(&value, "v2", 0, 0x0201), "verified");
-        assert_eq!(verify_sha256_signature(&value, "v2", 0, 0x0301), "unsupported");
+        assert_eq!(
+            verify_sha256_signature(&value, "v2", 0, 0x0301),
+            "unsupported"
+        );
         let at = value
             .windows(signature.as_ref().len())
             .position(|part| part == signature.as_ref())

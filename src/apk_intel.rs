@@ -1007,13 +1007,15 @@ fn content_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, 
                 .content_digest_checks
                 .iter()
                 .filter(|check| check.signature_authenticated)
-                .map(|check| format!(
-                    "{}#{}:0x{:04x}:{}",
-                    check.scheme,
-                    check.signer_index,
-                    check.signature_algorithm_id,
-                    check.declared_sha256
-                ))
+                .map(|check| {
+                    format!(
+                        "{}#{}:0x{:04x}:{}",
+                        check.scheme,
+                        check.signer_index,
+                        check.signature_algorithm_id,
+                        check.declared_sha256
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("; "),
         );
