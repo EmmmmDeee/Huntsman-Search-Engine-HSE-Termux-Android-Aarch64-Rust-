@@ -82,7 +82,7 @@ pub struct Component {
 pub struct IntentFilterDef {
     /// The component this filter applies to (e.g., "com.example.MainActivity").
     pub component: String,
-    /// Component kind: "activity", "service", "broadcast_receiver", or "provider".
+    /// Component kind: "activity", "service", "`broadcast_receiver`", or "provider".
     pub component_kind: String,
     /// Intent actions this component handles (e.g., "android.intent.action.VIEW").
     pub actions: Vec<String>,
@@ -129,7 +129,7 @@ pub struct Manifest {
     pub provider_authorities: Vec<String>,
     /// Authority claims tied to explicitly exported, enabled providers (bounded, not verified access).
     pub explicitly_exported_provider_authorities: Vec<String>,
-    /// Intent filters extracted from manifest, capped at MAX_LISTED.
+    /// Intent filters extracted from manifest, capped at `MAX_LISTED`.
     pub intent_filters: Vec<IntentFilterDef>,
     /// Count of intent filters omitted when list exceeds capacity.
     pub intent_filters_omitted: usize,
@@ -413,10 +413,41 @@ fn collect_provider_authorities(
 }
 
 impl Reader {
+    /// Collect the bounded scheme/host declarations for a single intent filter.
+    fn record_filter_data(&mut self, attributes: &[Attribute]) {
+        if let Some(scheme) = value(attributes, "scheme") {
+            let mut omitted = 0;
+            push_capped(
+                &mut self.manifest.deep_link_schemes,
+                &mut omitted,
+                &mut self.schemes,
+                &scheme.to_ascii_lowercase(),
+            );
+            if let Some(filter) = self.intent_filter.as_mut() {
+                filter.schemes.push(scheme.to_ascii_lowercase());
+            }
+        }
+        if let Some(host) = value(attributes, "host") {
+            push_capped(
+                &mut self.manifest.deep_link_hosts,
+                &mut self.manifest.deep_link_hosts_omitted,
+                &mut self.hosts,
+                &host.to_ascii_lowercase(),
+            );
+            if let Some(filter) = self.intent_filter.as_mut() {
+                filter.hosts.push(host.to_ascii_lowercase());
+            }
+        }
+    }
+
     fn start(&mut self, element: &str, parent: Option<&str>, attributes: &[Attribute]) {
         let component = COMPONENTS.contains(&element) && parent == Some("application");
         if component {
             self.close_component();
+        }
+        if element == "data" && parent == Some("intent-filter") {
+            self.record_filter_data(attributes);
+            return;
         }
         let manifest = &mut self.manifest;
         match element {
@@ -499,31 +530,6 @@ impl Reader {
                 if let Some(filter) = self.intent_filter.as_mut() {
                     if let Some(name) = value(attributes, "name") {
                         filter.categories.push(name.to_owned());
-                    }
-                }
-            }
-            "data" if parent == Some("intent-filter") => {
-                if let Some(scheme) = value(attributes, "scheme") {
-                    let mut omitted = 0;
-                    push_capped(
-                        &mut manifest.deep_link_schemes,
-                        &mut omitted,
-                        &mut self.schemes,
-                        &scheme.to_ascii_lowercase(),
-                    );
-                    if let Some(filter) = self.intent_filter.as_mut() {
-                        filter.schemes.push(scheme.to_ascii_lowercase());
-                    }
-                }
-                if let Some(host) = value(attributes, "host") {
-                    push_capped(
-                        &mut manifest.deep_link_hosts,
-                        &mut manifest.deep_link_hosts_omitted,
-                        &mut self.hosts,
-                        &host.to_ascii_lowercase(),
-                    );
-                    if let Some(filter) = self.intent_filter.as_mut() {
-                        filter.hosts.push(host.to_ascii_lowercase());
                     }
                 }
             }
