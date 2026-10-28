@@ -393,7 +393,7 @@ impl Reader {
             }
             kind if component => {
                 manifest.components += 1;
-                let mut own_authorities = Vec::new();
+                let mut own_authorities: Vec<String> = Vec::new();
                 if kind == "provider" {
                     for authority in value(attributes, "authorities")
                         .unwrap_or_default()
@@ -409,7 +409,9 @@ impl Reader {
                         );
                         if !authority.is_empty()
                             && own_authorities.len() < MAX_LISTED
-                            && !own_authorities.iter().any(|known| known.as_str() == authority)
+                            && !own_authorities
+                                .iter()
+                                .any(|known| known.as_str() == authority)
                         {
                             own_authorities.push(authority.to_owned());
                         }
@@ -463,8 +465,7 @@ impl Reader {
         if open.enabled == Some(false) || self.application_enabled == Some(false) {
             return;
         }
-        let explicitly_exported_provider =
-            open.kind == "provider" && open.exported == Some(true);
+        let explicitly_exported_provider = open.kind == "provider" && open.exported == Some(true);
         let exposure = match (open.exported, open.filtered) {
             (Some(true), _) => Exposure::Exported,
             (None, true) if open.kind != "provider" => Exposure::ImplicitByIntentFilter,
@@ -947,7 +948,11 @@ pub(super) mod tests {
         let parsed = manifest(&xml.build()).expect("valid binary manifest");
         assert_eq!(
             parsed.provider_authorities,
-            ["com.example.contacts", "com.example.public", "com.example.sms"]
+            [
+                "com.example.contacts",
+                "com.example.public",
+                "com.example.sms"
+            ]
         );
         assert_eq!(
             parsed.explicitly_exported_provider_authorities,
@@ -1004,12 +1009,8 @@ pub(super) mod tests {
             ["com.example.contacts"]
         );
         let findings = crate::apk_intel::risk::flags(&parsed);
-        assert!(
-            findings.iter().any(|flag| {
-                flag.id == "reachable_content_provider"
-                    && flag.detail.contains("manifest names do not prove")
-            })
-        );
-    }
-
-}
+        assert!(findings.iter().any(|flag| {
+            flag.id == "reachable_content_provider"
+                && flag.detail.contains("manifest names do not prove")
+        }));
+    }}
