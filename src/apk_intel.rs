@@ -970,6 +970,37 @@ fn network_policy_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, 
     }
 }
 
+/// Keep unauthenticated digest comparisons in the document evidence contract without
+/// promoting them into signing identities or treating a digest match as authentication.
+fn content_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, String)) {
+    if !analysis.content_digest_checks.is_empty() {
+        put(
+            "apk_content_digest_sha256_claims_unverified",
+            analysis
+                .content_digest_checks
+                .iter()
+                .map(|check| {
+                    format!(
+                        "{}#{}:0x{:04x}:declared={}:computed={}:matches={}",
+                        check.scheme,
+                        check.signer_index,
+                        check.signature_algorithm_id,
+                        check.declared_sha256,
+                        check.computed_sha256,
+                        check.matches
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        put("apk_content_digest_signature_authenticated", "false".to_owned());
+    }
+    put(
+        "apk_content_digest_parse_errors",
+        analysis.content_digest_parse_errors.join("; "),
+    );
+}
+
 fn document_evidence(
     inventory: &Inventory,
     analysis: &Analysis,
@@ -1026,6 +1057,7 @@ fn document_evidence(
         analysis.app_label.clone().unwrap_or_default(),
     );
     network_policy_attrs(analysis, &mut put);
+    content_digest_attrs(analysis, &mut put);
     signer_digest_attrs(analysis, &mut put);
     if let Some(signer) = analysis.signers.first() {
         put("apk_signer_subject", signer.subject.clone());
