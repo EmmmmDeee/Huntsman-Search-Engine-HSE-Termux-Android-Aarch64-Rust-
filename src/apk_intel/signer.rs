@@ -445,6 +445,14 @@ pub(super) fn verify_sha256_signature(
     else {
         return "malformed";
     };
+    let Some((digests_start, digests_end)) = prefixed_one(value, data_start, data_end) else {
+        return "malformed";
+    };
+    let digest_algorithms = algorithm_ids(value, digests_start, digests_end);
+    let signature_algorithms = algorithm_ids(value, signatures_start, signatures_end);
+    if digest_algorithms.is_none() || digest_algorithms != signature_algorithms {
+        return "malformed";
+    }
     let Some((key_start, key_end)) = prefixed_one(value, signatures_end, signer_end) else {
         return "malformed";
     };
@@ -528,6 +536,24 @@ fn signing_public_key(spki: &[u8], algorithm_id: u32) -> Option<&[u8]> {
     let bits = spki.get(fields[1].start..fields[1].end)?;
     let (unused, key) = bits.split_first()?;
     (*unused == 0 && !key.is_empty()).then_some(key)
+}
+
+/// Android requires the ordered digest and signature algorithm lists to be identical.
+fn algorithm_ids(value: &[u8], start: usize, end: usize) -> Option<Vec<u32>> {
+    let records = prefixed(value, start, end)?;
+    if records.len() > 64 {
+        return None;
+    }
+    let mut ids = Vec::new();
+    for (from, to) in records {
+        let id = u32::try_from(le32(value, from)?).ok()?;
+        let (_, payload_end) = prefixed_one(value, from.checked_add(4)?, to)?;
+        if payload_end != to || ids.contains(&id) {
+            return None;
+        }
+        ids.push(id);
+    }
+    Some(ids)
 }
 
 /// Locate the signature with exactly the digest claim's algorithm identifier.
@@ -771,6 +797,12 @@ pub(super) mod tests {
             .windows(signature.as_ref().len())
             .position(|part| part == signature.as_ref())
             .unwrap();
+        let mut mismatched_algorithms = value.clone();
+        mismatched_algorithms[at - 8..at - 4].copy_from_slice(&0x0103_u32.to_le_bytes());
+        assert_eq!(
+            verify_sha256_signature(&mismatched_algorithms, "v2", 0, 0x0201),
+            "malformed"
+        );
         value[at] ^= 1;
         assert_eq!(verify_sha256_signature(&value, "v2", 0, 0x0201), "invalid");
     }
