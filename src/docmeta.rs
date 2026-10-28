@@ -774,10 +774,8 @@ fn parse_xmp_coord(value: &str, negative: char) -> Option<f64> {
         || !minutes.is_finite()
         || !seconds.is_finite()
         || degrees < 0.0
-        || minutes < 0.0
-        || minutes >= 60.0
-        || seconds < 0.0
-        || seconds >= 60.0
+        || !(0.0..60.0).contains(&minutes)
+        || !(0.0..60.0).contains(&seconds)
     {
         return None;
     }

@@ -93,26 +93,17 @@ fn parse_sdk(sdk_str: &str) -> Option<u32> {
     sdk_str.trim().parse().ok()
 }
 
-/// The manifest's security-posture flags, highest risk first. Empty when the manifest declares
-/// nothing of note.
-#[must_use]
-pub fn flags(manifest: &Manifest) -> Vec<Flag> {
-    let mut flags = Vec::new();
-    let mut add =
-        |risk: Risk, id: &'static str, detail: String| flags.push(Flag { risk, id, detail });
-
-    // Check SDK version mismatches: target SDK too old means missing modern Android protections.
+/// Check SDK version risks (target and minimum) and return flags.
+fn check_sdk_versions(manifest: &Manifest) -> Vec<Flag> {
+    let mut sdk_flags = Vec::new();
     if let Some(target_sdk_str) = manifest.target_sdk.as_deref() {
         if let Some(target_sdk) = parse_sdk(target_sdk_str) {
             if target_sdk < 28 {
-                add(
-                    Risk::High,
-                    "target_sdk_too_old",
-                    format!(
-                        "the application targets Android SDK {} (below 9.0/API 28); it does not benefit from modern platform hardening, container isolation, scoped storage and other protections introduced in Android 9 and later",
-                        target_sdk
-                    ),
-                );
+                sdk_flags.push(Flag {
+                    risk: Risk::High,
+                    id: "target_sdk_too_old",
+                    detail: format!("the application targets Android SDK {target_sdk} (below 9.0/API 28); it does not benefit from modern platform hardening, container isolation, scoped storage and other protections introduced in Android 9 and later"),
+                });
             } else if target_sdk < 31 {
                 let api_name = if target_sdk == 29 {
                     "10 (Q)"
@@ -121,31 +112,35 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
                 } else {
                     "9 (P)"
                 };
-                add(
-                    Risk::Medium,
-                    "target_sdk_not_current",
-                    format!(
-                        "the application targets Android SDK {} (API {}); it does not receive protections from Android 12 and later, including restricted implicit intents, package visibility, and restricted non-SDK interfaces",
-                        target_sdk, api_name
-                    ),
-                );
+                sdk_flags.push(Flag {
+                    risk: Risk::Medium,
+                    id: "target_sdk_not_current",
+                    detail: format!("the application targets Android SDK {target_sdk} (API {api_name}); it does not receive protections from Android 12 and later, including restricted implicit intents, package visibility, and restricted non-SDK interfaces"),
+                });
             }
         }
     }
     if let Some(min_sdk_str) = manifest.min_sdk.as_deref() {
         if let Some(min_sdk) = parse_sdk(min_sdk_str) {
             if min_sdk < 21 {
-                add(
-                    Risk::Medium,
-                    "min_sdk_too_old",
-                    format!(
-                        "the application declares a minimum SDK {} (below 5.0/API 21); it is compatible with Android versions that lack modern platform security features",
-                        min_sdk
-                    ),
-                );
+                sdk_flags.push(Flag {
+                    risk: Risk::Medium,
+                    id: "min_sdk_too_old",
+                    detail: format!("the application declares a minimum SDK {min_sdk} (below 5.0/API 21); it is compatible with Android versions that lack modern platform security features"),
+                });
             }
         }
     }
+    sdk_flags
+}
+
+/// The manifest's security-posture flags, highest risk first. Empty when the manifest declares
+/// nothing of note.
+#[must_use]
+pub fn flags(manifest: &Manifest) -> Vec<Flag> {
+    let mut flags = check_sdk_versions(manifest);
+    let mut add =
+        |risk: Risk, id: &'static str, detail: String| flags.push(Flag { risk, id, detail });
 
     if manifest.debuggable == Some(true) {
         add(
@@ -226,6 +221,15 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
             );
         }
     }
+    if let Some(provider_flag) = check_provider_authorities(manifest) {
+        add(provider_flag.risk, provider_flag.id, provider_flag.detail);
+    }
+    flags.sort_by(|a, b| a.risk.cmp(&b.risk).then_with(|| a.id.cmp(b.id)));
+    flags
+}
+
+/// Check for reachable content providers with sensitive data and return a flag if found.
+fn check_provider_authorities(manifest: &Manifest) -> Option<Flag> {
     let reachable_providers = manifest
         .reachable_components
         .iter()
@@ -238,10 +242,10 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
             .filter(|auth| is_sensitive_authority(auth))
             .count();
         if sensitive_count > 0 {
-            add(
-                Risk::Medium,
-                "reachable_content_provider",
-                format!(
+            return Some(Flag {
+                risk: Risk::Medium,
+                id: "reachable_content_provider",
+                detail: format!(
                     "{reachable_providers} content provider{} accessible via intent; {} {} potentially sensitive data (contacts, calendar, SMS, call log, email)",
                     if reachable_providers == 1 { "" } else { "s" },
                     sensitive_count,
@@ -251,11 +255,10 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
                         "control"
                     }
                 ),
-            );
+            });
         }
     }
-    flags.sort_by(|a, b| a.risk.cmp(&b.risk).then_with(|| a.id.cmp(b.id)));
-    flags
+    None
 }
 
 /// Whether a content provider authority is likely to grant access to sensitive data.
