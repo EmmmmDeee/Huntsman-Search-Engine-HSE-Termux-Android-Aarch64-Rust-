@@ -1013,4 +1013,5 @@ pub(super) mod tests {
             flag.id == "reachable_content_provider"
                 && flag.detail.contains("manifest names do not prove")
         }));
-    }}
+    }
+}

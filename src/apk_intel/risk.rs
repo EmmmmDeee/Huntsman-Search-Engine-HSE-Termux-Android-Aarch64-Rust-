@@ -696,4 +696,5 @@ mod tests {
         assert!(!is_sensitive_authority("com.example.contactsimpostor"));
         assert!(!is_sensitive_authority("com.example.mysettings"));
         assert!(is_sensitive_authority("com.example.call_log"));
-    }}
+    }
+}
