@@ -10,14 +10,16 @@ use serde::Serialize;
 
 /// A single Android capability (data access, sensor, communication, privilege).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(dead_code)]
+#[allow(clippy::struct_field_names)]
 pub struct Capability {
-    /// Machine-readable identifier: e.g., "contacts_read", "location_precise", "camera_access".
+    /// Machine-readable identifier: e.g., `contacts_read`, `location_precise`, `camera_access`.
     pub id: String,
     /// Human-readable capability name.
     pub name: String,
-    /// What the capability provides: "data access", "sensor", "communication", "privilege", "installation".
+    /// What the capability provides: `data access`, `sensor`, `communication`, `privilege`, `installation`.
     pub capability_kind: String,
-    /// Sensitivity level: "critical" (PII/biometric), "high" (device state), "medium" (shared data), "low" (public).
+    /// Sensitivity level: `critical` (PII/biometric), `high` (device state), `medium` (shared data), `low` (public).
     pub sensitivity: String,
     /// Permissions that unlock this capability.
     pub required_permissions: Vec<String>,
@@ -27,8 +29,9 @@ pub struct Capability {
 
 /// Mapping of permission to the capabilities it controls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(dead_code)]
 pub struct PermissionCapability {
-    /// Android permission constant name (e.g., "android.permission.READ_CONTACTS").
+    /// Android permission constant name (e.g., `android.permission.READ_CONTACTS`).
     pub permission: String,
     /// Capabilities this permission unlocks.
     pub capabilities: Vec<String>,
@@ -40,6 +43,7 @@ pub struct PermissionCapability {
 
 /// Permission-to-capability analysis results.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[allow(dead_code)]
 pub struct CapabilityAnalysis {
     /// All declared permissions mapped to capabilities.
     pub permission_capabilities: Vec<PermissionCapability>,
@@ -62,6 +66,7 @@ pub struct CapabilityAnalysis {
 }
 
 /// Map a single permission to its capabilities and risk level.
+#[allow(dead_code, too_many_lines)]
 pub fn permission_to_capabilities(
     permission: &str,
 ) -> Option<(&'static str, &'static [&'static str])> {
