@@ -1195,6 +1195,15 @@ fn network_pin_entities(analysis: &Analysis, label: &str, sid: &str, entities: &
         }
     }
     for (digest, scopes) in groups {
+        // EntityKind::Other normalises values to lowercase: raw Base64 would collapse
+        // distinct case-sensitive digests. Encode the exact 32 bytes as lowercase hex.
+        let Some(bytes) = crate::base64::decode_standard(digest) else {
+            continue;
+        };
+        if bytes.len() != 32 || crate::base64::standard(&bytes) != digest {
+            continue;
+        }
+        let digest_hex = crate::base64::base16_lower(&bytes);
         let domains = scopes
             .iter()
             .map(|(domain, _)| domain.as_str())
@@ -1215,7 +1224,7 @@ fn network_pin_entities(analysis: &Analysis, label: &str, sid: &str, entities: &
         push_entity(
             entities,
             EntityKind::Other,
-            &format!("apk-tls-spki-sha256:{digest}"),
+            &format!("apk-tls-spki-sha256:{digest_hex}"),
             0.4,
             sid,
             Evidence::new(
@@ -1226,6 +1235,7 @@ fn network_pin_entities(analysis: &Analysis, label: &str, sid: &str, entities: &
             )
             .with_attr("pin_digest_algorithm", "SHA-256")
             .with_attr("pin_sha256_base64", digest)
+            .with_attr("pin_sha256_hex", digest_hex.as_str())
             .with_attr("declared_domains", domains)
             .with_attr("declared_scopes", declared_scopes)
             .with_attr("network_policy_resource", policy.resource_path.as_str()),
@@ -1910,7 +1920,7 @@ mod tests {
             .filter(|entity| entity.value.starts_with("apk-tls-spki-sha256:"))
             .collect();
         assert_eq!(pivots.len(), 1, "one entity for one valid pin digest");
-        assert_eq!(pivots[0].value, format!("apk-tls-spki-sha256:{pin}"));
+        assert_eq!(pivots[0].value, format!("apk-tls-spki-sha256:{}", "00".repeat(32)));
         assert_eq!(
             attr(pivots[0], "declared_domains"),
             Some("alpha.example.org,beta.example.org")
@@ -1937,6 +1947,21 @@ mod tests {
             "same digest yields same pivot UID"
         );
         assert_eq!(attr(other, "declared_domains"), Some("other.example.net"));
+        // Different 32-byte digests whose Base64 differs only in letter case
+        // must never collapse under EntityKind::Other's lowercase normalisation.
+        let case_variant = format!("a{}", &pin[1..]);
+        let variant = run(
+            &apk_with_declared_pin(&["case.example.net"], &case_variant),
+            "variant.apk",
+            102,
+        )
+        .unwrap();
+        let variant_pivot = variant
+            .entities
+            .iter()
+            .find(|entity| entity.value.starts_with("apk-tls-spki-sha256:"))
+            .unwrap();
+        assert_ne!(pivots[0].uid, variant_pivot.uid);
         assert_eq!(first.outcomes[0].found, Some(first.entities.len()));
     }
 
