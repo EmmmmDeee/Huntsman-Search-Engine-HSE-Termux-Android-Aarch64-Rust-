@@ -125,9 +125,6 @@ sync_cmd() {
         die "refusing to commit secret-looking path: $path"
       fi
     done
-    : # Commit only after verification below.
-  else
-    log "clean tree"
   fi
   # A direct sync must not bypass build/check/tests. The all command has already
   # completed them in this process; stored state from another run is not trusted.
@@ -143,6 +140,8 @@ sync_cmd() {
     git add -A
     git commit -m "lifecycle: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     log "committed $(git rev-parse --short HEAD)"
+  else
+    log "clean tree"
   fi
   git remote get-url origin >/dev/null 2>&1 || die "no origin remote"
   if ! git push origin main; then
