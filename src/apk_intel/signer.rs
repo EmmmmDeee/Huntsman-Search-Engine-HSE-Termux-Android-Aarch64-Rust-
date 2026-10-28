@@ -6,9 +6,9 @@
 //! `apksigner verify --print-certs` prints as the "certificate SHA-256 digest" and app stores and
 //! malware repositories index signers by, so two APKs signed by the same key pivot to each other.
 //! Its subject, issuer, serial number and validity are read from the DER for the analyst. No
-//! signature is verified: a certificate here is the one the archive presents, which says nothing
-//! about whether its signature over the APK holds, and a subject name is whatever the key holder
-//! (or anyone who made the certificate) typed.
+//! certificate-chain trust is established by extraction alone. Supported v2/v3 signed-data
+//! signatures are checked separately against their declared public keys and APK content digests;
+//! neither this nor a subject name proves ownership, CA trust or Android installability.
 
 use serde::Serialize;
 
