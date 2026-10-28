@@ -73,8 +73,21 @@ fn canonical_sha256_pin(value: &str) -> bool {
     }
     matches!(
         bytes[42],
-        b'A' | b'E' | b'I' | b'M' | b'Q' | b'U' | b'Y' | b'c' | b'g'
-            | b'k' | b'o' | b's' | b'w' | b'0' | b'4' | b'8'
+        b'A' | b'E'
+            | b'I'
+            | b'M'
+            | b'Q'
+            | b'U'
+            | b'Y'
+            | b'c'
+            | b'g'
+            | b'k'
+            | b'o'
+            | b's'
+            | b'w'
+            | b'0'
+            | b'4'
+            | b'8'
     )
 }
 
@@ -176,7 +189,10 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
                 });
             }
             "pin-set"
-                if node.parent.is_some_and(|index| nodes[index].name == "domain-config") => {
+                if node
+                    .parent
+                    .is_some_and(|index| nodes[index].name == "domain-config") =>
+            {
                 policy.pin_sets = policy.pin_sets.saturating_add(1);
                 if let Some(expiration) = node.attr("expiration") {
                     if policy.pin_expirations.len() < MAX_EXPIRATIONS {
@@ -189,7 +205,9 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
                 if nodes[parent].name != "pin-set" {
                     continue;
                 }
-                let Some(owner) = nodes[parent].parent else { continue };
+                let Some(owner) = nodes[parent].parent else {
+                    continue;
+                };
                 if nodes[owner].name != "domain-config" {
                     continue;
                 }
@@ -301,7 +319,9 @@ mod tests {
     fn records_canonical_sha256_pins_with_exact_domain_config_scope() {
         let pin = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         assert!(canonical_sha256_pin(pin));
-        assert!(!canonical_sha256_pin("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB="));
+        assert!(!canonical_sha256_pin(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB="
+        ));
         assert!(!canonical_sha256_pin("not-a-sha256-digest"));
         let mut xml = Axml::new(&["digest", "expiration"]);
         xml.start("network-security-config", &[])
