@@ -296,25 +296,82 @@ fn le32(data: &[u8], at: usize) -> Option<usize> {
     usize::try_from(u32::from_le_bytes([field[0], field[1], field[2], field[3]])).ok()
 }
 
-/// The `u32`-length-prefixed items filling `data[start..end]`, as the signing block nests them.
+/// One checked u32-length-prefixed item, without assuming later fields are prefixed.
+/// v3/v3.1 interleave raw SDK integers with length-prefixed fields.
+fn prefixed_one(data: &[u8], at: usize, end: usize) -> Option<(usize, usize)> {
+    let length = le32(data, at)?;
+    let from = at.checked_add(4)?;
+    let to = from.checked_add(length)?;
+    (to <= end).then_some((from, to))
+}
+
+/// The u32-length-prefixed items exactly filling data[start..end].
 fn prefixed(data: &[u8], start: usize, end: usize) -> Option<Vec<(usize, usize)>> {
     let mut at = start;
     let mut items = Vec::new();
     while at < end {
-        let length = le32(data, at)?;
-        let from = at.checked_add(4)?;
-        let to = from.checked_add(length)?;
-        if to > end {
-            return None;
-        }
-        items.push((from, to));
-        at = to;
+        let item = prefixed_one(data, at, end)?;
+        at = item.1;
+        items.push(item);
     }
     Some(items)
 }
 
-/// The certificates of each signer in a v2/v3 signing-block value: signers, then each signer's
-/// signed data, whose first two items are its digests and its certificates.
+/// Extract certificate claims only from a structurally consistent signer.
+/// This does NOT verify its cryptographic signature or APK content digests.
+fn signer_certificates(
+    value: &[u8],
+    signer_start: usize,
+    signer_end: usize,
+    scheme: &str,
+) -> Option<Vec<Certificate>> {
+    let (data_start, data_end) = prefixed_one(value, signer_start, signer_end)?;
+    let (_, digests_end) = prefixed_one(value, data_start, data_end)?;
+    let (certs_start, certs_end) = prefixed_one(value, digests_end, data_end)?;
+
+    let (attrs_at, signatures_at) = match scheme {
+        "v2" => (certs_end, data_end),
+        "v3" | "v3.1" => {
+            let inner_min = le32(value, certs_end)?;
+            let inner_max = le32(value, certs_end.checked_add(4)?)?;
+            let outer_min = le32(value, data_end)?;
+            let outer_max = le32(value, data_end.checked_add(4)?)?;
+            if inner_min > inner_max || (inner_min, inner_max) != (outer_min, outer_max) {
+                return None;
+            }
+            (certs_end.checked_add(8)?, data_end.checked_add(8)?)
+        }
+        _ => return None,
+    };
+
+    let (_, attrs_end) = prefixed_one(value, attrs_at, data_end)?;
+    if attrs_end != data_end {
+        return None;
+    }
+    let (_, signatures_end) = prefixed_one(value, signatures_at, signer_end)?;
+    let (key_start, key_end) = prefixed_one(value, signatures_end, signer_end)?;
+    if key_end != signer_end {
+        return None;
+    }
+    let declared_key_sha256 = hex32(&sha256(&value[key_start..key_end]));
+    let mut certificates = Vec::new();
+    for (index, (from, to)) in prefixed(value, certs_start, certs_end)?
+        .into_iter()
+        .enumerate()
+    {
+        let cert = certificate(&value[from..to], scheme)?;
+        if index == 0 && cert.public_key_sha256 != declared_key_sha256 {
+            return None;
+        }
+        if certificates.len() < MAX_CERTIFICATES {
+            certificates.push(cert);
+        }
+    }
+    Some(certificates)
+}
+
+/// Certificates declared by v2/v3/v3.1 signers, with SDK-copy and public-key consistency
+/// checks. Neither these checks nor certificate extraction authenticate the APK.
 #[must_use]
 pub fn signing_block(value: &[u8], scheme: &str) -> Vec<Certificate> {
     let found = || -> Option<Vec<Certificate>> {
@@ -323,14 +380,8 @@ pub fn signing_block(value: &[u8], scheme: &str) -> Vec<Certificate> {
         };
         let mut certificates = Vec::new();
         for (signer_start, signer_end) in prefixed(value, start, end)? {
-            let (data_start, data_end) = *prefixed(value, signer_start, signer_end)?.first()?;
-            let fields = prefixed(value, data_start, data_end)?;
-            let (certs_start, certs_end) = *fields.get(1)?;
-            for (from, to) in prefixed(value, certs_start, certs_end)? {
-                if certificates.len() < MAX_CERTIFICATES {
-                    certificates.extend(certificate(&value[from..to], scheme));
-                }
-            }
+            certificates.extend(signer_certificates(value, signer_start, signer_end, scheme)?);
+            certificates.truncate(MAX_CERTIFICATES);
         }
         Some(certificates)
     };
@@ -418,13 +469,79 @@ pub(super) mod tests {
         out
     }
 
-    /// A v2/v3 signing-block value holding one signer with `cert`.
+    fn spki(cert: &[u8]) -> &[u8] {
+        let outer = tlv(cert, 0, cert.len()).unwrap();
+        let tbs = children(cert, outer).unwrap()[0];
+        let fields = children(cert, tbs).unwrap();
+        let skip = usize::from(fields[0].tag == CONTEXT_0);
+        let key = fields[skip + 5];
+        &cert[key.at..key.end]
+    }
+
+    /// A v2 signing-block value holding one signer with `cert`.
     pub(crate) fn signing_value(cert: &[u8]) -> Vec<u8> {
         let digests = prefix(&[]);
         let certs = prefix(&[cert]);
         let signed_data = prefix(&[&digests, &certs, &prefix(&[])]);
-        let signer = prefix(&[&signed_data, &prefix(&[]), b"public-key"]);
+        let signer = prefix(&[&signed_data, &prefix(&[]), spki(cert)]);
         prefix(&[&prefix(&[&signer])])
+    }
+
+    /// A v3/v3.1 signer has raw SDK fields both inside and outside signed data.
+    pub(crate) fn signing_value_v3(cert: &[u8], min_sdk: u32, max_sdk: u32) -> Vec<u8> {
+        let digests = prefix(&[]);
+        let certs = prefix(&[cert]);
+        let mut signed_data = prefix(&[&digests, &certs]);
+        signed_data.extend_from_slice(&min_sdk.to_le_bytes());
+        signed_data.extend_from_slice(&max_sdk.to_le_bytes());
+        signed_data.extend_from_slice(&prefix(&[&[]]));
+        let mut signer = prefix(&[&signed_data]);
+        signer.extend_from_slice(&min_sdk.to_le_bytes());
+        signer.extend_from_slice(&max_sdk.to_le_bytes());
+        signer.extend_from_slice(&prefix(&[&[], spki(cert)]));
+        prefix(&[&prefix(&[&signer])])
+    }
+
+    #[test]
+    fn v3_and_v31_signers_decode_with_matching_sdk_copies() {
+        let der = certificate_der("Versioned Signer");
+        let valid = signing_value_v3(&der, 24, 35);
+        for scheme in ["v3", "v3.1"] {
+            let found = signing_block(&valid, scheme);
+            assert_eq!(found.len(), 1, "{scheme} must decode its raw SDK fields");
+            assert_eq!(found[0].sha256, hex32(&sha256(&der)));
+        }
+        assert!(signing_block(&valid, "v2").is_empty());
+        assert!(signing_block(&signing_value(&der), "v3").is_empty());
+    }
+
+    #[test]
+    fn sdk_mismatch_and_invalid_ranges_withhold_v3_certificate_claims() {
+        let der = certificate_der("Versioned Signer");
+        let valid = signing_value_v3(&der, 24, 35);
+        // 4-byte outer list prefix, 4-byte signer prefix, 4-byte signed-data prefix.
+        let sdk_at = 12 + le32(&valid, 8).unwrap();
+        let mut mismatched = valid.clone();
+        mismatched[sdk_at..sdk_at + 4].copy_from_slice(&25_u32.to_le_bytes());
+        assert!(signing_block(&mismatched, "v3").is_empty());
+
+        let mut reversed = valid;
+        reversed[sdk_at + 4..sdk_at + 8].copy_from_slice(&23_u32.to_le_bytes());
+        assert!(signing_block(&reversed, "v3.1").is_empty());
+    }
+
+    #[test]
+    fn mismatched_declared_public_key_withholds_signer_attribution() {
+        let der = certificate_der("Signer Key");
+        let mut v2 = signing_value(&der);
+        let key_at = v2.len() - spki(&der).len();
+        v2[key_at] ^= 1;
+        assert!(signing_block(&v2, "v2").is_empty());
+
+        let mut v3 = signing_value_v3(&der, 24, 35);
+        let key_at = v3.len() - spki(&der).len();
+        v3[key_at] ^= 1;
+        assert!(signing_block(&v3, "v3").is_empty());
     }
 
     #[test]
