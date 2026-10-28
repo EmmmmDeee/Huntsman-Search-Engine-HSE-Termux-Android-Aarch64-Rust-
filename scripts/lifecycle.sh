@@ -2,7 +2,8 @@
 # Canonical lifecycle. No opt-in flags.
 #   bash scripts/lifecycle.sh
 # builds the locked binary, runs check, records state, commits non-secret
-# changes, and pushes main. Termux aarch64, no root, no ports below 1024.
+# changes, and pushes main. Direct sync must pass the same checks as all.
+# Termux aarch64, no root, no ports below 1024.
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -44,6 +45,8 @@ need() {
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}"
 BIN="$CARGO_TARGET_DIR/debug/huntsman-recon"
+# Ephemeral only: a previous process or persisted state cannot authorise a push.
+SYNC_VERIFIED=0
 
 build() {
   need cargo
@@ -99,7 +102,6 @@ sync_cmd() {
   [[ -d .git ]] || die "not a git checkout; clone the canonical repo before sync"
   branch="$(git rev-parse --abbrev-ref HEAD)"
   [[ "$branch" == "main" ]] || die "sync refuses non-main branch: $branch"
-  write_state sync running "$branch"
   # Every path that `git add -A` and `git commit` would take, one entry per file and unquoted:
   # untracked files (not the directory that holds them), tracked changes, and what is staged.
   # `git status --porcelain` lists an untracked directory as one entry and quotes a name with a
@@ -123,11 +125,24 @@ sync_cmd() {
         die "refusing to commit secret-looking path: $path"
       fi
     done
+    : # Commit only after verification below.
+  else
+    log "clean tree"
+  fi
+  # A direct sync must not bypass build/check/tests. The all command has already
+  # completed them in this process; stored state from another run is not trusted.
+  if [[ "$SYNC_VERIFIED" != "1" ]]; then
+    log "sync verification: running build, check, and lib tests"
+    build
+    check_cmd
+    test_cmd
+    SYNC_VERIFIED=1
+  fi
+  write_state sync running "$branch"
+  if [[ ${#dirty[@]} -gt 0 ]]; then
     git add -A
     git commit -m "lifecycle: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     log "committed $(git rev-parse --short HEAD)"
-  else
-    log "clean tree"
   fi
   git remote get-url origin >/dev/null 2>&1 || die "no origin remote"
   if ! git push origin main; then
@@ -148,6 +163,7 @@ case "$cmd" in
     build
     check_cmd
     test_cmd
+    SYNC_VERIFIED=1
     sync_cmd
     printf 'lifecycle ok revision=%s\n' "$(git rev-parse --short HEAD)"
     printf 'state=%s\n' "$STATE"
