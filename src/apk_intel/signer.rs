@@ -370,6 +370,45 @@ fn signer_certificates(
     Some(certificates)
 }
 
+/// Read SHA-256 chunked-content digest declarations from structurally consistent signers.
+/// A digest declaration is NOT authenticated until the signed-data signature is verified.
+/// Unsupported algorithms are omitted; malformed records reject the scheme's observations.
+pub(super) fn sha256_digests(
+    value: &[u8],
+    scheme: &str,
+) -> Option<Vec<(usize, u32, [u8; 32])>> {
+    let [(start, end)] = prefixed(value, 0, value.len())?[..] else {
+        return None;
+    };
+    let mut found = Vec::new();
+    for (index, (signer_start, signer_end)) in
+        prefixed(value, start, end)?.into_iter().enumerate()
+    {
+        signer_certificates(value, signer_start, signer_end, scheme)?;
+        let (data_start, data_end) = prefixed_one(value, signer_start, signer_end)?;
+        let (digests_start, digests_end) = prefixed_one(value, data_start, data_end)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for (record_start, record_end) in prefixed(value, digests_start, digests_end)? {
+            let algorithm = u32::try_from(le32(value, record_start)?).ok()?;
+            let (digest_start, digest_end) =
+                prefixed_one(value, record_start.checked_add(4)?, record_end)?;
+            if digest_end != record_end || !seen.insert(algorithm) {
+                return None;
+            }
+            // Android's chunked SHA-256 signature algorithms. Verity digests and
+            // SHA-512 have different formats and are intentionally not compared.
+            if matches!(algorithm, 0x0101 | 0x0103 | 0x0201 | 0x0301) {
+                let digest: [u8; 32] = value[digest_start..digest_end].try_into().ok()?;
+                if found.len() >= 64 {
+                    return None;
+                }
+                found.push((index, algorithm, digest));
+            }
+        }
+    }
+    Some(found)
+}
+
 /// Certificates declared by v2/v3/v3.1 signers, with SDK-copy and public-key consistency
 /// checks. Neither these checks nor certificate extraction authenticate the APK.
 #[must_use]
@@ -505,6 +544,32 @@ pub(super) mod tests {
         signer.extend_from_slice(&max_sdk.to_le_bytes());
         signer.extend_from_slice(&prefix(&[&[], spki(cert)]));
         prefix(&[&prefix(&[&signer])])
+    }
+
+    /// Test-only structurally valid v2 signer with a declared SHA-256 digest.
+    pub(crate) fn signing_value_with_sha256_digest(cert: &[u8], digest: &[u8; 32]) -> Vec<u8> {
+        let mut record = 0x0103_u32.to_le_bytes().to_vec();
+        record.extend(prefix(&[digest]));
+        let digests = prefix(&[&record]);
+        let certs = prefix(&[cert]);
+        let signed_data = prefix(&[&digests, &certs, &prefix(&[])]);
+        let signer = prefix(&[&signed_data, &prefix(&[]), spki(cert)]);
+        prefix(&[&prefix(&[&signer])])
+    }
+
+    #[test]
+    fn chunked_sha256_declarations_are_bounded_and_not_signature_proofs() {
+        let cert = certificate_der("Digest Claim");
+        let digest = [0x42_u8; 32];
+        let value = signing_value_with_sha256_digest(&cert, &digest);
+        assert_eq!(sha256_digests(&value, "v2"), Some(vec![(0, 0x0103, digest)]));
+        let mut corrupted = value;
+        let record_at = corrupted
+            .windows(4)
+            .position(|part| part == 0x0103_u32.to_le_bytes())
+            .expect("test record ID");
+        corrupted[record_at + 4..record_at + 8].copy_from_slice(&31_u32.to_le_bytes());
+        assert!(sha256_digests(&corrupted, "v2").is_none());
     }
 
     #[test]
