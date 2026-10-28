@@ -20,6 +20,8 @@ pub struct ContentDigestCheck {
     pub matches: bool,
     /// Matching a declared digest does not verify the signature over that declaration.
     pub signature_authenticated: bool,
+    /// Verification of the signature over signed-data; not full Android APK installability.
+    pub signature_verification: &'static str,
 }
 
 /// Compute AOSP's SHA-256 content digest of sections 1, 3 and 4, omitting the
@@ -102,6 +104,8 @@ pub(super) fn compare(
                 computed = Some(actual);
                 actual
             };
+            let signature_verification =
+                signer::verify_sha256_signature(value, scheme, signer_index, algorithm_id);
             checks.push(ContentDigestCheck {
                 scheme: (*scheme).to_owned(),
                 signer_index,
@@ -109,7 +113,8 @@ pub(super) fn compare(
                 declared_sha256: hex32(&declared),
                 computed_sha256: hex32(&actual),
                 matches: declared == actual,
-                signature_authenticated: false,
+                signature_authenticated: declared == actual && signature_verification == "verified",
+                signature_verification,
             });
         }
     }
