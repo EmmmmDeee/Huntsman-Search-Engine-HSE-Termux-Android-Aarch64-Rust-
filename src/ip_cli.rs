@@ -48,7 +48,7 @@ use crate::virustotal;
 pub const IP_USAGE: &str = "usage: huntsman-recon ip ADDRESS [--save FILE]";
 pub const IP_HELP: &str = "\
 ip ADDRESS [--save FILE]
-Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), the names Mnemonic passive DNS saw answering with the address, open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat (and whether an Australian consumer provider or AARNet holds that AS) with the RPKI route-origin validation state of each announcing AS (valid, invalid_asn, invalid_length or unknown, with the ROAs it was judged against; an invalid state also tags the address rpki_invalid_origin and is a misconfiguration, a stale ROA or a hijack, not proof of any), internet-scanner status from GreyNoise Community (IPv4 only), threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. The address and every name the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs (IPv4 only), and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), the names Mnemonic passive DNS saw answering with the address, open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat (and whether an Australian consumer provider or AARNet holds that AS) with the RPKI route-origin validation state of each announcing AS, the other origin AS numbers RIS peers saw announcing a prefix containing the address over its routing history (at least 10 peers, most recent first; a transfer, an anycast or multi-homed operator, a leak or a hijack, never proof of any) (valid, invalid_asn, invalid_length or unknown, with the ROAs it was judged against; an invalid state also tags the address rpki_invalid_origin and is a misconfiguration, a stale ROA or a hijack, not proof of any), internet-scanner status from GreyNoise Community (IPv4 only), threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. The address and every name the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs (IPv4 only), and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Confidence of the queried address itself.
 const SEED_CONFIDENCE: f64 = 0.90;
@@ -199,7 +199,11 @@ pub fn run<T: Transport + ?Sized>(
         match routing {
             Ok(routing) => {
                 let rpki = rpki_states(transport, &routing, now_unix);
+                let history = routing_history(transport, &routing, &ip, now_unix);
                 ripestat_leg(&mut lookup, &routing, &rpki);
+                if let Some(history) = &history {
+                    routing_history_leg(&mut lookup, &routing, history);
+                }
             }
             Err(err) => lookup.failed(&ripestat::API, &err),
         }
@@ -409,6 +413,87 @@ fn rpki_states<T: Transport + ?Sized>(
             )
         })
         .collect()
+}
+
+/// The routing history of the announced covering prefix, keeping only announcements whose
+/// prefix contains the address: one request. `None` when there is no announcement to ask about.
+fn routing_history<T: Transport + ?Sized>(
+    transport: &T,
+    routing: &ripestat::Routing,
+    ip: &str,
+    now_unix: u64,
+) -> Option<Result<ripestat::RoutingHistory, LegError>> {
+    let prefix = routing.prefix.as_deref().filter(|_| routing.announced)?;
+    let address: std::net::IpAddr = ip.parse().ok()?;
+    let covers = |announced: &str| {
+        crate::netblock::Netblock::parse(announced).is_some_and(|block| block.contains(address))
+    };
+    Some(ripestat::routing_history(
+        transport, prefix, covers, now_unix,
+    ))
+}
+
+/// Who else announced the covering prefix, as a record on the address: every origin AS other
+/// than the current ones that RIS peers saw announcing a prefix containing the address, most
+/// recently seen first. A read that failed says so; it is never an empty history.
+fn routing_history_leg(
+    lookup: &mut Lookup<'_>,
+    routing: &ripestat::Routing,
+    history: &Result<ripestat::RoutingHistory, LegError>,
+) {
+    let api = &ripestat::API;
+    let prefix = routing.prefix.as_deref().unwrap_or_default();
+    let history = match history {
+        Ok(history) => history,
+        Err(error) => {
+            let evidence = lookup
+                .evidence(api, format!("Routing history of {prefix} not read"))
+                .with_attr("routing_history_check", format!("failed: {error}"));
+            lookup.on_address(evidence, &[]);
+            return;
+        }
+    };
+    let past: Vec<&ripestat::OriginHistory> = history
+        .origins
+        .iter()
+        .filter(|origin| !routing.origins.iter().any(|now| now.asn == origin.asn))
+        .collect();
+    let base = |summary: String| {
+        lookup
+            .evidence(api, summary)
+            .with_attr("prefix", prefix)
+            .with_attr(
+                "routing_history_min_peers",
+                ripestat::ROUTING_MIN_PEERS.to_string(),
+            )
+            .with_attr("past_origin_count", past.len().to_string())
+            .with_optional_attrs([("routing_history_window", history.window.as_deref())])
+    };
+    let Some(latest) = past.first() else {
+        let evidence = base(format!(
+            "Routing history of {prefix}: no origin AS but the current one seen announcing it by {} or more RIS peers",
+            ripestat::ROUTING_MIN_PEERS
+        ));
+        lookup.on_address(evidence, &[]);
+        return;
+    };
+    let listed: Vec<String> = past
+        .iter()
+        .take(ripestat::MAX_PAST_ORIGINS)
+        .map(|origin| origin.line())
+        .collect();
+    let evidence = base(format!(
+        "Routing history of {prefix}: {} other origin AS number(s) announced a prefix containing the address, most recently AS{} until {}; a transfer, an anycast or multi-homed operator, a leak or a hijack, not proof of any",
+        past.len(),
+        latest.asn,
+        latest.last_seen
+    ))
+    .with_attr("past_origins_listed", listed.len().to_string());
+    // One value per origin, so each is its own attribute value.
+    let evidence = listed.iter().fold(evidence, |evidence, line| {
+        evidence.with_attr("past_origins", line)
+    });
+    lookup.on_address(evidence, &["prefix_origin_history"]);
 }
 
 fn ripestat_leg(

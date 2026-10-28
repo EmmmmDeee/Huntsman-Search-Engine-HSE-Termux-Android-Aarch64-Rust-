@@ -897,12 +897,257 @@ pub fn decode_rpki(body: &[u8], prefix: &str) -> Result<Rpki, LegError> {
     })
 }
 
+/// The least visibility, in RIS full-feed peers, of an announcement the routing history keeps:
+/// a route few peers saw is more likely a local leak than an origin.
+pub const ROUTING_MIN_PEERS: u32 = 10;
+/// The most past origin AS numbers a lookup lists, most recently seen first.
+pub const MAX_PAST_ORIGINS: usize = 16;
+
+/// One AS number's announcements, over the routing history, of prefixes covering an address.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OriginHistory {
+    pub asn: u32,
+    /// The covering prefixes it announced, as `RIPEstat` writes them.
+    pub prefixes: Vec<String>,
+    /// The start of the first window it was seen in, UTC.
+    pub first_seen: String,
+    /// The end of the last window it was seen in, UTC.
+    pub last_seen: String,
+    /// The most RIS full-feed peers that saw any of its announcements in one window.
+    pub peak_peers: f64,
+}
+
+/// Every origin AS seen announcing a prefix covering an address, most recently seen first.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RoutingHistory {
+    pub origins: Vec<OriginHistory>,
+    /// The window `RIPEstat` searched, as it states it.
+    pub window: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HistoryData {
+    #[serde(default)]
+    by_origin: Vec<HistoryOrigin>,
+    #[serde(default)]
+    query_starttime: Option<String>,
+    #[serde(default)]
+    query_endtime: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HistoryOrigin {
+    origin: Value,
+    #[serde(default)]
+    prefixes: Vec<HistoryPrefix>,
+}
+
+#[derive(Deserialize)]
+struct HistoryPrefix {
+    prefix: String,
+    #[serde(default)]
+    timelines: Vec<HistoryWindow>,
+}
+
+#[derive(Deserialize)]
+struct HistoryWindow {
+    starttime: String,
+    endtime: String,
+    #[serde(default)]
+    full_peers_seeing: Option<f64>,
+}
+
+/// The request URL for the routing history of `prefix`. **Pure.**
+#[must_use]
+pub fn routing_history_url(prefix: &str) -> String {
+    format!(
+        "https://stat.ripe.net/data/routing-history/data.json?resource={}&min_peers={ROUTING_MIN_PEERS}",
+        percent_encode_component(prefix)
+    )
+}
+
+/// Every origin AS that announced a prefix covering an address in `prefix`'s routing history;
+/// `covers` says which announced prefixes contain the address.
+///
+/// # Errors
+/// The [`LegError`] that stopped the lookup.
+pub fn routing_history<T: Transport + ?Sized>(
+    transport: &T,
+    prefix: &str,
+    covers: impl Fn(&str) -> bool,
+    now_unix: u64,
+) -> Result<RoutingHistory, LegError> {
+    match api_leg::get(
+        transport,
+        &API,
+        &Keys::default(),
+        &routing_history_url(prefix),
+        now_unix,
+    )? {
+        Answer::Body(body) => decode_routing_history(&body, covers),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+    }
+}
+
+/// A `RIPEstat` time (`2016-02-05T00:00:00`, UTC with no zone) as RFC 3339, or `None` when it
+/// is not that shape. **Pure.**
+fn utc(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let bytes = raw.as_bytes();
+    let shape = bytes.len() == 19
+        && bytes.iter().enumerate().all(|(at, byte)| match at {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 | 16 => *byte == b':',
+            _ => byte.is_ascii_digit(),
+        });
+    shape.then(|| format!("{raw}Z"))
+}
+
+/// One `routing-history` body: every origin with at least one announcement `covers` accepts,
+/// its first and last window and its peak visibility, most recently seen first. An origin that
+/// is not an AS number, or a window whose times are not `RIPEstat`'s shape, is drift. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`] for any of those, or a body that is not an `ok` envelope with data.
+pub fn decode_routing_history(
+    body: &[u8],
+    covers: impl Fn(&str) -> bool,
+) -> Result<RoutingHistory, LegError> {
+    let data: HistoryData = unwrap(body)?;
+    let mut origins = Vec::new();
+    for row in data.by_origin {
+        let asn = match &row.origin {
+            Value::String(text) => text.trim().trim_start_matches("AS").parse().ok(),
+            Value::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
+            _ => None,
+        }
+        .ok_or_else(|| LegError::Decode("routing-history origin is not an AS number".into()))?;
+        let mut history: Option<OriginHistory> = None;
+        for announced in row.prefixes {
+            let prefix = announced.prefix.trim().to_owned();
+            if !covers(&prefix) {
+                continue;
+            }
+            for window in announced.timelines {
+                let (Some(start), Some(end)) = (utc(&window.starttime), utc(&window.endtime))
+                else {
+                    return Err(LegError::Decode(
+                        "routing-history window time is not RIPEstat's shape".into(),
+                    ));
+                };
+                let peers = window
+                    .full_peers_seeing
+                    .filter(|n| n.is_finite())
+                    .unwrap_or(0.0);
+                let entry = history.get_or_insert_with(|| OriginHistory {
+                    asn,
+                    prefixes: Vec::new(),
+                    first_seen: start.clone(),
+                    last_seen: end.clone(),
+                    peak_peers: peers,
+                });
+                if !entry.prefixes.contains(&prefix) {
+                    entry.prefixes.push(prefix.clone());
+                }
+                if start < entry.first_seen {
+                    entry.first_seen = start;
+                }
+                if end > entry.last_seen {
+                    entry.last_seen = end;
+                }
+                entry.peak_peers = entry.peak_peers.max(peers);
+            }
+        }
+        origins.extend(history);
+    }
+    origins.sort_by(|a, b| {
+        b.last_seen
+            .cmp(&a.last_seen)
+            .then_with(|| a.asn.cmp(&b.asn))
+    });
+    let window = match (
+        data.query_starttime.as_deref().and_then(utc),
+        data.query_endtime.as_deref().and_then(utc),
+    ) {
+        (Some(start), Some(end)) => Some(format!("{start}..{end}")),
+        _ => None,
+    };
+    Ok(RoutingHistory { origins, window })
+}
+
+impl OriginHistory {
+    /// `AS226 1.1.1.0/24 2016-02-05T00:00:00Z..2016-02-28T23:59:59Z peak 45.7 peers`. **Pure.**
+    #[must_use]
+    pub fn line(&self) -> String {
+        format!(
+            "AS{} {} {}..{} peak {} peers",
+            self.asn,
+            self.prefixes.join(","),
+            self.first_seen,
+            self.last_seen,
+            self.peak_peers
+        )
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
     /// Recorded from `RIPEstat` for AS13335 and 1.1.1.0/24 on 2026-10-28 (envelope trimmed).
     pub(crate) const RPKI_VALID: &str = r#"{"status":"ok","data":{"resource":"13335","prefix":"1.1.1.0/24","validating_roas":[{"origin":"13335","prefix":"1.1.1.0/24","validity":"valid","max_length":24}],"status":"valid","validator":"routinator"}}"#;
+
+    /// Recorded from `RIPEstat` for 1.1.1.0/24 on 2026-10-28 with `min_peers=10`, four of its
+    /// 46 origins kept with two windows each, plus a fictional AS64496 more-specific that does
+    /// not contain 1.1.1.1.
+    pub(crate) const ROUTING_HISTORY: &str = r#"{"status":"ok","data":{"by_origin":[{"origin":"226","prefixes":[{"prefix":"1.1.1.0/24","timelines":[{"starttime":"2016-02-05T00:00:00","endtime":"2016-02-16T23:59:59","full_peers_seeing":40.56},{"starttime":"2016-02-17T00:00:00","endtime":"2016-02-28T23:59:59","full_peers_seeing":45.7}]}]},{"origin":"237","prefixes":[{"prefix":"1.0.0.0/8","timelines":[{"starttime":"2010-02-12T00:00:00","endtime":"2010-02-23T23:59:59","full_peers_seeing":74.63},{"starttime":"2010-02-24T00:00:00","endtime":"2010-03-07T23:59:59","full_peers_seeing":72.62}]},{"prefix":"1.1.1.0/24","timelines":[{"starttime":"2012-02-26T00:00:00","endtime":"2012-03-08T23:59:59","full_peers_seeing":89.0}]}]},{"origin":"701","prefixes":[{"prefix":"1.1.1.0/24","timelines":[{"starttime":"2003-07-31T00:00:00","endtime":"2003-08-11T23:59:59","full_peers_seeing":18.0},{"starttime":"2004-05-26T00:00:00","endtime":"2004-06-06T23:59:59","full_peers_seeing":31.0}]}]},{"origin":"13335","prefixes":[{"prefix":"1.1.1.0/24","timelines":[{"starttime":"2018-03-14T00:00:00","endtime":"2018-04-06T23:59:59","full_peers_seeing":161.24},{"starttime":"2018-04-07T00:00:00","endtime":"2018-04-18T23:59:59","full_peers_seeing":164.03}]}]},{"origin":"64496","prefixes":[{"prefix":"1.1.1.128/25","timelines":[{"starttime":"2025-01-01T00:00:00","endtime":"2025-01-12T23:59:59","full_peers_seeing":12.0}]}]}],"resource":"1.1.1.0/24","query_starttime":"2000-08-01T00:00:00","query_endtime":"2026-10-28T16:00:00"}}"#;
+
+    fn covers_one_one_one_one(prefix: &str) -> bool {
+        crate::netblock::Netblock::parse(prefix)
+            .is_some_and(|block| block.contains("1.1.1.1".parse().unwrap()))
+    }
+
+    #[test]
+    fn routing_history_keeps_covering_announcements_most_recent_first() {
+        let history =
+            decode_routing_history(ROUTING_HISTORY.as_bytes(), covers_one_one_one_one).unwrap();
+        let asns: Vec<u32> = history.origins.iter().map(|o| o.asn).collect();
+        assert_eq!(asns, [13335, 226, 237, 701], "{history:?}");
+        let as237 = &history.origins[2];
+        assert_eq!(as237.prefixes, ["1.0.0.0/8", "1.1.1.0/24"]);
+        assert_eq!(as237.first_seen, "2010-02-12T00:00:00Z");
+        assert_eq!(
+            history.window.as_deref(),
+            Some("2000-08-01T00:00:00Z..2026-10-28T16:00:00Z")
+        );
+        assert!(
+            !asns.contains(&64496),
+            "a more-specific without the address is not an origin of it"
+        );
+        assert_eq!(
+            history.origins[1].line(),
+            "AS226 1.1.1.0/24 2016-02-05T00:00:00Z..2016-02-28T23:59:59Z peak 45.7 peers"
+        );
+    }
+
+    #[test]
+    fn routing_history_drift_is_refused() {
+        for drift in [
+            ROUTING_HISTORY.replace(r#""origin":"226""#, r#""origin":"cloudflare""#),
+            ROUTING_HISTORY.replace("2016-02-05T00:00:00", "5 Feb 2016"),
+            ROUTING_HISTORY.replace(r#"{"status":"ok""#, r#"{"status":"error""#),
+        ] {
+            assert!(
+                decode_routing_history(drift.as_bytes(), covers_one_one_one_one).is_err(),
+                "{drift}"
+            );
+        }
+        assert_eq!(
+            routing_history_url("1.1.1.0/24"),
+            "https://stat.ripe.net/data/routing-history/data.json?resource=1.1.1.0%2F24&min_peers=10"
+        );
+    }
 
     #[test]
     fn rpki_states_are_the_four_the_endpoint_documents() {
