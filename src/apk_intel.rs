@@ -1920,7 +1920,10 @@ mod tests {
             .filter(|entity| entity.value.starts_with("apk-tls-spki-sha256:"))
             .collect();
         assert_eq!(pivots.len(), 1, "one entity for one valid pin digest");
-        assert_eq!(pivots[0].value, format!("apk-tls-spki-sha256:{}", "00".repeat(32)));
+        assert_eq!(
+            pivots[0].value,
+            format!("apk-tls-spki-sha256:{}", "00".repeat(32))
+        );
         assert_eq!(
             attr(pivots[0], "declared_domains"),
             Some("alpha.example.org,beta.example.org")
