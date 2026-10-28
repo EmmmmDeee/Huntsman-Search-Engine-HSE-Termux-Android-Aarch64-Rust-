@@ -301,7 +301,8 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="rcresult" hidden>
 <div class="panel-heading">Cells Android reports <span class="badge" id="rcrows-n"></span></div>
 <p class="note" id="rcsummary"></p>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>Cell</th><th>Type</th><th>Registered</th><th>Signal (dBm)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rcrows"></tbody></table></div>
+<div id="rcaudit" hidden><div class="panel-heading">Cellular anomaly indicators (not detections)</div><p class="note" id="rcauditstatus" role="status"></p><div class="table-wrap"><table><thead><tr><th>Severity</th><th>Indicator</th><th>Cells</th><th>Evidence</th><th>Suggested action</th></tr></thead><tbody id="rcauditrows"></tbody></table></div></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>Cell</th><th>Type</th><th>Registered</th><th>Signal (dBm)</th><th>PCI / PSC</th><th>Site · sector</th><th>Timing advance</th><th>Bands</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rcrows"></tbody></table></div>
 </div>
 <div class="panel" id="rtresult" hidden>
 <div class="panel-heading">Cross-cell recurrence candidates (unconfirmed) <span class="badge" id="rtrows-n"></span></div>
@@ -698,8 +699,12 @@ $('rcread').onclick=async()=>{
   const b=$('rcread');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Reading the cells Android reports…';
   try{
     const scan=await api('/api/radar/cells');cellsLast=scan;$('rcresult').hidden=false;
-    fill('rcrows',Array.isArray(scan.observations)?scan.observations:[],o=>[o.sighting?.network_id||'',o.technology||'',o.registered==null?'unknown':o.registered?'yes':'no',o.sighting?.signal_dbm??'unknown',o.freshness||'unknown',cellPivot(o)]);
-    $('rcsummary').textContent='Requested at '+new Date().toLocaleString()+' (browser clock; no capture time is reported) · Source: '+scan.source+' · status: '+scan.status+' · records: '+scan.observed+' · rejected: '+scan.rejected;
+    fill('rcrows',Array.isArray(scan.observations)?scan.observations:[],o=>[o.sighting?.network_id||'',o.technology||'',o.registered==null?'unknown':o.registered?'yes':'no',o.sighting?.signal_dbm??'unknown',o.pci??'',o.site?o.site.id+' · '+o.site.sector:'',o.timing_advance?o.timing_advance.value+' ('+Math.round(o.timing_advance.min_distance_m)+'–'+Math.round(o.timing_advance.max_distance_m)+' m)':'',Array.isArray(o.bands)?o.bands.join(', '):'',o.freshness||'unknown',cellPivot(o)]);
+    const neighbours=Array.isArray(scan.neighbours)?scan.neighbours:[],findings=Array.isArray(scan.findings)?scan.findings:[];
+    $('rcaudit').hidden=!findings.length;
+    fill('rcauditrows',findings,f=>[f.severity,f.code,(f.cells||[]).join(', '),f.evidence,f.resolution]);
+    $('rcauditstatus').textContent=findings.length?findings.length+' indicator(s). Android apps cannot read the modem\'s signalling, so none of these detects an IMSI catcher; corroborate over time and place.':'';
+    $('rcsummary').textContent='Requested at '+new Date().toLocaleString()+' (browser clock; no capture time is reported) · Source: '+scan.source+' · status: '+scan.status+' · records: '+scan.observed+' · neighbours by PCI/PSC only: '+neighbours.length+(neighbours.length?' ('+neighbours.map(n=>n.technology+' '+n.pci+(n.signal_dbm!=null?' '+n.signal_dbm+' dBm':'')).join(', ')+')':'')+' · rejected: '+scan.rejected;
     $('rstatus').textContent=scan.status==='inconclusive'
       ?'Android returned no cells. Cellular service may still exist; this is not evidence that no cell site is near.'
       :'Cells as Android reports them: no tower position, time or capture age is inferred. Multiple distinct registered cell identities cannot establish one serving-cell bucket, and no reported cell is a verified GPS coordinate.';

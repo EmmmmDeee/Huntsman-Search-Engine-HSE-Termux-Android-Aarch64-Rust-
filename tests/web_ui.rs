@@ -35,8 +35,11 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// Source attribution view: two read-only routes the server already answered that the page had
 /// no control for, so a phone user could not reach them. Raised to 132 KiB for the Analyze tab's
 /// Extract seeds control: the `investigate` command's text extraction, which only a Termux shell
-/// could reach before; the browser check's timings for the page are in its metrics.
-const PAGE_BUDGET: usize = 132 * 1024;
+/// could reach before; the browser check's timings for the page are in its metrics. Raised to
+/// 136 KiB for the Radar tab's cell intelligence: each cell's PCI, eNodeB or RNC site and
+/// sector, timing-advance distance and bands, the neighbours Android reports by PCI only, and
+/// the cellular anomaly indicators, all of which `/api/radar/cells` already answered.
+const PAGE_BUDGET: usize = 136 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
