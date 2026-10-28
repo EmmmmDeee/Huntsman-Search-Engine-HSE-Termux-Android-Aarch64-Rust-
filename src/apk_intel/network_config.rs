@@ -48,11 +48,7 @@ fn bool_attr(node: &XmlNode, name: &str) -> Option<bool> {
     node.attr(name).and_then(|value| value.parse::<bool>().ok())
 }
 
-fn ancestor<'a>(
-    nodes: &'a [XmlNode],
-    mut at: Option<usize>,
-    wanted: &str,
-) -> Option<&'a XmlNode> {
+fn ancestor<'a>(nodes: &'a [XmlNode], mut at: Option<usize>, wanted: &str) -> Option<&'a XmlNode> {
     while let Some(index) = at {
         let node = nodes.get(index)?;
         if node.name == wanted {
@@ -131,11 +127,7 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
                 policy.domains.push(DomainRule {
                     domain: domain.to_owned(),
                     include_subdomains: bool_attr(node, "includeSubdomains"),
-                    declared_cleartext_permitted: inherited_cleartext(
-                        &nodes,
-                        Some(parent),
-                        base,
-                    ),
+                    declared_cleartext_permitted: inherited_cleartext(&nodes, Some(parent), base),
                 });
             }
             "certificates" => {
@@ -143,7 +135,9 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
                 if nodes[parent].name != "trust-anchors" {
                     continue;
                 }
-                let Some(source) = node.attr("src") else { continue };
+                let Some(source) = node.attr("src") else {
+                    continue;
+                };
                 let owner = nodes[parent].parent.and_then(|index| nodes.get(index));
                 let scope = owner.map_or("unknown", |owner| owner.name.as_str());
                 if policy.trust_anchors.len() == MAX_ANCHORS {
@@ -183,17 +177,27 @@ mod tests {
 
     fn sample() -> Vec<u8> {
         let mut xml = Axml::new(&[
-            "cleartextTrafficPermitted", "includeSubdomains", "src",
-            "overridePins", "expiration", "digest",
+            "cleartextTrafficPermitted",
+            "includeSubdomains",
+            "src",
+            "overridePins",
+            "expiration",
+            "digest",
         ]);
         xml.start("network-security-config", &[])
-            .start("base-config", &[("cleartextTrafficPermitted", Val::Bool(false))])
+            .start(
+                "base-config",
+                &[("cleartextTrafficPermitted", Val::Bool(false))],
+            )
             .start("trust-anchors", &[])
             .start("certificates", &[("src", Val::Str("system"))])
             .end("certificates")
             .end("trust-anchors")
             .end("base-config")
-            .start("domain-config", &[("cleartextTrafficPermitted", Val::Bool(true))])
+            .start(
+                "domain-config",
+                &[("cleartextTrafficPermitted", Val::Bool(true))],
+            )
             .start("domain", &[("includeSubdomains", Val::Bool(true))])
             .text("api.example.org")
             .end("domain")
