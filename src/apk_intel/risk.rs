@@ -230,58 +230,45 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
 
 /// Check for reachable content providers with sensitive data and return a flag if found.
 fn check_provider_authorities(manifest: &Manifest) -> Option<Flag> {
-    let reachable_providers = manifest
-        .reachable_components
+    let sensitive_count = manifest
+        .explicitly_exported_provider_authorities
         .iter()
-        .filter(|comp| comp.kind == "provider")
+        .filter(|authority| is_sensitive_authority(authority))
         .count();
-    if reachable_providers > 0 && !manifest.provider_authorities.is_empty() {
-        let sensitive_count = manifest
-            .provider_authorities
-            .iter()
-            .filter(|auth| is_sensitive_authority(auth))
-            .count();
-        if sensitive_count > 0 {
-            return Some(Flag {
-                risk: Risk::Medium,
-                id: "reachable_content_provider",
-                detail: format!(
-                    "{reachable_providers} content provider{} accessible via intent; {} {} potentially sensitive data (contacts, calendar, SMS, call log, email)",
-                    if reachable_providers == 1 { "" } else { "s" },
-                    sensitive_count,
-                    if sensitive_count == 1 {
-                        "controls"
-                    } else {
-                        "control"
-                    }
-                ),
-            });
-        }
-    }
-    None
+    (sensitive_count > 0).then(|| Flag {
+        risk: Risk::Medium,
+        id: "reachable_content_provider",
+        detail: format!(
+            "{sensitive_count} explicitly exported provider authorit{} contain sensitive-data name indicators; manifest names do not prove what data is stored or accessible, and provider permissions may restrict access",
+            if sensitive_count == 1 { "y" } else { "ies" }
+        ),
+    })
 }
 
-/// Whether a content provider authority is likely to grant access to sensitive data.
+/// Authority names are weak indicators, not evidence of actual content.
 fn is_sensitive_authority(authority: &str) -> bool {
-    let lower = authority.to_ascii_lowercase();
-    [
-        "contacts",
-        "sms",
-        "mms",
-        "calendar",
-        "call_log",
-        "calllog",
-        "email",
-        "gmail",
-        "mtp",
-        "media",
-        "files",
-        "document",
-        "clipboard",
-        "settings",
-    ]
-    .iter()
-    .any(|sensitive| lower.contains(sensitive))
+    authority
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .any(|segment| {
+            matches!(
+                segment,
+                "contacts"
+                    | "sms"
+                    | "mms"
+                    | "calendar"
+                    | "call_log"
+                    | "calllog"
+                    | "email"
+                    | "gmail"
+                    | "mtp"
+                    | "media"
+                    | "files"
+                    | "document"
+                    | "clipboard"
+                    | "settings"
+            )
+        })
 }
 
 /// The highest risk among `flags`, for a one-line summary; `None` when there are none.
@@ -404,7 +391,7 @@ mod tests {
                 name: ".ContentProvider".to_owned(),
                 exposure: Exposure::Exported,
             }],
-            provider_authorities: vec!["com.example.contacts".to_owned()],
+            explicitly_exported_provider_authorities: vec!["com.example.contacts".to_owned()],
             ..Manifest::default()
         };
         let observed = flags(&manifest);
@@ -418,7 +405,7 @@ mod tests {
             .find(|flag| flag.id == "reachable_content_provider")
             .unwrap();
         assert_eq!(provider_flag.risk, Risk::Medium);
-        assert!(provider_flag.detail.contains("potentially sensitive data"));
+        assert!(provider_flag.detail.contains("manifest names do not prove"));
     }
 
     #[test]
@@ -429,7 +416,7 @@ mod tests {
                 name: ".DataProvider".to_owned(),
                 exposure: Exposure::Exported,
             }],
-            provider_authorities: vec!["com.example.data".to_owned()],
+            explicitly_exported_provider_authorities: vec!["com.example.data".to_owned()],
             ..Manifest::default()
         };
         let observed = flags(&manifest);
@@ -598,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn implicit_intent_filter_providers_with_sensitive_data_are_flagged() {
+    fn implicit_intent_filter_alone_does_not_prove_provider_export() {
         let manifest = Manifest {
             reachable_components: vec![Component {
                 kind: "provider".to_owned(),
@@ -608,12 +595,11 @@ mod tests {
             provider_authorities: vec!["com.android.contacts.provider".to_owned()],
             ..Manifest::default()
         };
-        let observed = flags(&manifest);
         assert!(
-            observed
+            !flags(&manifest)
                 .iter()
                 .any(|flag| flag.id == "reachable_content_provider"),
-            "implicit intent filter provider with contacts authority should be flagged"
+            "an intent filter does not establish provider export or access"
         );
     }
 
@@ -632,7 +618,7 @@ mod tests {
                     exposure: Exposure::Exported,
                 },
             ],
-            provider_authorities: vec![
+            explicitly_exported_provider_authorities: vec![
                 "com.android.contacts.provider".to_owned(),
                 "com.example.data".to_owned(),
             ],
@@ -668,7 +654,7 @@ mod tests {
                 name: ".Provider".to_owned(),
                 exposure: Exposure::Exported,
             }],
-            provider_authorities: vec!["com.android.sms".to_owned()],
+            explicitly_exported_provider_authorities: vec!["com.android.sms".to_owned()],
             ..Manifest::default()
         };
         let observed = flags(&manifest);
@@ -683,4 +669,33 @@ mod tests {
             "should have at least 2 MEDIUM flags"
         );
     }
+    #[test]
+    fn private_authority_does_not_contaminate_unrelated_exported_provider() {
+        let manifest = Manifest {
+            reachable_components: vec![Component {
+                kind: "provider".to_owned(),
+                name: ".Public".to_owned(),
+                exposure: Exposure::Exported,
+            }],
+            provider_authorities: vec![
+                "com.example.public".to_owned(),
+                "com.example.contacts".to_owned(),
+            ],
+            explicitly_exported_provider_authorities: vec!["com.example.public".to_owned()],
+            ..Manifest::default()
+        };
+        assert!(
+            !flags(&manifest)
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider")
+        );
+    }
+
+    #[test]
+    fn sensitive_authority_matching_respects_name_boundaries() {
+        assert!(!is_sensitive_authority("com.example.contactsimpostor"));
+        assert!(!is_sensitive_authority("com.example.mysettings"));
+        assert!(is_sensitive_authority("com.example.call_log"));
+    }
+
 }
