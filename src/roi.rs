@@ -234,13 +234,16 @@ mod tests {
 
     #[test]
     fn invalid_cost_does_not_become_free_or_overflow_utility() {
-        assert_eq!(
-            normalised_cost_penalty(Some(f64::NAN)),
-            UNKNOWN_COST_PENALTY
-        );
-        assert_eq!(normalised_cost_penalty(Some(-1.0)), UNKNOWN_COST_PENALTY);
-        assert_eq!(normalised_cost_penalty(Some(f64::INFINITY)), 1.0);
-        assert_eq!(normalised_cost_penalty(Some(0.0)), 0.0);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(
+                normalised_cost_penalty(Some(f64::NAN)),
+                UNKNOWN_COST_PENALTY
+            );
+            assert_eq!(normalised_cost_penalty(Some(-1.0)), UNKNOWN_COST_PENALTY);
+            assert_eq!(normalised_cost_penalty(Some(f64::INFINITY)), 1.0);
+            assert_eq!(normalised_cost_penalty(Some(0.0)), 0.0);
+        }
         assert!(normalised_cost_penalty(Some(f64::MAX)).is_finite());
         assert!(normalised_cost_penalty(Some(1.0)) > 0.0);
     }
