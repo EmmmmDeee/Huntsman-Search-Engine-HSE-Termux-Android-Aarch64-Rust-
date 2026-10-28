@@ -1633,6 +1633,80 @@ mod tests {
     }
 
     #[test]
+    fn resolves_only_the_manifest_referenced_network_policy_not_a_decoy_xml() {
+        use axml::tests::{Axml, Val};
+        let id = 0x7f0e_0002;
+        let manifest = Axml::new(&["package", "networkSecurityConfig"])
+            .start("manifest", &[("package", Val::Str("org.example.net"))])
+            .start("application", &[("networkSecurityConfig", Val::Ref(id))])
+            .end("application")
+            .end("manifest")
+            .build();
+        let resources = arsc::tests::table(&["res/xml/actual.xml"], id, 0);
+        let actual = Axml::new(&["cleartextTrafficPermitted"])
+            .start("network-security-config", &[])
+            .start("base-config", &[("cleartextTrafficPermitted", Val::Bool(false))])
+            .end("base-config")
+            .end("network-security-config")
+            .build();
+        let decoy = Axml::new(&["cleartextTrafficPermitted"])
+            .start("network-security-config", &[])
+            .start("base-config", &[("cleartextTrafficPermitted", Val::Bool(true))])
+            .end("base-config")
+            .end("network-security-config")
+            .build();
+        let bytes = apk(
+            &[
+                part("AndroidManifest.xml", manifest.clone(), 0),
+                part("resources.arsc", resources.clone(), 0),
+                part("res/xml/decoy.xml", decoy, 0),
+                part("res/xml/actual.xml", actual.clone(), 8),
+            ],
+            None,
+        );
+        let report = run(&bytes, "network.apk", 100).unwrap();
+        assert_eq!(
+            report.analysis.manifest.as_ref().unwrap().network_security_config_resource_id,
+            Some(id)
+        );
+        let policy = report.analysis.network_policy.as_ref().unwrap();
+        assert_eq!(policy.resource_path, "res/xml/actual.xml");
+        assert_eq!(policy.base_cleartext_permitted, Some(false));
+        assert_eq!(
+            attr(&report.entities[0], "apk_network_policy_base_cleartext"),
+            Some("false")
+        );
+        assert!(report.analysis.unread.is_empty(), "{:?}", report.analysis.unread);
+
+        // Duplicate names are ambiguous, even if both carry the same bytes.
+        let duplicate = apk(
+            &[
+                part("AndroidManifest.xml", manifest, 0),
+                part("resources.arsc", resources, 0),
+                part("res/xml/actual.xml", actual.clone(), 0),
+                part("res/xml/actual.xml", actual, 0),
+            ],
+            None,
+        );
+        let report = run(&duplicate, "duplicate.apk", 100).unwrap();
+        assert!(report.analysis.network_policy.is_none());
+        assert!(
+            report.analysis.unread.iter().any(|reason| reason.contains("duplicate ZIP path")),
+            "{:?}",
+            report.analysis.unread
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_or_missing_network_policy_resource_paths() {
+        assert!(!valid_network_xml_path("res/layout/not_policy.xml"));
+        assert!(!valid_network_xml_path("res/xml/../not_policy.xml"));
+        assert!(!valid_network_xml_path("/res/xml/not_policy.xml"));
+        assert!(!valid_network_xml_path("res/xml/not_policy.xml/extra"));
+        assert!(valid_network_xml_path("res/xml-v24/network.xml"));
+    }
+
+    #[test]
     fn an_unknown_compression_method_is_read_as_android_reads_it_and_flagged() {
         let (bytes, ..) = field_apk(0x6301);
         let report = run(&bytes, "evasive.apk", 100).expect("apk");
