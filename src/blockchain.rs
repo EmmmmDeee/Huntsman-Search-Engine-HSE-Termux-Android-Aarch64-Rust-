@@ -1,12 +1,18 @@
 //! Keyless Bitcoin address intelligence over blockchain.info.
 //!
 //! One lookup is one GET to blockchain.info's public `rawaddr` endpoint for a single address, asked
-//! with `limit=0` so only the account summary comes back, not its transaction list. The address is
-//! confirmed on-chain and enriched with its balance and lifetime totals, as Spiderfoot's
-//! `sfp_blockchain` reports a `BITCOIN_BALANCE` for a `BITCOIN_ADDRESS`. Every figure is kept in
-//! full: the human-readable BTC amount in the summary and the exact satoshi integer in the evidence.
+//! for the account summary and its [`MAX_TXS`] most recent transactions. The address is confirmed
+//! on-chain and enriched with its balance and lifetime totals, as Spiderfoot's `sfp_blockchain`
+//! reports a `BITCOIN_BALANCE` for a `BITCOIN_ADDRESS`, and with the chronology of the sampled
+//! transactions. Each address it transacted with in them becomes a lead naming the transaction,
+//! its time and block, the exact satoshi amount and its role: `paid_by` (an input of a payment it
+//! received), `paid_to` (an output of a payment it made) or `co_input` (another input it was spent
+//! together with, the common-input heuristic). Every figure is kept in full: the human-readable
+//! BTC amount in the summary and the exact satoshi integer in the evidence. Sharing a transaction
+//! is not common ownership ([`COUNTERPARTY_LIMIT`]).
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
@@ -22,6 +28,21 @@ const SATOSHIS_PER_BTC: u64 = 100_000_000;
 
 /// Confidence of an address confirmed on-chain.
 const ADDRESS_CONFIDENCE: f64 = 0.95;
+
+/// The most recent transactions asked for with the summary; blockchain.info allows 50.
+pub const MAX_TXS: usize = 20;
+/// The most counterparty addresses kept from one lookup.
+const MAX_COUNTERPARTIES: usize = 64;
+/// The most counterparties taken from one side of one transaction, so one batch payout cannot
+/// fill the list.
+const MAX_LEGS_PER_SIDE: usize = 16;
+/// Confidence of an address that paid, or was paid by, the looked-up address.
+const COUNTERPARTY_CONFIDENCE: f64 = 0.5;
+/// Confidence of an address spent together with it: a heuristic, weaker than a payment.
+const CO_INPUT_CONFIDENCE: f64 = 0.35;
+
+/// What a counterparty never establishes.
+pub const COUNTERPARTY_LIMIT: &str = "Appearing in the same transaction is not common ownership or a relationship between people: the common-input heuristic fails for CoinJoin and payjoin transactions, and an exchange or custodial address links unrelated users. No wallet owner is identified.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
@@ -43,12 +64,76 @@ struct Account {
     total_sent: Option<u64>,
     #[serde(default)]
     final_balance: Option<u64>,
+    /// The sampled transactions, read leniently: a malformed one is skipped and counted, never
+    /// allowed to lose the account summary.
+    #[serde(default)]
+    txs: Vec<Value>,
+}
+
+/// One leg of a sampled transaction: an address and the exact satoshis it put in or took out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Leg {
+    address: String,
+    satoshis: u64,
+}
+
+/// One sampled transaction as the lookup reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sampled {
+    hash: String,
+    time: u64,
+    block_height: Option<u64>,
+    inputs: Vec<Leg>,
+    outputs: Vec<Leg>,
+}
+
+/// The legs of one side (`inputs` read through `prev_out`, or `out`); `None` when the side is
+/// not an array or a leg is malformed. A leg without an address (a non-standard script) is
+/// skipped.
+fn legs(tx: &Value, side: &str) -> Option<Vec<Leg>> {
+    let mut out = Vec::new();
+    for item in tx.get(side)?.as_array()? {
+        let leg = if side == "inputs" {
+            match item.get("prev_out") {
+                Some(prev) => prev,
+                None => continue,
+            }
+        } else {
+            item
+        };
+        let satoshis = leg.get("value")?.as_u64()?;
+        if let Some(address) = leg.get("addr").and_then(Value::as_str) {
+            out.push(Leg {
+                address: address.trim().to_owned(),
+                satoshis,
+            });
+        }
+    }
+    Some(out)
+}
+
+/// A sampled transaction, or `None` when it lacks a hash, a time or well-formed sides.
+fn sampled(tx: &Value) -> Option<Sampled> {
+    let hash = tx.get("hash")?.as_str()?;
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(Sampled {
+        hash: hash.to_ascii_lowercase(),
+        time: tx.get("time")?.as_u64()?,
+        block_height: tx.get("block_height").and_then(Value::as_u64),
+        inputs: legs(tx, "inputs")?,
+        outputs: legs(tx, "out")?,
+    })
 }
 
 /// The request URL for an address. **Pure.**
 #[must_use]
 pub fn url(address: &str) -> String {
-    format!("{HOST}{}?limit=0", percent_encode_component(address))
+    format!(
+        "{HOST}{}?limit={MAX_TXS}",
+        percent_encode_component(address)
+    )
 }
 
 /// An amount in satoshis written as a fixed-point BTC string. **Pure.**
@@ -163,6 +248,19 @@ fn decode(account: &Account, scan_id: &str, now_unix: u64, status: u16) -> Repor
         evidence = evidence.with_attr("hash160", hash160);
     }
 
+    let sample: Vec<Sampled> = account.txs.iter().filter_map(sampled).collect();
+    let skipped = account.txs.len() - sample.len();
+    if let (Some(first), Some(last)) = (
+        sample.iter().map(|tx| tx.time).min(),
+        sample.iter().map(|tx| tx.time).max(),
+    ) {
+        let utc = |unix: u64| crate::timefmt::format_unix(i64::try_from(unix).unwrap_or(i64::MAX));
+        evidence = evidence
+            .with_attr("sampled_transactions", sample.len().to_string())
+            .with_attr("sample_first_tx_utc", utc(first))
+            .with_attr("sample_last_tx_utc", utc(last));
+    }
+
     let mut entities = Vec::new();
     push_entity(
         &mut entities,
@@ -173,10 +271,80 @@ fn decode(account: &Account, scan_id: &str, now_unix: u64, status: u16) -> Repor
         evidence,
         &["blockchain", "bitcoin", "on-chain"],
     );
+    counterparties(&mut entities, on_chain, &sample, scan_id);
     merge_by_uid(&mut entities);
-    Report {
-        entities,
-        outcome: SourceExecutionOutcome::success(SOURCE, now_unix, 1).with_http_status(status),
+    let mut outcome =
+        SourceExecutionOutcome::success(SOURCE, now_unix, entities.len()).with_http_status(status);
+    if skipped != 0 {
+        outcome = outcome.with_detail(format!(
+            "{skipped} sampled transaction(s) were malformed and not read"
+        ));
+    }
+    Report { entities, outcome }
+}
+
+/// Add the addresses `on_chain` transacted with in `sample`, each with the transaction it shares,
+/// at most [`MAX_COUNTERPARTIES`].
+fn counterparties(entities: &mut Vec<Entity>, on_chain: &str, sample: &[Sampled], scan_id: &str) {
+    let mut added = std::collections::BTreeSet::new();
+    for tx in sample {
+        let spent = tx.inputs.iter().any(|leg| leg.address == on_chain);
+        let received = tx.outputs.iter().any(|leg| leg.address == on_chain);
+        // Spending: its co-inputs and whom it paid. Receiving only: who paid it.
+        let sides: [(&[Leg], &str); 2] = if spent {
+            [(&tx.inputs, "co_input"), (&tx.outputs, "paid_to")]
+        } else if received {
+            [(&tx.inputs, "paid_by"), (&[], "")]
+        } else {
+            continue;
+        };
+        for (legs, role) in sides {
+            for leg in legs
+                .iter()
+                .filter(|leg| leg.address != on_chain && !leg.address.is_empty())
+                .take(MAX_LEGS_PER_SIDE)
+            {
+                if added.len() >= MAX_COUNTERPARTIES && !added.contains(&leg.address) {
+                    return;
+                }
+                added.insert(leg.address.clone());
+                let mut evidence = Evidence::new(
+                    EvidenceProvenance::for_scan(SOURCE, scan_id),
+                    format!(
+                        "{role} of {on_chain} in transaction {} ({} BTC); {COUNTERPARTY_LIMIT}",
+                        tx.hash,
+                        btc(leg.satoshis)
+                    ),
+                )
+                .with_attr("dataset", "blockchain.info address transactions")
+                .with_attr("counterparty_of", on_chain)
+                .with_attr("role", role)
+                .with_attr("transaction", &tx.hash)
+                .with_attr(
+                    "transaction_utc",
+                    crate::timefmt::format_unix(i64::try_from(tx.time).unwrap_or(i64::MAX)),
+                )
+                .with_attr("leg_satoshis", leg.satoshis.to_string());
+                evidence = match tx.block_height {
+                    Some(height) => evidence.with_attr("block_height", height.to_string()),
+                    None => evidence.with_attr("block_height", "unconfirmed"),
+                };
+                let (confidence, tag) = if role == "co_input" {
+                    (CO_INPUT_CONFIDENCE, "bitcoin-co-input")
+                } else {
+                    (COUNTERPARTY_CONFIDENCE, "bitcoin-counterparty")
+                };
+                push_entity(
+                    entities,
+                    EntityKind::CryptoAddress,
+                    &leg.address,
+                    confidence,
+                    scan_id,
+                    evidence,
+                    &["blockchain", "bitcoin", tag],
+                );
+            }
+        }
     }
 }
 
@@ -202,9 +370,9 @@ mod tests {
     }
 
     #[test]
-    fn query_asks_only_the_account_summary() {
+    fn query_asks_for_the_summary_and_the_recent_transactions() {
         assert!(url("1abc").starts_with("https://blockchain.info/rawaddr/1abc"));
-        assert!(url("1abc").ends_with("?limit=0"));
+        assert!(url("1abc").ends_with("?limit=20"));
     }
 
     #[test]
@@ -310,5 +478,111 @@ mod tests {
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
         let detail = got.outcome.detail.unwrap_or_default();
         assert!(!detail.contains("secret@example.com"), "{detail}");
+    }
+
+    /// The shape blockchain.info's `rawaddr` answers today (integers, `addr` on each leg,
+    /// `block_height` null while unconfirmed), with fictional addresses.
+    const SAMPLE: &str = r#"{
+      "address":"1Target","n_tx":3,"total_received":40000,"total_sent":40000,"final_balance":4800,
+      "txs":[
+        {"hash":"aa00000000000000000000000000000000000000000000000000000000000001","time":1700000000,"block_height":800000,"result":40000,
+         "inputs":[{"prev_out":{"addr":"1Payer","value":50000}}],
+         "out":[{"addr":"1Target","value":40000},{"addr":"1PayerChange","value":9800}]},
+        {"hash":"bb00000000000000000000000000000000000000000000000000000000000002","time":1700100000,"block_height":null,"result":-35200,
+         "inputs":[{"prev_out":{"addr":"1Target","value":40000}},{"prev_out":{"addr":"1CoSpend","value":10000}}],
+         "out":[{"addr":"1Payee","value":45000},{"addr":"1Target","value":4800}]},
+        {"hash":"cc00000000000000000000000000000000000000000000000000000000000003","time":1700200000,
+         "inputs":[{"prev_out":{"addr":"1Odd","value":"not a number"}}],"out":[]}
+      ]
+    }"#;
+
+    #[test]
+    fn sampled_transactions_give_a_chronology_and_role_named_counterparties() {
+        let got = lookup(&OneResponse::json(200, SAMPLE), "1Target", "scan", 1).unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::Success);
+        assert!(
+            got.outcome
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("1 sampled transaction(s) were malformed")),
+            "{:?}",
+            got.outcome.detail
+        );
+        let find = |raw: &str| {
+            got.entities
+                .iter()
+                .find(|e| e.raw_value == raw)
+                .unwrap_or_else(|| panic!("{raw}: {:?}", got.entities))
+        };
+        let attr = |entity: &Entity, key: &str| {
+            entity.evidence[0]
+                .attributes
+                .get(key)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let target = find("1Target");
+        assert_eq!(attr(target, "sampled_transactions"), "2");
+        assert_eq!(attr(target, "sample_first_tx_utc"), "2023-11-14T22:13:20Z");
+        assert_eq!(attr(target, "sample_last_tx_utc"), "2023-11-16T02:00:00Z");
+
+        let payer = find("1Payer");
+        assert_eq!(attr(payer, "role"), "paid_by");
+        assert_eq!(attr(payer, "leg_satoshis"), "50000");
+        assert_eq!(attr(payer, "block_height"), "800000");
+        assert!((payer.confidence - COUNTERPARTY_CONFIDENCE).abs() < 1e-9);
+        let co = find("1CoSpend");
+        assert_eq!(attr(co, "role"), "co_input");
+        assert!(co.has_tag("bitcoin-co-input"));
+        assert!((co.confidence - CO_INPUT_CONFIDENCE).abs() < 1e-9);
+        let recipient = find("1Payee");
+        assert_eq!(attr(recipient, "role"), "paid_to");
+        assert_eq!(attr(recipient, "block_height"), "unconfirmed");
+        assert_eq!(
+            attr(recipient, "transaction"),
+            "bb00000000000000000000000000000000000000000000000000000000000002"
+        );
+        for counterparty in [payer, co, recipient] {
+            assert!(
+                counterparty.evidence[0]
+                    .summary
+                    .contains("not common ownership")
+            );
+            assert_eq!(attr(counterparty, "counterparty_of"), "1Target");
+        }
+        // The payer's change went back to the payer, not through the looked-up address.
+        assert!(!got.entities.iter().any(|e| e.raw_value == "1PayerChange"));
+        assert!(!got.entities.iter().any(|e| e.raw_value == "1Odd"));
+    }
+
+    #[test]
+    fn a_batch_payout_gives_at_most_its_bound_of_counterparties() {
+        let outputs: Vec<String> = (0..40)
+            .map(|i| format!(r#"{{"addr":"1Out{i}","value":1000}}"#))
+            .collect();
+        let body = format!(
+            r#"{{"address":"1Target","n_tx":1,"txs":[{{"hash":"dd00000000000000000000000000000000000000000000000000000000000004","time":1700000000,"block_height":1,"inputs":[{{"prev_out":{{"addr":"1Target","value":50000}}}}],"out":[{}]}}]}}"#,
+            outputs.join(",")
+        );
+        let got = lookup(&OneResponse::json(200, &body), "1Target", "scan", 1).unwrap();
+        let paid = got
+            .entities
+            .iter()
+            .filter(|e| e.has_tag("bitcoin-counterparty"))
+            .count();
+        assert_eq!(paid, MAX_LEGS_PER_SIDE);
+    }
+
+    #[test]
+    fn a_summary_without_transactions_is_read_as_before() {
+        let got = lookup(
+            &OneResponse::json(200, GENESIS),
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.entities.len(), 1);
+        assert_eq!(got.outcome.detail, None);
     }
 }
