@@ -13,6 +13,7 @@ mod axml;
 mod dex;
 mod elf;
 mod native_framework;
+mod network_config;
 mod risk;
 mod sdk;
 mod signer;
@@ -82,6 +83,7 @@ pub struct Inventory {
 
 pub use axml::{Component, Exposure, Manifest};
 pub use dex::CodeUrls;
+pub use network_config::{DomainRule, NetworkPolicy, TrustAnchor};
 pub use risk::Flag;
 pub use sdk::Tracker;
 pub use signer::Certificate;
@@ -106,6 +108,8 @@ pub struct Analysis {
     pub manifest: Option<Manifest>,
     /// Why the manifest could not be read, when it could not.
     pub manifest_error: Option<String>,
+    /// Decoded declarations from the exact manifest-referenced compiled network XML, if readable.
+    pub network_policy: Option<NetworkPolicy>,
     /// Each distinct signing certificate, its schemes joined when several present it.
     pub signers: Vec<Certificate>,
     pub code: CodeUrls,
@@ -428,6 +432,7 @@ fn directory_bounds(data: &[u8]) -> Result<(usize, usize, usize), Error> {
 struct Archive<'a> {
     manifest: Option<Member<'a>>,
     resources: Option<Member<'a>>,
+    resource_xml: Vec<Member<'a>>,
     dex: Vec<Member<'a>>,
     v1: Vec<Member<'a>>,
     /// Native libraries (`lib/*/*.so`), each with the ABI directory it sits in.
@@ -484,6 +489,8 @@ fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
         }
         if name == "resources.arsc" {
             archive.resources.get_or_insert(entry);
+        } else if resource_xml_name(name) {
+            archive.resource_xml.push(entry);
         }
         if dex_name(name) {
             archive.dex.push(entry);
@@ -693,19 +700,114 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     }
     analysis.native_build_ids.sort();
     analysis.native_frameworks = native_frameworks(&analysis.native_build_ids);
-    // The displayed app name: an inline manifest label, or the resources.arsc string its
-    // android:label references. Resolution that fails leaves it unknown, never guessed.
-    let (inline_label, label_ref) = analysis.manifest.as_ref().map_or((None, None), |manifest| {
-        (manifest.label.clone(), manifest.label_resource_id)
-    });
-    if inline_label.is_some() {
-        analysis.app_label = inline_label;
-    } else if let (Some(id), Some(member)) = (label_ref, &archive.resources) {
-        if let Some(bytes) = read(member, MAX_APK_RESOURCES_BYTES, &mut analysis) {
-            analysis.app_label = arsc::string_resource(&bytes, id);
+    resolve_resources(data, archive, &mut analysis, &mut budget);
+    analysis
+}
+
+/// Resolve only resource IDs actually named by the manifest, within the APK's shared
+/// inflation budget. No guessed XML names or cross-APK resources are accepted.
+fn resolve_resources(
+    data: &[u8],
+    archive: &Archive<'_>,
+    analysis: &mut Analysis,
+    budget: &mut usize,
+) {
+    let mut read = |member: &Member<'_>, limit: usize, analysis: &mut Analysis| match read_member(
+        data, member, limit, budget,
+    ) {
+        Ok((bytes, quirk)) => {
+            analysis.evasion_indicators.extend(quirk);
+            Some(bytes)
+        }
+        Err(reason) => {
+            analysis.unread.push(reason);
+            None
+        }
+    };
+    // Resolve the displayed label and the network policy from the same resource table.
+    // A similarly named XML member is never selected without the exact manifest resource ID.
+    let (inline_label, label_ref, policy_ref) =
+        analysis
+            .manifest
+            .as_ref()
+            .map_or((None, None, None), |manifest| {
+                (
+                    manifest.label.clone(),
+                    manifest.label_resource_id,
+                    manifest.network_security_config_resource_id,
+                )
+            });
+    analysis.app_label = inline_label;
+    let mut policy_path = None;
+    if label_ref.is_some() || policy_ref.is_some() {
+        if let Some(member) = &archive.resources {
+            if let Some(bytes) = read(member, MAX_APK_RESOURCES_BYTES, analysis) {
+                if let Some(id) = label_ref {
+                    analysis.app_label = arsc::string_resource(&bytes, id);
+                }
+                if let Some(id) = policy_ref {
+                    policy_path = arsc::string_resource(&bytes, id);
+                    if policy_path.is_none() {
+                        analysis.unread.push(format!(
+                            "network policy resource 0x{id:08x} did not resolve in resources.arsc"
+                        ));
+                    }
+                }
+            }
+        } else if policy_ref.is_some() {
+            analysis
+                .unread
+                .push("network policy reference has no resources.arsc table".to_owned());
         }
     }
-    analysis
+    if let (Some(id), Some(path)) = (policy_ref, policy_path) {
+        if valid_network_xml_path(&path) {
+            let mut matches = archive
+                .resource_xml
+                .iter()
+                .filter(|member| member.name == path);
+            match (matches.next(), matches.next()) {
+                (Some(member), None) => {
+                    if let Some(bytes) = read(member, MAX_APK_MANIFEST_BYTES, analysis) {
+                        match network_config::parse(&bytes, id, &path) {
+                            Ok(policy) => analysis.network_policy = Some(policy),
+                            Err(error) => analysis.unread.push(format!("{path}: {error}")),
+                        }
+                    }
+                }
+                (None, _) => analysis.unread.push(format!(
+                    "network policy resource 0x{id:08x} references absent {path}"
+                )),
+                (Some(_), Some(_)) => analysis.unread.push(format!(
+                    "network policy resource 0x{id:08x} references duplicate ZIP path {path}"
+                )),
+            }
+        } else {
+            analysis.unread.push(format!(
+                "network policy resource 0x{id:08x} resolved to an invalid XML path"
+            ));
+        }
+    }
+}
+
+fn resource_xml_name(name: &str) -> bool {
+    name.starts_with("res/")
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext == "xml")
+        && !suspicious(name)
+}
+
+fn valid_network_xml_path(path: &str) -> bool {
+    let Some((directory, file)) = path.rsplit_once('/') else {
+        return false;
+    };
+    (directory == "res/xml" || directory.starts_with("res/xml-"))
+        && !file.is_empty()
+        && std::path::Path::new(file)
+            .extension()
+            .is_some_and(|ext| ext == "xml")
+        && !suspicious(path)
 }
 
 /// The frameworks / engines named by the bundled native libraries, deduplicated and sorted. A
@@ -752,6 +854,55 @@ fn native_dependencies_summary(analysis: &Analysis) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+fn network_policy_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, String)) {
+    if let Some(policy) = &analysis.network_policy {
+        put("apk_network_policy_path", policy.resource_path.clone());
+        put(
+            "apk_network_policy_resource_id",
+            format!("0x{:08x}", policy.resource_id),
+        );
+        put(
+            "apk_network_policy_base_cleartext",
+            policy
+                .base_cleartext_permitted
+                .map_or("unknown".to_owned(), |value| value.to_string()),
+        );
+        put(
+            "apk_network_policy_domains",
+            policy
+                .domains
+                .iter()
+                .map(|rule| {
+                    format!(
+                        "{} (subdomains={:?}, declared_cleartext={:?})",
+                        rule.domain, rule.include_subdomains, rule.declared_cleartext_permitted
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        put(
+            "apk_network_policy_trust_anchors",
+            policy
+                .trust_anchors
+                .iter()
+                .map(|anchor| format!("{}:{}", anchor.scope, anchor.source))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        put(
+            "apk_network_policy_debug_overrides",
+            policy.debug_overrides_present.to_string(),
+        );
+        put("apk_network_policy_pin_sets", policy.pin_sets.to_string());
+        put("apk_network_policy_pin_count", policy.pin_count.to_string());
+        put(
+            "apk_network_policy_limitations",
+            policy.limitations.to_owned(),
+        );
+    }
 }
 
 fn document_evidence(
@@ -805,6 +956,7 @@ fn document_evidence(
         "apk_app_label",
         analysis.app_label.clone().unwrap_or_default(),
     );
+    network_policy_attrs(analysis, &mut put);
     signer_digest_attrs(analysis, &mut put);
     if let Some(signer) = analysis.signers.first() {
         put("apk_signer_subject", signer.subject.clone());
@@ -1536,6 +1688,99 @@ mod tests {
             attr(&report.entities[0], "apk_app_label"),
             Some("Field Tracker")
         );
+    }
+
+    #[test]
+    fn resolves_only_the_manifest_referenced_network_policy_not_a_decoy_xml() {
+        use axml::tests::{Axml, Val};
+        let id = 0x7f0e_0002;
+        let manifest = Axml::new(&["package", "networkSecurityConfig"])
+            .start("manifest", &[("package", Val::Str("org.example.net"))])
+            .start("application", &[("networkSecurityConfig", Val::Ref(id))])
+            .end("application")
+            .end("manifest")
+            .build();
+        let resources = arsc::tests::table(&["res/xml/actual.xml"], id, 0);
+        let actual = Axml::new(&["cleartextTrafficPermitted"])
+            .start("network-security-config", &[])
+            .start(
+                "base-config",
+                &[("cleartextTrafficPermitted", Val::Bool(false))],
+            )
+            .end("base-config")
+            .end("network-security-config")
+            .build();
+        let decoy = Axml::new(&["cleartextTrafficPermitted"])
+            .start("network-security-config", &[])
+            .start(
+                "base-config",
+                &[("cleartextTrafficPermitted", Val::Bool(true))],
+            )
+            .end("base-config")
+            .end("network-security-config")
+            .build();
+        let bytes = apk(
+            &[
+                part("AndroidManifest.xml", manifest.clone(), 0),
+                part("resources.arsc", resources.clone(), 0),
+                part("res/xml/decoy.xml", decoy, 0),
+                part("res/xml/actual.xml", actual.clone(), 8),
+            ],
+            None,
+        );
+        let report = run(&bytes, "network.apk", 100).unwrap();
+        assert_eq!(
+            report
+                .analysis
+                .manifest
+                .as_ref()
+                .unwrap()
+                .network_security_config_resource_id,
+            Some(id)
+        );
+        let policy = report.analysis.network_policy.as_ref().unwrap();
+        assert_eq!(policy.resource_path, "res/xml/actual.xml");
+        assert_eq!(policy.base_cleartext_permitted, Some(false));
+        assert_eq!(
+            attr(&report.entities[0], "apk_network_policy_base_cleartext"),
+            Some("false")
+        );
+        assert!(
+            report.analysis.unread.is_empty(),
+            "{:?}",
+            report.analysis.unread
+        );
+
+        // Duplicate names are ambiguous, even if both carry the same bytes.
+        let duplicate = apk(
+            &[
+                part("AndroidManifest.xml", manifest, 0),
+                part("resources.arsc", resources, 0),
+                part("res/xml/actual.xml", actual.clone(), 0),
+                part("res/xml/actual.xml", actual, 0),
+            ],
+            None,
+        );
+        let report = run(&duplicate, "duplicate.apk", 100).unwrap();
+        assert!(report.analysis.network_policy.is_none());
+        assert!(
+            report
+                .analysis
+                .unread
+                .iter()
+                .any(|reason| reason.contains("duplicate ZIP path")),
+            "{:?}",
+            report.analysis.unread
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_or_missing_network_policy_resource_paths() {
+        assert!(!valid_network_xml_path("res/layout/not_policy.xml"));
+        assert!(!valid_network_xml_path("res/xml/../not_policy.xml"));
+        assert!(!valid_network_xml_path("/res/xml/not_policy.xml"));
+        assert!(!valid_network_xml_path("res/xml/not_policy.xml/extra"));
+        assert!(valid_network_xml_path("res/xml-v24/network.xml"));
     }
 
     #[test]
