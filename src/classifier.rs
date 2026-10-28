@@ -93,7 +93,10 @@ pub fn classify(raw: &str) -> Classified {
     if let Some(domain) = canonical_domain(value) {
         return classified(EntityKind::Domain, &domain, 0.75, "domain-shape");
     }
-    if let Some(phone) = canonical_phone(value) {
+    // `canonical_phone` keeps only the digits, so a token that merely holds enough of them (a
+    // cookie's `GeoIP=US:VA:Ashburn:39.05:-77.49`, a hash, a version string) is a number, not a
+    // phone, unless it is written with nothing but digits and dialling punctuation.
+    if let Some(phone) = is_dialable(value).then(|| canonical_phone(value)).flatten() {
         return classified(EntityKind::Phone, &phone, 0.80, "dialable-shape");
     }
     if let Some(bare) = abn_acn(value) {
@@ -402,6 +405,15 @@ fn address_span(tokens: &[&str]) -> Option<(Classified, usize)> {
     ))
 }
 
+/// A value written only with digits, spaces and the punctuation of a dialled number, with at
+/// least one digit.
+fn is_dialable(value: &str) -> bool {
+    value.bytes().any(|b| b.is_ascii_digit())
+        && value.chars().all(|c| {
+            c.is_ascii_digit() || c.is_whitespace() || matches!(c, '+' | '-' | '(' | ')' | '.')
+        })
+}
+
 /// A token made only of digits and phone punctuation, with at least one digit.
 fn is_number_fragment(token: &str) -> bool {
     token.bytes().any(|b| b.is_ascii_digit())
@@ -580,6 +592,22 @@ mod tests {
         let local = extract("call 0412 345 678 today");
         assert_eq!(local.len(), 1, "{local:?}");
         assert_eq!(local[0].kind, EntityKind::Phone);
+    }
+
+    #[test]
+    fn digits_inside_another_token_are_not_a_phone_number() {
+        // A cookie's GeoIP coordinates once became the phone number +61390577494.
+        let cookie = extract("set-cookie: GeoIP=US:VA:Ashburn:39.05:-77.49:v4; Path=/;");
+        assert!(
+            !cookie.iter().any(|item| item.kind == EntityKind::Phone),
+            "{cookie:?}"
+        );
+        for raw in ["build-0412345678", "id=0412345678", "v0412345678"] {
+            assert_ne!(classify(raw).kind, EntityKind::Phone, "{raw}");
+        }
+        for raw in ["(03) 9057 7494", "+61-491-570-006", "0491570006"] {
+            assert_eq!(classify(raw).kind, EntityKind::Phone, "{raw}");
+        }
     }
 
     #[test]

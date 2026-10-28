@@ -1180,7 +1180,16 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::DnsRecon,
         attack_techniques: &["T1593.002"],
-        description: "bounded Internet Archive CDX capture metadata, historical URL and subdomain pivots; no playback fetch",
+        description: "bounded Internet Archive CDX capture metadata, historical URL and subdomain pivots, and the contacts up to 3 archived pages published",
+    },
+    ReachableModule {
+        name: "common_crawl",
+        command: "domain DOMAIN | scan -k domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1593.002"],
+        description: "newest Common Crawl index: bounded historical URL and subdomain pivots, and the contacts up to 3 crawled pages published, read by WARC byte range",
     },
     ReachableModule {
         name: "certspotter",

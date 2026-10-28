@@ -25,8 +25,10 @@
 
 use std::path::PathBuf;
 
+use crate::archived_page;
 use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
 use crate::certspotter;
+use crate::common_crawl;
 use crate::crtsh::{self, CrtShError};
 use crate::dns::{self, DomainDns, RESOLVE_SOURCE, RecordType, ResolveErrorKind};
 use crate::dns_filter;
@@ -125,7 +127,11 @@ pub fn run<T: Transport + ?Sized + Sync>(
         found.entities.extend(certificates.entities);
         found.outcomes.push(certificates.outcome);
     }
-    wayback_leg(transport, &domain, &scan_id, now_unix, &mut found);
+    for (source, lookup) in archives::<T>() {
+        archive_leg(
+            transport, source, lookup, &domain, &scan_id, now_unix, &mut found,
+        );
+    }
     let Resolved {
         resolvers_up,
         unfiltered,
@@ -212,34 +218,46 @@ pub fn run<T: Transport + ?Sized + Sync>(
     }
 }
 
-/// Record one keyless historical capture source's entities and typed outcome.
-fn wayback_leg<T: Transport + ?Sized>(
+/// A web-archive source's lookup of one domain.
+type ArchiveLookup<T> = fn(&T, &str, &str, u64) -> Result<archived_page::Report, Error>;
+
+/// The keyless web archives a domain lookup asks, in order.
+fn archives<T: Transport + ?Sized>() -> [(&'static str, ArchiveLookup<T>); 2] {
+    [
+        (wayback_cdx::SOURCE, wayback_cdx::lookup::<T>),
+        (common_crawl::SOURCE, common_crawl::lookup::<T>),
+    ]
+}
+
+/// Record one keyless web-archive source's entities and typed outcome, when the lookup asks
+/// for `source`.
+fn archive_leg<T: Transport + ?Sized>(
     transport: &T,
+    source: &str,
+    lookup: ArchiveLookup<T>,
     domain: &str,
     scan_id: &str,
     now_unix: u64,
     found: &mut Report,
 ) {
-    if !transport.runs_module(wayback_cdx::SOURCE) {
+    if !transport.runs_module(source) {
         return;
     }
-    match wayback_cdx::lookup(transport, domain, scan_id, now_unix) {
-        Ok(captures) => {
-            found.entities.extend(captures.entities);
-            found.outcomes.push(captures.outcome);
+    match lookup(transport, domain, scan_id, now_unix) {
+        Ok(report) => {
+            found.entities.extend(report.entities);
+            found.outcomes.push(report.outcome);
         }
         Err(Error::Network(reason)) => {
             found
                 .outcomes
                 .push(SourceExecutionOutcome::refused_before_sending(
-                    wayback_cdx::SOURCE,
-                    now_unix,
-                    reason,
+                    source, now_unix, reason,
                 ));
         }
         Err(error) => {
             found.outcomes.push(SourceExecutionOutcome::inconclusive(
-                wayback_cdx::SOURCE,
+                source,
                 now_unix,
                 error.to_string(),
             ));

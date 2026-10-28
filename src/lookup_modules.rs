@@ -53,6 +53,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
                 "crtsh",
                 certspotter::SOURCE,
                 crate::wayback_cdx::SOURCE,
+                crate::common_crawl::SOURCE,
                 "dns",
                 rdap::SOURCE,
                 mnemonic::SOURCE,
