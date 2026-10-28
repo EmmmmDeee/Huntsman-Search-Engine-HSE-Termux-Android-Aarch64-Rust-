@@ -675,8 +675,7 @@ mod tests {
         let risk_order: Vec<&str> = observed.iter().map(|f| f.risk.as_str()).collect();
         assert!(
             risk_order[0] == "HIGH",
-            "first flag should be HIGH risk (debuggable), got: {:?}",
-            risk_order
+            "first flag should be HIGH risk (debuggable), got: {risk_order:?}"
         );
         let medium_flags: Vec<_> = observed.iter().filter(|f| f.risk == Risk::Medium).collect();
         assert!(
