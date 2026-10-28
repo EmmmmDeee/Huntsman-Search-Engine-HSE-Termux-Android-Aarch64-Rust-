@@ -515,7 +515,6 @@ impl Reader {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub(super) struct XmlNode {
     pub name: String,
@@ -563,8 +562,8 @@ pub(super) fn xml_nodes(data: &[u8]) -> Result<Vec<XmlNode>, String> {
                 if nodes.len() >= 4096 || stack.len() >= MAX_DEPTH {
                     return Err("resource XML exceeds node/depth budget".to_owned());
                 }
-                let name_index = le32(data, at + header + 4)
-                    .ok_or("truncated resource XML element")?;
+                let name_index =
+                    le32(data, at + header + 4).ok_or("truncated resource XML element")?;
                 let name = document.string(name_index).unwrap_or_default().to_owned();
                 let attrs = document
                     .attributes(data, at, header)
@@ -583,8 +582,7 @@ pub(super) fn xml_nodes(data: &[u8]) -> Result<Vec<XmlNode>, String> {
             }
             RES_XML_CDATA_TYPE => {
                 let index = *stack.last().ok_or("resource XML text outside root")?;
-                let string_index = le32(data, at + header)
-                    .ok_or("truncated resource XML text")?;
+                let string_index = le32(data, at + header).ok_or("truncated resource XML text")?;
                 let value = document.string(string_index).unwrap_or_default();
                 if nodes[index].text.len().saturating_add(value.len()) > 2048 {
                     return Err("resource XML text exceeds budget".to_owned());
@@ -592,10 +590,12 @@ pub(super) fn xml_nodes(data: &[u8]) -> Result<Vec<XmlNode>, String> {
                 nodes[index].text.push_str(value);
             }
             RES_XML_END_ELEMENT_TYPE => {
-                let name_index = le32(data, at + header + 4)
-                    .ok_or("truncated resource XML closing element")?;
+                let name_index =
+                    le32(data, at + header + 4).ok_or("truncated resource XML closing element")?;
                 let name = document.string(name_index).unwrap_or_default();
-                let index = stack.pop().ok_or("resource XML closing element without start")?;
+                let index = stack
+                    .pop()
+                    .ok_or("resource XML closing element without start")?;
                 if nodes[index].name != name {
                     return Err("mismatched resource XML closing element".to_owned());
                 }
