@@ -23,6 +23,11 @@ impl ApiKey {
     pub fn expose(&self) -> &str {
         self.0.expose()
     }
+    /// The key as the [`crate::keys::Secret`] a [`crate::fetch::Credential`] carries.
+    #[must_use]
+    pub fn secret(&self) -> crate::keys::Secret {
+        self.0.clone()
+    }
 }
 impl fmt::Debug for ApiKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

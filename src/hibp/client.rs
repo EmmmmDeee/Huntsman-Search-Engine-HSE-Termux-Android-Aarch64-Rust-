@@ -38,6 +38,8 @@
 //! plan lacks `IncludesStealerLogs` / `IncludesKAnon`.
 
 use crate::clock;
+use crate::credential_origin::AuthenticationAuthority;
+use crate::fetch::{AuthStyle, Credential};
 use crate::http::{Request, Response, Transport, TransportConfig, UreqTransport};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -56,6 +58,11 @@ use super::{passwords, passwords::PasswordHashMode, passwords::RangeEntry};
 
 /// Production base URL of the HIBP v3 API.
 pub const HIBP_API_BASE: &str = "https://haveibeenpwned.com/api/v3";
+/// The origin of [`HIBP_API_BASE`], as [`crate::http::origin_of`] writes it: the only one a keyed
+/// request goes to, and the one its key's [`Credential`] is pinned to.
+const API_ORIGIN: &str = "https://haveibeenpwned.com:443";
+/// The header the key travels in.
+const KEY_HEADER: &str = "hibp-api-key";
 /// Production base URL of the Pwned Passwords API.
 pub const PWNED_PASSWORDS_BASE: &str = "https://api.pwnedpasswords.com";
 /// The user agent HIBP sees: the app name, version and contact URL.
@@ -431,11 +438,11 @@ impl HibpClient {
         keyed: bool,
     ) -> Result<Option<T>, HibpError> {
         super::trusted_url(url)?;
-        if crate::http::origin_of(url).as_deref() != Some("https://haveibeenpwned.com:443") {
+        if crate::http::origin_of(url).as_deref() != Some(API_ORIGIN) {
             return Err(HibpError::InvalidInput("untrusted HIBP origin".into()));
         }
-        let key = match (&self.auth, keyed) {
-            (Auth::ApiKey(k), true) => Some(k),
+        let credential = match (&self.auth, keyed) {
+            (Auth::ApiKey(k), true) => Some(credential(k)?),
             (Auth::None, true) => return Err(HibpError::MissingKey),
             (_, false) => None,
         };
@@ -448,13 +455,10 @@ impl HibpClient {
                         retry_after: Some(remaining),
                     })?;
             }
-            let mut req = Request::get(url)
+            let req = Request::get(url)
                 .header("User-Agent", &self.config.user_agent)
                 .header("Accept", "application/json");
-            if let Some(k) = key {
-                req = req.header("hibp-api-key", k.expose());
-            }
-            let resp = super::send(self.http.as_ref(), req)?;
+            let resp = super::send_with(self.http.as_ref(), req, credential.as_ref())?;
             let status = resp.status;
             if status == 429 {
                 let retry_after = retry_after(&resp);
@@ -495,6 +499,22 @@ impl HibpClient {
 enum Entitlement {
     StealerLogs,
     KAnon,
+}
+
+/// The operator's key as the [`Credential`] [`crate::fetch::fetch`] sends in the [`KEY_HEADER`]
+/// header, only to [`API_ORIGIN`].
+fn credential(key: &ApiKey) -> Result<Credential, HibpError> {
+    let slot = crate::environment::HUNTSMAN_HIBP_KEY_ENV;
+    AuthenticationAuthority::configured_slot("haveibeenpwned.com", slot, clock::unix_now())
+        .and_then(|authority| {
+            Credential::new(
+                authority,
+                key.secret(),
+                AuthStyle::Header(KEY_HEADER.into()),
+            )
+        })
+        .map(|credential| credential.only_for_origin(API_ORIGIN))
+        .map_err(|_| HibpError::Refused)
 }
 
 /// SHA-1 (upper-case hex) of a trimmed, lower-cased email address, as the
