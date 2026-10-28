@@ -90,7 +90,6 @@ impl Sandbox {
         fs::write(path, body).unwrap();
     }
 
-
     // Use a deterministic cargo stub: these tests exercise lifecycle publication
     // decisions without compiling Rust in a disposable scratch repository.
     fn run_with_mock_cargo(&self, mode: &str, test_exit: u8) -> Output {
@@ -314,7 +313,10 @@ fn direct_sync_does_not_trust_a_previous_success_state() {
     .unwrap();
     let before = sandbox.head();
     let output = sandbox.run_with_mock_cargo("sync", 1);
-    assert!(!output.status.success(), "stale receipt bypassed verification");
+    assert!(
+        !output.status.success(),
+        "stale receipt bypassed verification"
+    );
     assert_eq!(sandbox.head(), before);
 }
 
