@@ -1046,7 +1046,10 @@ pub(super) mod tests {
             .start("application", &[])
             .start("activity", &[("name", Val::Str(".Link"))])
             .start("intent-filter", &[])
-            .start("action", &[("name", Val::Str("android.intent.action.VIEW"))])
+            .start(
+                "action",
+                &[("name", Val::Str("android.intent.action.VIEW"))],
+            )
             .end("action")
             .start(
                 "data",
@@ -1058,7 +1061,10 @@ pub(super) mod tests {
             .end("data")
             .end("intent-filter")
             .start("intent-filter", &[])
-            .start("action", &[("name", Val::Str("android.intent.action.VIEW"))])
+            .start(
+                "action",
+                &[("name", Val::Str("android.intent.action.VIEW"))],
+            )
             .end("action")
             .start(
                 "data",
