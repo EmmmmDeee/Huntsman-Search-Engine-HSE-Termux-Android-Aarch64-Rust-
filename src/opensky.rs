@@ -147,7 +147,7 @@ struct State {
     lon: f64,
     baro_altitude_m: Option<f64>,
     geo_altitude_m: Option<f64>,
-    on_ground: bool,
+    on_ground: Option<bool>,
     velocity_m_s: Option<f64>,
     track_deg: Option<f64>,
     vertical_rate_m_s: Option<f64>,
@@ -199,7 +199,7 @@ fn state(row: &Value, point: (f64, f64)) -> Option<State> {
         lon,
         baro_altitude_m: number(&row[7]),
         geo_altitude_m: number(&row[13]),
-        on_ground: row[8].as_bool().unwrap_or(false),
+        on_ground: row[8].as_bool(),
         velocity_m_s: number(&row[9]),
         track_deg: number(&row[10]),
         vertical_rate_m_s: number(&row[11]),
@@ -328,9 +328,9 @@ fn evidence(state: &State, answered: i64, scan_id: &str) -> Evidence {
     .with_attr("latitude", format!("{:.5}", state.lat))
     .with_attr("longitude", format!("{:.5}", state.lon))
     .with_attr("distance_from_point_m", format!("{:.0}", state.distance_m))
-    .with_attr("on_ground", state.on_ground.to_string())
     .with_attr("limit", AIRCRAFT_LIMIT);
     let optional = [
+        ("on_ground", state.on_ground.map(|v| v.to_string())),
         ("callsign", state.callsign.clone()),
         ("registration_country_inferred", state.country.clone()),
         (
@@ -526,6 +526,41 @@ mod tests {
                 .is_some_and(|d| d.contains("60 aircraft") && d.contains("nearest 50 kept")),
             "{:?}",
             report.outcome.detail
+        );
+    }
+
+    #[test]
+    fn unknown_ground_state_is_not_misreported_as_airborne() {
+        let original = row("7c3b43", -33.81, 151.07, "LZP");
+        let unknown = original.replace(",false,64.75,", ",null,64.75,");
+        assert_ne!(original, unknown);
+        let report = parse(
+            &serde_json::from_str(&answer_of(&[unknown])).unwrap(),
+            POINT,
+            "scan",
+            NOW,
+            200,
+        )
+        .unwrap();
+        assert_eq!(report.entities.len(), 1);
+        assert!(
+            report.entities[0].evidence[0]
+                .attr_values("on_ground")
+                .next()
+                .is_none(),
+            "unknown is not a reported false"
+        );
+        let known = parse(
+            &serde_json::from_str(&answer_of(&[original])).unwrap(),
+            POINT,
+            "scan",
+            NOW,
+            200,
+        )
+        .unwrap();
+        assert_eq!(
+            known.entities[0].evidence[0].attr_values("on_ground").next(),
+            Some("false")
         );
     }
 
