@@ -386,15 +386,15 @@ pub(super) fn sha256_digests(value: &[u8], scheme: &str) -> Option<Vec<(usize, u
         let mut seen = std::collections::BTreeSet::new();
         for (record_start, record_end) in prefixed(value, digests_start, digests_end)? {
             let algorithm = u32::try_from(le32(value, record_start)?).ok()?;
-            let (digest_start, digest_end) =
+            let (value_start, value_end) =
                 prefixed_one(value, record_start.checked_add(4)?, record_end)?;
-            if digest_end != record_end || !seen.insert(algorithm) {
+            if value_end != record_end || !seen.insert(algorithm) {
                 return None;
             }
             // Android's chunked SHA-256 signature algorithms. Verity digests and
             // SHA-512 have different formats and are intentionally not compared.
             if matches!(algorithm, 0x0101 | 0x0103 | 0x0201 | 0x0301) {
-                let digest: [u8; 32] = value[digest_start..digest_end].try_into().ok()?;
+                let digest: [u8; 32] = value[value_start..value_end].try_into().ok()?;
                 if found.len() >= 64 {
                     return None;
                 }

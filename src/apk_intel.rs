@@ -472,6 +472,15 @@ struct Archive<'a> {
     directory_start: usize,
 }
 
+impl<'a> Archive<'a> {
+    fn with_directory_start(directory_start: usize) -> Self {
+        Self {
+            directory_start,
+            ..Self::default()
+        }
+    }
+}
+
 /// Inspect ZIP metadata only. No untrusted payload is decompressed or executed.
 ///
 /// # Errors
@@ -483,10 +492,7 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
 
 fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
     let (count, dir_start, dir_end) = directory_bounds(data)?;
-    let mut archive = Archive {
-        directory_start: dir_start,
-        ..Archive::default()
-    };
+    let mut archive = Archive::with_directory_start(dir_start);
 
     let mut pos = dir_start;
     let mut manifest = false;

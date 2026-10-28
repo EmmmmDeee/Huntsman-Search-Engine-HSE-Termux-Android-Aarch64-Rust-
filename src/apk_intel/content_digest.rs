@@ -89,19 +89,18 @@ pub(super) fn compare(
                 }
                 return (checks, errors);
             }
-            let actual = match computed {
-                Some(actual) => actual,
-                None => {
-                    let Some(actual) = chunked_sha256(apk, signing_start, directory_start, eocd_at)
-                    else {
-                        if errors.len() < MAX_ERRORS {
-                            errors.push("invalid APK content-digest boundaries".into());
-                        }
-                        return (checks, errors);
-                    };
-                    computed = Some(actual);
-                    actual
-                }
+            let actual = if let Some(actual) = computed {
+                actual
+            } else {
+                let Some(actual) = chunked_sha256(apk, signing_start, directory_start, eocd_at)
+                else {
+                    if errors.len() < MAX_ERRORS {
+                        errors.push("invalid APK content-digest boundaries".into());
+                    }
+                    return (checks, errors);
+                };
+                computed = Some(actual);
+                actual
             };
             checks.push(ContentDigestCheck {
                 scheme: (*scheme).to_owned(),
