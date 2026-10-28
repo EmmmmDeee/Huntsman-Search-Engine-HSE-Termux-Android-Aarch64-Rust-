@@ -489,8 +489,7 @@ fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
         }
         if name == "resources.arsc" {
             archive.resources.get_or_insert(entry);
-        }
-        if name.starts_with("res/") && name.ends_with(".xml") && !suspicious(name) {
+        } else if resource_xml_name(name) {
             archive.resource_xml.push(entry);
         }
         if dex_name(name) {
@@ -789,6 +788,14 @@ fn resolve_resources(
             ));
         }
     }
+}
+
+fn resource_xml_name(name: &str) -> bool {
+    name.starts_with("res/")
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext == "xml")
+        && !suspicious(name)
 }
 
 fn valid_network_xml_path(path: &str) -> bool {
