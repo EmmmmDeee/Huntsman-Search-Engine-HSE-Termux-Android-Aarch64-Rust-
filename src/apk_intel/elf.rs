@@ -1,8 +1,7 @@
 //! The GNU build-id of a native library (`lib/*/*.so`), read from its ELF note without loading or
 //! executing it. The build-id is a hash the linker stamps into the binary (`--build-id`, on by
-//! default in the Android NDK), unique to one compiled build of the library, so two APKs whose
-//! native libraries share a build-id shipped the same build — a strong cross-APK pivot that the
-//! Java-level SDK fingerprint cannot see.
+//! default in the Android NDK). It is a useful cross-APK candidate pivot, not proof of identical
+//! bytes, provenance, authorship, or a shared build: build-id bytes may be supplied or forged.
 //!
 //! Only the ELF header and the program headers are read, and the build-id note sits at a direct
 //! file offset, so no virtual-address mapping is needed. Every offset is bounds-checked; a file
@@ -104,6 +103,10 @@ pub fn build_id(data: &[u8]) -> Option<String> {
     }
     for i in 0..layout.phnum.min(MAX_PROGRAM_HEADERS) {
         let at = layout.phoff.checked_add(i.checked_mul(layout.phentsize)?)?;
+        // Reject an out-of-file table before fixed-offset field reads (at + 32, etc.).
+        if at.checked_add(layout.phentsize)? > data.len() {
+            return None;
+        }
         let header = program_header(data, at, layout.is_64)?;
         if header.kind != PT_NOTE {
             continue;
@@ -240,6 +243,23 @@ pub(super) mod tests {
         for cut in [4, 40, whole.len() - 1] {
             assert!(build_id(&whole[..cut]).is_none(), "cut at {cut}");
         }
+    }
+
+    #[test]
+    fn adversarial_program_header_offset_does_not_overflow() {
+        let mut elf = elf_with_build_id(true, &[1, 2, 3, 4]);
+        // The untrusted e_phoff must not reach unchecked fixed-offset reads.
+        elf[32..40].copy_from_slice(&(u64::MAX - 8).to_le_bytes());
+        assert!(build_id(&elf).is_none());
+    }
+
+    #[test]
+    fn identical_build_ids_do_not_prove_identical_library_bytes() {
+        let first = elf_with_build_id(true, &[0xca, 0xfe, 0xba, 0xbe]);
+        let mut second = first.clone();
+        second.push(0xff);
+        assert_eq!(build_id(&first), build_id(&second));
+        assert_ne!(crate::sha256::sha256(&first), crate::sha256::sha256(&second));
     }
 
     #[test]
