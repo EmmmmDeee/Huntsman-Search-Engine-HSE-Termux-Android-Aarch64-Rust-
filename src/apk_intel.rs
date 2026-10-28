@@ -203,6 +203,15 @@ struct SigningBlock<'a> {
     values: Vec<(&'static str, &'a [u8])>,
 }
 
+/// Convert structurally observed scheme IDs into deterministic labels.
+fn observed_scheme_ids(ids: BTreeSet<&'static str>, present: bool) -> Vec<String> {
+    if present {
+        ids.into_iter().map(str::to_owned).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Inspect *structural* signing IDs. A matching ID is never a verified signature.
 fn signing_block(data: &[u8], central_at: usize) -> SigningBlock<'_> {
     let mut found = SigningBlock::default();
@@ -248,10 +257,10 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock<'_> {
             _ => None,
         };
         if let Some(scheme) = scheme {
-            if !found.schemes.insert(scheme) {
-                found.duplicates.insert(scheme);
-            } else {
+            if found.schemes.insert(scheme) {
                 found.values.push((scheme, &data[pos + 12..next]));
+            } else {
+                found.duplicates.insert(scheme);
             }
         }
         pos = next;
@@ -552,16 +561,8 @@ fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
         v1_signing_artifacts_omitted: v1_count - v1.len(),
         v1_signing_artifacts: v1,
         apk_signing_block_present: sig.present,
-        signing_scheme_ids_detected_unverified: if sig.present {
-            sig.schemes.into_iter().map(str::to_owned).collect()
-        } else {
-            Vec::new()
-        },
-        duplicate_signing_scheme_ids: if sig.present {
-            sig.duplicates.into_iter().map(str::to_owned).collect()
-        } else {
-            Vec::new()
-        },
+        signing_scheme_ids_detected_unverified: observed_scheme_ids(sig.schemes, sig.present),
+        duplicate_signing_scheme_ids: observed_scheme_ids(sig.duplicates, sig.present),
         compressed_entries: compressed,
         encrypted_entries: encrypted,
         suspicious_paths: unsafe_paths,
