@@ -39,6 +39,14 @@
             "integration_id": 15368
           },
           {
+            "context": "CodeQL rust",
+            "integration_id": 15368
+          },
+          {
+            "context": "CodeQL actions",
+            "integration_id": 15368
+          },
+          {
             "context": "test (1.87)",
             "integration_id": 15368
           },
