@@ -382,11 +382,9 @@ mod tests {
             .iter()
             .find(|flag| flag.id == "exported_components")
             .unwrap();
-        assert!(
-            exported
-                .detail
-                .contains("permissions and platform restrictions")
-        );
+        assert!(exported
+            .detail
+            .contains("permissions and platform restrictions"));
     }
 
     #[test]
@@ -408,11 +406,9 @@ mod tests {
             ..Manifest::default()
         };
         let observed = flags(&manifest);
-        assert!(
-            observed
-                .iter()
-                .any(|flag| flag.id == "reachable_content_provider")
-        );
+        assert!(observed
+            .iter()
+            .any(|flag| flag.id == "reachable_content_provider"));
         let provider_flag = observed
             .iter()
             .find(|flag| flag.id == "reachable_content_provider")
@@ -433,11 +429,9 @@ mod tests {
             ..Manifest::default()
         };
         let observed = flags(&manifest);
-        assert!(
-            !observed
-                .iter()
-                .any(|flag| flag.id == "reachable_content_provider")
-        );
+        assert!(!observed
+            .iter()
+            .any(|flag| flag.id == "reachable_content_provider"));
     }
 
     #[test]
@@ -643,7 +637,11 @@ mod tests {
             .iter()
             .filter(|flag| flag.id == "reachable_content_provider")
             .collect();
-        assert_eq!(provider_flags.len(), 1, "only sensitive provider should be flagged");
+        assert_eq!(
+            provider_flags.len(),
+            1,
+            "only sensitive provider should be flagged"
+        );
     }
 
     #[test]
@@ -674,10 +672,10 @@ mod tests {
             "first flag should be HIGH risk (debuggable), got: {:?}",
             risk_order
         );
-        let medium_flags: Vec<_> = observed
-            .iter()
-            .filter(|f| f.risk == Risk::Medium)
-            .collect();
-        assert!(medium_flags.len() >= 2, "should have at least 2 MEDIUM flags");
+        let medium_flags: Vec<_> = observed.iter().filter(|f| f.risk == Risk::Medium).collect();
+        assert!(
+            medium_flags.len() >= 2,
+            "should have at least 2 MEDIUM flags"
+        );
     }
 }
