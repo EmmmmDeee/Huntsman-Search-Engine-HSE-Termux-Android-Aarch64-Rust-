@@ -92,8 +92,7 @@ pub(super) fn compare(
             let actual = match computed {
                 Some(actual) => actual,
                 None => {
-                    let Some(actual) =
-                        chunked_sha256(apk, signing_start, directory_start, eocd_at)
+                    let Some(actual) = chunked_sha256(apk, signing_start, directory_start, eocd_at)
                     else {
                         if errors.len() < MAX_ERRORS {
                             errors.push("invalid APK content-digest boundaries".into());

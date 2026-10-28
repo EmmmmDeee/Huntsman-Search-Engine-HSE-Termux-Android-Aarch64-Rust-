@@ -373,16 +373,12 @@ fn signer_certificates(
 /// Read SHA-256 chunked-content digest declarations from structurally consistent signers.
 /// A digest declaration is NOT authenticated until the signed-data signature is verified.
 /// Unsupported algorithms are omitted; malformed records reject the scheme's observations.
-pub(super) fn sha256_digests(
-    value: &[u8],
-    scheme: &str,
-) -> Option<Vec<(usize, u32, [u8; 32])>> {
+pub(super) fn sha256_digests(value: &[u8], scheme: &str) -> Option<Vec<(usize, u32, [u8; 32])>> {
     let [(start, end)] = prefixed(value, 0, value.len())?[..] else {
         return None;
     };
     let mut found = Vec::new();
-    for (index, (signer_start, signer_end)) in
-        prefixed(value, start, end)?.into_iter().enumerate()
+    for (index, (signer_start, signer_end)) in prefixed(value, start, end)?.into_iter().enumerate()
     {
         signer_certificates(value, signer_start, signer_end, scheme)?;
         let (data_start, data_end) = prefixed_one(value, signer_start, signer_end)?;
@@ -562,7 +558,10 @@ pub(super) mod tests {
         let cert = certificate_der("Digest Claim");
         let digest = [0x42_u8; 32];
         let value = signing_value_with_sha256_digest(&cert, &digest);
-        assert_eq!(sha256_digests(&value, "v2"), Some(vec![(0, 0x0103, digest)]));
+        assert_eq!(
+            sha256_digests(&value, "v2"),
+            Some(vec![(0, 0x0103, digest)])
+        );
         let mut corrupted = value;
         let record_at = corrupted
             .windows(4)

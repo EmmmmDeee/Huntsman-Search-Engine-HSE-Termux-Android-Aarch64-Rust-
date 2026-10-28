@@ -9,8 +9,8 @@
 //! the archive's own claim, and a certificate name or a URL in code is never proof of authorship.
 
 mod arsc;
-mod content_digest;
 mod axml;
+mod content_digest;
 mod dex;
 mod elf;
 mod native_framework;
