@@ -83,7 +83,7 @@ pub struct Inventory {
 
 pub use axml::{Component, Exposure, Manifest};
 pub use dex::CodeUrls;
-pub use network_config::{DomainRule, NetworkPolicy, TrustAnchor};
+pub use network_config::{DomainRule, NetworkPolicy, PinFingerprint, TrustAnchor};
 pub use risk::Flag;
 pub use sdk::Tracker;
 pub use signer::Certificate;
@@ -898,6 +898,27 @@ fn network_policy_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, 
         );
         put("apk_network_policy_pin_sets", policy.pin_sets.to_string());
         put("apk_network_policy_pin_count", policy.pin_count.to_string());
+        put(
+            "apk_network_policy_pin_fingerprints",
+            policy
+                .pin_fingerprints
+                .iter()
+                .map(|pin| {
+                    format!(
+                        "{}:{} (domains={}, expiration={})",
+                        pin.digest_algorithm,
+                        pin.digest_base64,
+                        pin.declared_domains.join(","),
+                        pin.expiration.as_deref().unwrap_or("unknown")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        put(
+            "apk_network_policy_pin_fingerprints_omitted",
+            policy.pin_fingerprints_omitted.to_string(),
+        );
         put(
             "apk_network_policy_limitations",
             policy.limitations.to_owned(),
