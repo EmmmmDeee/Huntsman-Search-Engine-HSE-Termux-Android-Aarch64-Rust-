@@ -368,7 +368,9 @@ fn collect_provider_authorities(
         );
         if !authority.is_empty()
             && own_authorities.len() < MAX_LISTED
-            && !own_authorities.iter().any(|known: &String| known == authority)
+            && !own_authorities
+                .iter()
+                .any(|known| known.as_str() == authority)
         {
             own_authorities.push(authority.to_owned());
         }
