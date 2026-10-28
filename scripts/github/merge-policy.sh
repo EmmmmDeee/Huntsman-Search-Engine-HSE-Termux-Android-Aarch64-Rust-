@@ -88,6 +88,13 @@ if [[ -z "$id" ]]; then
     echo 'main is already protected differently; refusing overlapping policy' >&2
     exit 1
   fi
+  # Check repository merge settings before creating an irreversible live ruleset.
+  # Retain the final readback below in case settings change after this preflight.
+  preflight_settings="$(gh api "$api")"
+  if ! jq -e '.allow_auto_merge == true and .allow_squash_merge == true' <<< "$preflight_settings" >/dev/null; then
+    echo 'NOT READY: repository auto-merge or squash merging is disabled' >&2
+    exit 1
+  fi
   echo "Creating '$name' for $repo/main (Administration:write required)"
   created="$(gh api --method POST "$api/rulesets" --input "$policy")"
   id="$(jq -er '.id' <<< "$created")"
