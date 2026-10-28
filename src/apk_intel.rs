@@ -1171,6 +1171,79 @@ fn signer_key_entities(analysis: &Analysis, label: &str, sid: &str, entities: &m
     }
 }
 
+/// One canonical graph pivot per declared SPKI pin digest. Preserve all domain-config
+/// scopes within this APK, without treating a declaration as TLS or ownership proof.
+fn network_pin_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
+    let Some(policy) = &analysis.network_policy else {
+        return;
+    };
+    let mut groups: std::collections::BTreeMap<
+        &str,
+        std::collections::BTreeSet<(String, Option<String>)>,
+    > = std::collections::BTreeMap::new();
+    for pin in &policy.pin_fingerprints {
+        if pin.digest_algorithm != "SHA-256" || pin.digest_base64.is_empty() {
+            continue;
+        }
+        for domain in &pin.declared_domains {
+            if !domain.is_empty() {
+                groups
+                    .entry(pin.digest_base64.as_str())
+                    .or_default()
+                    .insert((domain.clone(), pin.expiration.clone()));
+            }
+        }
+    }
+    for (digest, scopes) in groups {
+        // EntityKind::Other normalises values to lowercase: raw Base64 would collapse
+        // distinct case-sensitive digests. Encode the exact 32 bytes as lowercase hex.
+        let Some(bytes) = crate::base64::decode_standard(digest) else {
+            continue;
+        };
+        if bytes.len() != 32 || crate::base64::standard(&bytes) != digest {
+            continue;
+        }
+        let digest_hex = crate::base64::base16_lower(&bytes);
+        let domains = scopes
+            .iter()
+            .map(|(domain, _)| domain.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(",");
+        let declared_scopes = scopes
+            .iter()
+            .map(|(domain, expiration)| {
+                format!(
+                    "{domain} (expiration={})",
+                    expiration.as_deref().unwrap_or("unknown")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        push_entity(
+            entities,
+            EntityKind::Other,
+            &format!("apk-tls-spki-sha256:{digest_hex}"),
+            0.4,
+            sid,
+            Evidence::new(
+                EvidenceProvenance::for_scan(SOURCE, sid),
+                format!(
+                    "{label} declares this SHA-256 SPKI certificate pin; a matching declaration is a candidate lead, not proof of TLS contact, server ownership or shared APK authorship"
+                ),
+            )
+            .with_attr("pin_digest_algorithm", "SHA-256")
+            .with_attr("pin_sha256_base64", digest)
+            .with_attr("pin_sha256_hex", digest_hex.as_str())
+            .with_attr("declared_domains", domains)
+            .with_attr("declared_scopes", declared_scopes)
+            .with_attr("network_policy_resource", policy.resource_path.as_str()),
+            &[SOURCE, "offline", "apk_tls_pin", "unverified"],
+        );
+    }
+}
+
 fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
     let evidence = |text: String| Evidence::new(EvidenceProvenance::for_scan(SOURCE, sid), text);
     for signer in &analysis.signers {
@@ -1198,6 +1271,7 @@ fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec
     }
     signer_key_entities(analysis, label, sid, entities);
     native_entities(analysis, label, sid, entities);
+    network_pin_entities(analysis, label, sid, entities);
     let host_entity = |host: &str| {
         if host.parse::<std::net::Ipv4Addr>().is_ok() {
             EntityKind::IpAddress
@@ -1793,6 +1867,105 @@ mod tests {
             "{:?}",
             report.analysis.unread
         );
+    }
+
+    fn apk_with_declared_pin(domains: &[&str], pin: &str) -> Vec<u8> {
+        use axml::tests::{Axml, Val};
+        let id = 0x7f0e_0003;
+        let manifest = Axml::new(&["package", "networkSecurityConfig"])
+            .start("manifest", &[("package", Val::Str("org.example.pin"))])
+            .start("application", &[("networkSecurityConfig", Val::Ref(id))])
+            .end("application")
+            .end("manifest")
+            .build();
+        let resources = arsc::tests::table(&["res/xml/pins.xml"], id, 0);
+        let mut xml = Axml::new(&["digest", "expiration"]);
+        xml.start("network-security-config", &[])
+            .start("domain-config", &[]);
+        for domain in domains {
+            xml.start("domain", &[]).text(domain).end("domain");
+        }
+        xml.start("pin-set", &[("expiration", Val::Str("2030-01-01"))])
+            .start("pin", &[("digest", Val::Str("SHA-256"))])
+            .text(pin)
+            .end("pin")
+            .start("pin", &[("digest", Val::Str("SHA-256"))])
+            .text("not-a-valid-digest")
+            .end("pin")
+            .end("pin-set")
+            .end("domain-config")
+            .end("network-security-config");
+        apk(
+            &[
+                part("AndroidManifest.xml", manifest, 0),
+                part("resources.arsc", resources, 0),
+                part("res/xml/pins.xml", xml.build(), 0),
+            ],
+            None,
+        )
+    }
+
+    #[test]
+    fn tls_pin_graph_pivots_preserve_scopes_and_match_across_distinct_apks() {
+        let pin = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let first = run(
+            &apk_with_declared_pin(&["alpha.example.org", "beta.example.org"], pin),
+            "first.apk",
+            100,
+        )
+        .unwrap();
+        let pivots: Vec<_> = first
+            .entities
+            .iter()
+            .filter(|entity| entity.value.starts_with("apk-tls-spki-sha256:"))
+            .collect();
+        assert_eq!(pivots.len(), 1, "one entity for one valid pin digest");
+        assert_eq!(
+            pivots[0].value,
+            format!("apk-tls-spki-sha256:{}", "00".repeat(32))
+        );
+        assert_eq!(
+            attr(pivots[0], "declared_domains"),
+            Some("alpha.example.org,beta.example.org")
+        );
+        assert!(
+            attr(pivots[0], "declared_scopes")
+                .unwrap()
+                .contains("expiration=2030-01-01")
+        );
+        assert_eq!(attr(pivots[0], "pin_sha256_base64"), Some(pin));
+        let second = run(
+            &apk_with_declared_pin(&["other.example.net"], pin),
+            "second.apk",
+            101,
+        )
+        .unwrap();
+        let other = second
+            .entities
+            .iter()
+            .find(|entity| entity.value.starts_with("apk-tls-spki-sha256:"))
+            .unwrap();
+        assert_eq!(
+            pivots[0].uid, other.uid,
+            "same digest yields same pivot UID"
+        );
+        assert_eq!(attr(other, "declared_domains"), Some("other.example.net"));
+        // Different 32-byte digests whose Base64 differs only in letter case
+        // must never collapse under EntityKind::Other's lowercase normalisation.
+        let case_variant = format!("a{}", &pin[1..]);
+        let variant = run(
+            &apk_with_declared_pin(&["case.example.net"], &case_variant),
+            "variant.apk",
+            102,
+        )
+        .unwrap();
+        let variant_pivot = variant
+            .entities
+            .iter()
+            .find(|entity| entity.value.starts_with("apk-tls-spki-sha256:"))
+            .unwrap();
+        assert_ne!(pivots[0].uid, variant_pivot.uid);
+        assert_eq!(first.outcomes[0].found, Some(first.entities.len()));
     }
 
     #[test]
