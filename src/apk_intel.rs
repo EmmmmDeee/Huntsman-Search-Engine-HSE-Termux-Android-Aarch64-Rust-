@@ -985,23 +985,45 @@ fn content_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, 
             analysis
                 .content_digest_checks
                 .iter()
+                .filter(|check| !check.signature_authenticated)
                 .map(|check| {
                     format!(
-                        "{}#{}:0x{:04x}:declared={}:computed={}:matches={}",
+                        "{}#{}:0x{:04x}:declared={}:computed={}:matches={}:signature={}",
                         check.scheme,
                         check.signer_index,
                         check.signature_algorithm_id,
                         check.declared_sha256,
                         check.computed_sha256,
-                        check.matches
+                        check.matches,
+                        check.signature_verification
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("; "),
         );
         put(
+            "apk_content_digest_sha256_claims_authenticated",
+            analysis
+                .content_digest_checks
+                .iter()
+                .filter(|check| check.signature_authenticated)
+                .map(|check| format!(
+                    "{}#{}:0x{:04x}:{}",
+                    check.scheme,
+                    check.signer_index,
+                    check.signature_algorithm_id,
+                    check.declared_sha256
+                ))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        put(
             "apk_content_digest_signature_authenticated",
-            "false".to_owned(),
+            analysis
+                .content_digest_checks
+                .iter()
+                .any(|check| check.signature_authenticated)
+                .to_string(),
         );
     }
     put(
