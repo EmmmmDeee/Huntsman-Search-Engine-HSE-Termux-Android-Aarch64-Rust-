@@ -53,7 +53,7 @@ const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOST_ENTITIES: usize = 64;
 const LIMITATIONS: &str = "Offline static reading: manifest claims and signing certificates are unverified; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read the GNU build-id of each native library from its ELF note (a cross-APK build pivot), and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -82,13 +82,18 @@ pub use risk::Flag;
 pub use sdk::Tracker;
 pub use signer::Certificate;
 
-/// One native library identified by its ELF GNU build-id.
+/// One native library and what its ELF structures declare about it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct NativeLibrary {
     /// The ABI directory the library sits in (`arm64-v8a`, …).
     pub abi: String,
     pub name: String,
+    /// The GNU build-id as lowercase hex, or empty when the library carries none.
     pub build_id: String,
+    /// The library's own recorded name (`DT_SONAME`), when it declares one.
+    pub soname: Option<String>,
+    /// The shared libraries it links against (`DT_NEEDED`); a native dependency fingerprint.
+    pub needed: Vec<String>,
 }
 
 /// What reading the archive's members found.
@@ -651,7 +656,11 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     analysis.code.finish();
     for (abi, member) in &archive.native {
         if let Some(bytes) = read(member, MAX_APK_NATIVE_BYTES, &mut analysis) {
-            if let Some(build_id) = elf::build_id(&bytes) {
+            let build_id = elf::build_id(&bytes);
+            let dynamic = elf::dynamic(&bytes).unwrap_or_default();
+            // Record a library only when it declares something we read; an unreadable or empty ELF
+            // adds no entry.
+            if build_id.is_some() || dynamic.soname.is_some() || !dynamic.needed.is_empty() {
                 analysis.native_build_ids.push(NativeLibrary {
                     abi: (*abi).to_owned(),
                     name: member
@@ -660,7 +669,9 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
                         .next()
                         .unwrap_or(member.name)
                         .to_owned(),
-                    build_id,
+                    build_id: build_id.unwrap_or_default(),
+                    soname: dynamic.soname,
+                    needed: dynamic.needed,
                 });
             }
         }
@@ -670,14 +681,31 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
 }
 
 /// The document entity's evidence: the archive inventory, then what its members declare.
-/// The native build-ids as one evidence line: `name (abi): build_id`, comma-separated.
+/// The native build-ids as one evidence line: `name (abi): build_id`, comma-separated. Libraries
+/// that carry no build-id are left out.
 fn native_build_ids_summary(analysis: &Analysis) -> String {
     analysis
         .native_build_ids
         .iter()
+        .filter(|lib| !lib.build_id.is_empty())
         .map(|lib| format!("{} ({}): {}", lib.name, lib.abi, lib.build_id))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The native dependency fingerprint as one evidence line: for each library that declares a
+/// `SONAME` or a `DT_NEEDED` list, `name [soname] -> needed, libraries`.
+fn native_dependencies_summary(analysis: &Analysis) -> String {
+    analysis
+        .native_build_ids
+        .iter()
+        .filter(|lib| lib.soname.is_some() || !lib.needed.is_empty())
+        .map(|lib| {
+            let soname = lib.soname.as_deref().unwrap_or(&lib.name);
+            format!("{soname} -> {}", lib.needed.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn document_evidence(
@@ -763,6 +791,10 @@ fn document_evidence(
     }
     put("apk_native_build_ids", native_build_ids_summary(analysis));
     put(
+        "apk_native_dependencies",
+        native_dependencies_summary(analysis),
+    );
+    put(
         "apk_bundled_sdks",
         analysis
             .code
@@ -830,6 +862,42 @@ fn manifest_attrs(manifest: &Manifest, put: &mut impl FnMut(&'static str, String
 /// The pivots the archive names, each its own entity so scans of other APKs, domains and
 /// addresses meet it in the graph: its signing certificates, the hosts it claims as deep links,
 /// and the hosts and URLs in its code. Each says where in the archive it came from.
+/// The build-id pivot entity for each native library that carries one, enriched with its SONAME and
+/// linked libraries. A library without a build-id is kept in the document evidence, not here.
+fn native_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
+    for lib in analysis
+        .native_build_ids
+        .iter()
+        .filter(|lib| !lib.build_id.is_empty())
+    {
+        let mut lib_evidence = Evidence::new(
+            EvidenceProvenance::for_scan(SOURCE, sid),
+            format!(
+                "Native library {} ({}) in {label} declares this GNU build-id; a matching ID is a candidate lead, not proof of identical bytes, provenance or authorship",
+                lib.name, lib.abi
+            ),
+        )
+        .with_attr("native_library", lib.name.as_str())
+        .with_attr("abi", lib.abi.as_str())
+        .with_attr("build_id", lib.build_id.as_str());
+        if let Some(soname) = &lib.soname {
+            lib_evidence = lib_evidence.with_attr("soname", soname.as_str());
+        }
+        if !lib.needed.is_empty() {
+            lib_evidence = lib_evidence.with_attr("needed_libraries", lib.needed.join(", "));
+        }
+        push_entity(
+            entities,
+            EntityKind::Other,
+            &format!("apk-native-buildid:{}", lib.build_id),
+            0.9,
+            sid,
+            lib_evidence,
+            &[SOURCE, "offline", "apk_native"],
+        );
+    }
+}
+
 fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
     let evidence = |text: String| Evidence::new(EvidenceProvenance::for_scan(SOURCE, sid), text);
     for signer in &analysis.signers {
@@ -854,23 +922,7 @@ fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec
             &[SOURCE, "offline", "apk_signer"],
         );
     }
-    for lib in &analysis.native_build_ids {
-        push_entity(
-            entities,
-            EntityKind::Other,
-            &format!("apk-native-buildid:{}", lib.build_id),
-            0.9,
-            sid,
-            evidence(format!(
-                "Native library {} ({}) in {label} declares this GNU build-id; a matching ID is a candidate lead, not proof of identical bytes, provenance or authorship",
-                lib.name, lib.abi
-            ))
-            .with_attr("native_library", lib.name.as_str())
-            .with_attr("abi", lib.abi.as_str())
-            .with_attr("build_id", lib.build_id.as_str()),
-            &[SOURCE, "offline", "apk_native"],
-        );
-    }
+    native_entities(analysis, label, sid, entities);
     let host_entity = |host: &str| {
         if host.parse::<std::net::Ipv4Addr>().is_ok() {
             EntityKind::IpAddress
@@ -1181,6 +1233,15 @@ mod tests {
                     elf::tests::elf_with_build_id(true, &[0xca, 0xfe, 0xba, 0xbe]),
                     0,
                 ),
+                part(
+                    "lib/arm64-v8a/libengine.so",
+                    elf::tests::elf_with_dynamic(
+                        true,
+                        Some("libengine.so"),
+                        &["libflutter.so", "libc.so"],
+                    ),
+                    0,
+                ),
                 part("META-INF/CERT.RSA", signer::tests::pkcs7_der(&debug), 8),
             ],
             Some(&signer::tests::signing_value(&release)),
@@ -1230,16 +1291,6 @@ mod tests {
             "{:?}",
             analysis.risk_flags
         );
-        assert_eq!(
-            analysis.native_build_ids,
-            [NativeLibrary {
-                abi: "arm64-v8a".into(),
-                name: "libfield.so".into(),
-                build_id: "cafebabe".into()
-            }],
-            "the native library's GNU build-id is read from its ELF note"
-        );
-
         let document = &report.entities[0];
         assert_eq!(attr(document, "apk_package"), Some("com.example.field"));
         assert_eq!(attr(document, "apk_risk_highest"), Some("HIGH"));
@@ -1290,6 +1341,56 @@ mod tests {
             "a placeholder deep-link host is listed in the manifest but is no entity"
         );
         assert_eq!(report.outcomes[0].found, Some(report.entities.len()));
+    }
+
+    #[test]
+    fn reads_the_native_libraries_build_ids_and_dependencies_of_a_built_apk() {
+        let (bytes, ..) = field_apk(8);
+        let report = run(&bytes, "field.apk", 100).expect("apk");
+        assert_eq!(
+            report.analysis.native_build_ids,
+            [
+                // Sorted by name: the dynamic-only engine library (SONAME + NEEDED, no build-id)
+                // then the build-id-only library.
+                NativeLibrary {
+                    abi: "arm64-v8a".into(),
+                    name: "libengine.so".into(),
+                    build_id: String::new(),
+                    soname: Some("libengine.so".into()),
+                    needed: vec!["libflutter.so".into(), "libc.so".into()],
+                },
+                NativeLibrary {
+                    abi: "arm64-v8a".into(),
+                    name: "libfield.so".into(),
+                    build_id: "cafebabe".into(),
+                    soname: None,
+                    needed: Vec::new(),
+                },
+            ],
+            "the native libraries' build-id and SONAME/NEEDED are read from their ELF structures"
+        );
+        let document = &report.entities[0];
+        assert_eq!(
+            attr(document, "apk_native_build_ids"),
+            Some("libfield.so (arm64-v8a): cafebabe"),
+            "a library with no build-id is left out of the build-id line"
+        );
+        assert_eq!(
+            attr(document, "apk_native_dependencies"),
+            Some("libengine.so -> libflutter.so, libc.so")
+        );
+        let values: Vec<&str> = report.entities[1..]
+            .iter()
+            .map(|entity| entity.value.as_str())
+            .collect();
+        assert!(
+            values.contains(&"apk-native-buildid:cafebabe"),
+            "{values:?}"
+        );
+        assert!(
+            !values.contains(&"apk-native-buildid:"),
+            "a library with no build-id must not create an empty build-id pivot: {values:?}"
+        );
     }
 
     #[test]

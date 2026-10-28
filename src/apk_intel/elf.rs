@@ -1,20 +1,43 @@
-//! The GNU build-id of a native library (`lib/*/*.so`), read from its ELF note without loading or
-//! executing it. The build-id is a hash the linker stamps into the binary (`--build-id`, on by
-//! default in the Android NDK). It is a useful cross-APK candidate pivot, not proof of identical
-//! bytes, provenance, authorship, or a shared build: build-id bytes may be supplied or forged.
+//! What a native library (`lib/*/*.so`) declares about itself, read from its ELF structures
+//! without loading or executing it:
 //!
-//! Only the ELF header and the program headers are read, and the build-id note sits at a direct
-//! file offset, so no virtual-address mapping is needed. Every offset is bounds-checked; a file
-//! that is not a little-endian ELF, or whose headers do not fit, yields `None`.
+//! - its GNU **build-id** — a hash the linker stamps into the binary (`--build-id`, on by default
+//!   in the Android NDK). A useful cross-APK candidate pivot, not proof of identical bytes,
+//!   provenance, authorship or a shared build: build-id bytes may be supplied or forged;
+//! - its **`SONAME`** (the canonical name the library records for itself) and its **`DT_NEEDED`**
+//!   list (the shared libraries it links against) — a native dependency fingerprint the Java-level
+//!   SDK fingerprint cannot see, because stripped C/C++ code carries no package names.
+//!
+//! The build-id note sits at a direct file offset. The `SONAME`/`NEEDED` strings sit in the
+//! dynamic string table, which the dynamic section references by virtual address, so that address
+//! is translated to a file offset through the `PT_LOAD` segment that maps it. Every offset is
+//! bounds-checked; a file that is not a little-endian ELF, or whose headers do not fit, yields
+//! `None` rather than a misread.
 
+/// `PT_LOAD`: a loadable segment, used to translate a virtual address to a file offset.
+const PT_LOAD: u32 = 1;
+/// `PT_DYNAMIC`: the segment holding the dynamic-linking array.
+const PT_DYNAMIC: u32 = 2;
 /// `PT_NOTE`: a program header describing a note segment.
 const PT_NOTE: u32 = 4;
 /// `NT_GNU_BUILD_ID`: the note type the build-id uses, under the name `GNU`.
 const NT_GNU_BUILD_ID: u32 = 3;
+/// Dynamic-array tags we read: end, a needed library, the string table, its size, the `SONAME`.
+const DT_NULL: u64 = 0;
+const DT_NEEDED: u64 = 1;
+const DT_STRTAB: u64 = 5;
+const DT_STRSZ: u64 = 10;
+const DT_SONAME: u64 = 14;
 /// A build-id longer than this (far beyond SHA-256) is ignored as malformed.
 const MAX_BUILD_ID_BYTES: usize = 64;
 /// Program headers past this count are not walked; a real `.so` has a handful.
 const MAX_PROGRAM_HEADERS: usize = 256;
+/// Dynamic entries past this count are not walked; a real `.so` has tens.
+const MAX_DYNAMIC_ENTRIES: usize = 8192;
+/// `DT_NEEDED` libraries past this count are not kept; a real `.so` names a handful.
+const MAX_NEEDED: usize = 64;
+/// A `SONAME` or needed-library name longer than this is refused as malformed.
+const MAX_LIB_NAME_BYTES: usize = 256;
 
 fn u16_le(data: &[u8], at: usize) -> Option<u16> {
     let field = data.get(at..at.checked_add(2)?)?;
@@ -35,11 +58,13 @@ fn index(value: u64) -> Option<usize> {
     usize::try_from(value).ok()
 }
 
-/// One program header's type and the file range of its contents, read for the ELF class.
+/// One program header's type, the file range of its contents, and the virtual address it maps to,
+/// read for the ELF class.
 struct ProgramHeader {
     kind: u32,
     offset: usize,
     size: usize,
+    vaddr: u64,
 }
 
 /// Where and how the program headers sit, by ELF class.
@@ -83,15 +108,46 @@ fn program_header(data: &[u8], at: usize, is_64: bool) -> Option<ProgramHeader> 
         Some(ProgramHeader {
             kind: u32_le(data, at)?,
             offset: index(u64_le(data, at + 8)?)?,
+            vaddr: u64_le(data, at + 16)?,
             size: index(u64_le(data, at + 32)?)?,
         })
     } else {
         Some(ProgramHeader {
             kind: u32_le(data, at)?,
             offset: index(u32_le(data, at + 4)?.into())?,
+            vaddr: u32_le(data, at + 8)?.into(),
             size: index(u32_le(data, at + 16)?.into())?,
         })
     }
+}
+
+/// Every program header that parses, up to the header cap.
+fn program_headers(data: &[u8], layout: &Layout) -> Vec<ProgramHeader> {
+    let mut headers = Vec::new();
+    for i in 0..layout.phnum.min(MAX_PROGRAM_HEADERS) {
+        let Some(at) = layout.phoff.checked_add(i.saturating_mul(layout.phentsize)) else {
+            break;
+        };
+        if let Some(header) = program_header(data, at, layout.is_64) {
+            headers.push(header);
+        }
+    }
+    headers
+}
+
+/// The file offset a virtual address maps to, through the `PT_LOAD` segment that contains it.
+fn file_offset_of(headers: &[ProgramHeader], vaddr: u64) -> Option<usize> {
+    headers.iter().find_map(|header| {
+        if header.kind != PT_LOAD {
+            return None;
+        }
+        let end = header.vaddr.checked_add(header.size as u64)?;
+        if (header.vaddr..end).contains(&vaddr) {
+            index(header.offset as u64 + (vaddr - header.vaddr))
+        } else {
+            None
+        }
+    })
 }
 
 /// The GNU build-id of ELF `data` as lowercase hex, or `None` when it has none.
@@ -154,6 +210,105 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
         out
     })
+}
+
+/// What the dynamic section declares: the library's own `SONAME` (when it records one) and the
+/// shared libraries it links against (`DT_NEEDED`).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Dynamic {
+    pub soname: Option<String>,
+    pub needed: Vec<String>,
+}
+
+impl Dynamic {
+    fn is_empty(&self) -> bool {
+        self.soname.is_none() && self.needed.is_empty()
+    }
+}
+
+/// The size of one dynamic-array entry (`d_tag`, `d_un`), by ELF class.
+fn dynamic_entry_size(is_64: bool) -> usize {
+    if is_64 { 16 } else { 8 }
+}
+
+/// Reads one dynamic-array entry (`d_tag`, `d_un`) at `at`, by ELF class.
+fn dynamic_entry(data: &[u8], at: usize, is_64: bool) -> Option<(u64, u64)> {
+    if is_64 {
+        Some((u64_le(data, at)?, u64_le(data, at + 8)?))
+    } else {
+        Some((u32_le(data, at)?.into(), u32_le(data, at + 4)?.into()))
+    }
+}
+
+/// Reads a NUL-terminated name at `offset` into the string table `[strtab, strtab+strsz)`, refusing
+/// an empty or over-long name or one running past the table or the file.
+fn name_at(data: &[u8], strtab: usize, strsz: usize, offset: u64) -> Option<String> {
+    let start = strtab.checked_add(index(offset)?)?;
+    // A present DT_STRSZ bounds the table; without it, fall back to the end of the file.
+    let table_end = if strsz == 0 {
+        data.len()
+    } else {
+        strtab.checked_add(strsz)?.min(data.len())
+    };
+    let bytes = data.get(start..table_end)?;
+    let end = bytes.iter().position(|&b| b == 0)?;
+    if end == 0 || end > MAX_LIB_NAME_BYTES {
+        return None;
+    }
+    // A library name is printable ASCII; anything else means we are not reading a real name.
+    let name = bytes.get(..end)?;
+    if !name.iter().all(|&b| b.is_ascii_graphic()) {
+        return None;
+    }
+    String::from_utf8(name.to_vec()).ok()
+}
+
+/// The `SONAME` and `DT_NEEDED` list `data` declares, or `None` when it has no dynamic section.
+#[must_use]
+pub fn dynamic(data: &[u8]) -> Option<Dynamic> {
+    let layout = layout(data)?;
+    if layout.phentsize < if layout.is_64 { 56 } else { 32 } {
+        return None;
+    }
+    let headers = program_headers(data, &layout);
+    let segment = headers.iter().find(|h| h.kind == PT_DYNAMIC)?;
+    let entry_size = dynamic_entry_size(layout.is_64);
+    let count = (segment.size / entry_size).min(MAX_DYNAMIC_ENTRIES);
+
+    // First pass: locate the string table (referenced by virtual address) and its size.
+    let mut strtab_vaddr = None;
+    let mut strsz = 0usize;
+    for i in 0..count {
+        let (tag, value) = dynamic_entry(data, segment.offset + i * entry_size, layout.is_64)?;
+        match tag {
+            DT_NULL => break,
+            DT_STRTAB => strtab_vaddr = Some(value),
+            DT_STRSZ => strsz = index(value).unwrap_or(0),
+            _ => {}
+        }
+    }
+    let strtab = file_offset_of(&headers, strtab_vaddr?)?;
+
+    // Second pass: resolve the SONAME and the needed libraries against that table.
+    let mut dynamic = Dynamic::default();
+    for i in 0..count {
+        let (tag, value) = dynamic_entry(data, segment.offset + i * entry_size, layout.is_64)?;
+        match tag {
+            DT_NULL => break,
+            DT_SONAME => dynamic.soname = name_at(data, strtab, strsz, value),
+            DT_NEEDED if dynamic.needed.len() < MAX_NEEDED => {
+                if let Some(name) = name_at(data, strtab, strsz, value) {
+                    dynamic.needed.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    if dynamic.is_empty() {
+        None
+    } else {
+        Some(dynamic)
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +427,126 @@ pub(super) mod tests {
         let note_off = 64 + 56;
         elf[note_off + 4..note_off + 8].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(build_id(&elf).is_none());
+    }
+
+    /// A minimal little-endian ELF (64- or 32-bit) with a `PT_LOAD` segment that maps the whole
+    /// file at virtual address 0 (so a virtual address equals its file offset) and a `PT_DYNAMIC`
+    /// segment declaring the given `SONAME` and needed libraries against an embedded string table.
+    pub(crate) fn elf_with_dynamic(is_64: bool, soname: Option<&str>, needed: &[&str]) -> Vec<u8> {
+        let le16 = |v: usize| u16::try_from(v).unwrap().to_le_bytes();
+        let le32 = |v: usize| u32::try_from(v).unwrap().to_le_bytes();
+        let le64 = |v: usize| (v as u64).to_le_bytes();
+
+        let (ehsize, phentsize, entry_size) = if is_64 { (64, 56, 16) } else { (52, 32, 8) };
+        let phnum = 2;
+        let phoff = ehsize;
+        let strtab_off = phoff + phnum * phentsize;
+
+        // String table: index 0 is NUL, then each name NUL-terminated. Record each name's offset.
+        let mut strtab = vec![0_u8];
+        let mut intern = |name: &str| {
+            let at = strtab.len();
+            strtab.extend_from_slice(name.as_bytes());
+            strtab.push(0);
+            at
+        };
+        let soname_off = soname.map(&mut intern);
+        let needed_offs: Vec<usize> = needed.iter().map(|n| intern(n)).collect();
+        let strsz = strtab.len();
+
+        // Dynamic array: SONAME, each NEEDED, then the string table's location and size, then NULL.
+        let mut entries: Vec<(u64, u64)> = Vec::new();
+        if let Some(off) = soname_off {
+            entries.push((DT_SONAME, off as u64));
+        }
+        for off in &needed_offs {
+            entries.push((DT_NEEDED, *off as u64));
+        }
+        entries.push((DT_STRTAB, strtab_off as u64)); // vaddr == file offset via the PT_LOAD below
+        entries.push((DT_STRSZ, strsz as u64));
+        entries.push((DT_NULL, 0));
+
+        let dyn_off = strtab_off + strsz;
+        let dyn_len = entries.len() * entry_size;
+        let total = dyn_off + dyn_len;
+
+        let mut out = vec![0_u8; total];
+        out[..4].copy_from_slice(b"\x7fELF");
+        out[4] = if is_64 { 2 } else { 1 };
+        out[5] = 1; // little-endian
+        out[6] = 1;
+        let (load, dynamic) = (phoff, phoff + phentsize);
+        if is_64 {
+            out[32..40].copy_from_slice(&le64(phoff));
+            out[54..56].copy_from_slice(&le16(phentsize));
+            out[56..58].copy_from_slice(&le16(phnum));
+            // PT_LOAD: offset 0, vaddr 0, filesz = whole file.
+            out[load..load + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+            out[load + 32..load + 40].copy_from_slice(&le64(total));
+            // PT_DYNAMIC: offset == vaddr == dyn_off.
+            out[dynamic..dynamic + 4].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
+            out[dynamic + 8..dynamic + 16].copy_from_slice(&le64(dyn_off));
+            out[dynamic + 16..dynamic + 24].copy_from_slice(&le64(dyn_off));
+            out[dynamic + 32..dynamic + 40].copy_from_slice(&le64(dyn_len));
+        } else {
+            out[28..32].copy_from_slice(&le32(phoff));
+            out[42..44].copy_from_slice(&le16(phentsize));
+            out[44..46].copy_from_slice(&le16(phnum));
+            out[load..load + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+            out[load + 16..load + 20].copy_from_slice(&le32(total));
+            out[dynamic..dynamic + 4].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
+            out[dynamic + 4..dynamic + 8].copy_from_slice(&le32(dyn_off));
+            out[dynamic + 8..dynamic + 12].copy_from_slice(&le32(dyn_off));
+            out[dynamic + 16..dynamic + 20].copy_from_slice(&le32(dyn_len));
+        }
+        out[strtab_off..strtab_off + strsz].copy_from_slice(&strtab);
+        for (i, (tag, val)) in entries.iter().enumerate() {
+            let at = dyn_off + i * entry_size;
+            if is_64 {
+                out[at..at + 8].copy_from_slice(&tag.to_le_bytes());
+                out[at + 8..at + 16].copy_from_slice(&val.to_le_bytes());
+            } else {
+                out[at..at + 4].copy_from_slice(&u32::try_from(*tag).unwrap().to_le_bytes());
+                out[at + 4..at + 8].copy_from_slice(&u32::try_from(*val).unwrap().to_le_bytes());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_soname_and_needed_libraries_are_read_from_a_64_and_a_32_bit_dynamic_section() {
+        for is_64 in [true, false] {
+            let elf = elf_with_dynamic(is_64, Some("libfield.so"), &["libflutter.so", "libc.so"]);
+            let dynamic = dynamic(&elf).expect("dynamic section");
+            assert_eq!(dynamic.soname.as_deref(), Some("libfield.so"), "64={is_64}");
+            assert_eq!(dynamic.needed, ["libflutter.so", "libc.so"], "64={is_64}");
+        }
+    }
+
+    #[test]
+    fn a_library_without_a_dynamic_section_or_names_yields_none() {
+        // The build-id fixture has a PT_NOTE but no PT_DYNAMIC.
+        assert!(dynamic(&elf_with_build_id(true, &[1, 2, 3, 4])).is_none());
+        // A dynamic section declaring neither a SONAME nor any NEEDED yields None, not an empty set.
+        assert!(dynamic(&elf_with_dynamic(true, None, &[])).is_none());
+        assert!(dynamic(b"PK\x03\x04 not elf").is_none());
+    }
+
+    #[test]
+    fn a_needed_offset_past_the_string_table_is_refused_not_misread() {
+        let mut elf = elf_with_dynamic(true, Some("libfield.so"), &["libflutter.so"]);
+        // The first dynamic entry is DT_SONAME; overwrite its value with an offset past the table.
+        let dyn_off = {
+            let layout = layout(&elf).unwrap();
+            program_headers(&elf, &layout)
+                .into_iter()
+                .find(|h| h.kind == PT_DYNAMIC)
+                .unwrap()
+                .offset
+        };
+        elf[dyn_off + 8..dyn_off + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+        let dynamic = dynamic(&elf).expect("still reads the needed library");
+        assert_eq!(dynamic.soname, None, "the out-of-range SONAME is dropped");
+        assert_eq!(dynamic.needed, ["libflutter.so"]);
     }
 }
