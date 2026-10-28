@@ -17,7 +17,7 @@ pub const CRYPTO_USAGE: &str =
     "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]";
 pub const CRYPTO_HELP: &str = "\
 crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]
-Bitcoin: balance, lifetime received/sent and transaction count from blockchain.info. Base: 40-hex-digit EVM address explicitly prefixed base:, with finalized balance in exact wei, outgoing nonce and contract-code presence via the rate-limited public Base JSON-RPC. No keys, full transaction history or ownership assertion. --save FILE writes an unverified ledger; verify can reload it. Makes network requests.";
+Bitcoin: balance, lifetime received/sent and transaction count from blockchain.info, and from its 20 most recent transactions the first and last transaction times and every address it transacted with, by role: paid_by (paid it), paid_to (it paid) or co_input (spent together with it, the common-input heuristic), each with the transaction, its time and block and the exact satoshis. Sharing a transaction is not common ownership: CoinJoin and payjoin break the co-input heuristic and an exchange address links unrelated users, so no wallet owner is identified. Base: 40-hex-digit EVM address explicitly prefixed base:, with finalized balance in exact wei, outgoing nonce and contract-code presence via the rate-limited public Base JSON-RPC. No keys, full transaction history or ownership assertion. --save FILE writes an unverified ledger; verify can reload it. Makes network requests.";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {

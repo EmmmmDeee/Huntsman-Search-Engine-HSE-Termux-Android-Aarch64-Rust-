@@ -572,7 +572,12 @@ fn the_page_and_health_name_one_page_id_and_the_policy_still_matches() {
 /// JSON success routes to the shared shape.
 #[test]
 fn every_json_ok_route_shares_one_content_type_and_a_single_trailing_newline() {
-    for path in ["/api/health", "/api/modules", "/api/command"] {
+    for path in [
+        "/api/health",
+        "/api/modules",
+        "/api/command",
+        "/api/blueprint",
+    ] {
         let answer = response_for_request(
             &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n"),
             Some("secret"),
@@ -606,7 +611,12 @@ fn health_says_whether_a_token_is_needed_and_a_refusal_names_the_remedy() {
     assert!(health(Some("secret")).contains("\"auth\": \"token\""));
     assert!(health(None).contains("\"auth\": \"none\""));
 
-    for path in ["/api/modules", "/api/command", "/api/analyze?seeds=a"] {
+    for path in [
+        "/api/modules",
+        "/api/command",
+        "/api/analyze?seeds=a",
+        "/api/blueprint?format=docx",
+    ] {
         let denied = response_for_request(
             &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n"),
             Some("secret"),
@@ -3366,4 +3376,37 @@ fn the_event_stream_pushes_published_events_as_sse_frames() {
     // The client going away ends the stream at the server's next write, not after the full bound.
     drop(client);
     handle.join().unwrap();
+}
+
+/// The blueprint downloads as the same Word document `huntsman-recon blueprint --docx` writes,
+/// named for saving, and an unknown format is refused rather than answered as JSON.
+#[test]
+fn the_blueprint_downloads_as_a_word_document() {
+    let ask = |query: &str| {
+        let raw = respond(
+            &format!("GET /api/blueprint{query} HTTP/1.1\r\n\r\n"),
+            &test_config(loopback_bind(), None),
+            &Routes::default(),
+        );
+        let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        (
+            String::from_utf8(raw[..split].to_vec()).unwrap(),
+            raw[split..].to_vec(),
+        )
+    };
+    let (head, body) = ask("?format=docx");
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    assert_eq!(
+        header(&head, "Content-Type"),
+        Some(crate::docx::CONTENT_TYPE)
+    );
+    assert_eq!(
+        header(&head, "Content-Disposition"),
+        Some("attachment; filename=\"OSINT_APK_BLUEPRINT.docx\"")
+    );
+    assert_eq!(body, crate::osint_blueprint::docx());
+    let (_, json) = ask("");
+    let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(value["count"], crate::osint_blueprint::ENTRIES.len());
+    assert!(ask("?format=pdf").0.starts_with("HTTP/1.1 400"));
 }

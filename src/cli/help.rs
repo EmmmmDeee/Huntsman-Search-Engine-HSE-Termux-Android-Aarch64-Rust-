@@ -39,7 +39,7 @@ pub(super) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
 
 /// Separate the sensor help from the command dispatcher to keep it bounded.
 fn radar_help() -> &'static str {
-    "radar wifi|cells [--json] [--file TERMUX_SCAN_JSON]\nWiFi: Read Android OS-cached nearby WiFi results through termux-wifi-scaninfo with no root. This does NOT trigger an active scan. Each accepted individual BSSID includes SSID, RSSI, band and cache age when /proc/uptime permits; zero, group/broadcast and Android-redacted placeholder BSSIDs are counted as rejected; age over five minutes is labelled stale. No GPS position or UTC sighting timestamp is inferred. A missing Termux:API installation, disabled location services or an empty OS cache is not evidence that there are no networks. --file replays a supplied Termux-format JSON file without querying hardware and without estimating age from the current host's boot clock; imported file source and freshness are unverified. --json returns structured results. Cells: use radar cells --json for OS-cached GSM/WCDMA/LTE/5G NR/CDMA cell identities through termux-telephony-cellinfo. The Termux companion needs permissions and Android may suppress all cell data. An empty response is inconclusive. Records with incomplete or invalid identities are rejected; CDMA uses system/network/base-station IDs and its tower metadata is not treated as handset location. No location, observation UTC, or freshness is inferred. radar cells --file capture.json --json parses offline with explicitly unverified provenance."
+    "radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE]\nWiFi: Read Android OS-cached nearby WiFi results through termux-wifi-scaninfo with no root. This does NOT trigger an active scan. Each accepted individual BSSID includes SSID, RSSI, band and cache age when /proc/uptime permits; zero, group/broadcast and Android-redacted placeholder BSSIDs are counted as rejected; age over five minutes is labelled stale. No GPS position or UTC sighting timestamp is inferred. A missing Termux:API installation, disabled location services or an empty OS cache is not evidence that there are no networks. --file replays a supplied Termux-format JSON file without querying hardware and without estimating age from the current host's boot clock; imported file source and freshness are unverified. --json returns structured results. Cells: use radar cells --json for OS-cached GSM/WCDMA/LTE/5G NR/CDMA cell identities through termux-telephony-cellinfo. The Termux companion needs permissions and Android may suppress all cell data. An empty response is inconclusive. Records with incomplete or invalid identities are rejected, except neighbours reported by physical cell or scrambling code only, which are kept as neighbours. Each cell carries its PCI or scrambling code and bands, an LTE cell its eNodeB and sector and a WCDMA cell its RNC and cell, and the LTE serving cell its timing advance as a distance band; each read lists anomaly indicators (a 2G serving cell beside the same operator's 4G/5G, eNodeB sectors in different tracking areas, a registered cell without neighbours) that are never detections, since an app cannot read the modem's signalling. CDMA uses system/network/base-station IDs and its tower metadata is not treated as handset location. No location, observation UTC, or freshness is inferred. radar cells --file capture.json --json parses offline with explicitly unverified provenance. Track: radar track reads one cached Wi-Fi sweep and the registered serving cell and adds the sweep to $HUNTSMAN_HOME/radar/sweeps.jsonl (else ~/.huntsman/radar/sweeps.jsonl, or --log FILE; private, the newest 256 sweeps within 4 MiB); the serving cell is the sweep's coarse place, and no GPS position is recorded. It reports every stable BSSID heard in two or more sweeps (recurring) and every one heard in at least three distinct cells over at least ten minutes (follower), with the share of your places it was heard in; a follower is a personal-safety signal that something travelled with you, not an identification of its owner. An empty or wholly stale Wi-Fi cache logs nothing and exits 69. --wifi-file and --cells-file replay saved captures."
 }
 
 /// Separate the domain help from the command dispatcher to keep it bounded.
@@ -53,6 +53,8 @@ fn scan_help() -> &'static str {
 }
 
 const CASE_HELP: &str = "case-check CASE-JSON ORIGINAL-ADVERT-TEXT\nCheck bounded OSINT package JSON against exact source text, SHA-256, source IDs and claim references. This offline structural audit does not validate external claims, licences or advertisement authorship.";
+const COARSEN_HELP: &str =
+    "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing.";
 const GEO_HELP: &str =
     "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres.";
 
@@ -82,10 +84,9 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "geohash" => {
             "geohash LAT,LON [PRECISION] | geohash HASH\nEncode coordinates as a geohash (precision defaults to 7), or decode a geohash to the centre and bounds of the cell it names."
         }
-        "coarsen" => {
-            "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."
-        }
+        "coarsen" => COARSEN_HELP,
         "case-check" => CASE_HELP,
+        "blueprint" => super::blueprint::BLUEPRINT_HELP,
         "id" => {
             "id TOKEN...\nClassify and validate an Australian ABN, ACN, or BSB. The rest of the line is the token, so spaced digits need no quotes."
         }

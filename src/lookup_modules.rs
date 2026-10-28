@@ -110,7 +110,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
         ScanKind::Exposure => BREACH.to_vec(),
         ScanKind::CryptoAddress => vec![blockchain::SOURCE, crate::base_rpc::SOURCE],
-        ScanKind::Place => vec![nominatim::SOURCE],
+        ScanKind::Place => vec![nominatim::SOURCE, crate::stac::SOURCE],
     };
     // Stable deduplication keeps each source's first execution position and
     // avoids a tree allocation for the small, bounded module list.

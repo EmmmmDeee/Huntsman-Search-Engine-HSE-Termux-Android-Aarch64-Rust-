@@ -36,8 +36,9 @@ const AXE = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
-// Two additional KiB accommodate the complete, lossless on-demand TXT exporter.
-const PAGE_BUDGET = 132 * 1024;
+// Two additional KiB accommodate the complete, lossless on-demand TXT exporter; four more the
+// Radar tab's cell intelligence (PCI, site, timing advance, neighbours, anomaly indicators).
+const PAGE_BUDGET = 136 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -166,6 +167,11 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.goto(base + '/#/about', { waitUntil: 'networkidle' });
       check('About loads its details once', asked.filter(p => p === '/api/modules').length === 1 && asked.filter(p => p === '/api/command').length === 1, asked);
       check('About shows the module count', /^\d+$/.test(await page.textContent('#smodules')), await page.textContent('#smodules'));
+      const [blueprint] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#blueprint')]);
+      const blueprintBytes = fs.readFileSync(await blueprint.path());
+      check('About downloads the OSINT app blueprint as a Word document',
+        blueprint.suggestedFilename() === 'OSINT_APK_BLUEPRINT.docx' && blueprintBytes.subarray(0, 4).toString('latin1') === 'PK\x03\x04' &&
+        blueprintBytes.includes('word/document.xml') && await page.isHidden('#berror'), blueprint.suggestedFilename());
       // The old addresses still land somewhere: #/lookup is New Scan, #/status is About.
       await page.goto(base + '/#/lookup', { waitUntil: 'networkidle' });
       check('#/lookup opens New Scan', await page.isVisible('#view-newscan'), 'hidden');
@@ -284,8 +290,12 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         status: 'freshness_unknown', observed: 2, rejected: 0,
         observations: [
           { sighting: { network_id: 'gsm:505-01-17-91', signal_dbm: -83 }, technology: 'gsm', mcc: '505', mnc: '01', area_code: 17, cell_id: 91, registered: true, freshness: 'unknown' },
-          { sighting: { network_id: 'lte:505-01-19-12345', signal_dbm: -101 }, technology: 'lte', mcc: '505', mnc: '01', area_code: 19, cell_id: 12345, registered: false, freshness: 'unknown' }
-        ]
+          { sighting: { network_id: 'lte:505-01-19-12345', signal_dbm: -101 }, technology: 'lte', mcc: '505', mnc: '01', area_code: 19, cell_id: 12345, registered: false, freshness: 'unknown',
+            pci: 187, bands: [3, 28], site: { id: 'lte-enb:505-01-48', sector: 57 } }
+        ],
+        neighbours: [{ technology: 'lte', pci: 44, signal_dbm: -108 }],
+        findings: [{ severity: 'moderate', code: 'serving_2g_while_4g_5g_heard', cells: ['gsm:505-01-17-91', 'lte:505-01-19-12345'],
+          evidence: 'registered on GSM cell gsm:505-01-17-91 while 1 LTE/NR cell(s) of the same operator are reported', resolution: 'Note where and when it happens.' }]
       };
       const trackFixture = {
         sweeps: 3, located_sweeps: 3, distinct_cells: 3, skipped_lines: 0,
@@ -310,6 +320,12 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         cellCalls === 1 && sensorHeaders && await page.isHidden('#rerror') && cellsText.includes('gsm:505-01-17-91') &&
         cellsText.includes('lte:505-01-19-12345') && cellsText.includes('yes') && cellsText.includes('-83') &&
         (await page.textContent('#rcsummary')).includes('termux-telephony-cellinfo'), cellsText);
+      const auditText = await page.textContent('#rcaudit');
+      check(`${scheme}: Radar shows each cell's PCI, eNodeB site and bands, the PCI-only neighbours and the anomaly indicators as indicators`,
+        cellsText.includes('187') && cellsText.includes('lte-enb:505-01-48 · 57') && cellsText.includes('3, 28') &&
+        (await page.textContent('#rcsummary')).includes('neighbours by PCI/PSC only: 1 (lte 44 -108 dBm)') &&
+        await page.isVisible('#rcaudit') && auditText.includes('serving_2g_while_4g_5g_heard') &&
+        auditText.includes('none of these detects an IMSI catcher'), { cellsText, auditText });
       await page.click('#rcrows button');
       await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 });
       const cellHandoff = await page.evaluate(() => ({

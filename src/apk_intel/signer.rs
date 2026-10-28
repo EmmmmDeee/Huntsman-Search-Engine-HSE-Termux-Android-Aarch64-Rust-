@@ -6,9 +6,9 @@
 //! `apksigner verify --print-certs` prints as the "certificate SHA-256 digest" and app stores and
 //! malware repositories index signers by, so two APKs signed by the same key pivot to each other.
 //! Its subject, issuer, serial number and validity are read from the DER for the analyst. No
-//! signature is verified: a certificate here is the one the archive presents, which says nothing
-//! about whether its signature over the APK holds, and a subject name is whatever the key holder
-//! (or anyone who made the certificate) typed.
+//! certificate-chain trust is established by extraction alone. Supported v2/v3 signed-data
+//! signatures are checked separately against their declared public keys and APK content digests;
+//! neither this nor a subject name proves ownership, CA trust or Android installability.
 
 use serde::Serialize;
 
@@ -370,6 +370,235 @@ fn signer_certificates(
     Some(certificates)
 }
 
+/// Read SHA-256 chunked-content digest declarations from structurally consistent signers.
+/// A digest declaration is NOT authenticated until the signed-data signature is verified.
+/// Unsupported algorithms are omitted; malformed records reject the scheme's observations.
+pub(super) fn sha256_digests(value: &[u8], scheme: &str) -> Option<Vec<(usize, u32, [u8; 32])>> {
+    let [(start, end)] = prefixed(value, 0, value.len())?[..] else {
+        return None;
+    };
+    let mut found = Vec::new();
+    for (index, (signer_start, signer_end)) in prefixed(value, start, end)?.into_iter().enumerate()
+    {
+        signer_certificates(value, signer_start, signer_end, scheme)?;
+        let (data_start, data_end) = prefixed_one(value, signer_start, signer_end)?;
+        let (digests_start, digests_end) = prefixed_one(value, data_start, data_end)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for (record_start, record_end) in prefixed(value, digests_start, digests_end)? {
+            let algorithm = u32::try_from(le32(value, record_start)?).ok()?;
+            let (value_start, value_end) =
+                prefixed_one(value, record_start.checked_add(4)?, record_end)?;
+            if value_end != record_end || !seen.insert(algorithm) {
+                return None;
+            }
+            // Android's chunked SHA-256 signature algorithms. Verity digests and
+            // SHA-512 have different formats and are intentionally not compared.
+            if matches!(algorithm, 0x0101 | 0x0103 | 0x0201 | 0x0301) {
+                let digest: [u8; 32] = value[value_start..value_end].try_into().ok()?;
+                if found.len() >= 64 {
+                    return None;
+                }
+                found.push((index, algorithm, digest));
+            }
+        }
+    }
+    Some(found)
+}
+
+/// Return the APK signing-record authentication state for a SHA-256 digest claim.
+/// This verifies the signature over signed-data, not Android installability or a CA chain.
+pub(super) fn verify_sha256_signature(
+    value: &[u8],
+    scheme: &str,
+    signer_index: usize,
+    algorithm_id: u32,
+) -> &'static str {
+    if !matches!(algorithm_id, 0x0101 | 0x0103 | 0x0201) {
+        return "unsupported";
+    }
+    let Some(outer) = prefixed(value, 0, value.len()) else {
+        return "malformed";
+    };
+    let [(start, end)] = outer.as_slice() else {
+        return "malformed";
+    };
+    let Some(signers) = prefixed(value, *start, *end) else {
+        return "malformed";
+    };
+    let Some((signer_start, signer_end)) = signers.get(signer_index).copied() else {
+        return "malformed";
+    };
+    if signer_certificates(value, signer_start, signer_end, scheme)
+        .is_none_or(|certs| certs.is_empty())
+    {
+        return "malformed";
+    }
+    let Some((data_start, data_end)) = prefixed_one(value, signer_start, signer_end) else {
+        return "malformed";
+    };
+    let signatures_at = match scheme {
+        "v2" => data_end,
+        "v3" | "v3.1" => data_end.saturating_add(8),
+        _ => return "unsupported",
+    };
+    let Some((signatures_start, signatures_end)) = prefixed_one(value, signatures_at, signer_end)
+    else {
+        return "malformed";
+    };
+    let Some((digests_start, digests_end)) = prefixed_one(value, data_start, data_end) else {
+        return "malformed";
+    };
+    let digest_algorithms = algorithm_ids(value, digests_start, digests_end);
+    let signature_algorithms = algorithm_ids(value, signatures_start, signatures_end);
+    if digest_algorithms.is_none() || digest_algorithms != signature_algorithms {
+        return "malformed";
+    }
+    let Some((key_start, key_end)) = prefixed_one(value, signatures_end, signer_end) else {
+        return "malformed";
+    };
+    if key_end != signer_end {
+        return "malformed";
+    }
+    let signature = match matching_signature(value, signatures_start, signatures_end, algorithm_id)
+    {
+        SignatureRecord::Found(bytes) => bytes,
+        SignatureRecord::Missing => return "missing",
+        SignatureRecord::Malformed => return "malformed",
+    };
+    let Some(public_key) = signing_public_key(&value[key_start..key_end], algorithm_id) else {
+        return "unsupported";
+    };
+    let signed_data = &value[data_start..data_end];
+    let valid = match algorithm_id {
+        0x0101 => ring::signature::UnparsedPublicKey::new(
+            &ring::signature::RSA_PSS_2048_8192_SHA256,
+            public_key,
+        )
+        .verify(signed_data, signature)
+        .is_ok(),
+        0x0103 => ring::signature::UnparsedPublicKey::new(
+            &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+            public_key,
+        )
+        .verify(signed_data, signature)
+        .is_ok(),
+        0x0201 => ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P256_SHA256_ASN1,
+            public_key,
+        )
+        .verify(signed_data, signature)
+        .is_ok(),
+        _ => false,
+    };
+    if valid { "verified" } else { "invalid" }
+}
+
+/// Extract an algorithm-bound public key from DER `SubjectPublicKeyInfo`.
+/// RSA uses the embedded PKCS#1 key; P-256 ECDSA uses its uncompressed point.
+fn signing_public_key(spki: &[u8], algorithm_id: u32) -> Option<&[u8]> {
+    let outer = tlv(spki, 0, spki.len())?;
+    if outer.tag != SEQUENCE || outer.end != spki.len() {
+        return None;
+    }
+    let fields = children(spki, outer)?;
+    if fields.len() != 2 || fields[0].tag != SEQUENCE || fields[1].tag != 0x03 {
+        return None;
+    }
+    let algorithm = children(spki, fields[0])?;
+    let oid = algorithm.first()?;
+    if oid.tag != OID {
+        return None;
+    }
+    let name = spki.get(oid.start..oid.end)?;
+    let rsa_oid = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+    let ec_oid = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+    let p256_oid = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    let algorithm_matches = match algorithm_id {
+        0x0101 | 0x0103 => {
+            name == rsa_oid
+                && (algorithm.len() == 1
+                    || (algorithm.len() == 2
+                        && algorithm[1].tag == 0x05
+                        && algorithm[1].start == algorithm[1].end))
+        }
+        0x0201 => {
+            name == ec_oid
+                && algorithm.len() == 2
+                && algorithm[1].tag == OID
+                && spki.get(algorithm[1].start..algorithm[1].end)? == p256_oid
+        }
+        _ => false,
+    };
+    if !algorithm_matches {
+        return None;
+    }
+    let bits = spki.get(fields[1].start..fields[1].end)?;
+    let (unused, key) = bits.split_first()?;
+    (*unused == 0 && !key.is_empty()).then_some(key)
+}
+
+/// Android requires the ordered digest and signature algorithm lists to be identical.
+fn algorithm_ids(value: &[u8], start: usize, end: usize) -> Option<Vec<u32>> {
+    let records = prefixed(value, start, end)?;
+    if records.len() > 64 {
+        return None;
+    }
+    let mut ids = Vec::new();
+    for (from, to) in records {
+        let id = u32::try_from(le32(value, from)?).ok()?;
+        let (_, payload_end) = prefixed_one(value, from.checked_add(4)?, to)?;
+        if payload_end != to || ids.contains(&id) {
+            return None;
+        }
+        ids.push(id);
+    }
+    Some(ids)
+}
+
+enum SignatureRecord<'a> {
+    Malformed,
+    Missing,
+    Found(&'a [u8]),
+}
+
+/// Locate the signature with exactly the digest claim's algorithm identifier.
+fn matching_signature(
+    value: &[u8],
+    start: usize,
+    end: usize,
+    algorithm_id: u32,
+) -> SignatureRecord<'_> {
+    let Some(records) = prefixed(value, start, end) else {
+        return SignatureRecord::Malformed;
+    };
+    if records.len() > 64 {
+        return SignatureRecord::Malformed;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found = None;
+    for (from, to) in records {
+        let Some(id) = le32(value, from).and_then(|n| u32::try_from(n).ok()) else {
+            return SignatureRecord::Malformed;
+        };
+        let Some((bytes_start, bytes_end)) = from
+            .checked_add(4)
+            .and_then(|at| prefixed_one(value, at, to))
+        else {
+            return SignatureRecord::Malformed;
+        };
+        if bytes_end != to || !seen.insert(id) || bytes_end - bytes_start > 8192 {
+            return SignatureRecord::Malformed;
+        }
+        if id == algorithm_id {
+            found = Some(&value[bytes_start..bytes_end]);
+        }
+    }
+    match found {
+        Some(bytes) => SignatureRecord::Found(bytes),
+        None => SignatureRecord::Missing,
+    }
+}
+
 /// Certificates declared by v2/v3/v3.1 signers, with SDK-copy and public-key consistency
 /// checks. Neither these checks nor certificate extraction authenticate the APK.
 #[must_use]
@@ -505,6 +734,112 @@ pub(super) mod tests {
         signer.extend_from_slice(&max_sdk.to_le_bytes());
         signer.extend_from_slice(&prefix(&[&[], spki(cert)]));
         prefix(&[&prefix(&[&signer])])
+    }
+
+    /// Test-only structurally valid v2 signer with a declared SHA-256 digest.
+    pub(crate) fn signing_value_with_sha256_digest(cert: &[u8], digest: &[u8; 32]) -> Vec<u8> {
+        let mut record = 0x0103_u32.to_le_bytes().to_vec();
+        record.extend(prefix(&[digest]));
+        let digests = prefix(&[&record]);
+        let certs = prefix(&[cert]);
+        let signed_data = prefix(&[&digests, &certs, &prefix(&[])]);
+        let signer = prefix(&[&signed_data, &prefix(&[]), spki(cert)]);
+        prefix(&[&prefix(&[&signer])])
+    }
+
+    /// A real P-256 signature authenticates the exact v2 signed-data bytes.
+    #[test]
+    fn ecdsa_signed_data_authenticates_and_tampering_fails() {
+        use ring::signature::KeyPair as _;
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+            &rng,
+        )
+        .unwrap();
+        let keypair = ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+            pkcs8.as_ref(),
+            &rng,
+        )
+        .unwrap();
+        let mut algorithm = element(OID, &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]);
+        algorithm.extend(element(
+            OID,
+            &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
+        ));
+        let mut key_bits = vec![0];
+        key_bits.extend_from_slice(keypair.public_key().as_ref());
+        let mut spki_contents = element(SEQUENCE, &algorithm);
+        spki_contents.extend(element(0x03, &key_bits));
+        let spki = element(SEQUENCE, &spki_contents);
+
+        let old = certificate_der("Authenticated P256");
+        let outer = tlv(&old, 0, old.len()).unwrap();
+        let parts = children(&old, outer).unwrap();
+        let tbs_fields = children(&old, parts[0]).unwrap();
+        let key_index = usize::from(tbs_fields[0].tag == CONTEXT_0) + 5;
+        let mut tbs = Vec::new();
+        for (index, field) in tbs_fields.iter().enumerate() {
+            if index == key_index {
+                tbs.extend_from_slice(&spki);
+            } else {
+                tbs.extend_from_slice(&old[field.at..field.end]);
+            }
+        }
+        let mut cert_contents = element(SEQUENCE, &tbs);
+        for part in parts.iter().skip(1) {
+            cert_contents.extend_from_slice(&old[part.at..part.end]);
+        }
+        let cert = element(SEQUENCE, &cert_contents);
+        let digest = [0x42; 32];
+        let mut digest_record = 0x0201_u32.to_le_bytes().to_vec();
+        digest_record.extend(prefix(&[&digest]));
+        let signed_data = prefix(&[&prefix(&[&digest_record]), &prefix(&[&cert]), &prefix(&[])]);
+        let signature = keypair.sign(&rng, &signed_data).unwrap();
+        let mut signature_record = 0x0201_u32.to_le_bytes().to_vec();
+        signature_record.extend(prefix(&[signature.as_ref()]));
+        let signer = prefix(&[&signed_data, &prefix(&[&signature_record]), &spki]);
+        let mut value = prefix(&[&prefix(&[&signer])]);
+        assert_eq!(
+            sha256_digests(&value, "v2"),
+            Some(vec![(0, 0x0201, digest)])
+        );
+        assert_eq!(verify_sha256_signature(&value, "v2", 0, 0x0201), "verified");
+        assert_eq!(
+            verify_sha256_signature(&value, "v2", 0, 0x0301),
+            "unsupported"
+        );
+        let at = value
+            .windows(signature.as_ref().len())
+            .position(|part| part == signature.as_ref())
+            .unwrap();
+        let mut mismatched_algorithms = value.clone();
+        mismatched_algorithms[at - 8..at - 4].copy_from_slice(&0x0103_u32.to_le_bytes());
+        assert_eq!(
+            verify_sha256_signature(&mismatched_algorithms, "v2", 0, 0x0201),
+            "malformed"
+        );
+        value[at] ^= 1;
+        assert_eq!(verify_sha256_signature(&value, "v2", 0, 0x0201), "invalid");
+    }
+
+    #[test]
+    fn chunked_sha256_declarations_are_bounded_and_not_signature_proofs() {
+        let cert = certificate_der("Digest Claim");
+        let digest = [0x42_u8; 32];
+        let value = signing_value_with_sha256_digest(&cert, &digest);
+        assert_eq!(
+            sha256_digests(&value, "v2"),
+            Some(vec![(0, 0x0103, digest)])
+        );
+        let mut corrupted = value;
+        let record_at = corrupted
+            .windows(4)
+            .position(|part| part == 0x0103_u32.to_le_bytes())
+            .expect("test record ID");
+        corrupted[record_at + 4..record_at + 8].copy_from_slice(&31_u32.to_le_bytes());
+        assert!(sha256_digests(&corrupted, "v2").is_none());
     }
 
     #[test]
