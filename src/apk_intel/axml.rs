@@ -77,6 +77,23 @@ pub struct Component {
     pub exposure: Exposure,
 }
 
+/// A single intent-filter declaration with its action/category/data constraints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IntentFilterDef {
+    /// The component this filter applies to (e.g., "com.example.MainActivity").
+    pub component: String,
+    /// Component kind: "activity", "service", "broadcast_receiver", or "provider".
+    pub component_kind: String,
+    /// Intent actions this component handles (e.g., "android.intent.action.VIEW").
+    pub actions: Vec<String>,
+    /// Intent categories this component handles (e.g., "android.intent.category.LAUNCHER").
+    pub categories: Vec<String>,
+    /// Data schemes this filter accepts (e.g., "http", "https", "custom").
+    pub schemes: Vec<String>,
+    /// Data hosts this filter accepts (e.g., "example.com", "*.example.com").
+    pub hosts: Vec<String>,
+}
+
 /// The investigator-relevant facts a binary `AndroidManifest.xml` declares. Every value is the
 /// manifest's own claim, as the developer (or whoever rebuilt the APK) wrote it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -112,6 +129,10 @@ pub struct Manifest {
     pub provider_authorities: Vec<String>,
     /// Authority claims tied to explicitly exported, enabled providers (bounded, not verified access).
     pub explicitly_exported_provider_authorities: Vec<String>,
+    /// Intent filters extracted from manifest, capped at MAX_LISTED.
+    pub intent_filters: Vec<IntentFilterDef>,
+    /// Count of intent filters omitted when list exceeds capacity.
+    pub intent_filters_omitted: usize,
 }
 
 fn le16(data: &[u8], at: usize) -> Option<u16> {
@@ -339,6 +360,14 @@ struct Open {
     authorities: Vec<String>,
 }
 
+/// An intent-filter being parsed: its actions, categories, and data constraints.
+struct IntentFilterState {
+    actions: Vec<String>,
+    categories: Vec<String>,
+    schemes: Vec<String>,
+    hosts: Vec<String>,
+}
+
 #[derive(Default)]
 struct Reader {
     manifest: Manifest,
@@ -348,6 +377,8 @@ struct Reader {
     authorities: BTreeSet<String>,
     application_enabled: Option<bool>,
     open: Option<Open>,
+    intent_filter: Option<IntentFilterState>,
+    seen_filters: BTreeSet<String>,
 }
 
 /// Preserve each provider's authority claims separately from the manifest-wide inventory.
@@ -450,6 +481,26 @@ impl Reader {
                 if flag(attributes, "autoVerify") == Some(true) {
                     manifest.app_links_auto_verify = true;
                 }
+                self.intent_filter = Some(IntentFilterState {
+                    actions: Vec::new(),
+                    categories: Vec::new(),
+                    schemes: Vec::new(),
+                    hosts: Vec::new(),
+                });
+            }
+            "action" if parent == Some("intent-filter") => {
+                if let Some(filter) = self.intent_filter.as_mut() {
+                    if let Some(name) = value(attributes, "name") {
+                        filter.actions.push(name.to_owned());
+                    }
+                }
+            }
+            "category" if parent == Some("intent-filter") => {
+                if let Some(filter) = self.intent_filter.as_mut() {
+                    if let Some(name) = value(attributes, "name") {
+                        filter.categories.push(name.to_owned());
+                    }
+                }
             }
             "data" if parent == Some("intent-filter") => {
                 if let Some(scheme) = value(attributes, "scheme") {
@@ -460,6 +511,9 @@ impl Reader {
                         &mut self.schemes,
                         &scheme.to_ascii_lowercase(),
                     );
+                    if let Some(filter) = self.intent_filter.as_mut() {
+                        filter.schemes.push(scheme.to_ascii_lowercase());
+                    }
                 }
                 if let Some(host) = value(attributes, "host") {
                     push_capped(
@@ -468,14 +522,48 @@ impl Reader {
                         &mut self.hosts,
                         &host.to_ascii_lowercase(),
                     );
+                    if let Some(filter) = self.intent_filter.as_mut() {
+                        filter.hosts.push(host.to_ascii_lowercase());
+                    }
                 }
             }
             _ => {}
         }
     }
 
+    /// Finalizes the current intent-filter and stores it in the manifest.
+    fn close_intent_filter(&mut self) {
+        let Some(filter) = self.intent_filter.take() else {
+            return;
+        };
+        let Some(open) = self.open.as_ref() else {
+            return;
+        };
+        let key = format!("{}/{}", open.name, filter.actions.join(","));
+        if !self.seen_filters.insert(key) {
+            return;
+        }
+        if self.manifest.intent_filters.len() < MAX_LISTED {
+            let kind = match open.kind.as_str() {
+                "activity-alias" => "activity",
+                k => k,
+            };
+            self.manifest.intent_filters.push(IntentFilterDef {
+                component: open.name.clone(),
+                component_kind: kind.to_owned(),
+                actions: filter.actions,
+                categories: filter.categories,
+                schemes: filter.schemes,
+                hosts: filter.hosts,
+            });
+        } else {
+            self.manifest.intent_filters_omitted += 1;
+        }
+    }
+
     /// Records the component being read, if other apps can reach it.
     fn close_component(&mut self) {
+        self.close_intent_filter();
         let Some(open) = self.open.take() else {
             return;
         };
@@ -653,7 +741,9 @@ pub fn manifest(data: &[u8]) -> Result<Manifest, String> {
             }
             RES_XML_END_ELEMENT_TYPE => {
                 if let Some(element) = stack.pop() {
-                    if COMPONENTS.contains(&element.as_str())
+                    if element == "intent-filter" {
+                        reader.close_intent_filter();
+                    } else if COMPONENTS.contains(&element.as_str())
                         && stack.last().map(String::as_str) == Some("application")
                     {
                         reader.close_component();

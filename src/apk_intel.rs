@@ -13,6 +13,7 @@ mod axml;
 mod content_digest;
 mod dex;
 mod elf;
+mod intent;
 mod native_framework;
 mod network_config;
 mod risk;
@@ -84,9 +85,10 @@ pub struct Inventory {
     pub limitations: &'static str,
 }
 
-pub use axml::{Component, Exposure, Manifest};
+pub use axml::{Component, Exposure, IntentFilterDef, Manifest};
 pub use content_digest::ContentDigestCheck;
 pub use dex::CodeUrls;
+pub use intent::IntentAnalysis;
 pub use network_config::{DomainRule, NetworkPolicy, PinFingerprint, TrustAnchor};
 pub use risk::Flag;
 pub use sdk::Tracker;
@@ -125,6 +127,8 @@ pub struct Analysis {
     /// resource reference, or taken inline when the manifest gives a literal. The manifest's own
     /// claim, never verified against a store listing.
     pub app_label: Option<String>,
+    /// Intent filter analysis: implicit intent attack surface assessment.
+    pub intent_analysis: Option<IntentAnalysis>,
     /// The manifest's security-posture flags, highest risk first.
     pub risk_flags: Vec<Flag>,
     /// The GNU build-id of each native library read, with its ABI. Candidate pivot only.
@@ -676,6 +680,7 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
             Some(bytes) => match axml::manifest(&bytes) {
                 Ok(manifest) => {
                     analysis.risk_flags = risk::flags(&manifest);
+                    analysis.intent_analysis = Some(intent::analyze(&manifest));
                     analysis.manifest = Some(manifest);
                 }
                 Err(error) => analysis.manifest_error = Some(error),
