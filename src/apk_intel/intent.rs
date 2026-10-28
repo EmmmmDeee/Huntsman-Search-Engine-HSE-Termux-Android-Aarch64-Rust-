@@ -85,7 +85,7 @@ pub struct IntentAnalysis {
 
 /// Classify the risk level of an intent filter based on its characteristics.
 fn classify_risk(component_kind: &str, filter: &IntentFilterDef) -> String {
-    if component_kind == "broadcast_receiver" {
+    if matches!(component_kind, "receiver" | "broadcast_receiver") {
         if filter.actions.is_empty() {
             return "critical".to_string();
         }
@@ -177,7 +177,7 @@ pub fn analyze(manifest: &Manifest) -> IntentAnalysis {
         }
 
         // Sensitive broadcast receiver actions.
-        if def.component_kind == "broadcast_receiver"
+        if matches!(def.component_kind.as_str(), "receiver" | "broadcast_receiver")
             && def
                 .actions
                 .iter()
@@ -326,6 +326,26 @@ mod tests {
         };
 
         assert!(filter.schemes.len() > 1);
+    }
+
+    #[test]
+    fn parsed_manifest_receiver_kind_triggers_sensitive_broadcast_analysis() {
+        let manifest = Manifest {
+            intent_filters: vec![IntentFilterDef {
+                component: ".Boot".to_string(),
+                component_kind: "receiver".to_string(),
+                actions: vec!["android.intent.action.BOOT_COMPLETED".to_string()],
+                categories: vec![],
+                schemes: vec![],
+                hosts: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let analysis = analyze(&manifest);
+        assert!(analysis.implicit_broadcast_risk);
+        assert_eq!(analysis.sensitive_intent_handlers.len(), 1);
+        assert_eq!(analysis.intent_filters[0].risk_level, "high");
     }
 
     #[test]
