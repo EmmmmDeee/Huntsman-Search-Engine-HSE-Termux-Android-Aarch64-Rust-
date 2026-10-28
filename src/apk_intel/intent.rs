@@ -393,10 +393,12 @@ mod tests {
 
         let analysis = analyze(&manifest);
         assert_eq!(analysis.intent_filters.len(), 2);
-        assert!(analysis
-            .intent_filters
-            .iter()
-            .all(|filter| filter.risk_level == "low"));
+        assert!(
+            analysis
+                .intent_filters
+                .iter()
+                .all(|filter| filter.risk_level == "low")
+        );
         assert!(analysis.implicit_intent_components.is_empty());
         assert!(analysis.unguarded_action_filters.is_empty());
         assert_eq!(analysis.unguarded_action_filters_omitted, 0);
@@ -461,5 +463,4 @@ mod tests {
         assert_eq!(analysis.risk_score, 1);
         assert!(analysis.unguarded_action_filters.is_empty());
     }
-
 }
