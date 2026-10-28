@@ -382,9 +382,11 @@ mod tests {
             .iter()
             .find(|flag| flag.id == "exported_components")
             .unwrap();
-        assert!(exported
-            .detail
-            .contains("permissions and platform restrictions"));
+        assert!(
+            exported
+                .detail
+                .contains("permissions and platform restrictions")
+        );
     }
 
     #[test]
@@ -406,9 +408,11 @@ mod tests {
             ..Manifest::default()
         };
         let observed = flags(&manifest);
-        assert!(observed
-            .iter()
-            .any(|flag| flag.id == "reachable_content_provider"));
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider")
+        );
         let provider_flag = observed
             .iter()
             .find(|flag| flag.id == "reachable_content_provider")
@@ -429,9 +433,11 @@ mod tests {
             ..Manifest::default()
         };
         let observed = flags(&manifest);
-        assert!(!observed
-            .iter()
-            .any(|flag| flag.id == "reachable_content_provider"));
+        assert!(
+            !observed
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider")
+        );
     }
 
     #[test]
