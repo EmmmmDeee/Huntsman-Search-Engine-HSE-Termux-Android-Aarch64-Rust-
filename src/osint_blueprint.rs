@@ -393,6 +393,22 @@ pub const ENTRIES: &[Entry] = &[
         gap: "Huntsman investigates an address (balance, a sampled transaction chronology and role-named counterparties), not the network: no mempool, fee or TXID-confirmation watch.",
         acceptance: "crypto BITCOIN-ADDRESS on a fictional fixture lists the sampled first and last transaction times and paid_by, paid_to and co_input counterparties, each stating that a shared transaction is not common ownership (blockchain tests).",
     },
+    Entry {
+        app: "SkyPulse",
+        package: "io.github.mrjohn6774.skypulse",
+        category: "Aviation",
+        source: "https://f-droid.org/packages/io.github.mrjohn6774.skypulse/",
+        licence: "GPL-3.0-or-later",
+        features: "Decodes 1090 MHz Mode S and ADS-B on the phone from an RTL-SDR, maps the aircraft with offline FIR and TRACON boundaries, and can feed local tools over Beast TCP.",
+        modules: &["opensky", "nominatim_cli"],
+        commands: &["geocode QUERY"],
+        integration: "CLI (geocode LAT,LON, scan -k geocode), /api/lookup and the Web UI's Place scan; opensky in the module catalogue",
+        termux: "None for the OpenSky leg; own-receiver decoding would need an RTL-SDR on USB OTG through termux-usb",
+        priority: "P2",
+        status: Status::Partial,
+        gap: "Huntsman reads what OpenSky's public receiver network last reported around a point (transponder, callsign, position time, altitude, speed, squawk); it does not decode 1090 MHz itself from an attached SDR.",
+        acceptance: "geocode LAT,LON lists the aircraft OpenSky reported within half a degree, nearest first, each a transponder DeviceId stating it is an airframe, not anyone aboard, and not where it is now (opensky tests).",
+    },
 ];
 
 /// The blueprint as text: a summary line per app, then each app's fields.
