@@ -993,7 +993,10 @@ fn content_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, 
                 .collect::<Vec<_>>()
                 .join("; "),
         );
-        put("apk_content_digest_signature_authenticated", "false".to_owned());
+        put(
+            "apk_content_digest_signature_authenticated",
+            "false".to_owned(),
+        );
     }
     put(
         "apk_content_digest_parse_errors",
