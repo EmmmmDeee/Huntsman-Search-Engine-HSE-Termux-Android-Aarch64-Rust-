@@ -110,6 +110,11 @@ fn keyless() -> Routes {
             200,
             crate::ripestat::tests::RPKI_VALID,
         ),
+        (
+            "https://stat.ripe.net/data/routing-history/",
+            200,
+            crate::ripestat::tests::ROUTING_HISTORY,
+        ),
         ("https://stat.ripe.net/", 200, RIPESTAT),
         ("https://api.greynoise.io/", 404, GREYNOISE_UNSEEN),
         ("https://api.abuseipdb.com/", 200, ABUSEIPDB),
@@ -217,7 +222,9 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "rdap.apnic.net",
             "api.mnemonic.no",
             "internetdb.shodan.io",
-            // prefix-overview, geoloc, then the covering prefix's RPKI state for AS13335.
+            // prefix-overview, geoloc, the covering prefix's RPKI state for AS13335, then its
+            // routing history.
+            "stat.ripe.net",
             "stat.ripe.net",
             "stat.ripe.net",
             "stat.ripe.net",
@@ -661,10 +668,11 @@ fn origin_as_numbers_carry_their_rpki_state() {
     );
 }
 
-/// An address no AS announces has no announcement to validate: no RPKI request is sent, even
+/// An address no AS announces has no announcement to validate or trace: no RPKI or routing
+/// history request is sent, even
 /// when the answer still names an origin AS for the covering prefix.
 #[test]
-fn an_unannounced_address_asks_for_no_rpki_state() {
+fn an_unannounced_address_asks_for_no_rpki_state_or_routing_history() {
     let mut transport = keyless();
     for route in &mut transport.routes {
         if route.0 == "https://stat.ripe.net/" {
@@ -676,6 +684,148 @@ fn an_unannounced_address_asks_for_no_rpki_state() {
         !transport
             .sent()
             .iter()
-            .any(|r| r.url.contains("rpki-validation"))
+            .any(|r| r.url.contains("rpki-validation") || r.url.contains("routing-history"))
+    );
+}
+
+/// The address carries who else announced its covering prefix: every origin AS but the current
+/// one that RIS peers saw announcing a prefix containing it, most recently seen first, tagged
+/// `prefix_origin_history`; a history with no other origin says so, and a failed read is never
+/// shown as an empty history.
+#[test]
+fn the_address_carries_the_other_origins_of_its_prefix() {
+    let transport = keyless();
+    let (_, report) = printed(run(&transport, &Keys::default(), "1.1.1.1", 1));
+    assert!(transport.sent().iter().any(|r| r.url
+        == "https://stat.ripe.net/data/routing-history/data.json?resource=1.1.1.0%2F24&min_peers=10"));
+    let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
+    assert!(ip.has_tag("prefix_origin_history"));
+    let history = ip
+        .evidence
+        .iter()
+        .find(|e| e.attr_values("past_origins").next().is_some())
+        .unwrap_or_else(|| panic!("{:?}", ip.evidence));
+    let attr = |name: &str| {
+        history
+            .attr_values(name)
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // AS13335 announces the prefix now, so it is not a past origin; AS64496's /25 does not
+    // contain the address.
+    assert_eq!(attr("past_origin_count"), "3");
+    let past: Vec<&str> = history.attr_values("past_origins").collect();
+    assert_eq!(past.len(), 3, "{past:?}");
+    assert!(past[0].starts_with("AS226 1.1.1.0/24 2016-02-05T00:00:00Z"));
+    assert!(
+        past[1].starts_with("AS237 1.0.0.0/8,1.1.1.0/24 "),
+        "{past:?}"
+    );
+    assert!(
+        !past
+            .iter()
+            .any(|line| line.starts_with("AS13335 ") || line.starts_with("AS64496 ")),
+        "{past:?}"
+    );
+    assert!(
+        history.summary.contains("most recently AS226") && history.summary.contains("not proof")
+    );
+
+    let mut only_current = keyless();
+    let single: &'static str = Box::leak(
+        r#"{"status":"ok","data":{"by_origin":[{"origin":"13335","prefixes":[{"prefix":"1.1.1.0/24","timelines":[{"starttime":"2018-03-14T00:00:00","endtime":"2026-10-28T15:59:59","full_peers_seeing":300.0}]}]}],"query_starttime":"2000-08-01T00:00:00","query_endtime":"2026-10-28T16:00:00"}}"#
+            .to_owned()
+            .into_boxed_str(),
+    );
+    for route in &mut only_current.routes {
+        if route.0.contains("routing-history") {
+            route.2 = single;
+        }
+    }
+    let (_, report) = printed(run(&only_current, &Keys::default(), "1.1.1.1", 1));
+    let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
+    assert!(!ip.has_tag("prefix_origin_history"));
+    assert!(
+        ip.evidence
+            .iter()
+            .any(|e| e.attr_values("past_origin_count").any(|v| v == "0"))
+    );
+
+    let mut failing = keyless();
+    for route in &mut failing.routes {
+        if route.0.contains("routing-history") {
+            route.1 = 500;
+        }
+    }
+    let (_, report) = printed(run(&failing, &Keys::default(), "1.1.1.1", 1));
+    let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
+    assert!(!ip.has_tag("prefix_origin_history"));
+    assert!(ip.evidence.iter().any(|e| {
+        e.attr_values("routing_history_check")
+            .any(|v| v.starts_with("failed"))
+    }));
+    assert!(
+        !ip.evidence
+            .iter()
+            .any(|e| e.attr_values("past_origin_count").next().is_some())
+    );
+}
+
+/// At most `MAX_PAST_ORIGINS` past origins are listed, most recently seen first, and the count
+/// says how many there were.
+#[test]
+fn past_origins_are_bounded_and_counted() {
+    let origins: Vec<String> = (0..20)
+        .map(|i| {
+            format!(
+                r#"{{"origin":"{}","prefixes":[{{"prefix":"1.1.1.0/24","timelines":[{{"starttime":"2001-01-{:02}T00:00:00","endtime":"2001-01-{:02}T23:59:59","full_peers_seeing":20.0}}]}}]}}"#,
+                64500 + i,
+                i + 1,
+                i + 1
+            )
+        })
+        .collect();
+    let body: &'static str = Box::leak(
+        format!(
+            r#"{{"status":"ok","data":{{"by_origin":[{}]}}}}"#,
+            origins.join(",")
+        )
+        .into_boxed_str(),
+    );
+    let mut transport = keyless();
+    for route in &mut transport.routes {
+        if route.0.contains("routing-history") {
+            route.2 = body;
+        }
+    }
+    let (_, report) = printed(run(&transport, &Keys::default(), "1.1.1.1", 1));
+    let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
+    let history = ip
+        .evidence
+        .iter()
+        .find(|e| e.attr_values("past_origins").next().is_some())
+        .unwrap();
+    let attr = |name: &str| {
+        history
+            .attr_values(name)
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(attr("past_origin_count"), "20");
+    assert_eq!(
+        attr("past_origins_listed"),
+        crate::ripestat::MAX_PAST_ORIGINS.to_string()
+    );
+    assert_eq!(
+        history.attr_values("past_origins").count(),
+        crate::ripestat::MAX_PAST_ORIGINS
+    );
+    // The most recently seen (2001-01-20, AS64519) comes first.
+    assert!(
+        attr("past_origins").starts_with("AS64519 "),
+        "{}",
+        attr("past_origins")
     );
 }
