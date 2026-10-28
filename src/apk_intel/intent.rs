@@ -252,9 +252,11 @@ mod tests {
 
     #[test]
     fn intent_analysis_with_risk_score() {
-        let mut analysis = IntentAnalysis::default();
-        analysis.risk_score = 10;
-        analysis.implicit_broadcast_risk = true;
+        let analysis = IntentAnalysis {
+            risk_score: 10,
+            implicit_broadcast_risk: true,
+            ..Default::default()
+        };
 
         assert_eq!(analysis.risk_score, 10);
         assert!(analysis.implicit_broadcast_risk);
@@ -345,9 +347,11 @@ mod tests {
 
     #[test]
     fn intent_analysis_tracks_omitted_count() {
-        let mut analysis = IntentAnalysis::default();
-        analysis.intent_filters_omitted = 5;
-        analysis.implicit_intent_omitted = 3;
+        let analysis = IntentAnalysis {
+            intent_filters_omitted: 5,
+            implicit_intent_omitted: 3,
+            ..Default::default()
+        };
 
         assert_eq!(analysis.intent_filters_omitted, 5);
         assert_eq!(analysis.implicit_intent_omitted, 3);
