@@ -523,4 +523,161 @@ mod tests {
             "min SDK 21 should not trigger min_sdk_too_old flag"
         );
     }
+
+    #[test]
+    fn target_sdk_boundary_28_triggers_medium_risk() {
+        let manifest = Manifest {
+            target_sdk: Some("28".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "target_sdk_not_current" && flag.risk == Risk::Medium),
+            "target SDK 28 (boundary) should be flagged as MEDIUM risk"
+        );
+    }
+
+    #[test]
+    fn target_sdk_boundary_30_triggers_medium_risk() {
+        let manifest = Manifest {
+            target_sdk: Some("30".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "target_sdk_not_current" && flag.risk == Risk::Medium),
+            "target SDK 30 (boundary) should be flagged as MEDIUM risk"
+        );
+    }
+
+    #[test]
+    fn target_sdk_boundary_27_triggers_high_risk() {
+        let manifest = Manifest {
+            target_sdk: Some("27".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "target_sdk_too_old" && flag.risk == Risk::High),
+            "target SDK 27 (boundary) should be flagged as HIGH risk"
+        );
+    }
+
+    #[test]
+    fn target_sdk_boundary_31_does_not_trigger_flags() {
+        let manifest = Manifest {
+            target_sdk: Some("31".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            !observed.iter().any(|flag| flag.id.contains("target_sdk")),
+            "target SDK 31 (boundary) should not trigger SDK flags"
+        );
+    }
+
+    #[test]
+    fn min_sdk_boundary_20_triggers_medium_risk() {
+        let manifest = Manifest {
+            min_sdk: Some("20".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "min_sdk_too_old" && flag.risk == Risk::Medium),
+            "min SDK 20 (boundary) should be flagged as MEDIUM risk"
+        );
+    }
+
+    #[test]
+    fn implicit_intent_filter_providers_with_sensitive_data_are_flagged() {
+        let manifest = Manifest {
+            reachable_components: vec![Component {
+                kind: "provider".to_owned(),
+                name: ".SensitiveProvider".to_owned(),
+                exposure: Exposure::ImplicitByIntentFilter,
+            }],
+            provider_authorities: vec!["com.android.contacts.provider".to_owned()],
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider"),
+            "implicit intent filter provider with contacts authority should be flagged"
+        );
+    }
+
+    #[test]
+    fn multiple_providers_with_mixed_sensitivities_flags_only_sensitive() {
+        let manifest = Manifest {
+            reachable_components: vec![
+                Component {
+                    kind: "provider".to_owned(),
+                    name: ".ContactsProvider".to_owned(),
+                    exposure: Exposure::Exported,
+                },
+                Component {
+                    kind: "provider".to_owned(),
+                    name: ".DataProvider".to_owned(),
+                    exposure: Exposure::Exported,
+                },
+            ],
+            provider_authorities: vec![
+                "com.android.contacts.provider".to_owned(),
+                "com.example.data".to_owned(),
+            ],
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        let provider_flags: Vec<_> = observed
+            .iter()
+            .filter(|flag| flag.id == "reachable_content_provider")
+            .collect();
+        assert_eq!(provider_flags.len(), 1, "only sensitive provider should be flagged");
+    }
+
+    #[test]
+    fn authority_patterns_detect_case_insensitive_matches() {
+        assert!(is_sensitive_authority("COM.ANDROID.CONTACTS.PROVIDER"));
+        assert!(is_sensitive_authority("Com.Android.Calendar"));
+        assert!(is_sensitive_authority("com.ANDROID.sms"));
+    }
+
+    #[test]
+    fn combined_high_and_medium_risks_maintains_order() {
+        let manifest = Manifest {
+            debuggable: Some(true),
+            target_sdk: Some("29".to_owned()),
+            min_sdk: Some("20".to_owned()),
+            reachable_components: vec![Component {
+                kind: "provider".to_owned(),
+                name: ".Provider".to_owned(),
+                exposure: Exposure::Exported,
+            }],
+            provider_authorities: vec!["com.android.sms".to_owned()],
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        let risk_order: Vec<&str> = observed.iter().map(|f| f.risk.as_str()).collect();
+        assert!(
+            risk_order[0] == "HIGH",
+            "first flag should be HIGH risk (debuggable), got: {:?}",
+            risk_order
+        );
+        let medium_flags: Vec<_> = observed
+            .iter()
+            .filter(|f| f.risk == Risk::Medium)
+            .collect();
+        assert!(medium_flags.len() >= 2, "should have at least 2 MEDIUM flags");
+    }
 }
