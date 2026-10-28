@@ -380,7 +380,12 @@ pub fn signing_block(value: &[u8], scheme: &str) -> Vec<Certificate> {
         };
         let mut certificates = Vec::new();
         for (signer_start, signer_end) in prefixed(value, start, end)? {
-            certificates.extend(signer_certificates(value, signer_start, signer_end, scheme)?);
+            certificates.extend(signer_certificates(
+                value,
+                signer_start,
+                signer_end,
+                scheme,
+            )?);
             certificates.truncate(MAX_CERTIFICATES);
         }
         Some(certificates)
