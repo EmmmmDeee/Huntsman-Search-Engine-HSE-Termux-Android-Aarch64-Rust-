@@ -31,8 +31,9 @@ const TYPE_INT_HEX: u8 = 0x11;
 const TYPE_INT_BOOLEAN: u8 = 0x12;
 
 /// The framework attributes read here, by their `android.R.attr` resource IDs.
-const ATTRIBUTE_IDS: [(u32, &str); 21] = [
+const ATTRIBUTE_IDS: [(u32, &str); 22] = [
     (0x0101_0003, "name"),
+    (0x0101_000e, "enabled"),
     (0x0101_000f, "debuggable"),
     (0x0101_0010, "exported"),
     (0x0101_0018, "authorities"),
@@ -106,6 +107,8 @@ pub struct Manifest {
     /// Whether an intent filter asks Android to verify its hosts as App Links (`autoVerify`).
     pub app_links_auto_verify: bool,
     pub provider_authorities: Vec<String>,
+    /// Authority claims tied to explicitly exported, enabled providers (bounded, not verified access).
+    pub explicitly_exported_provider_authorities: Vec<String>,
 }
 
 fn le16(data: &[u8], at: usize) -> Option<u16> {
@@ -329,6 +332,8 @@ struct Open {
     name: String,
     exported: Option<bool>,
     filtered: bool,
+    enabled: Option<bool>,
+    authorities: Vec<String>,
 }
 
 #[derive(Default)]
@@ -338,7 +343,39 @@ struct Reader {
     hosts: BTreeSet<String>,
     schemes: BTreeSet<String>,
     authorities: BTreeSet<String>,
+    application_enabled: Option<bool>,
     open: Option<Open>,
+}
+
+/// Preserve each provider's authority claims separately from the manifest-wide inventory.
+fn collect_provider_authorities(
+    manifest: &mut Manifest,
+    seen: &mut BTreeSet<String>,
+    attributes: &[Attribute],
+) -> Vec<String> {
+    let mut own_authorities: Vec<String> = Vec::new();
+    for authority in value(attributes, "authorities")
+        .unwrap_or_default()
+        .split(';')
+    {
+        let authority = authority.trim();
+        let mut omitted = 0;
+        push_capped(
+            &mut manifest.provider_authorities,
+            &mut omitted,
+            seen,
+            authority,
+        );
+        if !authority.is_empty()
+            && own_authorities.len() < MAX_LISTED
+            && !own_authorities
+                .iter()
+                .any(|known| known.as_str() == authority)
+        {
+            own_authorities.push(authority.to_owned());
+        }
+    }
+    own_authorities
 }
 
 impl Reader {
@@ -370,6 +407,7 @@ impl Reader {
                 }
             }
             "application" => {
+                self.application_enabled = flag(attributes, "enabled");
                 manifest.label_resource_id = reference(attributes, "label");
                 if manifest.label_resource_id.is_none() {
                     // A literal, non-reference label is the displayed name as-is.
@@ -386,25 +424,18 @@ impl Reader {
             }
             kind if component => {
                 manifest.components += 1;
-                if kind == "provider" {
-                    for authority in value(attributes, "authorities")
-                        .unwrap_or_default()
-                        .split(';')
-                    {
-                        let mut omitted = 0;
-                        push_capped(
-                            &mut manifest.provider_authorities,
-                            &mut omitted,
-                            &mut self.authorities,
-                            authority.trim(),
-                        );
-                    }
-                }
+                let own_authorities = if kind == "provider" {
+                    collect_provider_authorities(manifest, &mut self.authorities, attributes)
+                } else {
+                    Vec::new()
+                };
                 self.open = Some(Open {
                     kind: kind.to_owned(),
                     name: value(attributes, "name").unwrap_or_default().to_owned(),
                     exported: flag(attributes, "exported"),
                     filtered: false,
+                    enabled: flag(attributes, "enabled"),
+                    authorities: own_authorities,
                 });
             }
             "intent-filter" => {
@@ -443,12 +474,30 @@ impl Reader {
         let Some(open) = self.open.take() else {
             return;
         };
+        if open.enabled == Some(false) || self.application_enabled == Some(false) {
+            return;
+        }
+        let explicitly_exported_provider = open.kind == "provider" && open.exported == Some(true);
         let exposure = match (open.exported, open.filtered) {
             (Some(true), _) => Exposure::Exported,
-            (None, true) => Exposure::ImplicitByIntentFilter,
+            (None, true) if open.kind != "provider" => Exposure::ImplicitByIntentFilter,
             _ => return,
         };
         let manifest = &mut self.manifest;
+        if explicitly_exported_provider {
+            for authority in &open.authorities {
+                if manifest.explicitly_exported_provider_authorities.len() < MAX_LISTED
+                    && !manifest
+                        .explicitly_exported_provider_authorities
+                        .iter()
+                        .any(|known| known == authority)
+                {
+                    manifest
+                        .explicitly_exported_provider_authorities
+                        .push(authority.clone());
+                }
+            }
+        }
         if manifest.reachable_components.len() < MAX_LISTED {
             manifest.reachable_components.push(Component {
                 kind: open.kind,
@@ -527,6 +576,7 @@ pub fn manifest(data: &[u8]) -> Result<Manifest, String> {
     manifest.deep_link_hosts.sort();
     manifest.deep_link_schemes.sort();
     manifest.provider_authorities.sort();
+    manifest.explicitly_exported_provider_authorities.sort();
     Ok(manifest)
 }
 
@@ -871,5 +921,109 @@ pub(super) mod tests {
         let mut lying = bytes.clone();
         lying[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(manifest(&lying).is_err());
+    }
+    #[test]
+    fn exported_provider_authorities_remain_bound_to_their_own_component() {
+        let mut xml = Axml::new(&["name", "exported", "authorities", "enabled"]);
+        xml.start("manifest", &[("package", Val::Str("com.example.test"))])
+            .start("application", &[])
+            .start(
+                "provider",
+                &[
+                    ("name", Val::Str(".Public")),
+                    ("exported", Val::Bool(true)),
+                    ("authorities", Val::Str("com.example.public")),
+                ],
+            )
+            .end("provider")
+            .start(
+                "provider",
+                &[
+                    ("name", Val::Str(".PrivateContacts")),
+                    ("exported", Val::Bool(false)),
+                    ("authorities", Val::Str("com.example.contacts")),
+                ],
+            )
+            .end("provider")
+            .start(
+                "provider",
+                &[
+                    ("name", Val::Str(".DisabledSms")),
+                    ("exported", Val::Bool(true)),
+                    ("enabled", Val::Bool(false)),
+                    ("authorities", Val::Str("com.example.sms")),
+                ],
+            )
+            .end("provider")
+            .end("application")
+            .end("manifest");
+        let parsed = manifest(&xml.build()).expect("valid binary manifest");
+        assert_eq!(
+            parsed.provider_authorities,
+            [
+                "com.example.contacts",
+                "com.example.public",
+                "com.example.sms"
+            ]
+        );
+        assert_eq!(
+            parsed.explicitly_exported_provider_authorities,
+            ["com.example.public"]
+        );
+        assert!(
+            !crate::apk_intel::risk::flags(&parsed)
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider"),
+            "a private sensitive authority must not be attributed to another exported provider"
+        );
+    }
+
+    #[test]
+    fn disabled_application_does_not_expose_its_provider() {
+        let mut xml = Axml::new(&["name", "exported", "authorities", "enabled"]);
+        xml.start("manifest", &[("package", Val::Str("com.example.test"))])
+            .start("application", &[("enabled", Val::Bool(false))])
+            .start(
+                "provider",
+                &[
+                    ("name", Val::Str(".Contacts")),
+                    ("exported", Val::Bool(true)),
+                    ("authorities", Val::Str("com.example.contacts")),
+                ],
+            )
+            .end("provider")
+            .end("application")
+            .end("manifest");
+        let parsed = manifest(&xml.build()).expect("valid binary manifest");
+        assert!(parsed.explicitly_exported_provider_authorities.is_empty());
+        assert!(parsed.reachable_components.is_empty());
+    }
+
+    #[test]
+    fn explicitly_exported_sensitive_provider_produces_cautious_risk_flag() {
+        let mut xml = Axml::new(&["name", "exported", "authorities"]);
+        xml.start("manifest", &[("package", Val::Str("com.example.test"))])
+            .start("application", &[])
+            .start(
+                "provider",
+                &[
+                    ("name", Val::Str(".Contacts")),
+                    ("exported", Val::Bool(true)),
+                    ("authorities", Val::Str("com.example.contacts")),
+                ],
+            )
+            .end("provider")
+            .end("application")
+            .end("manifest");
+        let parsed = manifest(&xml.build()).expect("valid binary manifest");
+        assert_eq!(
+            parsed.explicitly_exported_provider_authorities,
+            ["com.example.contacts"]
+        );
+        let findings = crate::apk_intel::risk::flags(&parsed);
+        assert!(findings.iter().any(|flag| {
+            flag.id == "reachable_content_provider"
+                && flag.detail.contains("manifest names do not prove")
+        }));
     }
 }
