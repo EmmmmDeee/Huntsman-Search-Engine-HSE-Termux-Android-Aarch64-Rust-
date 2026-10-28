@@ -11,6 +11,7 @@
 mod axml;
 mod dex;
 mod elf;
+mod native_framework;
 mod risk;
 mod sdk;
 mod signer;
@@ -53,7 +54,7 @@ const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOST_ENTITIES: usize = 64;
 const LIMITATIONS: &str = "Offline static reading: manifest claims and signing certificates are unverified; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -109,6 +110,9 @@ pub struct Analysis {
     pub risk_flags: Vec<Flag>,
     /// The GNU build-id of each native library read, with its ABI. Candidate pivot only.
     pub native_build_ids: Vec<NativeLibrary>,
+    /// Cross-platform frameworks / game engines named from the bundled native libraries
+    /// (Flutter, Unity, React Native, …). A classification of the app, not a cross-APK pivot.
+    pub native_frameworks: Vec<String>,
     /// Members that were not read, with why.
     pub unread: Vec<String>,
     /// Archive tricks that make analysis tools fail while Android still installs the app.
@@ -677,7 +681,26 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
         }
     }
     analysis.native_build_ids.sort();
+    analysis.native_frameworks = native_frameworks(&analysis.native_build_ids);
     analysis
+}
+
+/// The frameworks / engines named by the bundled native libraries, deduplicated and sorted. A
+/// library's own name, its `SONAME` and each `DT_NEEDED` entry are all considered, so an app that
+/// merely links against an engine is named as well as one that bundles it.
+fn native_frameworks(libraries: &[NativeLibrary]) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    for library in libraries {
+        let names = std::iter::once(library.name.as_str())
+            .chain(library.soname.as_deref())
+            .chain(library.needed.iter().map(String::as_str));
+        for name in names {
+            if let Some(framework) = native_framework::framework_of(name) {
+                found.insert(framework);
+            }
+        }
+    }
+    found.into_iter().map(str::to_owned).collect()
 }
 
 /// The document entity's evidence: the archive inventory, then what its members declare.
@@ -789,11 +812,7 @@ fn document_evidence(
                 .join("; "),
         );
     }
-    put("apk_native_build_ids", native_build_ids_summary(analysis));
-    put(
-        "apk_native_dependencies",
-        native_dependencies_summary(analysis),
-    );
+    native_attrs(analysis, &mut put);
     put(
         "apk_bundled_sdks",
         analysis
@@ -812,6 +831,20 @@ fn document_evidence(
     extra.into_iter().fold(evidence, |evidence, (key, value)| {
         evidence.with_attr(key, value)
     })
+}
+
+/// The native libraries' build-ids, dependency fingerprint and detected frameworks as
+/// document-evidence attributes.
+fn native_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, String)) {
+    put("apk_native_build_ids", native_build_ids_summary(analysis));
+    put(
+        "apk_native_dependencies",
+        native_dependencies_summary(analysis),
+    );
+    put(
+        "apk_native_frameworks",
+        analysis.native_frameworks.join(", "),
+    );
 }
 
 /// The manifest's facts as document-evidence attributes.
@@ -1379,6 +1412,9 @@ mod tests {
             attr(document, "apk_native_dependencies"),
             Some("libengine.so -> libflutter.so, libc.so")
         );
+        // libengine.so links against libflutter.so, so the app is named a Flutter build.
+        assert_eq!(report.analysis.native_frameworks, ["Flutter"]);
+        assert_eq!(attr(document, "apk_native_frameworks"), Some("Flutter"));
         let values: Vec<&str> = report.entities[1..]
             .iter()
             .map(|entity| entity.value.as_str())
