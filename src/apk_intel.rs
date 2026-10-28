@@ -10,6 +10,7 @@
 
 mod arsc;
 mod axml;
+mod capability;
 mod content_digest;
 mod dex;
 mod elf;
