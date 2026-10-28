@@ -260,7 +260,10 @@ fn ordinary_changes_are_committed_and_pushed() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("test ok"), "sync skipped tests");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("test ok"),
+        "sync skipped tests"
+    );
     assert_ne!(sandbox.head(), before, "nothing was committed");
     assert_eq!(
         sandbox.pushed(),
@@ -274,7 +277,6 @@ fn ordinary_changes_are_committed_and_pushed() {
 }
 
 #[test]
-#[test]
 fn direct_sync_with_failed_tests_never_commits_or_pushes() {
     let sandbox = Sandbox::new("direct-sync-failed-tests");
     sandbox.write("docs/pending.md", "must not be published\n");
@@ -285,8 +287,16 @@ fn direct_sync_with_failed_tests_never_commits_or_pushes() {
 
     assert!(!output.status.success(), "sync bypassed failed tests");
     assert!(stderr.contains("tests failed with exit 1"), "{stderr}");
-    assert_eq!(sandbox.head(), previous_head, "sync made an unverified commit");
-    assert_eq!(sandbox.pushed(), previous_remote, "sync pushed unverified work");
+    assert_eq!(
+        sandbox.head(),
+        previous_head,
+        "sync made an unverified commit"
+    );
+    assert_eq!(
+        sandbox.pushed(),
+        previous_remote,
+        "sync pushed unverified work"
+    );
     let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
     assert!(state.contains("phase=test\nstatus=failed\n"), "{state}");
 }
@@ -308,6 +318,7 @@ fn direct_sync_does_not_trust_a_previous_success_state() {
     assert_eq!(sandbox.head(), before);
 }
 
+#[test]
 fn an_interrupted_test_run_never_commits_or_pushes_main() {
     let sandbox = Sandbox::new("interrupted-test");
     sandbox.write("docs/pending.md", "not verified yet\n");
