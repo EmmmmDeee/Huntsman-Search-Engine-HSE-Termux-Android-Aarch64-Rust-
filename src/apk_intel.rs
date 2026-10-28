@@ -713,16 +713,16 @@ fn resolve_resources(
     analysis: &mut Analysis,
     budget: &mut usize,
 ) {
-    let mut read = |member: &Member<'_>, limit: usize, analysis: &mut Analysis| {
-        match read_member(data, member, limit, budget) {
-            Ok((bytes, quirk)) => {
-                analysis.evasion_indicators.extend(quirk);
-                Some(bytes)
-            }
-            Err(reason) => {
-                analysis.unread.push(reason);
-                None
-            }
+    let mut read = |member: &Member<'_>, limit: usize, analysis: &mut Analysis| match read_member(
+        data, member, limit, budget,
+    ) {
+        Ok((bytes, quirk)) => {
+            analysis.evasion_indicators.extend(quirk);
+            Some(bytes)
+        }
+        Err(reason) => {
+            analysis.unread.push(reason);
+            None
         }
     };
     // Resolve the displayed label and the network policy from the same resource table.
