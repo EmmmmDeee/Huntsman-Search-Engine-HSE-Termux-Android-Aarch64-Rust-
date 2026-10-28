@@ -82,17 +82,6 @@ fn bool_attr(node: &XmlNode, name: &str) -> Option<bool> {
     node.attr(name).and_then(|value| value.parse::<bool>().ok())
 }
 
-fn ancestor<'a>(nodes: &'a [XmlNode], mut at: Option<usize>, wanted: &str) -> Option<&'a XmlNode> {
-    while let Some(index) = at {
-        let node = nodes.get(index)?;
-        if node.name == wanted {
-            return Some(node);
-        }
-        at = node.parent;
-    }
-    None
-}
-
 fn inherited_cleartext(
     nodes: &[XmlNode],
     mut at: Option<usize>,
