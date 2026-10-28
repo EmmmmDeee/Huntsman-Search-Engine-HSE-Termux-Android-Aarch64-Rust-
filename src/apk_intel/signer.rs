@@ -48,6 +48,10 @@ pub struct Certificate {
     pub scheme: String,
     /// SHA-256 of the certificate's DER bytes, as `apksigner --print-certs` prints it.
     pub sha256: String,
+    /// SHA-256 of the `SubjectPublicKeyInfo` DER — the signing key's own identity, as
+    /// `apksigner --print-certs` prints for the public key. Google Play keys app-signing identity
+    /// and key rotation on this, so it pivots across certificates that re-wrap the same key.
+    pub public_key_sha256: String,
     pub subject: String,
     pub issuer: String,
     pub serial: String,
@@ -222,10 +226,10 @@ fn certificate(der: &[u8], scheme: &str) -> Option<Certificate> {
     let fields = children(der, tbs)?;
     // The version is optional ([0] EXPLICIT); the fields after it are in a fixed order.
     let skip = usize::from(fields.first()?.tag == CONTEXT_0);
-    let [serial, _algorithm, issuer, validity, subject, ..] = fields.get(skip..)? else {
+    let [serial, _algorithm, issuer, validity, subject, spki, ..] = fields.get(skip..)? else {
         return None;
     };
-    if serial.tag != INTEGER || validity.tag != SEQUENCE {
+    if serial.tag != INTEGER || validity.tag != SEQUENCE || spki.tag != SEQUENCE {
         return None;
     }
     let [not_before, not_after] = children(der, *validity)?[..] else {
@@ -235,6 +239,7 @@ fn certificate(der: &[u8], scheme: &str) -> Option<Certificate> {
     Some(Certificate {
         scheme: scheme.to_owned(),
         sha256: hex32(&sha256(der)),
+        public_key_sha256: hex32(&sha256(der.get(spki.at..spki.end)?)),
         android_debug: subject_name
             .split(", ")
             .any(|part| part == "CN=Android Debug"),
@@ -380,7 +385,9 @@ pub(super) mod tests {
         tbs.extend(&name);
         tbs.extend(element(SEQUENCE, &validity));
         tbs.extend(&name);
-        tbs.extend(element(SEQUENCE, &[]));
+        // A stand-in SubjectPublicKeyInfo that carries the common name, so certificates with
+        // different names have different public keys (as real distinct keys would).
+        tbs.extend(element(SEQUENCE, common_name.as_bytes()));
         let mut cert = element(SEQUENCE, &tbs);
         cert.extend(&algorithm);
         cert.extend(element(0x03, &[0, 1, 2, 3]));
@@ -435,6 +442,19 @@ pub(super) mod tests {
         assert_eq!(cert.not_before, "2020-01-01T00:00:00Z");
         assert_eq!(cert.not_after, "2050-01-01T00:00:00Z");
         assert_eq!(cert.scheme, "v2");
+    }
+
+    #[test]
+    fn the_public_key_digest_is_distinct_per_key_and_separate_from_the_certificate_digest() {
+        let field = certificate(&certificate_der("Field Apps"), "v2").expect("cert");
+        let debug = certificate(&certificate_der("Android Debug"), "v2").expect("cert");
+        // The public-key digest is a 64-hex SHA-256, and it is not the whole-certificate digest.
+        assert_eq!(field.public_key_sha256.len(), 64);
+        assert_ne!(field.public_key_sha256, field.sha256);
+        // Different keys give different public-key digests; the same name gives the same digest.
+        assert_ne!(field.public_key_sha256, debug.public_key_sha256);
+        let field_again = certificate(&certificate_der("Field Apps"), "v3").expect("cert");
+        assert_eq!(field.public_key_sha256, field_again.public_key_sha256);
     }
 
     #[test]
