@@ -626,7 +626,7 @@ fn origin_as_numbers_carry_their_rpki_state() {
     };
     assert_eq!(attr("rpki_state"), "valid");
     assert_eq!(attr("rpki_roas"), "AS13335 1.1.1.0/24 max /24 (valid)");
-    assert!(!entity(&report, &EntityKind::IpAddress, "1.1.1.1").has_tag("rpki_invalid_origin"));
+    assert!(!entity(&report, &EntityKind::IpAddress, "1.1.1.1").has_tag(tags::RPKI_INVALID_ORIGIN));
 
     let mut invalid = keyless();
     let wrong_origin = crate::ripestat::tests::RPKI_VALID
@@ -639,7 +639,7 @@ fn origin_as_numbers_carry_their_rpki_state() {
     }
     let (_, report) = printed(run(&invalid, &Keys::default(), "1.1.1.1", 1));
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
-    assert!(ip.has_tag("rpki_invalid_origin"));
+    assert!(ip.has_tag(tags::RPKI_INVALID_ORIGIN));
     assert!(
         ip.evidence
             .iter()
@@ -699,7 +699,7 @@ fn the_address_carries_the_other_origins_of_its_prefix() {
     assert!(transport.sent().iter().any(|r| r.url
         == "https://stat.ripe.net/data/routing-history/data.json?resource=1.1.1.0%2F24&min_peers=10"));
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
-    assert!(ip.has_tag("prefix_origin_history"));
+    assert!(ip.has_tag(tags::PREFIX_ORIGIN_HISTORY));
     let history = ip
         .evidence
         .iter()
@@ -745,7 +745,7 @@ fn the_address_carries_the_other_origins_of_its_prefix() {
     }
     let (_, report) = printed(run(&only_current, &Keys::default(), "1.1.1.1", 1));
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
-    assert!(!ip.has_tag("prefix_origin_history"));
+    assert!(!ip.has_tag(tags::PREFIX_ORIGIN_HISTORY));
     assert!(
         ip.evidence
             .iter()
@@ -760,7 +760,7 @@ fn the_address_carries_the_other_origins_of_its_prefix() {
     }
     let (_, report) = printed(run(&failing, &Keys::default(), "1.1.1.1", 1));
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
-    assert!(!ip.has_tag("prefix_origin_history"));
+    assert!(!ip.has_tag(tags::PREFIX_ORIGIN_HISTORY));
     assert!(ip.evidence.iter().any(|e| {
         e.attr_values("routing_history_check")
             .any(|v| v.starts_with("failed"))

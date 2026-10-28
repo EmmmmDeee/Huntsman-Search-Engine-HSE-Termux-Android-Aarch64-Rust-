@@ -50,3 +50,11 @@ pub const WHOIS_CONTACT: &str = "whois-contact";
 pub const WIKIPEDIA_EDIT: &str = "wikipedia-edit";
 /// A URL that is one Apple App Store app page, typed as `APPSTORE_ENTRY`.
 pub const APP_STORE_ENTRY: &str = "app-store";
+/// An origin AS announces the prefix covering the address or block against a published ROA
+/// (RPKI `invalid_asn` or `invalid_length`): a misconfiguration, a stale ROA or a hijack, not
+/// proof of any.
+pub const RPKI_INVALID_ORIGIN: &str = "rpki_invalid_origin";
+/// RIS peers saw origin AS numbers other than the current ones announcing a prefix touching the
+/// address or block: a transfer, an anycast or multi-homed operator, a leak or a hijack, not
+/// proof of any.
+pub const PREFIX_ORIGIN_HISTORY: &str = "prefix_origin_history";

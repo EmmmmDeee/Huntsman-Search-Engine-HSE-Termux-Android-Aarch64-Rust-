@@ -167,9 +167,10 @@ relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
 retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
 rf	leaf	radio-frequency model utility
-ripestat	adapter	RIPEstat prefix-overview leg reached through ip_cli from ip, scan -k ip and /api/lookup
+ripestat	adapter	RIPEstat prefix-overview, RPKI and routing-history legs reached through ip_cli, netblock_cli and routing_context from ip, netblock, scan and /api/lookup
 robtex	adapter	Robtex leg reached through indicator_legs from ip, domain, scan and /api/lookup
 roi	runtime	dispatch utility scoring
+routing_context	runtime	RPKI validation and routing-history evidence on the covering prefix, shared by ip_cli and netblock_cli from ip, netblock, scan and /api/lookup
 run_history	leaf	durable test-run history and regression verdict
 runtime	runtime	high-level investigation composition root
 scan_alert	runtime	whether a later scan of one target raises an alert over the earlier one, reached through scans alert, watch and the scan API
