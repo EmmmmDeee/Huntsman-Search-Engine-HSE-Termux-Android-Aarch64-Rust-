@@ -291,7 +291,7 @@ fn zip_header(out: &mut Vec<u8>, name: &str, data: &[u8], central: Option<usize>
 }
 
 /// A ZIP archive of `entries`, each stored as it is.
-fn stored_zip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+pub(crate) fn stored_zip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
     // ZIP32 cannot represent more than 65,535 members, 4 GiB per member,
     // or a central-directory offset beyond u32::MAX. Reject unsupported
     // archives rather than silently saturating ZIP fields into corrupt data.

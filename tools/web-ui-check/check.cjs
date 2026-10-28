@@ -167,6 +167,11 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.goto(base + '/#/about', { waitUntil: 'networkidle' });
       check('About loads its details once', asked.filter(p => p === '/api/modules').length === 1 && asked.filter(p => p === '/api/command').length === 1, asked);
       check('About shows the module count', /^\d+$/.test(await page.textContent('#smodules')), await page.textContent('#smodules'));
+      const [blueprint] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#blueprint')]);
+      const blueprintBytes = fs.readFileSync(await blueprint.path());
+      check('About downloads the OSINT app blueprint as a Word document',
+        blueprint.suggestedFilename() === 'OSINT_APK_BLUEPRINT.docx' && blueprintBytes.subarray(0, 4).toString('latin1') === 'PK\x03\x04' &&
+        blueprintBytes.includes('word/document.xml') && await page.isHidden('#berror'), blueprint.suggestedFilename());
       // The old addresses still land somewhere: #/lookup is New Scan, #/status is About.
       await page.goto(base + '/#/lookup', { waitUntil: 'networkidle' });
       check('#/lookup opens New Scan', await page.isVisible('#view-newscan'), 'hidden');

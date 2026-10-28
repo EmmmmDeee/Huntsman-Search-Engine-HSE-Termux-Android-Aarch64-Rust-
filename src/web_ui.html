@@ -488,6 +488,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <h1>About</h1>
 <p class="help">Huntsman is an OSINT engine in one Rust binary that runs on Android in Termux without root. Scans, their data elements and their logs stay on this device.</p>
 <p class="help"><a class="link" href="/evidence">Open local evidence dossier</a> · All indexed claims, sources, uncertainties, correlations and proposed verification actions.</p>
+<p class="help"><button class="btn" id="blueprint" type="button">OSINT app blueprint (.docx)</button> Each Android OSINT app, what Huntsman reproduces of it in Rust here, and what Android denies.</p><p class="alert" id="berror" role="alert" hidden></p>
 <div class="stats">
 <div class="stat"><div class="lab">server</div><div class="val" id="sstate">…</div></div>
 <div class="stat"><div class="lab">version</div><div class="val" id="sversion">…</div></div>
@@ -1669,6 +1670,7 @@ $('investigate').onsubmit=async ev=>{
   if(raw)try{const s=JSON.parse(raw);$('seeds').value=s.seeds;showAnalysis(s)}catch(_){sess.set('hse-analysis','');$('aresult').hidden=true}
 }
 $('refresh').onclick=()=>{health();details()};
+$('blueprint').onclick=()=>fetchFile('/api/blueprint?format=docx','OSINT_APK_BLUEPRINT.docx').then(()=>{$('berror').hidden=true},e=>fail('berror',e.message));
 // Live updates: the server pushes scan state and raised alerts over Server-Sent Events, so the
 // open view refreshes the instant something changes instead of only on the poll timer. The stream
 // is a nudge; the REST calls stay the source of truth and polling stays as the fallback.
