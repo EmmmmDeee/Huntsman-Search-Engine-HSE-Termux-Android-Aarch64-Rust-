@@ -131,6 +131,27 @@ if [[ -f "$MOCK_LOG" ]]; then
   echo 'FAIL: invalid CodeQL policy reached the GitHub API' >&2
   fail=$((fail + 1))
 fi
+
+# A policy whose review or status-check semantics are weakened must be rejected
+# before a GET or POST. A post-creation drift failure is too late.
+check_weakened_local_policy() {
+  local label="$1" mutation="$2"
+  jq "$mutation" "$original_policy" > "$tmp/mutated/merge-policy.json"
+  check_case "$label" none apply fail 0 'invalid or weakened local merge policy'
+  if [[ -f "$MOCK_LOG" ]]; then
+    echo "FAIL: weakened local policy ($label) reached the GitHub API" >&2
+    fail=$((fail + 1))
+  fi
+}
+check_weakened_local_policy 'disabled review-thread resolution fails before API' \
+  '(.rules[] | select(.type == "pull_request") | .parameters.required_review_thread_resolution) = false'
+check_weakened_local_policy 'disabled strict up-to-date checks fail before API' \
+  '(.rules[] | select(.type == "required_status_checks") | .parameters.strict_required_status_checks_policy) = false'
+check_weakened_local_policy 'non-enforcement on ruleset creation fails before API' \
+  '(.rules[] | select(.type == "required_status_checks") | .parameters.do_not_enforce_on_create) = true'
+check_weakened_local_policy 'unexpected status-check parameter fails before API' \
+  '(.rules[] | select(.type == "required_status_checks") | .parameters.unapproved_override) = true'
+
 script="$original_script"
 export POLICY_FILE="$original_policy"
 
