@@ -259,7 +259,10 @@ pub(super) mod tests {
         let mut second = first.clone();
         second.push(0xff);
         assert_eq!(build_id(&first), build_id(&second));
-        assert_ne!(crate::sha256::sha256(&first), crate::sha256::sha256(&second));
+        assert_ne!(
+            crate::sha256::sha256(&first),
+            crate::sha256::sha256(&second)
+        );
     }
 
     #[test]
