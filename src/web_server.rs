@@ -113,6 +113,8 @@ const KEYS_PATH: &str = "/api/settings/keys";
 /// A local file's raw bytes in, its EXIF and embedded document metadata out: the `exif` and
 /// `docmeta` commands for a file picked in the browser.
 const INSPECT_PATH: &str = "/api/inspect";
+/// The OSINT app blueprint: JSON, or the Word document with `format=docx`.
+const BLUEPRINT_PATH: &str = "/api/blueprint";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
 /// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
@@ -1406,6 +1408,7 @@ fn route(
             | TRACK_PATH
             | KEYS_PATH
             | INSPECT_PATH
+            | BLUEPRINT_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
@@ -1416,6 +1419,9 @@ fn route(
 
     if ScanApi::handles(parsed.path) {
         return scans_response(parsed, routes.scans.as_ref());
+    }
+    if parsed.path == BLUEPRINT_PATH {
+        return blueprint_response(parsed.query, head);
     }
     let text = match parsed.path {
         "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
@@ -1546,6 +1552,39 @@ fn bind_failure(addr: SocketAddr, error: &std::io::Error) -> Error {
         _ => error.to_string(),
     };
     Error::Store(format!("serve bind {addr}: {reason}"))
+}
+
+/// `GET /api/blueprint`: the OSINT app blueprint as JSON, or with `format=docx` as the Word
+/// document `huntsman-recon blueprint --docx` writes, as an attachment.
+fn blueprint_response(query: &str, head: bool) -> Vec<u8> {
+    use crate::osint_blueprint::{DOCX_NAME, ENTRIES, docx};
+    let format = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("format="))
+        .unwrap_or("json");
+    match format {
+        "docx" => response_bytes(
+            200,
+            crate::docx::CONTENT_TYPE,
+            &docx(),
+            head,
+            &format!("Content-Disposition: attachment; filename=\"{DOCX_NAME}\"\r\n"),
+        ),
+        "json" => {
+            let body = serde_json::to_string_pretty(
+                &serde_json::json!({ "count": ENTRIES.len(), "entries": ENTRIES }),
+            )
+            .unwrap_or_else(|_| "{\"count\":0,\"entries\":[]}".into());
+            json_ok(&body, head).into_bytes()
+        }
+        _ => response(
+            400,
+            "application/json; charset=utf-8",
+            "{\"error\":\"format must be json or docx\"}\n",
+            head,
+        )
+        .into_bytes(),
+    }
 }
 
 #[cfg(test)]
