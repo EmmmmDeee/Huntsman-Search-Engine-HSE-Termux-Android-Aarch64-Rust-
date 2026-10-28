@@ -54,7 +54,7 @@ pub struct IntentFilter {
     pub schemes: Vec<String>,
     /// Data hosts this filter accepts (e.g., "example.com", "*.example.com").
     pub hosts: Vec<String>,
-    /// Risk level: "critical", "high", "medium", or "low".
+    /// Declaration-based risk heuristic; not proof of external reachability.
     pub risk_level: String,
 }
 
@@ -65,41 +65,40 @@ pub struct IntentAnalysis {
     pub intent_filters: Vec<IntentFilter>,
     /// Intent filters omitted when list exceeds capacity.
     pub intent_filters_omitted: usize,
-    /// Components reachable via implicit intents without explicit export declaration.
+    /// Components declaring action-bearing filters; not proof of exported reachability.
     pub implicit_intent_components: Vec<String>,
     /// Implicit intent components omitted when list exceeds capacity.
     pub implicit_intent_omitted: usize,
-    /// Intent filters without action constraints (accept any action).
+    /// Legacy JSON field retained for compatibility. Empty-action filters are not
+    /// implicit handlers; declarations remain visible in `intent_filters`.
     pub unguarded_action_filters: Vec<String>,
-    /// Unguarded action filters omitted when list exceeds capacity.
+    /// Legacy JSON field retained for compatibility; always zero.
     pub unguarded_action_filters_omitted: usize,
     /// Sensitive actions (broadcast receiver intents) with implicit handlers.
     pub sensitive_intent_handlers: Vec<String>,
     /// Data-driven filters accepting multiple schemes (increased attack surface).
     pub multi_scheme_data_filters: Vec<String>,
-    /// Whether broadcast receivers accept implicit intents without protection.
+    /// Sensitive receiver action declared; no proof of exported or unprotected access.
     pub implicit_broadcast_risk: bool,
-    /// Overall risk score: sum of critical findings.
+    /// Heuristic declaration score, not a confirmed vulnerability finding.
     pub risk_score: u32,
 }
 
 /// Classify the risk level of an intent filter based on its characteristics.
 fn classify_risk(component_kind: &str, filter: &IntentFilterDef) -> String {
-    if matches!(component_kind, "receiver" | "broadcast_receiver") {
-        if filter.actions.is_empty() {
-            return "critical".to_string();
-        }
-        if filter
-            .actions
-            .iter()
-            .any(|a| SENSITIVE_BROADCAST_ACTIONS.iter().any(|s| a.contains(s)))
-        {
-            return "high".to_string();
-        }
+    // In Android manifest resolution, a filter declaring no actions cannot match
+    // implicit intents. Preserve the declaration without claiming exposure.
+    if filter.actions.is_empty() {
+        return "low".to_string();
     }
 
-    if component_kind == "service" && filter.actions.is_empty() {
-        return "critical".to_string();
+    if matches!(component_kind, "receiver" | "broadcast_receiver")
+        && filter
+            .actions
+            .iter()
+            .any(|a| SENSITIVE_BROADCAST_ACTIONS.contains(&a.as_str()))
+    {
+        return "high".to_string();
     }
 
     if !filter.schemes.is_empty() && filter.schemes.len() > 1 {
@@ -121,8 +120,6 @@ fn classify_risk(component_kind: &str, filter: &IntentFilterDef) -> String {
 pub fn analyze(manifest: &Manifest) -> IntentAnalysis {
     let mut analysis = IntentAnalysis::default();
     let mut components_with_filters = std::collections::BTreeSet::new();
-    let mut unguarded_count = 0;
-    let mut unguarded_omitted = 0;
     let mut multi_scheme_count = 0;
     let mut sensitive_count = 0;
     let mut risk_score = 0u32;
@@ -148,20 +145,12 @@ pub fn analyze(manifest: &Manifest) -> IntentAnalysis {
             analysis.intent_filters_omitted += 1;
         }
 
-        components_with_filters.insert(def.component.clone());
-
-        // Unguarded action filters (no actions = accepts all actions).
+        // Preserve actionless declarations above, but exclude them from candidate
+        // implicit handling and risk scoring; they fail the manifest action test.
         if def.actions.is_empty() {
-            if unguarded_count < MAX_LISTED {
-                analysis
-                    .unguarded_action_filters
-                    .push(format!("{}/{}", def.component, def.component_kind));
-                unguarded_count += 1;
-            } else {
-                unguarded_omitted += 1;
-            }
-            risk_score = risk_score.saturating_add(2);
+            continue;
         }
+        components_with_filters.insert(def.component.clone());
 
         // Multi-scheme data filters.
         if def.schemes.len() > 1 {
@@ -183,7 +172,7 @@ pub fn analyze(manifest: &Manifest) -> IntentAnalysis {
         ) && def
             .actions
             .iter()
-            .any(|a| SENSITIVE_BROADCAST_ACTIONS.iter().any(|s| a.contains(s)))
+            .any(|a| SENSITIVE_BROADCAST_ACTIONS.contains(&a.as_str()))
         {
             if sensitive_count < MAX_LISTED {
                 analysis.sensitive_intent_handlers.push(format!(
@@ -206,11 +195,10 @@ pub fn analyze(manifest: &Manifest) -> IntentAnalysis {
         }
     }
 
-    analysis.unguarded_action_filters_omitted = unguarded_omitted;
     analysis.implicit_broadcast_risk = has_broadcast_risk;
     analysis.risk_score = risk_score;
 
-    // Implicit intent components (those with intent filters).
+    // Candidate implicit handlers (filters declaring actions, not reachability proof).
     for component in components_with_filters {
         if analysis.implicit_intent_components.len() < MAX_LISTED {
             analysis.implicit_intent_components.push(component);
@@ -378,4 +366,100 @@ mod tests {
         assert_eq!(analysis.intent_filters_omitted, 5);
         assert_eq!(analysis.implicit_intent_omitted, 3);
     }
+
+    #[test]
+    fn actionless_receivers_and_services_are_declarations_not_implicit_handlers() {
+        let manifest = Manifest {
+            intent_filters: vec![
+                IntentFilterDef {
+                    component: ".EmptyReceiver".to_string(),
+                    component_kind: "receiver".to_string(),
+                    actions: vec![],
+                    categories: vec![],
+                    schemes: vec![],
+                    hosts: vec![],
+                },
+                IntentFilterDef {
+                    component: ".EmptyService".to_string(),
+                    component_kind: "service".to_string(),
+                    actions: vec![],
+                    categories: vec![],
+                    schemes: vec![],
+                    hosts: vec![],
+                },
+            ],
+            ..Default::default()
+        };
+
+        let analysis = analyze(&manifest);
+        assert_eq!(analysis.intent_filters.len(), 2);
+        assert!(analysis
+            .intent_filters
+            .iter()
+            .all(|filter| filter.risk_level == "low"));
+        assert!(analysis.implicit_intent_components.is_empty());
+        assert!(analysis.unguarded_action_filters.is_empty());
+        assert_eq!(analysis.unguarded_action_filters_omitted, 0);
+        assert!(analysis.sensitive_intent_handlers.is_empty());
+        assert!(!analysis.implicit_broadcast_risk);
+        assert_eq!(analysis.risk_score, 0);
+    }
+
+    #[test]
+    fn sensitive_broadcast_actions_require_exact_names() {
+        let manifest = Manifest {
+            intent_filters: vec![IntentFilterDef {
+                component: ".NotBootReceiver".to_string(),
+                component_kind: "receiver".to_string(),
+                actions: vec!["android.intent.action.BOOT_COMPLETED_FAKE".to_string()],
+                categories: vec![],
+                schemes: vec![],
+                hosts: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let analysis = analyze(&manifest);
+        assert_eq!(analysis.intent_filters[0].risk_level, "medium");
+        assert!(analysis.sensitive_intent_handlers.is_empty());
+        assert!(!analysis.implicit_broadcast_risk);
+        assert_eq!(analysis.risk_score, 1);
+        assert_eq!(analysis.implicit_intent_components.len(), 1);
+        assert_eq!(analysis.implicit_intent_components[0], ".NotBootReceiver");
+    }
+
+    #[test]
+    fn actionless_filter_preserves_distinct_action_bearing_filter() {
+        let manifest = Manifest {
+            intent_filters: vec![
+                IntentFilterDef {
+                    component: ".Screen".to_string(),
+                    component_kind: "activity".to_string(),
+                    actions: vec![],
+                    categories: vec![],
+                    schemes: vec![],
+                    hosts: vec![],
+                },
+                IntentFilterDef {
+                    component: ".Screen".to_string(),
+                    component_kind: "activity".to_string(),
+                    actions: vec!["android.intent.action.VIEW".to_string()],
+                    categories: vec!["android.intent.category.DEFAULT".to_string()],
+                    schemes: vec!["https".to_string()],
+                    hosts: vec!["example.org".to_string()],
+                },
+            ],
+            ..Default::default()
+        };
+
+        let analysis = analyze(&manifest);
+        assert_eq!(analysis.intent_filters.len(), 2);
+        assert_eq!(analysis.intent_filters[0].risk_level, "low");
+        assert_eq!(analysis.intent_filters[1].risk_level, "medium");
+        assert_eq!(analysis.implicit_intent_components.len(), 1);
+        assert_eq!(analysis.implicit_intent_components[0], ".Screen");
+        assert_eq!(analysis.risk_score, 1);
+        assert!(analysis.unguarded_action_filters.is_empty());
+    }
+
 }
