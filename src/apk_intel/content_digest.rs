@@ -35,7 +35,7 @@ fn chunked_sha256(
     }
     let offset = u32::try_from(signing_start).ok()?;
     let end = apk.get(eocd_at..)?;
-    if end.get(..4)? != b"PK\\x05\\x06" || end.len() < 22 {
+    if end.get(..4)? != b"PK\x05\x06" || end.len() < 22 {
         return None;
     }
     let mut corrected_end = end.to_vec();
@@ -125,7 +125,7 @@ mod tests {
     fn example() -> Vec<u8> {
         let mut apk = b"ABCDSIGBLOCKCENTRAL".to_vec();
         let mut end = [0_u8; 22];
-        end[..4].copy_from_slice(b"PK\\x05\\x06");
+        end[..4].copy_from_slice(b"PK\x05\x06");
         end[16..20].copy_from_slice(&12_u32.to_le_bytes());
         apk.extend_from_slice(&end);
         apk
