@@ -90,6 +90,46 @@ impl Sandbox {
         fs::write(path, body).unwrap();
     }
 
+
+    // Use a deterministic cargo stub: these tests exercise lifecycle publication
+    // decisions without compiling Rust in a disposable scratch repository.
+    fn run_with_mock_cargo(&self, mode: &str, test_exit: u8) -> Output {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mock_bin = self.root.join("mock-bin");
+        fs::create_dir_all(&mock_bin).unwrap();
+        let mock_cargo = mock_bin.join("cargo");
+        fs::write(
+            &mock_cargo,
+            format!(
+                r#"#!/bin/sh
+case "$1" in
+build)
+  mkdir -p "$CARGO_TARGET_DIR/debug" || exit 99
+  printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
+  chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
+  ;;
+test) exit {test_exit} ;;
+*) exit 99 ;;
+esac
+"#
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&mock_cargo).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&mock_cargo, permissions).unwrap();
+
+        let mut path = std::ffi::OsString::from(mock_bin.as_os_str());
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        self.command("bash", &self.work)
+            .env("PATH", path)
+            .args(["scripts/lifecycle.sh", mode])
+            .output()
+            .unwrap()
+    }
+
     fn sync(&self) -> Output {
         self.command("bash", &self.work)
             .args(["scripts/lifecycle.sh", "sync"])
@@ -214,12 +254,13 @@ fn ordinary_changes_are_committed_and_pushed() {
     let before = sandbox.head();
     sandbox.write("notes.txt", "ordinary\n");
     sandbox.write("docs/guide.md", "also ordinary\n");
-    let output = sandbox.sync();
+    let output = sandbox.run_with_mock_cargo("sync", 0);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("test ok"), "sync skipped tests");
     assert_ne!(sandbox.head(), before, "nothing was committed");
     assert_eq!(
         sandbox.pushed(),
@@ -233,9 +274,41 @@ fn ordinary_changes_are_committed_and_pushed() {
 }
 
 #[test]
-fn an_interrupted_test_run_never_commits_or_pushes_main() {
-    use std::os::unix::fs::PermissionsExt;
+#[test]
+fn direct_sync_with_failed_tests_never_commits_or_pushes() {
+    let sandbox = Sandbox::new("direct-sync-failed-tests");
+    sandbox.write("docs/pending.md", "must not be published\\n");
+    let previous_head = sandbox.head();
+    let previous_remote = sandbox.pushed();
+    let output = sandbox.run_with_mock_cargo("sync", 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
+    assert!(!output.status.success(), "sync bypassed failed tests");
+    assert!(stderr.contains("tests failed with exit 1"), "{stderr}");
+    assert_eq!(sandbox.head(), previous_head, "sync made an unverified commit");
+    assert_eq!(sandbox.pushed(), previous_remote, "sync pushed unverified work");
+    let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
+    assert!(state.contains("phase=test\\nstatus=failed\\n"), "{state}");
+}
+
+#[test]
+fn direct_sync_does_not_trust_a_previous_success_state() {
+    let sandbox = Sandbox::new("direct-sync-stale-state");
+    sandbox.write("docs/pending.md", "not verified in this process\\n");
+    let state_dir = sandbox.root.join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(
+        state_dir.join("lifecycle-state"),
+        "updated=old\\nrevision=old\\nphase=sync\\nstatus=ok\\ndetail=old\\n",
+    )
+    .unwrap();
+    let before = sandbox.head();
+    let output = sandbox.run_with_mock_cargo("sync", 1);
+    assert!(!output.status.success(), "stale receipt bypassed verification");
+    assert_eq!(sandbox.head(), before);
+}
+
+fn an_interrupted_test_run_never_commits_or_pushes_main() {
     let sandbox = Sandbox::new("interrupted-test");
     sandbox.write("docs/pending.md", "not verified yet\n");
     let previous_head = sandbox.head();
@@ -244,37 +317,7 @@ fn an_interrupted_test_run_never_commits_or_pushes_main() {
     // Exercise the real 'all' lifecycle without building Rust in the scratch clone.
     // The stub succeeds at build/check but simulates cargo test killed by SIGKILL
     // (shell exit status 128 + 9). Incomplete tests must be a hard release gate.
-    let mock_bin = sandbox.root.join("mock-bin");
-    fs::create_dir_all(&mock_bin).unwrap();
-    let mock_cargo = mock_bin.join("cargo");
-    fs::write(
-        &mock_cargo,
-        r#"#!/bin/sh
-case "$1" in
-build)
-  mkdir -p "$CARGO_TARGET_DIR/debug" || exit 99
-  printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
-  chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
-  ;;
-test) exit 137 ;;
-*) exit 99 ;;
-esac
-"#,
-    )
-    .unwrap();
-    let mut permissions = fs::metadata(&mock_cargo).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&mock_cargo, permissions).unwrap();
-
-    let mut path = std::ffi::OsString::from(mock_bin.as_os_str());
-    path.push(":");
-    path.push(std::env::var_os("PATH").unwrap_or_default());
-    let output = sandbox
-        .command("bash", &sandbox.work)
-        .env("PATH", path)
-        .args(["scripts/lifecycle.sh", "all"])
-        .output()
-        .unwrap();
+    let output = sandbox.run_with_mock_cargo("all", 137);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
