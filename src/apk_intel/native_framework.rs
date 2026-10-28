@@ -1,18 +1,17 @@
 //! The cross-platform app framework or game engine an APK is built on, named from the native
 //! libraries it bundles. A Flutter app ships `libflutter.so`; a Unity/IL2CPP game ships
 //! `libil2cpp.so`; a React Native app ships `libreactnativejni.so` or `libhermes.so`. These engine
-//! libraries have stable, well-documented names, so their presence names the framework — a triage
-//! and attribution signal the DEX/Java SDK fingerprint cannot give, because it survives stripping
-//! and Java obfuscation.
+//! libraries have commonly observed names, making them useful framework *indicators* even when
+//! Java code is obfuscated. APK-supplied names and dependencies are untrusted: a marker alone
+//! cannot prove a framework, author, signer, or common build.
 //!
 //! This names the build framework, not a product or an author: many unrelated apps share one
 //! engine, so a framework is a classification of the app, never a cross-APK pivot between apps.
 
 /// One engine/framework marker: a native library name stem and the framework it identifies.
 pub struct Signature {
-    /// Matched as a prefix of a bundled library's file name, `SONAME` or `DT_NEEDED` entry
-    /// (`libflutter` matches `libflutter.so`). Stems are distinctive enough that a prefix match
-    /// does not collide across frameworks.
+    /// A known library-name stem. Matching requires a shared-object boundary or a curated
+    /// framework-specific suffix; arbitrary prefix collisions are not evidence.
     pub marker: &'static str,
     pub framework: &'static str,
 }
@@ -22,7 +21,7 @@ const fn sig(marker: &'static str, framework: &'static str) -> Signature {
 }
 
 /// Curated, widely-documented engine/framework native-library names. Each stem is distinctive and
-/// stable across versions; a match names the engine, never proves a shared build between apps.
+/// stable across versions; a match suggests the engine, never proves a shared build between apps.
 pub static SIGNATURES: &[Signature] = &[
     sig("libflutter", "Flutter"),
     sig("libreactnativejni", "React Native"),
@@ -42,13 +41,84 @@ pub static SIGNATURES: &[Signature] = &[
     sig("libdefold", "Defold"),
 ];
 
+/// A valid ELF shared-object suffix, including a numeric SONAME version. Never accept arbitrary
+/// trailing text such as `.so.impostor` as a framework indicator.
+fn shared_object_suffix(suffix: &str) -> bool {
+    let Some(version) = suffix.strip_prefix(".so") else {
+        return false;
+    };
+    if version.is_empty() {
+        return true;
+    }
+    version.strip_prefix('.').is_some_and(|parts| {
+        !parts.is_empty()
+            && parts
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    })
+}
+
+fn matches_marker(name: &str, marker: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(marker) else {
+        return false;
+    };
+    if shared_object_suffix(suffix) {
+        return true;
+    }
+
+    match marker {
+        "libmonosgen" => suffix
+            .strip_prefix("-2.0")
+            .is_some_and(shared_object_suffix),
+        "libQt5" | "libQt6" => {
+            const MODULES: &[&str] = &[
+                "Core",
+                "Gui",
+                "Widgets",
+                "Network",
+                "Qml",
+                "Quick",
+                "OpenGL",
+                "Sql",
+                "Xml",
+                "Multimedia",
+                "WebEngineCore",
+                "WebView",
+                "Positioning",
+                "Sensors",
+                "Svg",
+                "Test",
+            ];
+            const ABIS: &[&str] = &["_arm64-v8a", "_armeabi-v7a", "_x86", "_x86_64"];
+            MODULES.iter().any(|module| {
+                suffix.strip_prefix(module).is_some_and(|tail| {
+                    shared_object_suffix(tail)
+                        || ABIS
+                            .iter()
+                            .any(|abi| tail.strip_prefix(abi).is_some_and(shared_object_suffix))
+                })
+            })
+        }
+        "libcocos2d" => ["cpp", "js"].iter().any(|variant| {
+            suffix
+                .strip_prefix(variant)
+                .is_some_and(shared_object_suffix)
+        }),
+        "libgodot" => suffix
+            .strip_prefix("_android")
+            .is_some_and(shared_object_suffix),
+        _ => false,
+    }
+}
+
 /// The framework a single native-library name identifies, or `None`. `name` is a file name such as
 /// `libflutter.so` (a bundled library, a `SONAME` or a `DT_NEEDED` entry).
+/// A prefix alone is insufficient: unrelated libraries may deliberately share the same stem.
 #[must_use]
 pub fn framework_of(name: &str) -> Option<&'static str> {
     SIGNATURES
         .iter()
-        .find(|signature| name.starts_with(signature.marker))
+        .find(|signature| matches_marker(name, signature.marker))
         .map(|signature| signature.framework)
 }
 
@@ -73,6 +143,33 @@ mod tests {
         assert_eq!(framework_of("libnative.so"), None);
         assert_eq!(framework_of("libcrypto.so"), None);
         assert_eq!(framework_of(""), None);
+    }
+
+    #[test]
+    fn prefix_impostors_never_claim_a_framework() {
+        for signature in SIGNATURES {
+            let impostor = format!("{}impostor.so", signature.marker);
+            assert_eq!(
+                framework_of(&impostor),
+                None,
+                "prefix-only match misclassified {impostor}"
+            );
+        }
+        assert_eq!(framework_of("libQt5CoreImpostor.so"), None);
+        assert_eq!(framework_of("libflutter.so.evil"), None);
+        assert_eq!(framework_of("libflutter.so/other"), None);
+        assert_eq!(framework_of("libflutter.so.1evil"), None);
+    }
+
+    #[test]
+    fn known_variants_and_numeric_sonames_still_match() {
+        assert_eq!(framework_of("libflutter.so.1"), Some("Flutter"));
+        assert_eq!(framework_of("libflutter.so.1.2"), Some("Flutter"));
+        assert_eq!(framework_of("libmonosgen-2.0.so"), Some("Mono (.NET)"));
+        assert_eq!(framework_of("libQt5Core.so"), Some("Qt"));
+        assert_eq!(framework_of("libQt6Network_arm64-v8a.so"), Some("Qt"));
+        assert_eq!(framework_of("libcocos2dcpp.so"), Some("Cocos2d-x"));
+        assert_eq!(framework_of("libgodot_android.so"), Some("Godot"));
     }
 
     #[test]

@@ -376,7 +376,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(sent >= asked, "{sent} requests for {asked} legs");
         assert!(
-            took < std::time::Duration::from_millis(1_000),
+            took < std::time::Duration::from_secs(1),
             "{asked} legs of 200 ms took {took:?}"
         );
     }
