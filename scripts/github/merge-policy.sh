@@ -26,6 +26,20 @@ jq -e '
   (.conditions.ref_name.exclude == []) and
   ([.rules[].type] | sort) ==
     (["deletion","non_fast_forward","pull_request","required_status_checks"] | sort) and
+  # Refuse weakened or unexpected rule parameters *before* the first API call.
+  # Post-install drift checks cannot undo creation of a permissive ruleset.
+  ([.rules[] | select(.type == "pull_request") | .parameters] ==
+    [{"dismiss_stale_reviews_on_push":false,
+      "require_code_owner_review":false,
+      "require_last_push_approval":false,
+      "required_approving_review_count":0,
+      "required_review_thread_resolution":true}]) and
+  ([.rules[] | select(.type == "required_status_checks") | .parameters |
+    {strict_required_status_checks_policy, do_not_enforce_on_create}] ==
+    [{"strict_required_status_checks_policy":true,
+      "do_not_enforce_on_create":false}]) and
+  ([.rules[] | select(.type == "required_status_checks") | .parameters | keys] ==
+    [["do_not_enforce_on_create", "required_status_checks", "strict_required_status_checks_policy"]]) and
   ([.rules[] | select(.type == "required_status_checks") | .parameters]
      | length == 1) and
   ([.rules[] | select(.type == "required_status_checks") |
