@@ -72,22 +72,38 @@ fn matches_marker(name: &str, marker: &str) -> bool {
             .is_some_and(shared_object_suffix),
         "libQt5" | "libQt6" => {
             const MODULES: &[&str] = &[
-                "Core", "Gui", "Widgets", "Network", "Qml", "Quick", "OpenGL", "Sql", "Xml",
-                "Multimedia", "WebEngineCore", "WebView", "Positioning", "Sensors", "Svg", "Test",
+                "Core",
+                "Gui",
+                "Widgets",
+                "Network",
+                "Qml",
+                "Quick",
+                "OpenGL",
+                "Sql",
+                "Xml",
+                "Multimedia",
+                "WebEngineCore",
+                "WebView",
+                "Positioning",
+                "Sensors",
+                "Svg",
+                "Test",
             ];
             const ABIS: &[&str] = &["_arm64-v8a", "_armeabi-v7a", "_x86", "_x86_64"];
             MODULES.iter().any(|module| {
                 suffix.strip_prefix(module).is_some_and(|tail| {
                     shared_object_suffix(tail)
-                        || ABIS.iter().any(|abi| {
-                            tail.strip_prefix(abi).is_some_and(shared_object_suffix)
-                        })
+                        || ABIS
+                            .iter()
+                            .any(|abi| tail.strip_prefix(abi).is_some_and(shared_object_suffix))
                 })
             })
         }
-        "libcocos2d" => ["cpp", "js"]
-            .iter()
-            .any(|variant| suffix.strip_prefix(variant).is_some_and(shared_object_suffix)),
+        "libcocos2d" => ["cpp", "js"].iter().any(|variant| {
+            suffix
+                .strip_prefix(variant)
+                .is_some_and(shared_object_suffix)
+        }),
         "libgodot" => suffix
             .strip_prefix("_android")
             .is_some_and(shared_object_suffix),
