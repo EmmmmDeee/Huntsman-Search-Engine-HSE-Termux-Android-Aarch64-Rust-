@@ -559,7 +559,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            known.entities[0].evidence[0].attr_values("on_ground").next(),
+            known.entities[0].evidence[0]
+                .attr_values("on_ground")
+                .next(),
             Some("false")
         );
     }
