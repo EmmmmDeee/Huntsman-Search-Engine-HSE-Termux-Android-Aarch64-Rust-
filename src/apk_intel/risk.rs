@@ -194,7 +194,11 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
                     "{reachable_providers} content provider{} accessible via intent; {} {} potentially sensitive data (contacts, calendar, SMS, call log, email)",
                     if reachable_providers == 1 { "" } else { "s" },
                     sensitive_count,
-                    if sensitive_count == 1 { "controls" } else { "control" }
+                    if sensitive_count == 1 {
+                        "controls"
+                    } else {
+                        "control"
+                    }
                 ),
             );
         }
@@ -350,9 +354,11 @@ mod tests {
             ..Manifest::default()
         };
         let observed = flags(&manifest);
-        assert!(observed
-            .iter()
-            .any(|flag| flag.id == "reachable_content_provider"));
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider")
+        );
         let provider_flag = observed
             .iter()
             .find(|flag| flag.id == "reachable_content_provider")
@@ -373,9 +379,11 @@ mod tests {
             ..Manifest::default()
         };
         let observed = flags(&manifest);
-        assert!(!observed
-            .iter()
-            .any(|flag| flag.id == "reachable_content_provider"));
+        assert!(
+            !observed
+                .iter()
+                .any(|flag| flag.id == "reachable_content_provider")
+        );
     }
 
     #[test]
@@ -384,7 +392,9 @@ mod tests {
         assert!(is_sensitive_authority("com.android.calendar"));
         assert!(is_sensitive_authority("com.android.sms"));
         assert!(is_sensitive_authority("com.android.call_log"));
-        assert!(is_sensitive_authority("com.google.android.gm.email.provider"));
+        assert!(is_sensitive_authority(
+            "com.google.android.gm.email.provider"
+        ));
         assert!(!is_sensitive_authority("com.example.data"));
         assert!(!is_sensitive_authority("com.example.appdata"));
     }
