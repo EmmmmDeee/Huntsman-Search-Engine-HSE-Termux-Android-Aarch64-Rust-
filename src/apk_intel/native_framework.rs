@@ -1,9 +1,9 @@
 //! The cross-platform app framework or game engine an APK is built on, named from the native
 //! libraries it bundles. A Flutter app ships `libflutter.so`; a Unity/IL2CPP game ships
 //! `libil2cpp.so`; a React Native app ships `libreactnativejni.so` or `libhermes.so`. These engine
-//! libraries have stable, well-documented names, so their presence names the framework — a triage
-//! and attribution signal the DEX/Java SDK fingerprint cannot give, because it survives stripping
-//! and Java obfuscation.
+//! libraries have commonly observed names, making them useful framework *indicators* even when
+//! Java code is obfuscated. APK-supplied names and dependencies are untrusted: a marker alone
+//! cannot prove a framework, author, signer, or common build.
 //!
 //! This names the build framework, not a product or an author: many unrelated apps share one
 //! engine, so a framework is a classification of the app, never a cross-APK pivot between apps.
@@ -21,7 +21,7 @@ const fn sig(marker: &'static str, framework: &'static str) -> Signature {
 }
 
 /// Curated, widely-documented engine/framework native-library names. Each stem is distinctive and
-/// stable across versions; a match names the engine, never proves a shared build between apps.
+/// stable across versions; a match suggests the engine, never proves a shared build between apps.
 pub static SIGNATURES: &[Signature] = &[
     sig("libflutter", "Flutter"),
     sig("libreactnativejni", "React Native"),
