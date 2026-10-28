@@ -9,7 +9,8 @@ use super::axml::{XmlNode, xml_nodes};
 const MAX_RULES: usize = 128;
 const MAX_ANCHORS: usize = 128;
 const MAX_EXPIRATIONS: usize = 64;
-pub const LIMITATIONS: &str = "Declared compiled Android network policy only. Missing values inherit platform/target-SDK defaults not inferred here. Debug overrides apply only to debuggable apps. Trust anchors, pin declarations and cleartext settings do not prove runtime network behaviour or certificate validation.";
+const MAX_PIN_FINGERPRINTS: usize = 128;
+pub const LIMITATIONS: &str = "Declared compiled Android network policy only. Missing values inherit platform/target-SDK defaults not inferred here. Debug overrides apply only to debuggable apps. Trust anchors, pin declarations and cleartext settings do not prove runtime network behaviour or certificate validation. Certificate pin hashes are unverified declarations, not proof of server ownership, actual TLS connections or signer identity.";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DomainRule {
@@ -28,6 +29,17 @@ pub struct TrustAnchor {
     pub override_pins: Option<bool>,
 }
 
+/// A syntactically valid declared SHA-256 SPKI pin. A candidate cross-APK pivot only:
+/// the archive is untrusted and no TLS connection or server certificate is verified.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PinFingerprint {
+    pub digest_algorithm: String,
+    pub digest_base64: String,
+    /// Only domains declared directly in the containing domain-config, not unrelated siblings.
+    pub declared_domains: Vec<String>,
+    pub expiration: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct NetworkPolicy {
     pub resource_id: u32,
@@ -41,22 +53,46 @@ pub struct NetworkPolicy {
     pub pin_sets: usize,
     pub pin_count: usize,
     pub pin_expirations: Vec<String>,
+    pub pin_fingerprints: Vec<PinFingerprint>,
+    pub pin_fingerprints_omitted: usize,
     pub limitations: &'static str,
+}
+
+/// A SHA-256 digest is 32 bytes, canonically encoded as 43 base64 characters and '='.
+/// Reject malformed and non-canonical padding instead of promoting arbitrary XML text to a pivot.
+fn canonical_sha256_pin(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 44 || bytes[43] != b'=' {
+        return false;
+    }
+    if !bytes[..43]
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'+' || *byte == b'/')
+    {
+        return false;
+    }
+    matches!(
+        bytes[42],
+        b'A' | b'E'
+            | b'I'
+            | b'M'
+            | b'Q'
+            | b'U'
+            | b'Y'
+            | b'c'
+            | b'g'
+            | b'k'
+            | b'o'
+            | b's'
+            | b'w'
+            | b'0'
+            | b'4'
+            | b'8'
+    )
 }
 
 fn bool_attr(node: &XmlNode, name: &str) -> Option<bool> {
     node.attr(name).and_then(|value| value.parse::<bool>().ok())
-}
-
-fn ancestor<'a>(nodes: &'a [XmlNode], mut at: Option<usize>, wanted: &str) -> Option<&'a XmlNode> {
-    while let Some(index) = at {
-        let node = nodes.get(index)?;
-        if node.name == wanted {
-            return Some(node);
-        }
-        at = node.parent;
-    }
-    None
 }
 
 fn inherited_cleartext(
@@ -74,6 +110,51 @@ fn inherited_cleartext(
         at = node.parent;
     }
     base
+}
+
+/// Preserve the declaring domain-config and refuse malformed pin text. A digest is only
+/// a declared candidate pivot; this routine never contacts a server or verifies TLS.
+fn record_pin(nodes: &[XmlNode], node: &XmlNode, policy: &mut NetworkPolicy) {
+    let Some(parent) = node.parent else {
+        return;
+    };
+    if nodes[parent].name != "pin-set" {
+        return;
+    }
+    let Some(owner) = nodes[parent].parent else {
+        return;
+    };
+    if nodes[owner].name != "domain-config" {
+        return;
+    }
+    policy.pin_count = policy.pin_count.saturating_add(1);
+    if node.attr("digest") != Some("SHA-256") {
+        return;
+    }
+    let digest = node.text.trim();
+    if !canonical_sha256_pin(digest) {
+        return;
+    }
+    let declared_domains: Vec<String> = nodes
+        .iter()
+        .filter(|domain| domain.name == "domain" && domain.parent == Some(owner))
+        .map(|domain| domain.text.trim())
+        .filter(|domain| !domain.is_empty() && domain.len() <= 253)
+        .map(str::to_owned)
+        .collect();
+    if declared_domains.is_empty() {
+        return;
+    }
+    if policy.pin_fingerprints.len() == MAX_PIN_FINGERPRINTS {
+        policy.pin_fingerprints_omitted += 1;
+        return;
+    }
+    policy.pin_fingerprints.push(PinFingerprint {
+        digest_algorithm: "SHA-256".to_owned(),
+        digest_base64: digest.to_owned(),
+        declared_domains,
+        expiration: nodes[parent].attr("expiration").map(str::to_owned),
+    });
 }
 
 /// Parse a compiled network-security-config XML document from the exact ZIP member
@@ -104,6 +185,8 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
         pin_sets: 0,
         pin_count: 0,
         pin_expirations: Vec::new(),
+        pin_fingerprints: Vec::new(),
+        pin_fingerprints_omitted: 0,
         limitations: LIMITATIONS,
     };
     for node in nodes.iter().skip(1) {
@@ -150,7 +233,11 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
                     override_pins: bool_attr(node, "overridePins"),
                 });
             }
-            "pin-set" if ancestor(&nodes, node.parent, "domain-config").is_some() => {
+            "pin-set"
+                if node
+                    .parent
+                    .is_some_and(|index| nodes[index].name == "domain-config") =>
+            {
                 policy.pin_sets = policy.pin_sets.saturating_add(1);
                 if let Some(expiration) = node.attr("expiration") {
                     if policy.pin_expirations.len() < MAX_EXPIRATIONS {
@@ -158,12 +245,7 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
                     }
                 }
             }
-            "pin" => {
-                let Some(parent) = node.parent else { continue };
-                if nodes[parent].name == "pin-set" {
-                    policy.pin_count = policy.pin_count.saturating_add(1);
-                }
-            }
+            "pin" => record_pin(&nodes, node, &mut policy),
             _ => {}
         }
     }
@@ -237,6 +319,52 @@ mod tests {
         assert_eq!(result.pin_sets, 1);
         assert_eq!(result.pin_count, 1);
         assert_eq!(result.pin_expirations, ["2027-12-31"]);
+    }
+
+    #[test]
+    fn records_canonical_sha256_pins_with_exact_domain_config_scope() {
+        let pin = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        assert!(canonical_sha256_pin(pin));
+        assert!(!canonical_sha256_pin(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB="
+        ));
+        assert!(!canonical_sha256_pin("not-a-sha256-digest"));
+        let mut xml = Axml::new(&["digest", "expiration"]);
+        xml.start("network-security-config", &[])
+            .start("domain-config", &[])
+            .start("domain", &[])
+            .text("one.example.org")
+            .end("domain")
+            .start("pin-set", &[("expiration", Val::Str("2028-01-01"))])
+            .start("pin", &[("digest", Val::Str("SHA-256"))])
+            .text(pin)
+            .end("pin")
+            .end("pin-set")
+            .end("domain-config")
+            .start("domain-config", &[])
+            .start("domain", &[])
+            .text("unrelated.example.org")
+            .end("domain")
+            .start("pin-set", &[])
+            .start("pin", &[("digest", Val::Str("SHA-256"))])
+            .text("not-a-sha256-digest")
+            .end("pin")
+            .end("pin-set")
+            .end("domain-config")
+            .end("network-security-config");
+        let result = parse(&xml.build(), 42, "res/xml/network.xml").unwrap();
+        assert_eq!(result.pin_count, 2);
+        assert_eq!(result.pin_fingerprints.len(), 1);
+        assert_eq!(result.pin_fingerprints[0].digest_base64, pin);
+        assert_eq!(
+            result.pin_fingerprints[0].declared_domains,
+            ["one.example.org"]
+        );
+        assert_eq!(
+            result.pin_fingerprints[0].expiration.as_deref(),
+            Some("2028-01-01")
+        );
+        assert_eq!(result.pin_fingerprints_omitted, 0);
     }
 
     #[test]
