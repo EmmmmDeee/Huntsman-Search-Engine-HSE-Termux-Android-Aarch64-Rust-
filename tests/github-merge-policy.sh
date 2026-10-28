@@ -48,14 +48,18 @@ case "$p" in
   "repos/$GH_REPO/branches/main")
     if [[ -f "$MOCK_STATE" || "${MOCK_SCENARIO:-}" == protected_other ]]; then
       echo '{"protected":true}'
-    elif [[ "${MOCK_SCENARIO:-}" == none || "${MOCK_SCENARIO:-}" == post_denied || "${MOCK_SCENARIO:-}" == unprotected ]]; then
+    elif [[ "${MOCK_SCENARIO:-}" == none || "${MOCK_SCENARIO:-}" == post_denied || "${MOCK_SCENARIO:-}" == unprotected || "${MOCK_SCENARIO:-}" == auto_disabled_new || "${MOCK_SCENARIO:-}" == squash_disabled_new ]]; then
       echo '{"protected":false}'
     else
       echo '{"protected":true}'
     fi
     ;;
   "repos/$GH_REPO")
-    [[ "${MOCK_SCENARIO:-}" == auto_disabled ]] && echo '{"allow_auto_merge":false,"allow_squash_merge":true}' || echo '{"allow_auto_merge":true,"allow_squash_merge":true}'
+    case "${MOCK_SCENARIO:-}" in
+      auto_disabled|auto_disabled_new) echo '{"allow_auto_merge":false,"allow_squash_merge":true}' ;;
+      squash_disabled_new) echo '{"allow_auto_merge":true,"allow_squash_merge":false}' ;;
+      *) echo '{"allow_auto_merge":true,"allow_squash_merge":true}' ;;
+    esac
     ;;
   *) echo "unexpected mock path: $p" >&2; exit 90 ;;
 esac
@@ -103,6 +107,10 @@ check_case 'unexpected check provider is rejected' drift_app check fail 0 'DRIFT
 check_case 'wrong branch target is rejected' drift_target check fail 0 'DRIFT:'
 check_case 'inactive branch enforcement is rejected' unprotected check fail 0 'NOT ENFORCED:'
 check_case 'auto-merge disabled is rejected' auto_disabled check fail 0 'NOT READY:'
+# An apply must fail BEFORE POST when the required repository merge features
+# are disabled. Previously the installer wrote the ruleset then failed.
+check_case 'disabled auto-merge blocks ruleset creation' auto_disabled_new apply fail 0 'NOT READY:'
+check_case 'disabled squash-merge blocks ruleset creation' squash_disabled_new apply fail 0 'NOT READY:'
 
 # A policy can retain twelve contexts while silently replacing RustSec or CodeQL gates.
 # Run the real controller against a mutated local policy and require fail-closed
