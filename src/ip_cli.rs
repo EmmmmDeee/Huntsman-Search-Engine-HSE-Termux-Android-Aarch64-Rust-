@@ -48,7 +48,7 @@ use crate::virustotal;
 pub const IP_USAGE: &str = "usage: huntsman-recon ip ADDRESS [--save FILE]";
 pub const IP_HELP: &str = "\
 ip ADDRESS [--save FILE]
-Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), the names Mnemonic passive DNS saw answering with the address, open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat (and whether an Australian consumer provider or AARNet holds that AS), internet-scanner status from GreyNoise Community (IPv4 only), threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. The address and every name the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs (IPv4 only), and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), the names Mnemonic passive DNS saw answering with the address, open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat (and whether an Australian consumer provider or AARNet holds that AS) with the RPKI route-origin validation state of each announcing AS (valid, invalid_asn, invalid_length or unknown, with the ROAs it was judged against; an invalid state also tags the address rpki_invalid_origin and is a misconfiguration, a stale ROA or a hijack, not proof of any), internet-scanner status from GreyNoise Community (IPv4 only), threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. The address and every name the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs (IPv4 only), and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Confidence of the queried address itself.
 const SEED_CONFIDENCE: f64 = 0.90;
@@ -197,7 +197,10 @@ pub fn run<T: Transport + ?Sized>(
             ripestat_place_leg(&mut lookup, place);
         }
         match routing {
-            Ok(routing) => ripestat_leg(&mut lookup, &routing),
+            Ok(routing) => {
+                let rpki = rpki_states(transport, &routing, now_unix);
+                ripestat_leg(&mut lookup, &routing, &rpki);
+            }
             Err(err) => lookup.failed(&ripestat::API, &err),
         }
         if let Err(err) = &place {
@@ -385,7 +388,34 @@ fn internetdb_leg(lookup: &mut Lookup<'_>, host: &internetdb::Host) {
     lookup.found(api, 1 + host.hostnames.len());
 }
 
-fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
+/// The RPKI state of the covering prefix for each of its first
+/// [`ripestat::MAX_RPKI_ORIGINS`] public origin AS numbers, when the prefix is announced: one
+/// request each, keyed by AS number.
+fn rpki_states<T: Transport + ?Sized>(
+    transport: &T,
+    routing: &ripestat::Routing,
+    now_unix: u64,
+) -> Vec<(u32, Result<ripestat::Rpki, LegError>)> {
+    let Some(prefix) = routing.prefix.as_deref().filter(|_| routing.announced) else {
+        return Vec::new();
+    };
+    routing
+        .public_origins()
+        .take(ripestat::MAX_RPKI_ORIGINS)
+        .map(|origin| {
+            (
+                origin.asn,
+                ripestat::rpki_validation(transport, origin.asn, prefix, now_unix),
+            )
+        })
+        .collect()
+}
+
+fn ripestat_leg(
+    lookup: &mut Lookup<'_>,
+    routing: &ripestat::Routing,
+    rpki: &[(u32, Result<ripestat::Rpki, LegError>)],
+) {
     let api = &ripestat::API;
     if !routing.says_anything() {
         lookup.nothing(api);
@@ -398,13 +428,49 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
     lookup.on_address(evidence, &[]);
     for origin in routing.public_origins() {
         let asn = format!("AS{}", origin.asn);
-        let evidence = lookup
+        let mut evidence = lookup
             .evidence(api, "Origin AS of the prefix covering the address")
             .with_attr("ip", lookup.ip)
             .with_optional_attrs([
                 ("prefix", routing.prefix.as_deref()),
                 ("holder", origin.holder.as_deref()),
             ]);
+        match rpki
+            .iter()
+            .find(|(asn, _)| *asn == origin.asn)
+            .map(|(_, state)| state)
+        {
+            Some(Ok(state)) => {
+                evidence = evidence
+                    .with_attr("rpki_state", state.state.as_str())
+                    .with_attr("rpki_meaning", state.state.meaning())
+                    .with_optional_attrs([("rpki_validator", state.validator.as_deref())]);
+                if !state.roas.is_empty() {
+                    evidence = evidence.with_attr("rpki_roas", state.roas_text());
+                }
+                if state.state.is_invalid() {
+                    let invalid = lookup
+                        .evidence(
+                            api,
+                            format!(
+                                "RPKI {}: {asn} announcing {} contradicts a published ROA",
+                                state.state.as_str(),
+                                routing.prefix.as_deref().unwrap_or_default()
+                            ),
+                        )
+                        .with_attr("asn", &asn)
+                        .with_attr("rpki_state", state.state.as_str())
+                        .with_attr("rpki_meaning", state.state.meaning())
+                        .with_attr("rpki_roas", state.roas_text());
+                    lookup.on_address(invalid, &["rpki_invalid_origin"]);
+                }
+            }
+            // A failed check is not an unknown state.
+            Some(Err(error)) => {
+                evidence = evidence.with_attr("rpki_check", format!("failed: {error}"));
+            }
+            None => {}
+        }
         lookup.pivot(EntityKind::Asn, &asn, evidence);
         if let Some((operator, kind)) = origin.holder.as_deref().and_then(au_operator) {
             let (summary, tag) = match kind {

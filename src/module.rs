@@ -524,6 +524,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "satellite-imagery catalogue: the Sentinel-2 and Landsat scenes Earth Search STAC lists over a point in the last 90 days, with acquisition time, cloud cover and footprint; no imagery downloaded",
     },
     ReachableModule {
+        name: "opensky",
+        command: "geocode LAT,LON | scan -k geocode LAT,LON",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1591.001"],
+        description: "public aircraft observations: the transponders OpenSky Network receivers last reported within half a degree of a point, nearest first, with callsign, position time, altitude, speed and squawk; an airframe, not anyone aboard",
+    },
+    ReachableModule {
         name: "exif",
         command: "exif IMAGE-FILE",
         access: "keyless",
@@ -1180,7 +1189,16 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::DnsRecon,
         attack_techniques: &["T1593.002"],
-        description: "bounded Internet Archive CDX capture metadata, historical URL and subdomain pivots; no playback fetch",
+        description: "bounded Internet Archive CDX capture metadata, historical URL and subdomain pivots, and the contacts up to 3 archived pages published",
+    },
+    ReachableModule {
+        name: "common_crawl",
+        command: "domain DOMAIN | scan -k domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1593.002"],
+        description: "newest Common Crawl index: bounded historical URL and subdomain pivots, and the contacts up to 3 crawled pages published, read by WARC byte range",
     },
     ReachableModule {
         name: "certspotter",

@@ -709,9 +709,253 @@ fn place_line(place: &Location) -> String {
         .join(" ")
 }
 
+/// The most origin AS numbers of one prefix whose RPKI state a lookup asks for: one request each.
+pub const MAX_RPKI_ORIGINS: usize = 4;
+
+/// The RPKI route-origin validation state of one announcement (an origin AS and a prefix), as
+/// `RIPEstat`'s Routinator validator decides it from the published ROAs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpkiState {
+    /// A ROA authorises this origin AS for this prefix at this length.
+    Valid,
+    /// A ROA covers the prefix, but for a different origin AS.
+    InvalidAsn,
+    /// A ROA covers the prefix for this origin, but not at this prefix length.
+    InvalidLength,
+    /// No ROA covers the prefix.
+    Unknown,
+}
+
+impl RpkiState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::InvalidAsn => "invalid_asn",
+            Self::InvalidLength => "invalid_length",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "valid" => Some(Self::Valid),
+            "invalid_asn" => Some(Self::InvalidAsn),
+            "invalid_length" => Some(Self::InvalidLength),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+
+    /// Whether the announcement contradicts a published ROA.
+    #[must_use]
+    pub const fn is_invalid(self) -> bool {
+        matches!(self, Self::InvalidAsn | Self::InvalidLength)
+    }
+
+    /// What the state establishes, and what it does not.
+    #[must_use]
+    pub const fn meaning(self) -> &'static str {
+        match self {
+            Self::Valid => {
+                "a published ROA authorises this origin AS to announce this prefix at this length"
+            }
+            Self::InvalidAsn => {
+                "a published ROA covers this prefix for a different origin AS: a misconfiguration, a stale ROA or a hijack, and not proof of any of them"
+            }
+            Self::InvalidLength => {
+                "a published ROA covers this prefix for this origin AS, but not at this prefix length: often a more-specific announcement the ROA does not allow, not proof of a hijack"
+            }
+            Self::Unknown => {
+                "no published ROA covers this prefix; much of the routing table has none, so this alone is not suspicious"
+            }
+        }
+    }
+}
+
+/// One route origin authorisation the validator matched against the announcement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Roa {
+    pub origin: u32,
+    pub prefix: String,
+    pub max_length: u8,
+    pub validity: String,
+}
+
+/// The RPKI validation of one announcement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rpki {
+    pub state: RpkiState,
+    pub validator: Option<String>,
+    pub roas: Vec<Roa>,
+}
+
+impl Rpki {
+    /// Every matched ROA as `AS13335 1.1.1.0/24 max /24 (valid)`, joined by `; `. **Pure.**
+    #[must_use]
+    pub fn roas_text(&self) -> String {
+        self.roas
+            .iter()
+            .map(|roa| {
+                format!(
+                    "AS{} {} max /{} ({})",
+                    roa.origin, roa.prefix, roa.max_length, roa.validity
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+#[derive(Deserialize)]
+struct RpkiData {
+    status: String,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    validator: Option<String>,
+    #[serde(default)]
+    validating_roas: Vec<RoaRow>,
+}
+
+#[derive(Deserialize)]
+struct RoaRow {
+    origin: Value,
+    prefix: String,
+    max_length: u8,
+    #[serde(default)]
+    validity: Option<String>,
+}
+
+/// The request URL for the RPKI state of `prefix` announced by `AS{asn}`. **Pure.**
+#[must_use]
+pub fn rpki_url(asn: u32, prefix: &str) -> String {
+    format!(
+        "https://stat.ripe.net/data/rpki-validation/data.json?resource=AS{asn}&prefix={}",
+        percent_encode_component(prefix)
+    )
+}
+
+/// The RPKI state of `prefix` announced by `AS{asn}`.
+///
+/// # Errors
+/// The [`LegError`] that stopped the lookup.
+pub fn rpki_validation<T: Transport + ?Sized>(
+    transport: &T,
+    asn: u32,
+    prefix: &str,
+    now_unix: u64,
+) -> Result<Rpki, LegError> {
+    match api_leg::get(
+        transport,
+        &API,
+        &Keys::default(),
+        &rpki_url(asn, prefix),
+        now_unix,
+    )? {
+        Answer::Body(body) => decode_rpki(&body, prefix),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+    }
+}
+
+/// One `rpki-validation` body for the announcement of `prefix`. A state other than the four the
+/// endpoint documents, an answer about another prefix, or a ROA whose origin is not an AS number
+/// is drift. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`] for any of those, or a body that is not an `ok` envelope with data.
+pub fn decode_rpki(body: &[u8], prefix: &str) -> Result<Rpki, LegError> {
+    let data: RpkiData = unwrap(body)?;
+    let state = RpkiState::parse(data.status.trim())
+        .ok_or_else(|| LegError::Decode("unrecognised RPKI state".into()))?;
+    if data.prefix.as_deref().map(str::trim) != Some(prefix.trim()) {
+        return Err(LegError::Decode("RPKI answer names another prefix".into()));
+    }
+    let roas = data
+        .validating_roas
+        .into_iter()
+        .map(|row| {
+            let origin = match &row.origin {
+                Value::String(text) => text.trim().trim_start_matches("AS").parse().ok(),
+                Value::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
+                _ => None,
+            }
+            .ok_or_else(|| LegError::Decode("ROA origin is not an AS number".into()))?;
+            Ok(Roa {
+                origin,
+                prefix: row.prefix.trim().to_owned(),
+                max_length: row.max_length,
+                validity: api_leg::clean(row.validity.as_deref())
+                    .unwrap_or_else(|| "unstated".to_owned()),
+            })
+        })
+        .collect::<Result<Vec<_>, LegError>>()?;
+    Ok(Rpki {
+        state,
+        validator: api_leg::clean(data.validator.as_deref()),
+        roas,
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Recorded from `RIPEstat` for AS13335 and 1.1.1.0/24 on 2026-10-28 (envelope trimmed).
+    pub(crate) const RPKI_VALID: &str = r#"{"status":"ok","data":{"resource":"13335","prefix":"1.1.1.0/24","validating_roas":[{"origin":"13335","prefix":"1.1.1.0/24","validity":"valid","max_length":24}],"status":"valid","validator":"routinator"}}"#;
+
+    #[test]
+    fn rpki_states_are_the_four_the_endpoint_documents() {
+        let valid = decode_rpki(RPKI_VALID.as_bytes(), "1.1.1.0/24").unwrap();
+        assert_eq!(valid.state, RpkiState::Valid);
+        assert!(!valid.state.is_invalid());
+        assert_eq!(valid.validator.as_deref(), Some("routinator"));
+        assert_eq!(valid.roas_text(), "AS13335 1.1.1.0/24 max /24 (valid)");
+        // Recorded for AS64500 and for a /25 the /24 ROA does not allow, on the same day.
+        let wrong_origin = RPKI_VALID.replace(r#""status":"valid""#, r#""status":"invalid_asn""#);
+        let asn = decode_rpki(wrong_origin.as_bytes(), "1.1.1.0/24").unwrap();
+        assert_eq!(asn.state, RpkiState::InvalidAsn);
+        assert!(asn.state.is_invalid() && asn.state.meaning().contains("not proof"));
+        let longer = RPKI_VALID
+            .replace(
+                r#""prefix":"1.1.1.0/24","validating"#,
+                r#""prefix":"1.1.1.0/25","validating"#,
+            )
+            .replace(r#""status":"valid""#, r#""status":"invalid_length""#);
+        assert_eq!(
+            decode_rpki(longer.as_bytes(), "1.1.1.0/25").unwrap().state,
+            RpkiState::InvalidLength
+        );
+        let none = r#"{"status":"ok","data":{"resource":"3","prefix":"18.0.0.0/9","validating_roas":[],"status":"unknown","validator":"routinator"}}"#;
+        let unknown = decode_rpki(none.as_bytes(), "18.0.0.0/9").unwrap();
+        assert_eq!(unknown.state, RpkiState::Unknown);
+        assert!(!unknown.state.is_invalid() && unknown.roas.is_empty());
+    }
+
+    #[test]
+    fn rpki_drift_is_refused() {
+        for (body, prefix) in [
+            (
+                RPKI_VALID.replace(r#""status":"valid""#, r#""status":"maybe""#),
+                "1.1.1.0/24",
+            ),
+            (RPKI_VALID.to_owned(), "1.1.2.0/24"),
+            (
+                RPKI_VALID.replace(r#""origin":"13335""#, r#""origin":"cloudflare""#),
+                "1.1.1.0/24",
+            ),
+            (
+                RPKI_VALID.replace(r#"{"status":"ok""#, r#"{"status":"error""#),
+                "1.1.1.0/24",
+            ),
+        ] {
+            assert!(decode_rpki(body.as_bytes(), prefix).is_err(), "{body}");
+        }
+        assert_eq!(
+            rpki_url(13335, "1.1.1.0/24"),
+            "https://stat.ripe.net/data/rpki-validation/data.json?resource=AS13335&prefix=1.1.1.0%2F24"
+        );
+    }
 
     /// Recorded from `RIPEstat` for `1.1.1.1` on 2026-10-14 (envelope fields trimmed).
     const RECORDED: &str = r#"{"messages":[["warning","Given resource is not announced but result has been aligned to first-level less-specific (1.1.1.0/24)."]],"status":"ok","status_code":200,"data":{"is_less_specific":true,"announced":true,"asns":[{"asn":13335,"holder":"CLOUDFLARENET - Cloudflare, Inc."}],"related_prefixes":[],"resource":"1.1.1.0/24","type":"prefix","block":{"resource":"1.0.0.0/8","desc":"APNIC (Status: ALLOCATED)","name":"IANA IPv4 Address Space Registry"}}}"#;

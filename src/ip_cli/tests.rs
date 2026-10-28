@@ -105,6 +105,11 @@ fn keyless() -> Routes {
         ),
         ("https://internetdb.shodan.io/", 200, INTERNETDB),
         ("https://stat.ripe.net/data/geoloc/", 200, RIPESTAT_GEO),
+        (
+            "https://stat.ripe.net/data/rpki-validation/",
+            200,
+            crate::ripestat::tests::RPKI_VALID,
+        ),
         ("https://stat.ripe.net/", 200, RIPESTAT),
         ("https://api.greynoise.io/", 404, GREYNOISE_UNSEEN),
         ("https://api.abuseipdb.com/", 200, ABUSEIPDB),
@@ -212,6 +217,8 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "rdap.apnic.net",
             "api.mnemonic.no",
             "internetdb.shodan.io",
+            // prefix-overview, geoloc, then the covering prefix's RPKI state for AS13335.
+            "stat.ripe.net",
             "stat.ripe.net",
             "stat.ripe.net",
             "api.greynoise.io",
@@ -580,5 +587,95 @@ fn the_reverse_zone_names_the_address() {
     assert_eq!(
         outcome(&report, RESOLVE_SOURCE),
         SourceOutcomeKind::ValidZero
+    );
+}
+
+/// Each origin AS of the announced covering prefix carries its RPKI state, what the state means
+/// and the ROAs it was judged against; an invalid state is also a tagged record on the address,
+/// and a check that failed is said to have failed, never shown as an unknown state.
+#[test]
+fn origin_as_numbers_carry_their_rpki_state() {
+    let transport = keyless();
+    let (_, report) = printed(run(&transport, &Keys::default(), "1.1.1.1", 1));
+    let rpki: Vec<String> = transport
+        .sent()
+        .iter()
+        .map(|r| r.url.clone())
+        .filter(|url| url.contains("rpki-validation"))
+        .collect();
+    assert_eq!(
+        rpki,
+        [
+            "https://stat.ripe.net/data/rpki-validation/data.json?resource=AS13335&prefix=1.1.1.0%2F24"
+        ]
+    );
+    let asn = entity(&report, &EntityKind::Asn, "AS13335");
+    let attr = |name: &str| {
+        asn.evidence
+            .iter()
+            .find_map(|e| e.attr_values(name).next())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(attr("rpki_state"), "valid");
+    assert_eq!(attr("rpki_roas"), "AS13335 1.1.1.0/24 max /24 (valid)");
+    assert!(!entity(&report, &EntityKind::IpAddress, "1.1.1.1").has_tag("rpki_invalid_origin"));
+
+    let mut invalid = keyless();
+    let wrong_origin = crate::ripestat::tests::RPKI_VALID
+        .replace(r#""status":"valid""#, r#""status":"invalid_asn""#);
+    let wrong_origin: &'static str = Box::leak(wrong_origin.into_boxed_str());
+    for route in &mut invalid.routes {
+        if route.0.contains("rpki-validation") {
+            route.2 = wrong_origin;
+        }
+    }
+    let (_, report) = printed(run(&invalid, &Keys::default(), "1.1.1.1", 1));
+    let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
+    assert!(ip.has_tag("rpki_invalid_origin"));
+    assert!(
+        ip.evidence
+            .iter()
+            .any(|e| e.summary.contains("RPKI invalid_asn: AS13335"))
+    );
+
+    let mut failing = keyless();
+    for route in &mut failing.routes {
+        if route.0.contains("rpki-validation") {
+            route.1 = 500;
+        }
+    }
+    let (_, report) = printed(run(&failing, &Keys::default(), "1.1.1.1", 1));
+    let asn = entity(&report, &EntityKind::Asn, "AS13335");
+    assert!(
+        asn.evidence
+            .iter()
+            .any(|e| e.attr_values("rpki_check").any(|v| v.starts_with("failed"))),
+        "{:?}",
+        asn.evidence
+    );
+    assert!(
+        !asn.evidence
+            .iter()
+            .any(|e| e.attr_values("rpki_state").next().is_some())
+    );
+}
+
+/// An address no AS announces has no announcement to validate: no RPKI request is sent, even
+/// when the answer still names an origin AS for the covering prefix.
+#[test]
+fn an_unannounced_address_asks_for_no_rpki_state() {
+    let mut transport = keyless();
+    for route in &mut transport.routes {
+        if route.0 == "https://stat.ripe.net/" {
+            route.2 = r#"{"status":"ok","data":{"announced":false,"asns":[{"asn":13335,"holder":"CLOUDFLARENET - Cloudflare, Inc."}],"resource":"1.1.1.0/24","block":{"desc":"APNIC (Status: ALLOCATED)"}}}"#;
+        }
+    }
+    let _ = run(&transport, &Keys::default(), "1.1.1.1", 1);
+    assert!(
+        !transport
+            .sent()
+            .iter()
+            .any(|r| r.url.contains("rpki-validation"))
     );
 }

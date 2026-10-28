@@ -73,6 +73,8 @@ impl Transport for Everywhere {
             )
         } else if url.contains("earth-search") {
             (200, br#"{"type":"FeatureCollection","features":[]}"#)
+        } else if url.contains("opensky-network.org") {
+            (200, br#"{"time":1,"states":null}"#)
         } else if url.contains("nominatim") {
             (
                 200,
@@ -364,8 +366,10 @@ fn a_lookup_asks_only_the_chosen_modules() {
             let chosen: Vec<&str> = std::iter::once(module).chain(anchor(kind)).collect();
             let address = if kind == ScanKind::CryptoAddress && module == crate::base_rpc::SOURCE {
                 "base:0x1111111111111111111111111111111111111111"
-            } else if kind == ScanKind::Place && module == crate::stac::SOURCE {
-                // The imagery catalogue takes a point, not a place name.
+            } else if kind == ScanKind::Place
+                && (module == crate::stac::SOURCE || module == crate::opensky::SOURCE)
+            {
+                // The imagery catalogue and the aircraft states take a point, not a place name.
                 "-33.8688,151.2093"
             } else {
                 target(kind)

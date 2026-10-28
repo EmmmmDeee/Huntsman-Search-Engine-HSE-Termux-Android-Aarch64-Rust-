@@ -4,20 +4,18 @@
 //! One bounded, read-only GET to the public CDX index yields actual indexed captures, not
 //! search links or proof that a historic page's contents are true. Every accepted URL
 //! carries its CDX timestamp, digest and replay link as unverified source evidence.
-//! Then at most [`MAX_CONTENT_PAGES`] of those captures (contact, about and team pages first,
+//! Then at most [`archived_page::MAX_PAGES`] of those captures (contact, about and team pages first,
 //! then the site root, newest first) are read from the archive's raw replay
 //! (`/web/TIMESTAMP` + `id_/URL`, the bytes as captured), and the e-mail addresses and phone
 //! numbers on them become historical leads, each naming the capture it came from. A
 //! returned URL is *never fetched* from its own site: it cannot redirect the scanner or
 //! reach a local/private host. The only network origin contacted is web.archive.org.
 
-use crate::canonical::{canonical_domain, canonical_url};
-use crate::classifier;
-use crate::domains::host_only;
+use crate::archived_page::{self, Admission, Archive, Capture};
+use crate::canonical::canonical_domain;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
-use crate::html_text::{Markup, Piece, attribute, html_to_text};
 use crate::http::{Request, Response, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
@@ -26,35 +24,8 @@ const API: &str = "https://web.archive.org/cdx/search/cdx";
 const ARCHIVE: &str = "https://web.archive.org/web";
 const MAX_CAPTURES: usize = 32;
 const MAX_JSON_BYTES: usize = 128 * 1024;
-const MAX_URL_BYTES: usize = 2048;
 const FIELDS: [&str; 4] = ["timestamp", "original", "statuscode", "digest"];
-/// The most archived pages read for their content in one lookup.
-pub const MAX_CONTENT_PAGES: usize = 3;
-/// The largest archived page read, in bytes; a larger one is not read.
-const MAX_PAGE_BYTES: usize = 1024 * 1024;
-/// The most text taken from one archived page, in characters.
-const MAX_PAGE_CHARS: usize = 200_000;
-/// The most contact details kept from one archived page.
-const MAX_CONTACTS_PER_PAGE: usize = 32;
-/// The ceiling on a contact's confidence: a page's past claim, not a current fact.
-const CONTENT_CONFIDENCE_CAP: f64 = 0.6;
-/// Path words of the pages that publish contact details, read before any other page.
-const CONTACT_WORDS: &[&str] = &[
-    "contact",
-    "about",
-    "team",
-    "staff",
-    "people",
-    "impressum",
-    "imprint",
-    "support",
-];
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub use crate::archived_page::Report;
 
 /// Retrieve a bounded sample of historically indexed web pages on this domain.
 /// No credentials, crawling of returned pages, or account access.
@@ -100,60 +71,23 @@ pub fn lookup<T: Transport + ?Sized>(
     Ok(report)
 }
 
-/// One capture to read: its 14-digit timestamp and its canonical original URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Capture {
-    timestamp: String,
-    url: String,
-}
-
-/// The captures to read for content: contact-like pages first, then the site root, then the
-/// rest, each group newest first, at most [`MAX_CONTENT_PAGES`].
+/// The captures to read for content, chosen by [`archived_page::choose`] from the URLs found.
 fn content_captures(entities: &[Entity]) -> Vec<Capture> {
-    let mut captures: Vec<(u8, Capture)> = Vec::new();
-    for entity in entities
-        .iter()
-        .filter(|entity| entity.kind == EntityKind::Url)
-    {
-        for evidence in &entity.evidence {
-            let (Some(timestamp), Some(url)) = (
-                evidence.attr_values("capture_timestamp_utc").next(),
-                evidence.attr_values("original_url").next(),
-            ) else {
-                continue;
-            };
-            let path = url
-                .split_once("://")
-                .and_then(|(_, rest)| rest.split_once('/'))
-                .map_or("", |(_, path)| path)
-                .to_ascii_lowercase();
-            let rank = if CONTACT_WORDS.iter().any(|word| path.contains(word)) {
-                0
-            } else if path.is_empty() {
-                1
-            } else {
-                2
-            };
-            let capture = Capture {
-                timestamp: timestamp.to_owned(),
-                url: url.to_owned(),
-            };
-            if !captures.iter().any(|(_, seen)| seen.url == capture.url) {
-                captures.push((rank, capture));
-            }
-        }
-    }
-    captures.sort_by(|(a_rank, a), (b_rank, b)| {
-        a_rank
-            .cmp(b_rank)
-            .then_with(|| b.timestamp.cmp(&a.timestamp))
-            .then_with(|| a.url.cmp(&b.url))
-    });
-    captures
-        .into_iter()
-        .take(MAX_CONTENT_PAGES)
-        .map(|(_, capture)| capture)
-        .collect()
+    archived_page::choose(
+        entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::Url)
+            .flat_map(|entity| &entity.evidence)
+            .filter_map(|evidence| {
+                Some(Capture {
+                    timestamp: evidence
+                        .attr_values("capture_timestamp_utc")
+                        .next()?
+                        .to_owned(),
+                    url: evidence.attr_values("original_url").next()?.to_owned(),
+                })
+            }),
+    )
 }
 
 /// Read the chosen captures and add the contact details they published to `report`, saying in
@@ -223,87 +157,21 @@ fn read_capture<T: Transport + ?Sized>(
     if response.status != 200 {
         return Err(format!("HTTP {}", response.status));
     }
-    let content_type = response.header_value("content-type").unwrap_or_default();
-    if !(content_type.contains("html") || content_type.starts_with("text/plain")) {
-        return Err("not a web page".to_owned());
-    }
-    if response.body.len() > MAX_PAGE_BYTES {
-        return Err("page over 1 MiB".to_owned());
-    }
-    Ok(page_contacts(
+    archived_page::web_page(
+        response.header_value("content-type").unwrap_or_default(),
+        response.body.len(),
+    )?;
+    Ok(archived_page::contacts(
         &String::from_utf8_lossy(&response.body),
         capture,
+        &Archive {
+            source: SOURCE,
+            dataset: "Internet Archive Wayback capture content",
+            holder: "the Internet Archive",
+            snapshot_url: format!("{ARCHIVE}/{}/{}", capture.timestamp, capture.url),
+        },
         scan_id,
     ))
-}
-
-/// The e-mail addresses and phone numbers `html` publishes in its text and in its `mailto:` and
-/// `tel:` links, each a historical lead naming `capture`. **Pure.**
-fn page_contacts(html: &str, capture: &Capture, scan_id: &str) -> Vec<Entity> {
-    let mut text = html_to_text(html, MAX_PAGE_CHARS).unwrap_or_default();
-    for piece in Markup::new(html) {
-        let Piece::Tag {
-            name,
-            end: false,
-            attrs,
-        } = piece
-        else {
-            continue;
-        };
-        if !name.eq_ignore_ascii_case("a") {
-            continue;
-        }
-        let Some(href) = attribute(attrs, "href") else {
-            continue;
-        };
-        let href = crate::textnorm::decode_html_entities(href.trim());
-        let target = href
-            .strip_prefix("mailto:")
-            .or_else(|| href.strip_prefix("tel:"))
-            .map(|rest| {
-                rest.split(['?', '#'])
-                    .next()
-                    .unwrap_or_default()
-                    .replace("%40", "@")
-                    .replace("%20", " ")
-            });
-        if let Some(target) = target {
-            text.push(' ');
-            text.push_str(&target);
-        }
-    }
-    let snapshot = format!("{ARCHIVE}/{}/{}", capture.timestamp, capture.url);
-    let mut entities = Vec::new();
-    for found in classifier::extract(&text)
-        .into_iter()
-        .filter(|found| {
-            found.is_actionable() && matches!(found.kind, EntityKind::Email | EntityKind::Phone)
-        })
-        .take(MAX_CONTACTS_PER_PAGE)
-    {
-        let evidence = Evidence::new(
-            EvidenceProvenance::for_scan(SOURCE, scan_id),
-            format!(
-                "published on {} as archived by the Internet Archive at {} UTC (historical; not proof it is current)",
-                capture.url, capture.timestamp
-            ),
-        )
-        .with_attr("dataset", "Internet Archive Wayback capture content")
-        .with_attr("capture_timestamp_utc", &capture.timestamp)
-        .with_attr("original_url", &capture.url)
-        .with_attr("archive_snapshot_url", &snapshot)
-        .with_attr("signal", found.signal);
-        push_entity(
-            &mut entities,
-            found.kind,
-            &found.value,
-            found.confidence.min(CONTENT_CONFIDENCE_CAP),
-            scan_id,
-            evidence,
-            &[SOURCE, "historical_content"],
-        );
-    }
-    entities
 }
 
 fn miss(outcome: SourceExecutionOutcome) -> Report {
@@ -403,7 +271,7 @@ fn parse_capture(
     status: u16,
     entities: &mut Vec<Entity>,
 ) -> Result<bool, SourceExecutionOutcome> {
-    if row.len() != FIELDS.len() || !valid_timestamp(&row[0]) || row[2] != "200" {
+    if row.len() != FIELDS.len() || !archived_page::valid_timestamp(&row[0]) || row[2] != "200" {
         return Err(failed(
             SourceOutcomeKind::SchemaDrift,
             now_unix,
@@ -411,46 +279,20 @@ fn parse_capture(
             "Wayback CDX capture row violates the documented contract",
         ));
     }
-    let original = row[1].as_str();
-    if original.len() > MAX_URL_BYTES {
-        return Err(failed(
-            SourceOutcomeKind::SemanticDrift,
-            now_unix,
-            status,
-            "Wayback CDX capture URL exceeds local evidence limits",
-        ));
-    }
-    let Some(canonical) = canonical_url(original) else {
-        return Err(failed(
-            SourceOutcomeKind::SemanticDrift,
-            now_unix,
-            status,
-            "Wayback CDX returned an invalid HTTP(S) URL",
-        ));
+    let (canonical, host) = match archived_page::admit(&row[1], domain) {
+        Ok(Admission::Admit { url, host }) => (url, host),
+        // Historical session tokens, e-mail addresses and other query values an archived URL
+        // exposed are not persisted.
+        Ok(Admission::Sensitive) => return Ok(true),
+        Err(reason) => {
+            return Err(failed(
+                SourceOutcomeKind::SemanticDrift,
+                now_unix,
+                status,
+                &format!("Wayback CDX returned {reason}"),
+            ));
+        }
     };
-    let host = host_only(&canonical)
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if host != domain
-        && !host
-            .strip_suffix(domain)
-            .is_some_and(|prefix| prefix.ends_with('.'))
-    {
-        return Err(failed(
-            SourceOutcomeKind::SemanticDrift,
-            now_unix,
-            status,
-            "Wayback CDX returned a URL outside the requested domain",
-        ));
-    }
-    // Do not persist historical session tokens, emails or other query values
-    // that may have been accidentally exposed in archived URL parameters.
-    if original
-        .bytes()
-        .any(|byte| matches!(byte, b'?' | b'#' | b'@'))
-    {
-        return Ok(true);
-    }
     let timestamp = &row[0];
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, scan_id),
@@ -498,35 +340,6 @@ fn failed(
     detail: &str,
 ) -> SourceExecutionOutcome {
     SourceExecutionOutcome::failed(SOURCE, now_unix, kind, Some(status), detail)
-}
-
-fn valid_timestamp(raw: &str) -> bool {
-    if raw.len() != 14 || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return false;
-    }
-    let parse = |start: usize, end: usize| raw[start..end].parse::<u32>().ok();
-    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
-        parse(0, 4),
-        parse(4, 6),
-        parse(6, 8),
-        parse(8, 10),
-        parse(10, 12),
-        parse(12, 14),
-    ) else {
-        return false;
-    };
-    if year == 0 || hour > 23 || minute > 59 || second > 59 {
-        return false;
-    }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return false,
-    };
-    (1..=days).contains(&day)
 }
 
 #[cfg(test)]
@@ -577,28 +390,6 @@ mod tests {
         );
         let bad = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://fakeexample.org/a","200","ABC"]]"#;
         assert!(parse_response(&response(bad), "example.org", "scan", NOW).is_err());
-    }
-
-    #[test]
-    fn timestamp_rejects_impossible_calendar_dates_and_times() {
-        for invalid in [
-            "00000101000000",
-            "20261301000000",
-            "20260001000000",
-            "20260431000000",
-            "20230229000000",
-            "19000229000000",
-            "20240230000000",
-            "20240101240000",
-            "20240101236000",
-            "20240101235960",
-            "2024010123595x",
-        ] {
-            assert!(!valid_timestamp(invalid), "{invalid}");
-        }
-        for valid in ["20000229000000", "20240229235959", "20241231235959"] {
-            assert!(valid_timestamp(valid), "{valid}");
-        }
     }
 
     #[test]
@@ -718,7 +509,7 @@ mod tests {
         };
         let email = lead(EntityKind::Email, "info@example.org");
         assert!(email.has_tag("historical_content"));
-        assert!(email.confidence <= CONTENT_CONFIDENCE_CAP);
+        assert!(email.confidence <= archived_page::CONFIDENCE_CAP);
         let evidence = &email.evidence[0];
         assert_eq!(
             evidence.attr_values("capture_timestamp_utc").next(),

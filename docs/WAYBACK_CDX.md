@@ -47,6 +47,10 @@ current. The outcome's detail names how many pages were read and why any was not
 (an HTTP status, a refused class, not a web page, over 1 MiB); a page not read is
 never treated as one with no contacts.
 
+The capture choice, page bound and contact reading live in one shared module,
+`archived_page`, which the Common Crawl source ([COMMON_CRAWL.md](COMMON_CRAWL.md))
+uses too, so a page is read the same way whichever archive holds it.
+
 Each retained record produces an `url` entity tagged `historical_capture`;
 an archived subdomain also produces a conservative `domain` pivot tagged
 `historical_subdomain`. Evidence records contain the canonical original URL,
