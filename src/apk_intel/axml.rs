@@ -82,7 +82,7 @@ pub struct Component {
 pub struct IntentFilterDef {
     /// The component this filter applies to (e.g., "com.example.MainActivity").
     pub component: String,
-    /// Component kind: "activity", "service", "broadcast_receiver", or "provider".
+    /// Component kind: "activity", "service", "`broadcast_receiver`", or "provider".
     pub component_kind: String,
     /// Intent actions this component handles (e.g., "android.intent.action.VIEW").
     pub actions: Vec<String>,
@@ -129,7 +129,7 @@ pub struct Manifest {
     pub provider_authorities: Vec<String>,
     /// Authority claims tied to explicitly exported, enabled providers (bounded, not verified access).
     pub explicitly_exported_provider_authorities: Vec<String>,
-    /// Intent filters extracted from manifest, capped at MAX_LISTED.
+    /// Intent filters extracted from manifest, capped at `MAX_LISTED`.
     pub intent_filters: Vec<IntentFilterDef>,
     /// Count of intent filters omitted when list exceeds capacity.
     pub intent_filters_omitted: usize,
@@ -378,7 +378,6 @@ struct Reader {
     application_enabled: Option<bool>,
     open: Option<Open>,
     intent_filter: Option<IntentFilterState>,
-    seen_filters: BTreeSet<String>,
 }
 
 /// Preserve each provider's authority claims separately from the manifest-wide inventory.
@@ -413,10 +412,41 @@ fn collect_provider_authorities(
 }
 
 impl Reader {
+    /// Collect the bounded scheme/host declarations for a single intent filter.
+    fn record_filter_data(&mut self, attributes: &[Attribute]) {
+        if let Some(scheme) = value(attributes, "scheme") {
+            let mut omitted = 0;
+            push_capped(
+                &mut self.manifest.deep_link_schemes,
+                &mut omitted,
+                &mut self.schemes,
+                &scheme.to_ascii_lowercase(),
+            );
+            if let Some(filter) = self.intent_filter.as_mut() {
+                filter.schemes.push(scheme.to_ascii_lowercase());
+            }
+        }
+        if let Some(host) = value(attributes, "host") {
+            push_capped(
+                &mut self.manifest.deep_link_hosts,
+                &mut self.manifest.deep_link_hosts_omitted,
+                &mut self.hosts,
+                &host.to_ascii_lowercase(),
+            );
+            if let Some(filter) = self.intent_filter.as_mut() {
+                filter.hosts.push(host.to_ascii_lowercase());
+            }
+        }
+    }
+
     fn start(&mut self, element: &str, parent: Option<&str>, attributes: &[Attribute]) {
         let component = COMPONENTS.contains(&element) && parent == Some("application");
         if component {
             self.close_component();
+        }
+        if element == "data" && parent == Some("intent-filter") {
+            self.record_filter_data(attributes);
+            return;
         }
         let manifest = &mut self.manifest;
         match element {
@@ -502,31 +532,6 @@ impl Reader {
                     }
                 }
             }
-            "data" if parent == Some("intent-filter") => {
-                if let Some(scheme) = value(attributes, "scheme") {
-                    let mut omitted = 0;
-                    push_capped(
-                        &mut manifest.deep_link_schemes,
-                        &mut omitted,
-                        &mut self.schemes,
-                        &scheme.to_ascii_lowercase(),
-                    );
-                    if let Some(filter) = self.intent_filter.as_mut() {
-                        filter.schemes.push(scheme.to_ascii_lowercase());
-                    }
-                }
-                if let Some(host) = value(attributes, "host") {
-                    push_capped(
-                        &mut manifest.deep_link_hosts,
-                        &mut manifest.deep_link_hosts_omitted,
-                        &mut self.hosts,
-                        &host.to_ascii_lowercase(),
-                    );
-                    if let Some(filter) = self.intent_filter.as_mut() {
-                        filter.hosts.push(host.to_ascii_lowercase());
-                    }
-                }
-            }
             _ => {}
         }
     }
@@ -539,10 +544,6 @@ impl Reader {
         let Some(open) = self.open.as_ref() else {
             return;
         };
-        let key = format!("{}/{}", open.name, filter.actions.join(","));
-        if !self.seen_filters.insert(key) {
-            return;
-        }
         if self.manifest.intent_filters.len() < MAX_LISTED {
             let kind = match open.kind.as_str() {
                 "activity-alias" => "activity",
@@ -1036,6 +1037,53 @@ pub(super) mod tests {
         .end("application")
         .end("manifest");
         axml
+    }
+
+    #[test]
+    fn distinct_filters_with_the_same_action_preserve_both_hosts() {
+        let mut axml = Axml::new(&["name", "scheme", "host"]);
+        axml.start("manifest", &[])
+            .start("application", &[])
+            .start("activity", &[("name", Val::Str(".Link"))])
+            .start("intent-filter", &[])
+            .start(
+                "action",
+                &[("name", Val::Str("android.intent.action.VIEW"))],
+            )
+            .end("action")
+            .start(
+                "data",
+                &[
+                    ("scheme", Val::Str("https")),
+                    ("host", Val::Str("one.example")),
+                ],
+            )
+            .end("data")
+            .end("intent-filter")
+            .start("intent-filter", &[])
+            .start(
+                "action",
+                &[("name", Val::Str("android.intent.action.VIEW"))],
+            )
+            .end("action")
+            .start(
+                "data",
+                &[
+                    ("scheme", Val::Str("https")),
+                    ("host", Val::Str("two.example")),
+                ],
+            )
+            .end("data")
+            .end("intent-filter")
+            .end("activity")
+            .end("application")
+            .end("manifest");
+
+        let parsed = manifest(&axml.build()).expect("manifest");
+        assert_eq!(parsed.intent_filters.len(), 2);
+        assert_eq!(parsed.intent_filters[0].hosts, ["one.example"]);
+        assert_eq!(parsed.intent_filters[1].hosts, ["two.example"]);
+        assert_eq!(parsed.intent_filters_omitted, 0);
     }
 
     #[test]

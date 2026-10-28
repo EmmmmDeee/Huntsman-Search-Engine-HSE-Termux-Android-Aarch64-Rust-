@@ -85,7 +85,7 @@ pub struct IntentAnalysis {
 
 /// Classify the risk level of an intent filter based on its characteristics.
 fn classify_risk(component_kind: &str, filter: &IntentFilterDef) -> String {
-    if component_kind == "broadcast_receiver" {
+    if matches!(component_kind, "receiver" | "broadcast_receiver") {
         if filter.actions.is_empty() {
             return "critical".to_string();
         }
@@ -177,11 +177,13 @@ pub fn analyze(manifest: &Manifest) -> IntentAnalysis {
         }
 
         // Sensitive broadcast receiver actions.
-        if def.component_kind == "broadcast_receiver"
-            && def
-                .actions
-                .iter()
-                .any(|a| SENSITIVE_BROADCAST_ACTIONS.iter().any(|s| a.contains(s)))
+        if matches!(
+            def.component_kind.as_str(),
+            "receiver" | "broadcast_receiver"
+        ) && def
+            .actions
+            .iter()
+            .any(|a| SENSITIVE_BROADCAST_ACTIONS.iter().any(|s| a.contains(s)))
         {
             if sensitive_count < MAX_LISTED {
                 analysis.sensitive_intent_handlers.push(format!(
@@ -252,9 +254,11 @@ mod tests {
 
     #[test]
     fn intent_analysis_with_risk_score() {
-        let mut analysis = IntentAnalysis::default();
-        analysis.risk_score = 10;
-        analysis.implicit_broadcast_risk = true;
+        let analysis = IntentAnalysis {
+            risk_score: 10,
+            implicit_broadcast_risk: true,
+            ..Default::default()
+        };
 
         assert_eq!(analysis.risk_score, 10);
         assert!(analysis.implicit_broadcast_risk);
@@ -327,6 +331,26 @@ mod tests {
     }
 
     #[test]
+    fn parsed_manifest_receiver_kind_triggers_sensitive_broadcast_analysis() {
+        let manifest = Manifest {
+            intent_filters: vec![IntentFilterDef {
+                component: ".Boot".to_string(),
+                component_kind: "receiver".to_string(),
+                actions: vec!["android.intent.action.BOOT_COMPLETED".to_string()],
+                categories: vec![],
+                schemes: vec![],
+                hosts: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let analysis = analyze(&manifest);
+        assert!(analysis.implicit_broadcast_risk);
+        assert_eq!(analysis.sensitive_intent_handlers.len(), 1);
+        assert_eq!(analysis.intent_filters[0].risk_level, "high");
+    }
+
+    #[test]
     fn intent_filter_broadcast_receiver() {
         let filter = IntentFilter {
             component: "com.example.BootReceiver".to_string(),
@@ -345,9 +369,11 @@ mod tests {
 
     #[test]
     fn intent_analysis_tracks_omitted_count() {
-        let mut analysis = IntentAnalysis::default();
-        analysis.intent_filters_omitted = 5;
-        analysis.implicit_intent_omitted = 3;
+        let analysis = IntentAnalysis {
+            intent_filters_omitted: 5,
+            implicit_intent_omitted: 3,
+            ..Default::default()
+        };
 
         assert_eq!(analysis.intent_filters_omitted, 5);
         assert_eq!(analysis.implicit_intent_omitted, 3);
