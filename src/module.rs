@@ -524,6 +524,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "satellite-imagery catalogue: the Sentinel-2 and Landsat scenes Earth Search STAC lists over a point in the last 90 days, with acquisition time, cloud cover and footprint; no imagery downloaded",
     },
     ReachableModule {
+        name: "opensky",
+        command: "geocode LAT,LON | scan -k geocode LAT,LON",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1591.001"],
+        description: "public aircraft observations: the transponders OpenSky Network receivers last reported within half a degree of a point, nearest first, with callsign, position time, altitude, speed and squawk; an airframe, not anyone aboard",
+    },
+    ReachableModule {
         name: "exif",
         command: "exif IMAGE-FILE",
         access: "keyless",
