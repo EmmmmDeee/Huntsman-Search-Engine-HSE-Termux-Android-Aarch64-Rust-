@@ -1504,12 +1504,18 @@ mod tests {
         let mut bytes = sample(&["AndroidManifest.xml"]);
         let directory = usize::try_from(le32(&bytes, bytes.len() - 22 + 16).unwrap()).unwrap();
         let certificate = signer::tests::certificate_der("Ambiguous Signer");
-        let value = signer::tests::signing_value(&certificate);
+        let v2_value = signer::tests::signing_value(&certificate);
+        let v3_value = signer::tests::signing_value_v3(&certificate, 28, 35);
         let mut pairs = Vec::new();
         for id in [0x7109_871a_u32, 0x7109_871a, 0xf053_68c0] {
+            let value = if id == 0xf053_68c0 {
+                &v3_value
+            } else {
+                &v2_value
+            };
             pairs.extend_from_slice(&u64::try_from(value.len() + 4).unwrap().to_le_bytes());
             pairs.extend_from_slice(&id.to_le_bytes());
-            pairs.extend_from_slice(&value);
+            pairs.extend_from_slice(value);
         }
         let size = u64::try_from(pairs.len() + 24).unwrap();
         let mut block = size.to_le_bytes().to_vec();
