@@ -347,6 +347,35 @@ struct Reader {
     open: Option<Open>,
 }
 
+/// Preserve each provider's authority claims separately from the manifest-wide inventory.
+fn collect_provider_authorities(
+    manifest: &mut Manifest,
+    seen: &mut BTreeSet<String>,
+    attributes: &[Attribute],
+) -> Vec<String> {
+    let mut own_authorities = Vec::new();
+    for authority in value(attributes, "authorities")
+        .unwrap_or_default()
+        .split(';')
+    {
+        let authority = authority.trim();
+        let mut omitted = 0;
+        push_capped(
+            &mut manifest.provider_authorities,
+            &mut omitted,
+            seen,
+            authority,
+        );
+        if !authority.is_empty()
+            && own_authorities.len() < MAX_LISTED
+            && !own_authorities.iter().any(|known: &String| known == authority)
+        {
+            own_authorities.push(authority.to_owned());
+        }
+    }
+    own_authorities
+}
+
 impl Reader {
     fn start(&mut self, element: &str, parent: Option<&str>, attributes: &[Attribute]) {
         let component = COMPONENTS.contains(&element) && parent == Some("application");
@@ -393,30 +422,11 @@ impl Reader {
             }
             kind if component => {
                 manifest.components += 1;
-                let mut own_authorities: Vec<String> = Vec::new();
-                if kind == "provider" {
-                    for authority in value(attributes, "authorities")
-                        .unwrap_or_default()
-                        .split(';')
-                    {
-                        let authority = authority.trim();
-                        let mut omitted = 0;
-                        push_capped(
-                            &mut manifest.provider_authorities,
-                            &mut omitted,
-                            &mut self.authorities,
-                            authority,
-                        );
-                        if !authority.is_empty()
-                            && own_authorities.len() < MAX_LISTED
-                            && !own_authorities
-                                .iter()
-                                .any(|known| known.as_str() == authority)
-                        {
-                            own_authorities.push(authority.to_owned());
-                        }
-                    }
-                }
+                let own_authorities = if kind == "provider" {
+                    collect_provider_authorities(manifest, &mut self.authorities, attributes)
+                } else {
+                    Vec::new()
+                };
                 self.open = Some(Open {
                     kind: kind.to_owned(),
                     name: value(attributes, "name").unwrap_or_default().to_owned(),
