@@ -16,6 +16,7 @@ const RES_STRING_POOL_TYPE: u16 = 0x0001;
 const RES_XML_RESOURCE_MAP_TYPE: u16 = 0x0180;
 const RES_XML_START_ELEMENT_TYPE: u16 = 0x0102;
 const RES_XML_END_ELEMENT_TYPE: u16 = 0x0103;
+const RES_XML_CDATA_TYPE: u16 = 0x0104;
 const UTF8_FLAG: u32 = 0x0100;
 const NO_INDEX: u32 = 0xffff_ffff;
 /// Element nesting deeper than any manifest needs is refused rather than tracked.
@@ -98,6 +99,8 @@ pub struct Manifest {
     pub allow_backup: Option<bool>,
     pub uses_cleartext_traffic: Option<bool>,
     pub network_security_config: bool,
+    /// Exact resource reference from the manifest; a declaration alone is not a decoded policy.
+    pub network_security_config_resource_id: Option<u32>,
     pub components: usize,
     pub reachable_components: Vec<Component>,
     pub reachable_components_omitted: usize,
@@ -421,6 +424,8 @@ impl Reader {
                 manifest.uses_cleartext_traffic = flag(attributes, "usesCleartextTraffic");
                 manifest.network_security_config =
                     value(attributes, "networkSecurityConfig").is_some();
+                manifest.network_security_config_resource_id =
+                    reference(attributes, "networkSecurityConfig");
             }
             kind if component => {
                 manifest.components += 1;
@@ -508,6 +513,101 @@ impl Reader {
             manifest.reachable_components_omitted += 1;
         }
     }
+}
+
+
+#[derive(Debug, Clone)]
+pub(super) struct XmlNode {
+    pub name: String,
+    pub parent: Option<usize>,
+    pub attributes: Vec<(String, String)>,
+    pub text: String,
+}
+
+impl XmlNode {
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.attributes
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// Bounded generic binary-XML node reader for manifest-referenced resource XML.
+/// Unlike filename-based scanning, this is only called on the exact resolved ZIP member.
+pub(super) fn xml_nodes(data: &[u8]) -> Result<Vec<XmlNode>, String> {
+    let (kind, header, size) = chunk(data, 0, data.len())?;
+    if kind != RES_XML_TYPE {
+        return Err("not Android binary XML".to_owned());
+    }
+    let mut document = Document {
+        strings: Vec::new(),
+        resource_ids: Vec::new(),
+    };
+    let mut nodes: Vec<XmlNode> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut at = header;
+    while at + 8 <= size {
+        let (kind, header, length) = chunk(data, at, size)?;
+        match kind {
+            RES_STRING_POOL_TYPE if document.strings.is_empty() => {
+                document.strings = string_pool(data, at, header, length)?;
+            }
+            RES_XML_RESOURCE_MAP_TYPE => {
+                document.resource_ids = data[at + header..at + length]
+                    .chunks_exact(4)
+                    .map(|id| u32::from_le_bytes([id[0], id[1], id[2], id[3]]))
+                    .collect();
+            }
+            RES_XML_START_ELEMENT_TYPE => {
+                if nodes.len() >= 4096 || stack.len() >= MAX_DEPTH {
+                    return Err("resource XML exceeds node/depth budget".to_owned());
+                }
+                let name_index = le32(data, at + header + 4)
+                    .ok_or("truncated resource XML element")?;
+                let name = document.string(name_index).unwrap_or_default().to_owned();
+                let attrs = document
+                    .attributes(data, at, header)
+                    .ok_or("truncated resource XML attributes")?;
+                if attrs.len() > 256 {
+                    return Err("resource XML element exceeds attribute budget".to_owned());
+                }
+                let index = nodes.len();
+                nodes.push(XmlNode {
+                    name,
+                    parent: stack.last().copied(),
+                    attributes: attrs.into_iter().map(|a| (a.name, a.value)).collect(),
+                    text: String::new(),
+                });
+                stack.push(index);
+            }
+            RES_XML_CDATA_TYPE => {
+                let index = *stack.last().ok_or("resource XML text outside root")?;
+                let string_index = le32(data, at + header)
+                    .ok_or("truncated resource XML text")?;
+                let value = document.string(string_index).unwrap_or_default();
+                if nodes[index].text.len().saturating_add(value.len()) > 2048 {
+                    return Err("resource XML text exceeds budget".to_owned());
+                }
+                nodes[index].text.push_str(value);
+            }
+            RES_XML_END_ELEMENT_TYPE => {
+                let name_index = le32(data, at + header + 4)
+                    .ok_or("truncated resource XML closing element")?;
+                let name = document.string(name_index).unwrap_or_default();
+                let index = stack.pop().ok_or("resource XML closing element without start")?;
+                if nodes[index].name != name {
+                    return Err("mismatched resource XML closing element".to_owned());
+                }
+            }
+            _ => {}
+        }
+        at += length;
+    }
+    if at != size || !stack.is_empty() || nodes.is_empty() {
+        return Err("incomplete resource XML".to_owned());
+    }
+    Ok(nodes)
 }
 
 /// Decode a compiled `AndroidManifest.xml`.
@@ -669,6 +769,21 @@ pub(super) mod tests {
                 .extend_from_slice(&u16::try_from(attrs.len()).unwrap().to_le_bytes());
             self.body.extend_from_slice(&[0; 6]);
             self.body.extend_from_slice(&encoded);
+            self
+        }
+
+        pub(crate) fn text(&mut self, value: &str) -> &mut Self {
+            let index = self.intern(value);
+            self.body
+                .extend_from_slice(&RES_XML_CDATA_TYPE.to_le_bytes());
+            self.body.extend_from_slice(&16_u16.to_le_bytes());
+            self.body.extend_from_slice(&28_u32.to_le_bytes());
+            self.body.extend_from_slice(&[0; 8]);
+            self.body.extend_from_slice(&index.to_le_bytes());
+            self.body.extend_from_slice(&8_u16.to_le_bytes());
+            self.body.push(0);
+            self.body.push(TYPE_STRING);
+            self.body.extend_from_slice(&index.to_le_bytes());
             self
         }
 
