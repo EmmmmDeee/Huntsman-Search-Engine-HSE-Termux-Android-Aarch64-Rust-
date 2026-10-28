@@ -459,12 +459,10 @@ pub(super) fn verify_sha256_signature(
     if key_end != signer_end {
         return "malformed";
     }
-    let Some(signature) = matching_signature(value, signatures_start, signatures_end, algorithm_id)
-    else {
-        return "malformed";
-    };
-    let Some(signature) = signature else {
-        return "missing";
+    let signature = match matching_signature(value, signatures_start, signatures_end, algorithm_id) {
+        SignatureRecord::Found(bytes) => bytes,
+        SignatureRecord::Missing => return "missing",
+        SignatureRecord::Malformed => return "malformed",
     };
     let Some(public_key) = signing_public_key(&value[key_start..key_end], algorithm_id) else {
         return "unsupported";
@@ -494,7 +492,7 @@ pub(super) fn verify_sha256_signature(
     if valid { "verified" } else { "invalid" }
 }
 
-/// Extract an algorithm-bound public key from DER SubjectPublicKeyInfo.
+/// Extract an algorithm-bound public key from DER `SubjectPublicKeyInfo`.
 /// RSA uses the embedded PKCS#1 key; P-256 ECDSA uses its uncompressed point.
 fn signing_public_key(spki: &[u8], algorithm_id: u32) -> Option<&[u8]> {
     let outer = tlv(spki, 0, spki.len())?;
@@ -556,30 +554,47 @@ fn algorithm_ids(value: &[u8], start: usize, end: usize) -> Option<Vec<u32>> {
     Some(ids)
 }
 
+enum SignatureRecord<'a> {
+    Malformed,
+    Missing,
+    Found(&'a [u8]),
+}
+
 /// Locate the signature with exactly the digest claim's algorithm identifier.
 fn matching_signature(
     value: &[u8],
     start: usize,
     end: usize,
     algorithm_id: u32,
-) -> Option<Option<&[u8]>> {
-    let records = prefixed(value, start, end)?;
+) -> SignatureRecord<'_> {
+    let Some(records) = prefixed(value, start, end) else {
+        return SignatureRecord::Malformed;
+    };
     if records.len() > 64 {
-        return None;
+        return SignatureRecord::Malformed;
     }
     let mut seen = std::collections::BTreeSet::new();
     let mut found = None;
     for (from, to) in records {
-        let id = u32::try_from(le32(value, from)?).ok()?;
-        let (bytes_start, bytes_end) = prefixed_one(value, from.checked_add(4)?, to)?;
+        let Some(id) = le32(value, from).and_then(|n| u32::try_from(n).ok()) else {
+            return SignatureRecord::Malformed;
+        };
+        let Some((bytes_start, bytes_end)) =
+            from.checked_add(4).and_then(|at| prefixed_one(value, at, to))
+        else {
+            return SignatureRecord::Malformed;
+        };
         if bytes_end != to || !seen.insert(id) || bytes_end - bytes_start > 8192 {
-            return None;
+            return SignatureRecord::Malformed;
         }
         if id == algorithm_id {
             found = Some(&value[bytes_start..bytes_end]);
         }
     }
-    Some(found)
+    match found {
+        Some(bytes) => SignatureRecord::Found(bytes),
+        None => SignatureRecord::Missing,
+    }
 }
 
 /// Certificates declared by v2/v3/v3.1 signers, with SDK-copy and public-key consistency
