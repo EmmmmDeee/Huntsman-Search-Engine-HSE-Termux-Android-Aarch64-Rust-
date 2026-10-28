@@ -472,7 +472,7 @@ struct Archive<'a> {
     directory_start: usize,
 }
 
-impl<'a> Archive<'a> {
+impl Archive<'_> {
     fn with_directory_start(directory_start: usize) -> Self {
         Self {
             directory_start,
