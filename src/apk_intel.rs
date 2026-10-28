@@ -1767,10 +1767,15 @@ mod tests {
         assert_eq!(report.analysis.content_digest_checks.len(), 1);
         assert!(report.analysis.content_digest_checks[0].matches);
         assert!(!report.analysis.content_digest_checks[0].signature_authenticated);
-        assert!(report.entities.iter().any(|entity| entity.evidence.iter().any(
-            |evidence| evidence.attributes.get("apk_content_digest_signature_authenticated")
-                .is_some_and(|value| value == "false")
-        )));
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.evidence.iter().any(|evidence| evidence
+                    .attributes
+                    .get("apk_content_digest_signature_authenticated")
+                    .is_some_and(|value| value == "false")))
+        );
 
         // Tamper with the actual local manifest payload, not the untrusted digest claim.
         let mut tampered = signed;
