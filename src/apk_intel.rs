@@ -10,6 +10,7 @@
 
 mod axml;
 mod dex;
+mod elf;
 mod risk;
 mod sdk;
 mod signer;
@@ -38,6 +39,11 @@ const APK_SIG_MAGIC: &[u8] = b"APK Sig Block 42";
 const MAX_APK_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 /// The most one DEX file may inflate to.
 const MAX_APK_DEX_BYTES: usize = 128 * 1024 * 1024;
+/// The most one native library read for its build-id may inflate to.
+const MAX_APK_NATIVE_BYTES: usize = 64 * 1024 * 1024;
+/// At most this many native libraries are read for build-ids, so an archive packed with `.so`
+/// files cannot make the phone inflate every one.
+const MAX_NATIVE_LIBS_READ: usize = 64;
 /// The most one v1 signature file may inflate to.
 const MAX_APK_SIGNATURE_FILE_BYTES: usize = 1024 * 1024;
 /// The most one APK's members may inflate to in total, so a small archive cannot make the phone
@@ -45,9 +51,9 @@ const MAX_APK_SIGNATURE_FILE_BYTES: usize = 1024 * 1024;
 const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 /// Hosts and URLs turned into entities, each; the report lists more.
 const MAX_HOST_ENTITIES: usize = 64;
-const LIMITATIONS: &str = "Offline static reading: the manifest is the archive's own claim, signing certificates are those the archive presents (no signature is verified), and a URL in code is a lead, not proof the app contacts it. Nothing is executed or fetched.";
+const LIMITATIONS: &str = "Offline static reading: manifest claims and signing certificates are unverified; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), and list the URLs and third-party SDKs the DEX code references, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read the GNU build-id of each native library from its ELF note (a cross-APK build pivot), and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -76,6 +82,15 @@ pub use risk::Flag;
 pub use sdk::Tracker;
 pub use signer::Certificate;
 
+/// One native library identified by its ELF GNU build-id.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct NativeLibrary {
+    /// The ABI directory the library sits in (`arm64-v8a`, …).
+    pub abi: String,
+    pub name: String,
+    pub build_id: String,
+}
+
 /// What reading the archive's members found.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Analysis {
@@ -87,6 +102,8 @@ pub struct Analysis {
     pub code: CodeUrls,
     /// The manifest's security-posture flags, highest risk first.
     pub risk_flags: Vec<Flag>,
+    /// The GNU build-id of each native library read, with its ABI. Candidate pivot only.
+    pub native_build_ids: Vec<NativeLibrary>,
     /// Members that were not read, with why.
     pub unread: Vec<String>,
     /// Archive tricks that make analysis tools fail while Android still installs the app.
@@ -396,6 +413,8 @@ struct Archive<'a> {
     manifest: Option<Member<'a>>,
     dex: Vec<Member<'a>>,
     v1: Vec<Member<'a>>,
+    /// Native libraries (`lib/*/*.so`), each with the ABI directory it sits in.
+    native: Vec<(&'a str, Member<'a>)>,
     signing_values: Vec<(&'static str, &'a [u8])>,
 }
 
@@ -456,6 +475,9 @@ fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
         if let Some(abi) = native_abi(name) {
             native_count += 1;
             abis.insert(abi.to_owned());
+            if archive.native.len() < MAX_NATIVE_LIBS_READ {
+                archive.native.push((abi, entry));
+            }
         }
         if is_v1_signing_artifact(name) {
             if is_v1_certificate(name) && archive.v1.len() < MAX_LISTED {
@@ -627,10 +649,37 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
         }
     }
     analysis.code.finish();
+    for (abi, member) in &archive.native {
+        if let Some(bytes) = read(member, MAX_APK_NATIVE_BYTES, &mut analysis) {
+            if let Some(build_id) = elf::build_id(&bytes) {
+                analysis.native_build_ids.push(NativeLibrary {
+                    abi: (*abi).to_owned(),
+                    name: member
+                        .name
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(member.name)
+                        .to_owned(),
+                    build_id,
+                });
+            }
+        }
+    }
+    analysis.native_build_ids.sort();
     analysis
 }
 
 /// The document entity's evidence: the archive inventory, then what its members declare.
+/// The native build-ids as one evidence line: `name (abi): build_id`, comma-separated.
+fn native_build_ids_summary(analysis: &Analysis) -> String {
+    analysis
+        .native_build_ids
+        .iter()
+        .map(|lib| format!("{} ({}): {}", lib.name, lib.abi, lib.build_id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn document_evidence(
     inventory: &Inventory,
     analysis: &Analysis,
@@ -712,6 +761,7 @@ fn document_evidence(
                 .join("; "),
         );
     }
+    put("apk_native_build_ids", native_build_ids_summary(analysis));
     put(
         "apk_bundled_sdks",
         analysis
@@ -802,6 +852,23 @@ fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec
             .with_attr("certificate_self_signed", signer.self_signed.to_string())
             .with_attr("certificate_android_debug_key", signer.android_debug.to_string()),
             &[SOURCE, "offline", "apk_signer"],
+        );
+    }
+    for lib in &analysis.native_build_ids {
+        push_entity(
+            entities,
+            EntityKind::Other,
+            &format!("apk-native-buildid:{}", lib.build_id),
+            0.9,
+            sid,
+            evidence(format!(
+                "Native library {} ({}) in {label} declares this GNU build-id; a matching ID is a candidate lead, not proof of identical bytes, provenance or authorship",
+                lib.name, lib.abi
+            ))
+            .with_attr("native_library", lib.name.as_str())
+            .with_attr("abi", lib.abi.as_str())
+            .with_attr("build_id", lib.build_id.as_str()),
+            &[SOURCE, "offline", "apk_native"],
         );
     }
     let host_entity = |host: &str| {
@@ -1109,6 +1176,11 @@ mod tests {
                     b"Signature-Version: 1.0\r\n".to_vec(),
                     8,
                 ),
+                part(
+                    "lib/arm64-v8a/libfield.so",
+                    elf::tests::elf_with_build_id(true, &[0xca, 0xfe, 0xba, 0xbe]),
+                    0,
+                ),
                 part("META-INF/CERT.RSA", signer::tests::pkcs7_der(&debug), 8),
             ],
             Some(&signer::tests::signing_value(&release)),
@@ -1158,6 +1230,15 @@ mod tests {
             "{:?}",
             analysis.risk_flags
         );
+        assert_eq!(
+            analysis.native_build_ids,
+            [NativeLibrary {
+                abi: "arm64-v8a".into(),
+                name: "libfield.so".into(),
+                build_id: "cafebabe".into()
+            }],
+            "the native library's GNU build-id is read from its ELF note"
+        );
 
         let document = &report.entities[0];
         assert_eq!(attr(document, "apk_package"), Some("com.example.field"));
@@ -1188,6 +1269,10 @@ mod tests {
             .iter()
             .map(|entity| (entity.kind.clone(), entity.value.as_str()))
             .collect();
+        assert!(
+            values.contains(&(EntityKind::Other, "apk-native-buildid:cafebabe")),
+            "{values:?}"
+        );
         let release_pivot = format!("apk-signer-sha256:{}", hex32(&sha256(&release)));
         assert!(
             values.contains(&(EntityKind::Other, release_pivot.as_str())),
