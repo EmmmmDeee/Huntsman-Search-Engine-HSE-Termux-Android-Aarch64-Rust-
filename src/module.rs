@@ -515,6 +515,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "forward and reverse geocoding from OpenStreetMap's Nominatim: a place or address to its coordinates and full address, or a point to the address there",
     },
     ReachableModule {
+        name: "stac",
+        command: "geocode LAT,LON | scan -k geocode LAT,LON",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1591.001"],
+        description: "satellite-imagery catalogue: the Sentinel-2 and Landsat scenes Earth Search STAC lists over a point in the last 90 days, with acquisition time, cloud cover and footprint; no imagery downloaded",
+    },
+    ReachableModule {
         name: "exif",
         command: "exif IMAGE-FILE",
         access: "keyless",

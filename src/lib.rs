@@ -222,6 +222,7 @@ pub mod snake_graph;
 pub mod source_outcome;
 pub mod source_registry;
 pub mod spf;
+pub mod stac;
 pub mod stage;
 pub mod stdio_failure;
 pub mod stix;

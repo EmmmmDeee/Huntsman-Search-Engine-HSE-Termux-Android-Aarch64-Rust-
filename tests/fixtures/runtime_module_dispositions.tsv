@@ -202,6 +202,7 @@ snake_graph	exporter	compact graph rendering
 source_outcome	runtime	causal provider outcome model
 source_registry	runtime	lead-only discovery route registry
 spf	leaf	SPF parser
+stac	adapter	keyless Earth Search STAC satellite-scene catalogue reached through nominatim_cli's point leg from geocode LAT,LON, scan -k geocode and /api/lookup
 stage	leaf	status/evidence-level primitives
 stdio_failure	leaf	the exit status a failed print becomes, for the binaries' panic hooks
 stix	exporter	STIX output from admitted claims
