@@ -1526,10 +1526,17 @@ mod tests {
 
         let (inventory, archive) = walk(&bytes).unwrap();
         assert!(inventory.apk_signing_block_present);
-        assert_eq!(inventory.signing_scheme_ids_detected_unverified, ["v2", "v3"]);
+        assert_eq!(
+            inventory.signing_scheme_ids_detected_unverified,
+            ["v2", "v3"]
+        );
         assert_eq!(inventory.duplicate_signing_scheme_ids, ["v2"]);
         assert_eq!(
-            archive.signing_values.iter().map(|(scheme, _)| *scheme).collect::<Vec<_>>(),
+            archive
+                .signing_values
+                .iter()
+                .map(|(scheme, _)| *scheme)
+                .collect::<Vec<_>>(),
             ["v3"]
         );
         let analysis = analyse(&bytes, &archive);
