@@ -42,12 +42,13 @@ impl CellId {
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let mut parts = text.split(':');
-        Some(Self {
+        let cell = Self {
             mcc: parts.next()?.parse().ok()?,
             mnc: parts.next()?.parse().ok()?,
             lac: parts.next()?.parse().ok()?,
             cellid: parts.next()?.parse().ok()?,
-        })
+        };
+        parts.next().is_none().then_some(cell)
     }
 }
 
@@ -83,6 +84,12 @@ pub fn lookup(
     }
 }
 
+/// A position is evidence only when both coordinates lie inside their geographic bounds.
+/// No clamping: an out-of-range provider value must not become a real location. **Pure.**
+fn valid_position(lat: f64, lon: f64) -> bool {
+    (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
+}
+
 /// One answer body. **Pure.**
 ///
 /// # Errors
@@ -100,6 +107,9 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let Some((lat, lon)) = lat.zip(lon) else {
         return Ok(None);
     };
+    if !valid_position(lat, lon) {
+        return Err(LegError::Decode("OpenCelliD position out of range".into()));
+    }
     let mut finding = Finding::new(format!("OpenCelliD: {lat:.4},{lon:.4}"))
         .attr("position", format!("{lat:.6},{lon:.6}"))
         .attr("raw_answer", text);
@@ -188,6 +198,9 @@ pub fn area<T: Transport + ?Sized>(
     lon: f64,
     now_unix: u64,
 ) -> Result<Area, LegError> {
+    if !valid_position(lat, lon) {
+        return Err(LegError::Decode("OpenCelliD area coordinates out of range".into()));
+    }
     match api_leg::get(
         transport,
         &API,
@@ -228,6 +241,11 @@ pub fn decode_area(body: &[u8]) -> Result<Area, LegError> {
     let cells = cells
         .iter()
         .filter_map(|cell| {
+            let lat = cell.get("lat").and_then(Value::as_f64)?;
+            let lon = cell.get("lon").and_then(Value::as_f64)?;
+            if !valid_position(lat, lon) {
+                return None;
+            }
             Some(AreaCell {
                 cell: CellId {
                     mcc: u16::try_from(number(cell, "mcc")?).ok()?,
@@ -235,8 +253,8 @@ pub fn decode_area(body: &[u8]) -> Result<Area, LegError> {
                     lac: u32::try_from(number(cell, "lac")?).ok()?,
                     cellid: number(cell, "cellid")?,
                 },
-                lat: cell.get("lat").and_then(Value::as_f64)?,
-                lon: cell.get("lon").and_then(Value::as_f64)?,
+                lat,
+                lon,
                 radio: api_leg::clean(cell.get("radio").and_then(Value::as_str)),
                 range: number(cell, "range"),
                 samples: number(cell, "samples"),
@@ -252,6 +270,54 @@ pub fn decode_area(body: &[u8]) -> Result<Area, LegError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_ids_require_exactly_four_components() {
+        assert_eq!(
+            CellId::parse("505:1:123:456"),
+            Some(CellId {
+                mcc: 505,
+                mnc: 1,
+                lac: 123,
+                cellid: 456,
+            })
+        );
+        for invalid in [
+            "505:1:123",
+            "505:1:123:456:",
+            "505:1:123:456:789",
+            "505:1:123:456:untrusted",
+            "505:1:123:456::",
+        ] {
+            assert!(CellId::parse(invalid).is_none(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn out_of_range_positions_are_not_emitted_as_evidence() {
+        for (lat, lon) in [(91.0, 151.0), (-90.1, 151.0), (0.0, 180.1), (0.0, -180.1)] {
+            let body = format!(r#"{{"lat":{lat},"lon":{lon},"range":500}}"#);
+            assert!(matches!(decode(body.as_bytes()), Err(LegError::Decode(_))));
+        }
+        assert!(valid_position(-90.0, -180.0));
+        assert!(valid_position(90.0, 180.0));
+        assert!(!valid_position(f64::NAN, 0.0));
+        assert!(!valid_position(0.0, f64::INFINITY));
+    }
+
+    #[test]
+    fn area_excludes_invalid_positions_without_erasing_valid_cells() {
+        let response = br#"{"count":3,"cells":[
+            {"lat":-27.0,"lon":153.0,"mcc":505,"mnc":1,"lac":12,"cellid":100},
+            {"lat":91.0,"lon":153.0,"mcc":505,"mnc":1,"lac":12,"cellid":101},
+            {"lat":-27.0,"lon":181.0,"mcc":505,"mnc":1,"lac":12,"cellid":102}
+        ]}"#;
+        let area = decode_area(response).expect("valid response structure");
+        assert_eq!(area.cells.len(), 1);
+        assert_eq!(area.cells[0].cell.cellid, 100);
+        // Provider count is provenance about upstream rows, not the number accepted.
+        assert_eq!(area.count, Some(3));
+    }
 
     #[test]
     fn a_position_is_kept() {
