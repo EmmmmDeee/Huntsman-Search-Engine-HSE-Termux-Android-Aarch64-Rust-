@@ -199,7 +199,9 @@ pub fn area<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Area, LegError> {
     if !valid_position(lat, lon) {
-        return Err(LegError::Decode("OpenCelliD area coordinates out of range".into()));
+        return Err(LegError::Decode(
+            "OpenCelliD area coordinates out of range".into(),
+        ));
     }
     match api_leg::get(
         transport,
