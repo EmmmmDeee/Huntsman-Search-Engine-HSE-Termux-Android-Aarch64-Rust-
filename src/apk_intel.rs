@@ -82,8 +82,8 @@ pub struct Inventory {
 }
 
 pub use axml::{Component, Exposure, Manifest};
-pub use network_config::{DomainRule, NetworkPolicy, TrustAnchor};
 pub use dex::CodeUrls;
+pub use network_config::{DomainRule, NetworkPolicy, TrustAnchor};
 pub use risk::Flag;
 pub use sdk::Tracker;
 pub use signer::Certificate;
@@ -704,13 +704,16 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     // Resolve the displayed label and the network policy from the same resource table.
     // A similarly named XML member is never selected without the exact manifest resource ID.
     let (inline_label, label_ref, policy_ref) =
-        analysis.manifest.as_ref().map_or((None, None, None), |manifest| {
-            (
-                manifest.label.clone(),
-                manifest.label_resource_id,
-                manifest.network_security_config_resource_id,
-            )
-        });
+        analysis
+            .manifest
+            .as_ref()
+            .map_or((None, None, None), |manifest| {
+                (
+                    manifest.label.clone(),
+                    manifest.label_resource_id,
+                    manifest.network_security_config_resource_id,
+                )
+            });
     analysis.app_label = inline_label;
     let mut policy_path = None;
     if label_ref.is_some() || policy_ref.is_some() {
@@ -729,9 +732,9 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
                 }
             }
         } else if policy_ref.is_some() {
-            analysis.unread.push(
-                "network policy reference has no resources.arsc table".to_owned(),
-            );
+            analysis
+                .unread
+                .push("network policy reference has no resources.arsc table".to_owned());
         }
     }
     if let (Some(id), Some(path)) = (policy_ref, policy_path) {
@@ -740,7 +743,10 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
                 "network policy resource 0x{id:08x} resolved to an invalid XML path"
             ));
         } else {
-            let mut matches = archive.resource_xml.iter().filter(|member| member.name == path);
+            let mut matches = archive
+                .resource_xml
+                .iter()
+                .filter(|member| member.name == path);
             match (matches.next(), matches.next()) {
                 (Some(member), None) => {
                     if let Some(bytes) = read(member, MAX_APK_MANIFEST_BYTES, &mut analysis) {
@@ -871,25 +877,38 @@ fn document_evidence(
     );
     if let Some(policy) = &analysis.network_policy {
         put("apk_network_policy_path", policy.resource_path.clone());
-        put("apk_network_policy_resource_id", format!("0x{:08x}", policy.resource_id));
+        put(
+            "apk_network_policy_resource_id",
+            format!("0x{:08x}", policy.resource_id),
+        );
         put(
             "apk_network_policy_base_cleartext",
-            policy.base_cleartext_permitted.map_or("unknown".to_owned(), |value| value.to_string()),
+            policy
+                .base_cleartext_permitted
+                .map_or("unknown".to_owned(), |value| value.to_string()),
         );
         put(
             "apk_network_policy_domains",
-            policy.domains.iter().map(|rule| {
-                format!(
-                    "{} (subdomains={:?}, declared_cleartext={:?})",
-                    rule.domain, rule.include_subdomains, rule.declared_cleartext_permitted
-                )
-            }).collect::<Vec<_>>().join("; "),
+            policy
+                .domains
+                .iter()
+                .map(|rule| {
+                    format!(
+                        "{} (subdomains={:?}, declared_cleartext={:?})",
+                        rule.domain, rule.include_subdomains, rule.declared_cleartext_permitted
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
         );
         put(
             "apk_network_policy_trust_anchors",
-            policy.trust_anchors.iter().map(|anchor| {
-                format!("{}:{}", anchor.scope, anchor.source)
-            }).collect::<Vec<_>>().join("; "),
+            policy
+                .trust_anchors
+                .iter()
+                .map(|anchor| format!("{}:{}", anchor.scope, anchor.source))
+                .collect::<Vec<_>>()
+                .join("; "),
         );
         put(
             "apk_network_policy_debug_overrides",
@@ -897,7 +916,10 @@ fn document_evidence(
         );
         put("apk_network_policy_pin_sets", policy.pin_sets.to_string());
         put("apk_network_policy_pin_count", policy.pin_count.to_string());
-        put("apk_network_policy_limitations", policy.limitations.to_owned());
+        put(
+            "apk_network_policy_limitations",
+            policy.limitations.to_owned(),
+        );
     }
     signer_digest_attrs(analysis, &mut put);
     if let Some(signer) = analysis.signers.first() {
@@ -1645,13 +1667,19 @@ mod tests {
         let resources = arsc::tests::table(&["res/xml/actual.xml"], id, 0);
         let actual = Axml::new(&["cleartextTrafficPermitted"])
             .start("network-security-config", &[])
-            .start("base-config", &[("cleartextTrafficPermitted", Val::Bool(false))])
+            .start(
+                "base-config",
+                &[("cleartextTrafficPermitted", Val::Bool(false))],
+            )
             .end("base-config")
             .end("network-security-config")
             .build();
         let decoy = Axml::new(&["cleartextTrafficPermitted"])
             .start("network-security-config", &[])
-            .start("base-config", &[("cleartextTrafficPermitted", Val::Bool(true))])
+            .start(
+                "base-config",
+                &[("cleartextTrafficPermitted", Val::Bool(true))],
+            )
             .end("base-config")
             .end("network-security-config")
             .build();
@@ -1666,7 +1694,12 @@ mod tests {
         );
         let report = run(&bytes, "network.apk", 100).unwrap();
         assert_eq!(
-            report.analysis.manifest.as_ref().unwrap().network_security_config_resource_id,
+            report
+                .analysis
+                .manifest
+                .as_ref()
+                .unwrap()
+                .network_security_config_resource_id,
             Some(id)
         );
         let policy = report.analysis.network_policy.as_ref().unwrap();
@@ -1676,7 +1709,11 @@ mod tests {
             attr(&report.entities[0], "apk_network_policy_base_cleartext"),
             Some("false")
         );
-        assert!(report.analysis.unread.is_empty(), "{:?}", report.analysis.unread);
+        assert!(
+            report.analysis.unread.is_empty(),
+            "{:?}",
+            report.analysis.unread
+        );
 
         // Duplicate names are ambiguous, even if both carry the same bytes.
         let duplicate = apk(
@@ -1691,7 +1728,11 @@ mod tests {
         let report = run(&duplicate, "duplicate.apk", 100).unwrap();
         assert!(report.analysis.network_policy.is_none());
         assert!(
-            report.analysis.unread.iter().any(|reason| reason.contains("duplicate ZIP path")),
+            report
+                .analysis
+                .unread
+                .iter()
+                .any(|reason| reason.contains("duplicate ZIP path")),
             "{:?}",
             report.analysis.unread
         );
