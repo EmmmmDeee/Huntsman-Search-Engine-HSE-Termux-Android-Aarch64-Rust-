@@ -82,7 +82,7 @@ pub struct Component {
 pub struct IntentFilterDef {
     /// The component this filter applies to (e.g., "com.example.MainActivity").
     pub component: String,
-    /// Component kind: "activity", "service", "broadcast_receiver", or "provider".
+    /// Component kind: "activity", "service", "`broadcast_receiver`", or "provider".
     pub component_kind: String,
     /// Intent actions this component handles (e.g., "android.intent.action.VIEW").
     pub actions: Vec<String>,
@@ -129,7 +129,7 @@ pub struct Manifest {
     pub provider_authorities: Vec<String>,
     /// Authority claims tied to explicitly exported, enabled providers (bounded, not verified access).
     pub explicitly_exported_provider_authorities: Vec<String>,
-    /// Intent filters extracted from manifest, capped at MAX_LISTED.
+    /// Intent filters extracted from manifest, capped at `MAX_LISTED`.
     pub intent_filters: Vec<IntentFilterDef>,
     /// Count of intent filters omitted when list exceeds capacity.
     pub intent_filters_omitted: usize,
@@ -413,6 +413,7 @@ fn collect_provider_authorities(
 }
 
 impl Reader {
+    #[allow(clippy::too_many_lines)]
     fn start(&mut self, element: &str, parent: Option<&str>, attributes: &[Attribute]) {
         let component = COMPONENTS.contains(&element) && parent == Some("application");
         if component {

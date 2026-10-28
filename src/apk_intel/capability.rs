@@ -66,7 +66,7 @@ pub struct CapabilityAnalysis {
 }
 
 /// Map a single permission to its capabilities and risk level.
-#[allow(dead_code, too_many_lines)]
+#[allow(dead_code, clippy::too_many_lines)]
 pub fn permission_to_capabilities(
     permission: &str,
 ) -> Option<(&'static str, &'static [&'static str])> {
