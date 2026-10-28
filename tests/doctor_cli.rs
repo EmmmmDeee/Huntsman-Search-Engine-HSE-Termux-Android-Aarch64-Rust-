@@ -67,6 +67,18 @@ fn stdout(out: &Output) -> String {
 }
 
 /// A port nothing listens on.
+/// Held for the whole of every test that binds, frees or probes a loopback port. Tests in one
+/// binary run in parallel threads, and a port a test frees (`free_port`, a stopped server) can be
+/// handed by the kernel to another test's listener at once: a probe then meets the wrong program,
+/// a "not running" port is suddenly foreign, or a counted accept is spent by a stranger. Cargo
+/// runs test binaries one at a time, so serialising these tests here removes the collision.
+fn ports() -> std::sync::MutexGuard<'static, ()> {
+    static PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PORTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -112,6 +124,7 @@ fn start_serve(home: &Path, bind: &str, token: Option<&str>) -> Serve {
 
 #[test]
 fn doctor_serve_reports_a_real_server_healthy_and_a_stopped_one_not_running() {
+    let _ports = ports();
     let home = scratch("serve");
     let serve = start_serve(&home, "127.0.0.1:0", None);
     let out = bin(&home)
@@ -172,6 +185,7 @@ fn doctor_serve_reports_a_real_server_healthy_and_a_stopped_one_not_running() {
 /// state directory.
 #[test]
 fn doctor_serve_reads_the_address_the_termux_controller_recorded() {
+    let _ports = ports();
     let home = scratch("serve-bind");
     let serve = start_serve(&home, "127.0.0.1:0", None);
     let bind_file = home.join(".huntsman").join("serve.bind");
@@ -275,6 +289,7 @@ fn doctor_serve_reads_the_address_the_termux_controller_recorded() {
 /// started with it needs none, so `doctor serve` finds it healthy from a shell without it.
 #[test]
 fn doctor_serve_finds_a_loopback_server_started_with_a_token_healthy_without_it() {
+    let _ports = ports();
     let home = scratch("loopback-token");
     let serve = start_serve(&home, "127.0.0.1:0", Some("doctor-test-serve-token"));
     let out = bin(&home)
@@ -293,6 +308,7 @@ fn doctor_serve_finds_a_loopback_server_started_with_a_token_healthy_without_it(
 
 #[test]
 fn doctor_serve_needs_the_token_a_public_server_was_started_with() {
+    let _ports = ports();
     let home = scratch("token");
     let serve = start_serve(&home, "0.0.0.0:0", Some("doctor-test-serve-token"));
     let out = bin(&home)
@@ -316,21 +332,61 @@ fn doctor_serve_needs_the_token_a_public_server_was_started_with() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// Another program on a port: it answers every connection with a page that is not
+/// huntsman-recon's, until dropped. It answers any number of connections, not a counted few, so a
+/// stray connection (another test's doctor probing a port number it was handed and released,
+/// which the kernel can hand to this listener) cannot leave a later probe facing a closed port.
+struct Foreign {
+    addr: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Foreign {
+    fn start() -> Self {
+        use std::sync::atomic::Ordering;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = std::sync::Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0_u8; 2048];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\n\r\nother",
+                );
+            }
+        });
+        Self {
+            addr,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Foreign {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wake the blocked accept so the thread sees the flag and ends.
+        let _ = std::net::TcpStream::connect(&self.addr);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 #[test]
 fn a_port_held_by_another_program_is_foreign_and_fails_doctor() {
+    let _ports = ports();
     let home = scratch("foreign");
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    let server = std::thread::spawn(move || {
-        for _ in 0..2 {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buf = [0_u8; 2048];
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\n\r\nother",
-            );
-        }
-    });
+    let foreign = Foreign::start();
+    let addr = foreign.addr.clone();
     let out = bin(&home)
         .args(["doctor", "serve", "--bind", &addr])
         .output()
@@ -342,6 +398,9 @@ fn a_port_held_by_another_program_is_foreign_and_fails_doctor() {
         stdout(&out)
     );
 
+    // A stray connection, as another test's doctor probing a port number it was handed and
+    // released, lands on this listener: it is the same program on the same port.
+    drop(std::net::TcpStream::connect(&addr).unwrap());
     let out = bin(&home)
         .args(["doctor", "--bind", &addr])
         .output()
@@ -353,12 +412,13 @@ fn a_port_held_by_another_program_is_foreign_and_fails_doctor() {
         text.contains("fix: huntsman-recon serve --bind 127.0.0.1:8081"),
         "{text}"
     );
-    server.join().unwrap();
+    drop(foreign);
     let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
 fn fix_repairs_a_fresh_home_and_leaves_keys_untouched() {
+    let _ports = ports();
     let home = scratch("fix");
     let keys = home.join(".huntsman.env");
     let content = "HUNTSMAN_SHODAN_KEY=doctor-test-secret-value-cli\n";
@@ -412,6 +472,7 @@ fn fix_repairs_a_fresh_home_and_leaves_keys_untouched() {
 
 #[test]
 fn a_broken_ledger_in_the_working_directory_fails_doctor_and_survives_fix() {
+    let _ports = ports();
     let home = scratch("ledger");
     let var = home.join("work/var");
     fs::create_dir_all(&var).unwrap();
@@ -467,6 +528,7 @@ fn doctor_and_fix_have_help() {
 /// `doctor` must not report them as keys no provider reads.
 #[test]
 fn continuous_settings_in_the_keys_file_are_recognised() {
+    let _ports = ports();
     let home = scratch("continuous");
     let keys = home.join(".huntsman.env");
     fs::write(
@@ -494,6 +556,7 @@ fn continuous_settings_in_the_keys_file_are_recognised() {
 /// that ends it, so the scans the page ran are never reported missing.
 #[test]
 fn doctor_names_a_state_dir_the_web_ui_service_keeps_elsewhere() {
+    let _ports = ports();
     let home = scratch("service-state");
     let prefix = home.join("prefix");
     let service = prefix.join("var/service/huntsman-serve");
