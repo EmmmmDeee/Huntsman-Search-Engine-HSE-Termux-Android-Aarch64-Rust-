@@ -88,6 +88,11 @@ const SENSITIVE_PERMISSIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Parse an Android SDK level string (typically "30", "31", etc.) to an integer.
+fn parse_sdk(sdk_str: &str) -> Option<u32> {
+    sdk_str.trim().parse().ok()
+}
+
 /// The manifest's security-posture flags, highest risk first. Empty when the manifest declares
 /// nothing of note.
 #[must_use]
@@ -95,6 +100,46 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
     let mut flags = Vec::new();
     let mut add =
         |risk: Risk, id: &'static str, detail: String| flags.push(Flag { risk, id, detail });
+
+    // Check SDK version mismatches: target SDK too old means missing modern Android protections.
+    if let Some(target_sdk_str) = manifest.target_sdk.as_deref() {
+        if let Some(target_sdk) = parse_sdk(target_sdk_str) {
+            if target_sdk < 28 {
+                add(
+                    Risk::High,
+                    "target_sdk_too_old",
+                    format!(
+                        "the application targets Android SDK {} (below 9.0/API 28); it does not benefit from modern platform hardening, container isolation, scoped storage and other protections introduced in Android 9 and later",
+                        target_sdk
+                    ),
+                );
+            } else if target_sdk < 31 {
+                add(
+                    Risk::Medium,
+                    "target_sdk_not_current",
+                    format!(
+                        "the application targets Android SDK {} (API {}); it does not receive protections from Android 12 and later, including restricted implicit intents, package visibility, and restricted non-SDK interfaces",
+                        target_sdk,
+                        if target_sdk == 29 { "10 (Q)" } else if target_sdk == 30 { "11 (R)" } else { "9 (P)" }
+                    ),
+                );
+            }
+        }
+    }
+    if let Some(min_sdk_str) = manifest.min_sdk.as_deref() {
+        if let Some(min_sdk) = parse_sdk(min_sdk_str) {
+            if min_sdk < 21 {
+                add(
+                    Risk::Medium,
+                    "min_sdk_too_old",
+                    format!(
+                        "the application declares a minimum SDK {} (below 5.0/API 21); it is compatible with Android versions that lack modern platform security features",
+                        min_sdk
+                    ),
+                );
+            }
+        }
+    }
 
     if manifest.debuggable == Some(true) {
         add(
@@ -397,5 +442,76 @@ mod tests {
         ));
         assert!(!is_sensitive_authority("com.example.data"));
         assert!(!is_sensitive_authority("com.example.appdata"));
+    }
+
+    #[test]
+    fn target_sdk_too_old_is_flagged_as_high_risk() {
+        let manifest = Manifest {
+            target_sdk: Some("27".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "target_sdk_too_old" && flag.risk == Risk::High),
+            "target SDK 27 should be flagged as HIGH risk"
+        );
+    }
+
+    #[test]
+    fn target_sdk_between_28_and_30_is_flagged_as_medium_risk() {
+        let manifest = Manifest {
+            target_sdk: Some("29".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "target_sdk_not_current" && flag.risk == Risk::Medium),
+            "target SDK 29 should be flagged as MEDIUM risk"
+        );
+    }
+
+    #[test]
+    fn target_sdk_31_or_above_does_not_trigger_sdk_flags() {
+        let manifest = Manifest {
+            target_sdk: Some("31".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            !observed.iter().any(|flag| flag.id.contains("target_sdk")),
+            "target SDK 31 should not trigger SDK flags"
+        );
+    }
+
+    #[test]
+    fn min_sdk_below_21_is_flagged() {
+        let manifest = Manifest {
+            min_sdk: Some("19".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            observed
+                .iter()
+                .any(|flag| flag.id == "min_sdk_too_old" && flag.risk == Risk::Medium),
+            "min SDK 19 should be flagged as MEDIUM risk"
+        );
+    }
+
+    #[test]
+    fn min_sdk_21_or_above_does_not_trigger_min_sdk_flag() {
+        let manifest = Manifest {
+            min_sdk: Some("21".to_owned()),
+            ..Manifest::default()
+        };
+        let observed = flags(&manifest);
+        assert!(
+            !observed.iter().any(|flag| flag.id == "min_sdk_too_old"),
+            "min SDK 21 should not trigger min_sdk_too_old flag"
+        );
     }
 }
