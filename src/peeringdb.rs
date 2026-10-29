@@ -16,8 +16,9 @@
 //! is accepted only when the `net` response's `asn` is exactly the requested number -- a mismatched
 //! or malformed envelope is schema drift, never a positive entity; a 404 or an empty `data` array
 //! is a clean zero (most networks simply have no `PeeringDB` record). Every published field is kept
-//! verbatim as evidence; nothing is redacted. A peering address is minted only when it canonicalises
-//! as an IP, so a malformed address value never becomes a fabricated pivot.
+//! verbatim as evidence; nothing is redacted. Secondary exchange rows must match the requested
+//! ASN and, when supplied, the selected network ID before any IP pivots are emitted. A peering
+//! address is minted only when it canonicalises as an IP, so malformed addresses are not pivots.
 //!
 //! The network's facilities (`netfac`) and public points of contact (`poc`) are a planned
 //! compounding follow-up over the same `net.id`; this module establishes the keyless source and its
@@ -109,6 +110,8 @@ struct NetIxLan {
     #[serde(default)]
     asn: Option<u32>,
     #[serde(default)]
+    net_id: Option<u64>,
+    #[serde(default)]
     speed: Option<u64>,
     #[serde(default)]
     ipaddr4: Option<String>,
@@ -176,7 +179,7 @@ pub fn lookup<T: Transport + ?Sized>(
 
     if net.ix_count.unwrap_or(0) > 0 {
         if let Some(net_id) = net.id {
-            match ixlan_entities(transport, net_id, scan_id, now_unix) {
+            match ixlan_entities(transport, net_id, asn, scan_id, now_unix) {
                 Ok((peering, records)) => {
                     let _ = write!(
                         detail,
@@ -337,6 +340,7 @@ fn net_summary(net: &Net, asn: u32) -> String {
 fn ixlan_entities<T: Transport + ?Sized>(
     transport: &T,
     net_id: u64,
+    expected_asn: u32,
     scan_id: &str,
     now_unix: u64,
 ) -> Result<(Vec<Entity>, usize), String> {
@@ -355,7 +359,17 @@ fn ixlan_entities<T: Transport + ?Sized>(
     let envelope: Envelope<NetIxLan> =
         decode_json(response, SOURCE, now_unix, "PeeringDB netixlan")
             .map_err(|_| "unreadable netixlan body".to_owned())?;
-    let records = envelope.data.unwrap_or_default();
+    let records = envelope
+        .data
+        .ok_or_else(|| "netixlan schema drift: missing data array".to_owned())?;
+    // The URL filter is not an attribution guarantee. Fail the whole secondary leg
+    // rather than emitting any IP when a row contradicts the selected AS/network.
+    if records.iter().any(|record| {
+        record.asn != Some(expected_asn)
+            || record.net_id.is_some_and(|record_id| record_id != net_id)
+    }) {
+        return Err("netixlan schema drift: missing/foreign ASN or foreign network ID".to_owned());
+    }
     let count = records.len();
     let mut entities = Vec::new();
     for record in &records {
@@ -547,6 +561,38 @@ mod tests {
             "netixlan success detail: {:?}",
             report.outcome.detail
         );
+    }
+
+    #[test]
+    fn netixlan_requires_matching_asn_and_network_id_before_emitting_any_ips() {
+        // Reject a foreign ASN, missing ASN, contradictory network ID, and a mixed
+        // response where an otherwise valid row precedes a foreign one. In all
+        // cases preserve the verified network profile, but withhold every IP pivot.
+        for body in [
+            r#"{"data":[{"asn":9999,"net_id":5104,"ipaddr4":"203.0.113.77"}]}"#,
+            r#"{"data":[{"net_id":5104,"ipaddr4":"203.0.113.77"}]}"#,
+            r#"{"data":[{"asn":3333,"net_id":42,"ipaddr4":"203.0.113.77"}]}"#,
+            r#"{"data":[{"asn":3333,"net_id":5104,"ipaddr4":"193.239.117.25"},{"asn":9999,"net_id":5104,"ipaddr4":"203.0.113.77"}]}"#,
+            r#"{"meta":{}}"#,
+        ] {
+            let report = report_of(vec![Ok(json_ok(NET)), Ok(json_ok(body))]);
+            assert!(has(&report, &EntityKind::Asn, "AS3333"));
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+            assert!(
+                !report.entities.iter().any(|entity| entity.kind == EntityKind::IpAddress),
+                "a contradictory netixlan response must not emit any IP: {:#?}",
+                report.entities
+            );
+            assert!(
+                report.outcome.detail.as_deref().unwrap_or_default().contains("netixlan unavailable"),
+                "schema drift must be visible in outcome detail: {:?}",
+                report.outcome.detail
+            );
+        }
+
+        let valid = r#"{"data":[{"asn":3333,"net_id":5104,"ipaddr4":"193.239.117.25"}]}"#;
+        let report = report_of(vec![Ok(json_ok(NET)), Ok(json_ok(valid))]);
+        assert!(has(&report, &EntityKind::IpAddress, "193.239.117.25"));
     }
 
     #[test]
