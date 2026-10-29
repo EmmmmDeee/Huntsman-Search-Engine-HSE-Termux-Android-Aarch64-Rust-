@@ -333,7 +333,10 @@ mod tests {
         assert_eq!(entities[1].confidence, 0.55);
         assert!(entities[1].has_tag(wikidata::NAME_SEARCH_LEAD_TAG));
         assert_eq!(
-            entities[1].evidence[0].attributes.get("qid").map(String::as_str),
+            entities[1].evidence[0]
+                .attributes
+                .get("qid")
+                .map(String::as_str),
             Some("Q42"),
         );
     }
