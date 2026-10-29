@@ -1,6 +1,8 @@
 //! RF helpers rebuilt from the monolith's `util::wifi`, `util::cell`, and
 //! `core::rf`.
 
+pub mod network_survey;
+
 use std::borrow::Cow;
 use std::fmt::Display;
 
