@@ -215,9 +215,24 @@ mod tests {
         let body = br#"{"total_employees":5,"total_users":10,"stealers":[{"credentials":[{"password":"SENTINEL_PASSWORD_83","username":"private@example.test"}],"computer_name":"PRIVATE_HOST_83","ip":"203.0.113.83"}]}"#;
         let finding = decode(body).unwrap().unwrap();
         assert!(finding.summary.contains("5 employees"));
-        assert!(finding.attrs.iter().any(|(k, v)| *k == "employees" && v == "5"));
-        assert!(finding.attrs.iter().any(|(k, v)| *k == "users" && v == "10"));
-        assert!(finding.attrs.iter().any(|(k, v)| *k == "stealers" && v == "1"));
+        assert!(
+            finding
+                .attrs
+                .iter()
+                .any(|(k, v)| *k == "employees" && v == "5")
+        );
+        assert!(
+            finding
+                .attrs
+                .iter()
+                .any(|(k, v)| *k == "users" && v == "10")
+        );
+        assert!(
+            finding
+                .attrs
+                .iter()
+                .any(|(k, v)| *k == "stealers" && v == "1")
+        );
         assert!(!finding.attrs.iter().any(|(k, _)| *k == "raw_answer"));
         for secret in [
             "SENTINEL_PASSWORD_83",
