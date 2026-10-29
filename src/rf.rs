@@ -2,6 +2,7 @@
 //! `core::rf`.
 
 pub mod network_survey;
+pub(crate) mod survey_csv;
 
 use std::borrow::Cow;
 use std::fmt::Display;

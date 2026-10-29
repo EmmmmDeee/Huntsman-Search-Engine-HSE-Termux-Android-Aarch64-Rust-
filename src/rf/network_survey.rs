@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use crate::cell_radar::network_survey::{MAX_SURVEY_CSV_BYTES, csv_rows};
+use crate::rf::survey_csv::{MAX_SURVEY_CSV_BYTES, csv_rows};
 use crate::error::Error;
 use crate::rf::{canonical_network_id, is_mac};
 use crate::textnorm::escape_controls;
