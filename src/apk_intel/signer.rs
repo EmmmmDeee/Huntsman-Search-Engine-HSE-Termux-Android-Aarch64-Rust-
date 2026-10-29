@@ -227,7 +227,7 @@ fn time(data: &[u8], time: Tlv) -> Option<String> {
 }
 
 /// The summary of the X.509 certificate `der`, or `None` if it is not one.
-fn certificate(der: &[u8], scheme: &str) -> Option<Certificate> {
+pub(super) fn certificate(der: &[u8], scheme: &str) -> Option<Certificate> {
     let outer = tlv(der, 0, der.len())?;
     if outer.tag != SEQUENCE || outer.end != der.len() {
         return None;
@@ -304,14 +304,14 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-fn le32(data: &[u8], at: usize) -> Option<usize> {
+pub(super) fn le32(data: &[u8], at: usize) -> Option<usize> {
     let field = data.get(at..at.checked_add(4)?)?;
     usize::try_from(u32::from_le_bytes([field[0], field[1], field[2], field[3]])).ok()
 }
 
 /// One checked u32-length-prefixed item, without assuming later fields are prefixed.
 /// v3/v3.1 interleave raw SDK integers with length-prefixed fields.
-fn prefixed_one(data: &[u8], at: usize, end: usize) -> Option<(usize, usize)> {
+pub(super) fn prefixed_one(data: &[u8], at: usize, end: usize) -> Option<(usize, usize)> {
     let length = le32(data, at)?;
     let from = at.checked_add(4)?;
     let to = from.checked_add(length)?;
@@ -319,7 +319,7 @@ fn prefixed_one(data: &[u8], at: usize, end: usize) -> Option<(usize, usize)> {
 }
 
 /// The u32-length-prefixed items exactly filling data[start..end].
-fn prefixed(data: &[u8], start: usize, end: usize) -> Option<Vec<(usize, usize)>> {
+pub(super) fn prefixed(data: &[u8], start: usize, end: usize) -> Option<Vec<(usize, usize)>> {
     let mut at = start;
     let mut items = Vec::new();
     while at < end {
@@ -550,6 +550,55 @@ fn signing_public_key(spki: &[u8], algorithm_id: u32) -> Option<&[u8]> {
     (*unused == 0 && !key.is_empty()).then_some(key)
 }
 
+/// Return the exact DER SubjectPublicKeyInfo from a well-formed X.509 certificate.
+fn certificate_spki(der: &[u8]) -> Option<&[u8]> {
+    let outer = tlv(der, 0, der.len())?;
+    if outer.tag != SEQUENCE || outer.end != der.len() {
+        return None;
+    }
+    let tbs = *children(der, outer)?.first()?;
+    if tbs.tag != SEQUENCE {
+        return None;
+    }
+    let fields = children(der, tbs)?;
+    let skip = usize::from(fields.first()?.tag == CONTEXT_0);
+    let spki = *fields.get(skip.checked_add(5)?)?;
+    (spki.tag == SEQUENCE).then(|| &der[spki.at..spki.end])
+}
+
+/// Verify a proof-of-rotation child node with its parent's certificate public key.
+/// Unsupported algorithms fail closed rather than becoming authenticated identities.
+pub(super) fn verify_rotation_signature(
+    parent_der: &[u8],
+    algorithm_id: u32,
+    signed_data: &[u8],
+    signature: &[u8],
+) -> Option<bool> {
+    let key = signing_public_key(certificate_spki(parent_der)?, algorithm_id)?;
+    let verified = match algorithm_id {
+        0x0101 => ring::signature::UnparsedPublicKey::new(
+            &ring::signature::RSA_PSS_2048_8192_SHA256,
+            key,
+        )
+        .verify(signed_data, signature)
+        .is_ok(),
+        0x0103 => ring::signature::UnparsedPublicKey::new(
+            &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+            key,
+        )
+        .verify(signed_data, signature)
+        .is_ok(),
+        0x0201 => ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P256_SHA256_ASN1,
+            key,
+        )
+        .verify(signed_data, signature)
+        .is_ok(),
+        _ => return None,
+    };
+    Some(verified)
+}
+
 /// Android requires the ordered digest and signature algorithm lists to be identical.
 fn algorithm_ids(value: &[u8], start: usize, end: usize) -> Option<Vec<u32>> {
     let records = prefixed(value, start, end)?;
@@ -762,6 +811,38 @@ pub(super) mod tests {
         let skip = usize::from(fields[0].tag == CONTEXT_0);
         let key = fields[skip + 5];
         &cert[key.at..key.end]
+    }
+
+    /// Test-only certificate containing a genuine P-256 public key.
+    pub(crate) fn p256_certificate(common_name: &str, point: &[u8]) -> Vec<u8> {
+        let original = certificate_der(common_name);
+        let outer = tlv(&original, 0, original.len()).unwrap();
+        let parts = children(&original, outer).unwrap();
+        let fields = children(&original, parts[0]).unwrap();
+        let key_index = usize::from(fields[0].tag == CONTEXT_0) + 5;
+        let mut algorithm = element(OID, &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]);
+        algorithm.extend(element(
+            OID,
+            &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07],
+        ));
+        let mut bits = vec![0];
+        bits.extend_from_slice(point);
+        let mut key = element(SEQUENCE, &algorithm);
+        key.extend(element(0x03, &bits));
+        let spki = element(SEQUENCE, &key);
+        let mut tbs = Vec::new();
+        for (index, field) in fields.iter().enumerate() {
+            if index == key_index {
+                tbs.extend_from_slice(&spki);
+            } else {
+                tbs.extend_from_slice(&original[field.at..field.end]);
+            }
+        }
+        let mut certificate = element(SEQUENCE, &tbs);
+        for field in parts.iter().skip(1) {
+            certificate.extend_from_slice(&original[field.at..field.end]);
+        }
+        element(SEQUENCE, &certificate)
     }
 
     /// A v2 signing-block value holding one signer with `cert`.
