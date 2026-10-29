@@ -89,6 +89,13 @@ impl Transport for Everywhere {
                     PLACES
                 },
             )
+        } else if url.contains("peeringdb.com/api/net?asn=") {
+            // The AS target is AS15133, so the net record echoes asn 15133; ix_count 0 means the
+            // peeringdb leg makes no follow-up netixlan request in this conformance run.
+            (
+                200,
+                br#"{"data":[{"id":1,"asn":15133,"name":"Example Net","website":"https://example.net","ix_count":0,"fac_count":0}],"meta":{}}"#,
+            )
         } else {
             (404, b"{}")
         };

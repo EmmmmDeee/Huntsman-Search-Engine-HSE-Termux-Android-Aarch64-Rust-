@@ -73,7 +73,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             netblock.extend(feeds());
             netblock
         }
-        ScanKind::Asn => vec![rdap::SOURCE, ripestat::SOURCE],
+        ScanKind::Asn => vec![rdap::SOURCE, ripestat::SOURCE, crate::peeringdb::SOURCE],
         ScanKind::Email => {
             let mut email = vec![gravatar::SRC, duolingo::SRC, openpgp_keys::SRC];
             email.extend(indicators(IndicatorKind::Email));
