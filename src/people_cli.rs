@@ -405,12 +405,8 @@ mod tests {
         // A legal-name match alone cannot corroborate an ASIC organisation. Two charities
         // sharing a name but bearing distinct valid ABNs must also remain distinct.
         let candidate = |source: &str, abn: Option<&str>| {
-            let mut entity = Entity::new(
-                EntityKind::Organisation,
-                "The Smith Family",
-                0.60,
-                "scan",
-            );
+            let mut entity =
+                Entity::new(EntityKind::Organisation, "The Smith Family", 0.60, "scan");
             let mut evidence = Evidence::new(
                 EvidenceProvenance::for_scan(source, "scan"),
                 "name match only",
