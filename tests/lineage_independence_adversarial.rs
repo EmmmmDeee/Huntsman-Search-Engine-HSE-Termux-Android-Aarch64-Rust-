@@ -201,3 +201,51 @@ fn case_folded_lookalike_collector_is_not_a_verified_registry_source() {
     assert_eq!("\u{212A}".to_lowercase(), "k");
     assert_not_a_verified_registry_source("abn_loo\u{212A}up");
 }
+
+/// One upstream dataset spelled with an invisible character, a lookalike letter or a
+/// compatibility form is one family, not a second independent one: none of these spellings can
+/// turn one breach into corroboration.
+#[test]
+fn a_dataset_name_spelled_with_lookalikes_is_one_family() {
+    for spoof in [
+        "\u{0410}dobe",                                  // CYRILLIC CAPITAL LETTER A
+        "Ad\u{043E}be",                                  // CYRILLIC SMALL LETTER O
+        "Ado\u{200B}be",                                 // ZERO WIDTH SPACE
+        "Ado\u{200D}be\u{FE0F}",                         // ZERO WIDTH JOINER, VARIATION SELECTOR-16
+        "\u{202E}Adobe",                                 // RIGHT-TO-LEFT OVERRIDE
+        "Ado\u{00AD}be",                                 // SOFT HYPHEN
+        "\u{FF21}\u{FF44}\u{FF4F}\u{FF42}\u{FF45}",      // FULLWIDTH ADOBE
+        "\u{1D400}\u{1D41D}\u{1D428}\u{1D41B}\u{1D41E}", // MATHEMATICAL BOLD ADOBE
+    ] {
+        let out = resolve(vec![
+            observation("hibp-1", "hibp", &[("breach", "Adobe")]),
+            observation("dump-1", "dehashed", &[("dbname", spoof)]),
+        ]);
+        assert_eq!(out.independent_families, ["adobe"], "{spoof:?}");
+        assert_held_for_family_count(&out, 1);
+    }
+}
+
+/// The fold joins only spellings of one name: different datasets stay different, and a name
+/// written in its own script is not rewritten into Latin lookalikes.
+#[test]
+fn distinct_dataset_names_and_other_scripts_stay_distinct() {
+    let out = resolve(vec![
+        observation("dump-1", "dehashed", &[("dbname", "Adobe 2013")]),
+        observation("dump-2", "dehashed", &[("dbname", "Adobe 2014")]),
+    ]);
+    assert_eq!(out.independent_families, ["adobe 2013", "adobe 2014"]);
+
+    let out = resolve(vec![
+        observation(
+            "dump-1",
+            "dehashed",
+            &[("dbname", "\u{0421}\u{0431}\u{0435}\u{0440}")],
+        ),
+        observation("dump-2", "dehashed", &[("dbname", "Adobe")]),
+    ]);
+    assert_eq!(
+        out.independent_families,
+        ["adobe", "\u{0441}\u{0431}\u{0435}\u{0440}"]
+    );
+}

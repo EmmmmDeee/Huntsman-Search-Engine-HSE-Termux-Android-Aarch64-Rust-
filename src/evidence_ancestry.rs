@@ -5,12 +5,15 @@
 //! by being emitted again. Formatting variants of one family are one family.
 //! A derivation must name what it derives from. Walks visit each node once.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::retrieval_artifact::ArtifactId;
+
+mod lookalike;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -25,8 +28,8 @@ impl From<&str> for EvidenceNodeId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceAncestryNode {
     pub id: EvidenceNodeId,
-    /// Family, corpus, or provider-origin label. Canonicalised on insert
-    /// (whitespace collapsed, lowercased), so `"  Adobe   2013 "` and `"ADOBE 2013"` are one family.
+    /// Family, corpus, or provider-origin label. Canonicalised on insert ([`canonical_family`]),
+    /// so `"  Adobe   2013 "`, `"ADOBE 2013"` and `"\u{0410}dobe 2013"` are one family.
     pub source_family: String,
     /// Direct evidence parents. Empty means an observed root.
     pub parents: BTreeSet<EvidenceNodeId>,
@@ -130,14 +133,88 @@ pub enum AncestryError {
     ConflictingIndependenceEvidence(EvidenceNodeId, EvidenceNodeId),
 }
 
-/// Canonical family key: whitespace runs collapsed, Unicode lowercase. Conservative:
+/// Canonical family key: one spelling for every way of writing the same name, so one upstream
+/// dataset or collector cannot be counted as two by how its name is written. Conservative:
 /// `adobe 2013` and `adobe 2014` stay distinct. From overlay patch 0007.
+///
+/// - `Default_Ignorable_Code_Point` characters (zero-width spaces and joiners, bidi controls,
+///   variation selectors, soft hyphens) are dropped: they are invisible wherever they are written.
+/// - Fullwidth forms and mathematical letters and digits become the ASCII they are a form of.
+/// - A name with an ASCII letter presents as Latin, so each other character that UTS #39 says
+///   looks like one ASCII letter or digit becomes it: `\u{0410}dobe` (CYRILLIC CAPITAL LETTER A)
+///   is `adobe`. A name with no ASCII letter keeps its own script, so a Cyrillic or Greek name is
+///   not rewritten into Latin lookalikes.
+/// - Whitespace runs collapse to one space and the result is Unicode lowercase.
+///
+/// Folding can only join names, never split them, so it can lower a count of independent
+/// families but never raise one. Idempotent: a canonical family is its own canonical family.
 #[must_use]
 pub fn canonical_family(raw: &str) -> String {
-    raw.split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
+    let visible: String = raw
+        .chars()
+        .filter(|c| !is_ignorable(*c))
+        .map(|c| {
+            if is_compatibility_form(c) {
+                ascii_lookalike(c).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect();
+    let lower = visible.to_lowercase();
+    let folded = if lower.chars().any(|c| c.is_ascii_alphabetic()) {
+        // Once before lowercasing, for lookalikes only an uppercase form has (Cyrillic `В`), and
+        // once after, for those only the lowercase form has, so the result is a fixed point.
+        let once = visible.chars().map(fold_lookalike).collect::<String>();
+        once.to_lowercase()
+            .chars()
+            .map(fold_lookalike)
+            .collect::<String>()
+            .to_lowercase()
+    } else {
+        lower
+    };
+    folded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether `c` is a `Default_Ignorable_Code_Point`.
+fn is_ignorable(c: char) -> bool {
+    let point = u32::from(c);
+    lookalike::IGNORABLE
+        .binary_search_by(|&(first, last)| {
+            if last < point {
+                Ordering::Less
+            } else if first > point {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// Whether `c` is a compatibility form of ASCII, never a script's own spelling of a name: the
+/// halfwidth and fullwidth forms and the mathematical alphanumeric symbols.
+const fn is_compatibility_form(c: char) -> bool {
+    matches!(c as u32, 0xFF00..=0xFFEF | 0x1D400..=0x1D7FF)
+}
+
+/// The one ASCII letter or digit UTS #39 says `c` looks like, if any.
+fn ascii_lookalike(c: char) -> Option<char> {
+    let point = u32::from(c);
+    lookalike::LOOKALIKE
+        .binary_search_by_key(&point, |&(source, _)| source)
+        .ok()
+        .map(|index| char::from(lookalike::LOOKALIKE[index].1))
+}
+
+/// `c`, or the ASCII it looks like when it is not ASCII itself.
+fn fold_lookalike(c: char) -> char {
+    if c.is_ascii() {
+        c
+    } else {
+        ascii_lookalike(c).unwrap_or(c)
+    }
 }
 
 fn canonical_pair(
@@ -536,6 +613,73 @@ impl EvidenceAncestryGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The generated table is what the fold's binary searches need: ignorable ranges ascending,
+    /// disjoint and non-empty; lookalikes ascending by a unique non-ASCII code point, each mapped
+    /// to an ASCII letter or digit.
+    #[test]
+    fn the_lookalike_table_is_sorted_and_well_formed() {
+        assert!(
+            lookalike::IGNORABLE
+                .iter()
+                .all(|(first, last)| first <= last)
+        );
+        assert!(lookalike::IGNORABLE.windows(2).all(|w| w[0].1 < w[1].0));
+        assert!(lookalike::LOOKALIKE.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(
+            lookalike::LOOKALIKE
+                .iter()
+                .all(|(source, ascii)| *source >= 0x80 && ascii.is_ascii_alphanumeric())
+        );
+        for c in ['\u{00AD}', '\u{200B}', '\u{FEFF}', '\u{E01EF}'] {
+            assert!(is_ignorable(c), "{c:?}");
+        }
+        for c in ['a', ' ', '\u{0430}', '\u{1F600}'] {
+            assert!(!is_ignorable(c), "{c:?}");
+        }
+        assert_eq!(ascii_lookalike('\u{0430}'), Some('a'));
+        assert_eq!(ascii_lookalike('\u{0410}'), Some('A'));
+        assert_eq!(ascii_lookalike('\u{FF41}'), Some('a'));
+        assert_eq!(ascii_lookalike('a'), None);
+    }
+
+    /// A canonical family is its own canonical family, for every lookalike in the table written
+    /// in a Latin name, alone, and in either case, so re-canonicalising stored nodes never moves
+    /// a family.
+    #[test]
+    fn canonical_family_is_idempotent_over_the_whole_table() {
+        for &(source, _) in lookalike::LOOKALIKE {
+            let c = char::from_u32(source).expect("a code point");
+            for raw in [
+                format!("ad{c}be"),
+                format!("ad{}be", c.to_uppercase()),
+                c.to_string(),
+                c.to_uppercase().collect::<String>(),
+                format!("{c}\u{0431}"),
+            ] {
+                let once = canonical_family(&raw);
+                assert_eq!(canonical_family(&once), once, "{raw:?}");
+            }
+        }
+    }
+
+    /// Uppercase and lowercase lookalikes both fold in a Latin name, whitespace and case still
+    /// collapse, and a name with no ASCII letter keeps its own script.
+    #[test]
+    fn canonical_family_folds_lookalikes_only_in_a_latin_name() {
+        assert_eq!(canonical_family("  Adobe   2013 "), "adobe 2013");
+        assert_eq!(canonical_family("\u{0412}ank"), "bank"); // CYRILLIC CAPITAL LETTER VE
+        assert_eq!(canonical_family("b\u{0430}nk"), "bank");
+        // GREEK CAPITAL LETTER SIGMA has no lookalike; its lowercase form looks like `o`.
+        assert_eq!(canonical_family("Ad\u{03A3}be"), "adobe");
+        assert_eq!(canonical_family("Ado\u{2060}be\u{3000}2013"), "adobe 2013");
+        assert_eq!(
+            canonical_family("\u{0421}\u{0411}\u{0415}\u{0420}"),
+            "\u{0441}\u{0431}\u{0435}\u{0440}"
+        );
+        assert_eq!(canonical_family("\u{FF21}\u{FF24}\u{FF2F}"), "ado");
+        assert_eq!(canonical_family("\u{200B}"), "");
+    }
 
     fn node(id: &str, family: &str, parents: &[&str], derived: bool) -> EvidenceAncestryNode {
         EvidenceAncestryNode {

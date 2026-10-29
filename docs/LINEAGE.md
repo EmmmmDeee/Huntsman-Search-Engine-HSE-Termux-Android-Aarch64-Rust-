@@ -69,13 +69,27 @@ Unicode lowercasing folds some non-ASCII letters onto ASCII (KELVIN SIGN U+212A 
 such as CYRILLIC SMALL LETTER A U+0430 (`\u{0430}bn_lookup`) are different strings and do
 not match.
 
-Dataset-name canonicalisation collapses whitespace and case only. Unicode confusables and
-zero-width characters are not normalised, so `Adobe` and `\u{0410}dobe` (CYRILLIC CAPITAL
-LETTER A) are two dataset families. Legacy 7dca720 also counts them as 2, so this is not a
-regression. The collector-name ASCII rule above is separate: it decides only whether a
-collector is a verified registry source. It never normalises, compares or rejects dataset
-values. Treat adapter-origin validation and stronger dataset-name canonicalisation as
-separate hardening work, not as capabilities already provided here.
+Dataset and collector names are canonicalised by `evidence_ancestry::canonical_family`, so one
+upstream dataset cannot be counted as two families by how its name is spelled:
+
+- `Default_Ignorable_Code_Point` characters (zero-width spaces and joiners, bidi controls,
+  variation selectors, soft hyphens) are dropped;
+- fullwidth forms and mathematical letters and digits become the ASCII they are a form of;
+- a name with an ASCII letter presents as Latin, so every other character that UTS #39
+  `confusables.txt` maps to one ASCII letter or digit becomes it: `Adobe`, `\u{0410}dobe`
+  (CYRILLIC CAPITAL LETTER A), `Ado\u{200B}be` and fullwidth `\u{FF21}\u{FF44}\u{FF4F}\u{FF42}\u{FF45}`
+  are one family;
+- whitespace runs collapse and the result is lowercase, as before.
+
+A name with no ASCII letter keeps its own script, so a Cyrillic or Greek dataset name is not
+rewritten into Latin lookalikes. Residual: a name written wholly in another script to imitate
+a Latin one (a UTS #39 whole-script confusable) stays a separate family. The fold can only join
+names, never split them, so it can lower a count of independent families and never raise one.
+Legacy 7dca720 counted `Adobe` and `\u{0410}dobe` as 2; this is a deliberate tightening. The
+table is generated from Unicode's files by `cargo run --locked -p xtask -- confusables generate
+CONFUSABLES DERIVED src/evidence_ancestry/lookalike.rs`, which records both files' dates. The
+collector-name ASCII rule above is separate: it decides only whether a collector is a verified
+registry source. Adapter-origin validation remains separate hardening work.
 
 ## The merge rule
 
@@ -180,8 +194,9 @@ The same comparison found these cases equal:
   by `two_explicit_datasets_from_one_collector_remain_independent`): legacy 2, recon 2. This
   matches legacy, so it is not a loosening. A one-collector-one-family rule would be a
   tightening. It is not adopted, pending Chief's decision.
-- `Adobe` vs the Cyrillic lookalike `\u{0410}dobe`: legacy 2, recon 2. Neither normalises
-  dataset names (see the trust boundary above).
+- `Adobe` vs the Cyrillic lookalike `\u{0410}dobe`: legacy 2, recon 1 since lookalike folding
+  (see the trust boundary above): a deliberate tightening, pinned by
+  `a_dataset_name_spelled_with_lookalikes_is_one_family`.
 
 [E] `Entity::source_count` / `Entity::corroborating_sources` on a saved entity whose stored
 `provenance.source_family` disagrees with `provenance.source` (Security low finding on
