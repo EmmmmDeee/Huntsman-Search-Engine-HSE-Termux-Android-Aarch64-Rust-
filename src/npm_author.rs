@@ -296,7 +296,7 @@ fn add_people(
                 .map(str::trim)
                 .map(str::to_ascii_lowercase)
                 .filter(|email| canonical_email(email).is_some())
-                && seen.emails.insert(email.clone())
+                .filter(|email| seen.emails.insert((*email).clone()))
             {
                 push_entity(
                     entities,
@@ -313,7 +313,7 @@ fn add_people(
                 .as_deref()
                 .map(str::trim)
                 .filter(|url| canonical_url(url).is_some())
-                && seen.urls.insert(url.to_owned())
+                .filter(|url| seen.urls.insert((*url).to_owned()))
             {
                 push_entity(
                     entities,
@@ -331,7 +331,7 @@ fn add_people(
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(str::to_ascii_lowercase)
-            && seen.co_maintainers.insert(name.clone())
+            .filter(|name| seen.co_maintainers.insert((*name).clone()))
         {
             push_entity(
                 entities,
