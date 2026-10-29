@@ -60,7 +60,7 @@ struct RecordResp {
 #[derive(Debug, Deserialize)]
 struct SearchResp {
     // A missing data collection is schema drift, not an observed empty registry.
-    data: Vec<LeiRecord>,
+    data: Option<Vec<LeiRecord>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -264,7 +264,16 @@ fn interpret_search(fetched: &Fetched, now_unix: u64) -> Result<String, SourceEx
     let response = whole_response(fetched, "GLEIF search")?;
     answer(fetched, "GLEIF search")?;
     let resp: SearchResp = decode_json(response, SOURCE, now_unix, "GLEIF search")?;
-    let Some(top) = resp.data.into_iter().next() else {
+    let Some(data) = resp.data else {
+        return Err(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "GLEIF search response lacked the required data array",
+        ));
+    };
+    let Some(top) = data.into_iter().next() else {
         return Err(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status)
         );
