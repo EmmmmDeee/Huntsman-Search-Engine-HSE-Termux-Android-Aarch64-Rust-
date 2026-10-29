@@ -190,13 +190,19 @@ sync_cmd() {
       die "clean tree differs from verified tree; refusing push"
     log "clean tree"
   fi
+  # Push the verified object ID, never a branch name that may move after
+  # verification. Git still enforces non-force fast-forward semantics.
+  local verified_commit
+  verified_commit="$(git rev-parse HEAD)" || die "could not identify the verified commit"
+  [[ "$(git rev-parse "$verified_commit^{tree}")" == "$SYNC_EXPECTED_TREE" ]] ||
+    die "push candidate differs from verified tree"
   git remote get-url origin >/dev/null 2>&1 || die "no origin remote"
-  if ! git push origin main; then
-    write_state sync failed "git push origin main"
+  if ! git push origin "$verified_commit:refs/heads/main"; then
+    write_state sync failed "git push origin verified-commit:refs/heads/main"
     die "push failed; credentials or network. Local commit is kept. See $LOG"
   fi
-  log "pushed $(git rev-parse --short HEAD)"
-  write_state sync ok "$(git rev-parse HEAD)"
+  log "pushed $verified_commit"
+  write_state sync ok "$verified_commit"
 }
 
 cmd="${1:-all}"
