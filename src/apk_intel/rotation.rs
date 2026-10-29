@@ -29,7 +29,7 @@ pub struct RotationChain {
     pub scheme: String,
     pub signer_index: usize,
     /// "verified" requires both cryptographic lineage and APK signed-data authentication.
-    /// "lineage_verified_apk_unverified" is not evidence of APK signing identity.
+    /// `lineage_verified_apk_unverified` is not evidence of APK signing identity.
     pub status: &'static str,
     pub certificates: Vec<RotationCertificate>,
 }
@@ -54,23 +54,23 @@ fn parse_proof(
             return Err("limit_exceeded");
         }
         let (start, end) = signer::prefixed_one(bytes, at, bytes.len()).ok_or("malformed")?;
-        let (signed_start, signed_end) =
+        let (node_data_start, node_data_end) =
             signer::prefixed_one(bytes, start, end).ok_or("malformed")?;
-        let flags_at = signed_end;
+        let flags_at = node_data_end;
         let flags = u32::try_from(signer::le32(bytes, flags_at).ok_or("malformed")?)
             .map_err(|_| "malformed")?;
         let next_at = flags_at.checked_add(4).ok_or("malformed")?;
         let next_algorithm = u32::try_from(signer::le32(bytes, next_at).ok_or("malformed")?)
             .map_err(|_| "malformed")?;
         let signature_at = next_at.checked_add(4).ok_or("malformed")?;
-        let (sig_start, sig_end) =
+        let (signature_start, signature_end) =
             signer::prefixed_one(bytes, signature_at, end).ok_or("malformed")?;
-        if sig_end != end || sig_end - sig_start > MAX_SIGNATURE_BYTES {
+        if signature_end != end || signature_end - signature_start > MAX_SIGNATURE_BYTES {
             return Err("malformed");
         }
         let (cert_start, cert_end) =
-            signer::prefixed_one(bytes, signed_start, signed_end).ok_or("malformed")?;
-        if cert_end - cert_start > MAX_CERT_BYTES || cert_end.checked_add(4) != Some(signed_end) {
+            signer::prefixed_one(bytes, node_data_start, node_data_end).ok_or("malformed")?;
+        if cert_end - cert_start > MAX_CERT_BYTES || cert_end.checked_add(4) != Some(node_data_end) {
             return Err("malformed");
         }
         let signed_algorithm = u32::try_from(signer::le32(bytes, cert_end).ok_or("malformed")?)
@@ -87,14 +87,14 @@ fn parse_proof(
             match signer::verify_rotation_signature(
                 previous,
                 previous_algorithm,
-                &bytes[signed_start..signed_end],
-                &bytes[sig_start..sig_end],
+                &bytes[node_data_start..node_data_end],
+                &bytes[signature_start..signature_end],
             ) {
                 Some(true) => {}
                 Some(false) => return Err("invalid_signature"),
                 None => return Err("unsupported_algorithm"),
             }
-        } else if signed_algorithm != 0 || sig_start != sig_end {
+        } else if signed_algorithm != 0 || signature_start != signature_end {
             return Err("malformed");
         }
         nodes.push(RotationCertificate {
@@ -116,11 +116,11 @@ fn parse_proof(
     Ok(nodes)
 }
 
-fn signer_attribute<'a>(
-    value: &'a [u8],
+fn signer_attribute(
+    value: &[u8],
     signer_start: usize,
     signer_end: usize,
-) -> Result<Option<&'a [u8]>, &'static str> {
+) -> Result<Option<&[u8]>, &'static str> {
     let (data_start, data_end) =
         signer::prefixed_one(value, signer_start, signer_end).ok_or("malformed")?;
     let (_, digests_end) = signer::prefixed_one(value, data_start, data_end).ok_or("malformed")?;
