@@ -113,6 +113,8 @@ mastodon_user	adapter	public Mastodon account source client reached through user
 tiktok_public_contact	adapter	keyless public TikTok bio contact client, reached from username_cli and bounded by same guarded transport
 wikidata	adapter	Wikidata entity source client reached through wikidata_cli from the wikidata command
 wikidata_cli	adapter	wikidata query front-end reached from the wikidata command
+gleif	adapter	GLEIF legal-entity source client reached through gleif_cli from the gleif command
+gleif_cli	adapter	gleif query front-end reached from the gleif command
 wikipedia	adapter	public Wikipedia user-contributions source client reached through username_cli from the username command and scan
 kickbox	adapter	Kickbox disposable-domain leg reached through indicator_legs from email, scan -k email and /api/lookup
 leads	runtime	lead ranking through intelligence report
