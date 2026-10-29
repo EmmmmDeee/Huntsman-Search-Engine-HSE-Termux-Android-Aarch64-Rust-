@@ -662,6 +662,22 @@ fn read_member<'a>(
     Ok((bytes, quirk))
 }
 
+/// Inspect rotation attributes only after the APK digest and SDK signer claims are known.
+fn collect_rotation_chains(archive: &Archive<'_>, analysis: &Analysis) -> Vec<RotationChain> {
+    archive
+        .signing_values
+        .iter()
+        .flat_map(|(scheme, value)| {
+            rotation::inspect(
+                value,
+                scheme,
+                &analysis.sdk_signers,
+                &analysis.content_digest_checks,
+            )
+        })
+        .collect()
+}
+
 /// Fold certificate declarations without claiming that any signature was verified.
 fn fold_signing_certificates(analysis: &mut Analysis, certificates: Vec<Certificate>) {
     for certificate in certificates {
@@ -731,18 +747,7 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
             .sdk_signers
             .extend(signer::sdk_signers(value, scheme));
     }
-    analysis.rotation_chains = archive
-        .signing_values
-        .iter()
-        .flat_map(|(scheme, value)| {
-            rotation::inspect(
-                value,
-                scheme,
-                &analysis.sdk_signers,
-                &analysis.content_digest_checks,
-            )
-        })
-        .collect();
+    analysis.rotation_chains = collect_rotation_chains(archive, &analysis);
     for member in &archive.v1 {
         if let Some(bytes) = read(member, MAX_APK_SIGNATURE_FILE_BYTES, &mut analysis) {
             certificates.extend(signer::pkcs7(&bytes, member.name));
