@@ -1129,7 +1129,12 @@ fn document_evidence(
             .rotation_chains
             .iter()
             .filter(|chain| chain.status == "verified")
-            .flat_map(|chain| chain.certificates.iter().map(|cert| cert.certificate_sha256.as_str()))
+            .flat_map(|chain| {
+                chain
+                    .certificates
+                    .iter()
+                    .map(|cert| cert.certificate_sha256.as_str())
+            })
             .collect::<Vec<_>>()
             .join(","),
     );
