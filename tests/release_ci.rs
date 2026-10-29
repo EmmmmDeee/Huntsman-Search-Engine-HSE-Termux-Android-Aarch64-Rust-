@@ -50,7 +50,6 @@ fn root_installer_changes_trigger_release_dry_run_on_pull_requests() {
     }
 }
 
-
 #[test]
 fn lifecycle_publication_changes_trigger_release_dry_run_on_pull_requests() {
     let wf = release();
