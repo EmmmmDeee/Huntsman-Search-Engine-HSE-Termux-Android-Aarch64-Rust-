@@ -579,12 +579,20 @@ mod tests {
             assert!(has(&report, &EntityKind::Asn, "AS3333"));
             assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
             assert!(
-                !report.entities.iter().any(|entity| entity.kind == EntityKind::IpAddress),
+                !report
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == EntityKind::IpAddress),
                 "a contradictory netixlan response must not emit any IP: {:#?}",
                 report.entities
             );
             assert!(
-                report.outcome.detail.as_deref().unwrap_or_default().contains("netixlan unavailable"),
+                report
+                    .outcome
+                    .detail
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("netixlan unavailable"),
                 "schema drift must be visible in outcome detail: {:?}",
                 report.outcome.detail
             );
