@@ -80,28 +80,34 @@ fn invalid(reason: &str) -> Error {
     Error::Invalid(format!("Network Survey Bluetooth CSV: {reason}"))
 }
 
-fn number(raw: &str, max: u64) -> Option<Option<u64>> {
+#[derive(Debug, Clone, Copy)]
+struct InvalidField;
+
+fn number(raw: &str, max: u64) -> Result<Option<u64>, InvalidField> {
     if raw.is_empty() {
-        return Some(None);
+        return Ok(None);
     }
     if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
+        return Err(InvalidField);
     }
     raw.parse::<u64>()
         .ok()
         .filter(|value| *value <= max)
         .map(Some)
+        .ok_or(InvalidField)
 }
 
-fn finite(raw: &str, low: f64, high: f64) -> Option<Option<f64>> {
+fn finite(raw: &str, low: f64, high: f64) -> Result<Option<f64>, InvalidField> {
     if raw.is_empty() {
         return Some(None);
     }
-    let value = raw.parse::<f64>().ok()?;
-    (value.is_finite() && (low..=high).contains(&value)).then_some(Some(value))
+    let value = raw.parse::<f64>().map_err(|_| InvalidField)?;
+    (value.is_finite() && (low..=high).contains(&value))
+        .then_some(Some(value))
+        .ok_or(InvalidField)
 }
 
-fn enum_value(raw: &str, allowed: &[&'static str]) -> Option<Option<&'static str>> {
+fn enum_value(raw: &str, allowed: &[&'static str]) -> Result<Option<&'static str>, InvalidField> {
     if raw.is_empty() {
         return Some(None);
     }
@@ -110,16 +116,17 @@ fn enum_value(raw: &str, allowed: &[&'static str]) -> Option<Option<&'static str
         .copied()
         .find(|value| *value == raw)
         .map(Some)
+        .ok_or(InvalidField)
 }
 
-fn text_field(raw: &str, max_bytes: usize) -> Option<Option<String>> {
+fn text_field(raw: &str, max_bytes: usize) -> Result<Option<String>, InvalidField> {
     if raw.len() > max_bytes {
-        return None;
+        return Err(InvalidField);
     }
-    Some((!raw.is_empty()).then(|| raw.to_owned()))
+    Ok((!raw.is_empty()).then(|| raw.to_owned()))
 }
 
-fn hex_field(raw: &str, max_digits: usize) -> Option<Option<String>> {
+fn hex_field(raw: &str, max_digits: usize) -> Result<Option<String>, InvalidField> {
     if raw.is_empty() {
         return Some(None);
     }
@@ -128,9 +135,9 @@ fn hex_field(raw: &str, max_digits: usize) -> Option<Option<String>> {
         || digits.len() > max_digits
         || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
-        return None;
+        return Err(InvalidField);
     }
-    Some(Some(digits.to_ascii_uppercase()))
+    Ok(Some(digits.to_ascii_uppercase()))
 }
 
 fn valid_manufacturer_data(raw: &str) -> bool {
@@ -150,8 +157,9 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
     {
         return None;
     }
-    let address_type =
-        enum_value(&row[18], &["UNKNOWN", "PUBLIC", "RANDOM", "ANONYMOUS"])?.unwrap_or("UNKNOWN");
+    let address_type = enum_value(&row[18], &["UNKNOWN", "PUBLIC", "RANDOM", "ANONYMOUS"])
+        .ok()?
+        .unwrap_or("UNKNOWN");
     // Anonymous advertising cannot establish an address-based observation.
     if address_type == "ANONYMOUS" {
         return None;
@@ -165,20 +173,22 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
         return None;
     }
     let observed_epoch = parse_timestamp(timestamp)?;
-    let signal_dbm = finite(&row[10], -200.0, 200.0)??;
-    let tx_power_dbm = finite(&row[11], -200.0, 200.0)?;
-    let technology = enum_value(&row[12], &["UNKNOWN", "BR_EDR", "LE"])?.unwrap_or("UNKNOWN");
-    let supported_technologies = enum_value(&row[13], &["UNKNOWN", "BR_EDR", "LE", "DUAL"])?;
-    let advertised_name = text_field(&row[14], 128)?;
-    let channel = number(&row[15], 78)?.map(u8::try_from).transpose().ok()?;
-    let record_number = number(&row[7], u64::MAX)?;
+    let signal_dbm = finite(&row[10], -200.0, 200.0).ok()??;
+    let tx_power_dbm = finite(&row[11], -200.0, 200.0).ok()?;
+    let technology = enum_value(&row[12], &["UNKNOWN", "BR_EDR", "LE"])
+        .ok()?
+        .unwrap_or("UNKNOWN");
+    let supported_technologies = enum_value(&row[13], &["UNKNOWN", "BR_EDR", "LE", "DUAL"]).ok()?;
+    let advertised_name = text_field(&row[14], 128).ok()?;
+    let channel = number(&row[15], 78).ok()?.map(u8::try_from).transpose().ok()?;
+    let record_number = number(&row[7], u64::MAX).ok()?;
     if record_number == Some(0) {
         return None;
     }
-    let location_age_ms = number(&row[17], 86_400_000)?;
-    let device_class = hex_field(&row[19], 8)?;
-    let service_uuids = text_field(&row[20], 1024)?;
-    let company_id = hex_field(&row[21], 8)?;
+    let location_age_ms = number(&row[17], 86_400_000).ok()?;
+    let device_class = hex_field(&row[19], 8).ok()?;
+    let service_uuids = text_field(&row[20], 1024).ok()?;
+    let company_id = hex_field(&row[21], 8).ok()?;
     // Validate but never emit raw manufacturer payloads: these can carry
     // rotating identifiers, telemetry or application-specific private data.
     if !valid_manufacturer_data(&row[22]) {
