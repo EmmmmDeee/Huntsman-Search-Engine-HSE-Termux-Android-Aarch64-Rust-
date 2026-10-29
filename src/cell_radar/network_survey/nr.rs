@@ -105,7 +105,9 @@ fn optional_measurement(
     if raw.is_empty() {
         return Ok(None);
     }
-    let value = raw.parse::<f64>().map_err(|_| "invalid optional measurement")?;
+    let value = raw
+        .parse::<f64>()
+        .map_err(|_| "invalid optional measurement")?;
     if value.is_finite() && (low..=high).contains(&value) {
         Ok(Some(value))
     } else {
@@ -142,7 +144,8 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     let sync_signal_quality = optional_measurement(row, columns, "ssRsrq", -43.0, 20.0).ok()?;
     let sync_signal_sinr = optional_measurement(row, columns, "ssSinr", -23.0, 40.0).ok()?;
     let channel_state_power = optional_measurement(row, columns, "csiRsrp", -140.0, -44.0).ok()?;
-    let channel_state_quality = optional_measurement(row, columns, "csiRsrq", -200.0, 200.0).ok()?;
+    let channel_state_quality =
+        optional_measurement(row, columns, "csiRsrq", -200.0, 200.0).ok()?;
     let channel_state_sinr = optional_measurement(row, columns, "csiSinr", -23.0, 40.0).ok()?;
     let serving = match column(row, columns, "servingCell") {
         "true" => Some(true),
