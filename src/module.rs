@@ -742,6 +742,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "RIPEstat covering prefix and origin AS of an address or a block, and an AS's holder, announced prefixes and BGP neighbours",
     },
     ReachableModule {
+        name: "peeringdb",
+        command: "asn AS-NUMBER | scan -k asn AS-NUMBER",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Infrastructure,
+        attack_techniques: &["T1590.004", "T1590.005"],
+        description: "PeeringDB operator profile, website and public Internet-exchange peering addresses for an AS",
+    },
+    ReachableModule {
         name: "greynoise",
         command: "ip ADDRESS",
         access: "keyless",

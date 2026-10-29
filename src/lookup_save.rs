@@ -238,6 +238,7 @@ pub const NETBLOCK_POLICY: SavePolicy = SavePolicy {
 fn asn_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "ripestat" => ("ripestat", "src/ripestat.rs"),
+        "peeringdb" => ("peeringdb", "src/peeringdb.rs"),
         other => indicator_provenance(other).unwrap_or((source, "src/asn_cli.rs")),
     }
 }

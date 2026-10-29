@@ -170,6 +170,7 @@ pub mod otx;
 pub mod oui;
 pub mod oui_ieee;
 pub mod pattern;
+pub mod peeringdb;
 pub mod people_cli;
 pub mod phishstats;
 pub mod phone_cli;

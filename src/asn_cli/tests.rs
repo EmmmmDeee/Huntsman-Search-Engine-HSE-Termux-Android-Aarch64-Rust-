@@ -27,6 +27,11 @@ fn registry(neighbours: (u16, &'static str)) -> RoutedTransport {
             neighbours.0,
             neighbours.1,
         ),
+        // These RDAP/RIPEstat tests mock no PeeringDB record, so the peeringdb leg is a clean
+        // valid_zero that adds no entities; its own profile folding is covered separately below.
+        // The route is pinned to the `net?asn=` endpoint so it cannot shadow a `netixlan?net_id=`
+        // request (RoutedTransport matches by prefix, and "netixlan" starts with "net").
+        ("https://www.peeringdb.com/api/net?asn=", 404, "{}"),
     ])
 }
 
@@ -113,6 +118,58 @@ fn an_as_is_its_registration_holder_prefixes_and_neighbours() {
              and 1 IPv6 from 2026-10-01T08:00:00 to 2026-10-15T08:00:00; asn-neighbours: 1 \
              left, 1 right, 1 uncertain on 2026-10-15T00:00:00"
         )
+    );
+}
+
+/// The `PeeringDB` profile folds onto the same AS entity the RDAP and `RIPEstat` legs emit (so one
+/// AS scan corroborates its holder across registries), and its operator organisation and website
+/// surface as pivots beside the `RIPEstat` holder.
+#[test]
+fn a_peeringdb_profile_folds_onto_the_as() {
+    const NET: &str = r#"{"data":[{"id":5,"asn":13335,"name":"Cloudflare","website":"https://www.cloudflare.com","irr_as_set":"AS-CLOUDFLARE","info_type":"Content","ix_count":0,"fac_count":0}],"meta":{}}"#;
+    let transport = RoutedTransport::new(&[
+        RDAP[0],
+        RDAP[1],
+        ("https://stat.ripe.net/data/as-overview/", 200, OVERVIEW),
+        (
+            "https://stat.ripe.net/data/announced-prefixes/",
+            200,
+            PREFIXES,
+        ),
+        (
+            "https://stat.ripe.net/data/asn-neighbours/",
+            200,
+            NEIGHBOURS,
+        ),
+        ("https://www.peeringdb.com/api/net?asn=", 200, NET),
+    ]);
+    let report = printed(run(&transport, "AS13335", 1));
+
+    // The AS entity carries peeringdb evidence beside rdap and ripestat: the three legs fold onto
+    // the one `AS13335` entity by UID.
+    let asn = find(&report, &EntityKind::Asn, "AS13335");
+    let sources: std::collections::BTreeSet<&str> = asn
+        .evidence
+        .iter()
+        .map(|evidence| evidence.provenance.source.as_str())
+        .collect();
+    assert_eq!(sources, ["peeringdb", "rdap", "ripestat"].into());
+    assert_eq!(values(asn, "irr_as_set"), ["AS-CLOUDFLARE"]);
+
+    // The operator organisation and its website pivot surface from the profile.
+    find(&report, &EntityKind::Organisation, "Cloudflare");
+    assert!(
+        report
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Domain
+                && entity.raw_value.ends_with("cloudflare.com")),
+        "{:#?}",
+        report.entities
+    );
+    assert_eq!(
+        outcome(&report, "peeringdb").kind,
+        SourceOutcomeKind::Success
     );
 }
 
