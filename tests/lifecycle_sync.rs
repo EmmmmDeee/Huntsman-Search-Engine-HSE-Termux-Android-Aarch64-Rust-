@@ -93,6 +93,15 @@ impl Sandbox {
     // Use a deterministic cargo stub: these tests exercise lifecycle publication
     // decisions without compiling Rust in a disposable scratch repository.
     fn run_with_mock_cargo(&self, mode: &str, test_exit: u8) -> Output {
+        self.run_with_mock_cargo_mutation(mode, test_exit, "none")
+    }
+
+    fn run_with_mock_cargo_mutation(
+        &self,
+        mode: &str,
+        test_exit: u8,
+        mutation: &str,
+    ) -> Output {
         use std::os::unix::fs::PermissionsExt;
 
         let mock_bin = self.root.join("mock-bin");
@@ -108,7 +117,14 @@ build)
   printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
   chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
   ;;
-test) exit {test_exit} ;;
+test)
+  case "$HUNTSMAN_TEST_MUTATE" in
+    file) printf 'unexpected\n' >> docs/pending.md ;;
+    secret) mkdir -p deploy && printf 'fake\n' > deploy/.env ;;
+    *) ;;
+  esac
+  exit {test_exit}
+  ;;
 *) exit 99 ;;
 esac
 "#
@@ -124,6 +140,7 @@ esac
         path.push(std::env::var_os("PATH").unwrap_or_default());
         self.command("bash", &self.work)
             .env("PATH", path)
+            .env("HUNTSMAN_TEST_MUTATE", mutation)
             .args(["scripts/lifecycle.sh", mode])
             .output()
             .unwrap()
@@ -318,6 +335,91 @@ fn direct_sync_does_not_trust_a_previous_success_state() {
         "stale receipt bypassed verification"
     );
     assert_eq!(sandbox.head(), before);
+}
+
+#[test]
+fn direct_sync_refuses_changes_made_by_a_successful_test_command() {
+    let sandbox = Sandbox::new("mutated-after-check");
+    sandbox.write("docs/pending.md", "verified before tests\n");
+    let before = sandbox.head();
+    let remote_before = sandbox.pushed();
+    let output = sandbox.run_with_mock_cargo_mutation("sync", 0, "file");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "mutated source was accepted");
+    assert!(
+        stderr.contains("worktree changed during verification"),
+        "{stderr}"
+    );
+    assert_eq!(sandbox.head(), before, "unverified changes were committed");
+    assert_eq!(sandbox.pushed(), remote_before, "remote main was mutated");
+}
+
+#[test]
+fn all_refuses_changes_made_during_its_test_phase() {
+    let sandbox = Sandbox::new("all-mutated-after-check");
+    sandbox.write("docs/pending.md", "verified before tests\n");
+    let before = sandbox.head();
+    let remote_before = sandbox.pushed();
+    let output = sandbox.run_with_mock_cargo_mutation("all", 0, "file");
+    assert!(!output.status.success(), "all published a changed worktree");
+    assert_eq!(sandbox.head(), before, "unverified changes were committed");
+    assert_eq!(sandbox.pushed(), remote_before, "remote main was mutated");
+}
+
+#[test]
+fn direct_sync_refuses_a_secret_path_created_during_tests() {
+    let sandbox = Sandbox::new("new-secret-after-check");
+    sandbox.write("docs/pending.md", "ordinary change\n");
+    let before = sandbox.head();
+    let remote_before = sandbox.pushed();
+    let output = sandbox.run_with_mock_cargo_mutation("sync", 0, "secret");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(REFUSED),
+        "secret introduced during tests was not refused"
+    );
+    assert_eq!(sandbox.head(), before);
+    assert_eq!(sandbox.pushed(), remote_before);
+}
+
+#[test]
+fn direct_sync_keeps_the_original_index_when_tests_fail() {
+    let sandbox = Sandbox::new("index-preservation");
+    sandbox.write("docs/staged.md", "staged only\n");
+    sandbox.git(&["add", "docs/staged.md"]);
+    let staged_before = sandbox.git(&["write-tree"]).stdout;
+    let before = sandbox.head();
+    let output = sandbox.run_with_mock_cargo("sync", 1);
+    assert!(!output.status.success());
+    assert_eq!(sandbox.git(&["write-tree"]).stdout, staged_before);
+    assert_eq!(sandbox.head(), before);
+}
+
+#[test]
+fn direct_sync_refuses_a_commit_hook_that_modifies_staged_content() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = Sandbox::new("hook-mutates-commit");
+    sandbox.write("docs/pending.md", "original\n");
+    let hook = sandbox.work.join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        "#!/bin/sh\nprintf 'unexpected\n' >> docs/pending.md\ngit add -A\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&hook).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&hook, permissions).unwrap();
+    let before = sandbox.head();
+    let remote_before = sandbox.pushed();
+    let output = sandbox.run_with_mock_cargo("sync", 0);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "unexpected commit was published");
+    assert!(
+        stderr.contains("committed tree differs from verified tree"),
+        "{stderr}"
+    );
+    assert_ne!(sandbox.head(), before, "hook never executed");
+    assert_eq!(sandbox.pushed(), remote_before, "unverified commit was pushed");
 }
 
 #[test]
