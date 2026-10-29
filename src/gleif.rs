@@ -344,14 +344,18 @@ fn interpret_record(
     // envelope carries (its `id` and its `attributes.lei`) must be exactly the requested one. A
     // self-inconsistent envelope -- one field the request, the other a different LEI -- is rejected,
     // never trusted on the field that matches while labelled from the one that does not.
-    let present_leis: Vec<String> = [
-        canonical_lei(record.id.as_deref()),
-        canonical_lei(record.attributes.as_ref().and_then(|a| a.lei.as_deref())),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if present_leis.is_empty() || present_leis.iter().any(|lei| lei.as_str() != requested_lei) {
+    let supplied_leis = [
+        record.id.as_deref(),
+        record.attributes.as_ref().and_then(|a| a.lei.as_deref()),
+    ];
+    // A present but malformed LEI is not an absent field: reject it even when
+    // the other field correctly matches the request.
+    if !supplied_leis.iter().any(Option::is_some)
+        || !supplied_leis
+            .into_iter()
+            .flatten()
+            .all(|raw| canonical_lei(Some(raw)).as_deref() == Some(requested_lei))
+    {
         return (
             Vec::new(),
             schema_drift(
@@ -380,8 +384,20 @@ fn validated_lei(record: &LeiRecord) -> Option<String> {
     if record.kind.as_deref() != Some("lei-records") {
         return None;
     }
-    canonical_lei(record.id.as_deref())
-        .or_else(|| canonical_lei(record.attributes.as_ref().and_then(|a| a.lei.as_deref())))
+    let supplied_leis = [
+        record.id.as_deref(),
+        record.attributes.as_ref().and_then(|a| a.lei.as_deref()),
+    ];
+    let candidate = supplied_leis
+        .into_iter()
+        .flatten()
+        .next()
+        .and_then(|raw| canonical_lei(Some(raw)))?;
+    supplied_leis
+        .into_iter()
+        .flatten()
+        .all(|raw| canonical_lei(Some(raw)).as_deref() == Some(candidate.as_str()))
+        .then_some(candidate)
 }
 
 /// Build the report entities from a confirmed record: the legal name as an `Organisation`, its legal
@@ -708,6 +724,28 @@ mod tests {
         let split = r#"{"data":{"type":"lei-records","id":"OTHERVALIDLEI00000XX","attributes":{"lei":"5493001KJTIIGC8Y1R12","entity":{"legalName":{"name":"Victim Corp"}}}}}"#;
         let report = report_of(split, "5493001KJTIIGC8Y1R12");
         assert!(report.entities.is_empty(), "{:#?}", report.entities);
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn a_malformed_secondary_lei_is_schema_drift_not_an_absent_field() {
+        // Previously the malformed secondary field was discarded, allowing
+        // the matching primary id to authenticate a contradictory envelope.
+        for bad in ["not-an-lei", "", "5493001KJTIIGC8Y1R12!"] {
+            let body = format!(
+                r#"{{"data":{{"type":"lei-records","id":"5493001KJTIIGC8Y1R12","attributes":{{"lei":"{bad}","entity":{{"legalName":{{"name":"Unverified Corp"}}}}}}}}}}"#
+            );
+            let report = report_of(&body, "5493001KJTIIGC8Y1R12");
+            assert!(report.entities.is_empty(), "{bad}: {:#?}", report.entities);
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift, "{bad}");
+        }
+    }
+
+    #[test]
+    fn search_rejects_conflicting_or_malformed_lei_fields() {
+        let bad_search = r#"{"data":[{"type":"lei-records","id":"5493001KJTIIGC8Y1R12","attributes":{"lei":"invalid"}}]}"#;
+        let report = report_of(bad_search, "Example Holdings");
+        assert!(report.entities.is_empty());
         assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
     }
 
