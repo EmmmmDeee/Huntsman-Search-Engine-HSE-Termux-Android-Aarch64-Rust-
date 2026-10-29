@@ -7,8 +7,9 @@
 //! instance of a known organisation type, and otherwise [`EntityKind::Other`]: an organisation is
 //! asserted on positive type evidence, never assumed as a default. A 200 response that is not the
 //! item document asked for -- an array, a different id, or a non-item envelope -- is source-schema
-//! drift, never a positive entity. **Every** statement property Wikidata returns is kept as
-//! evidence -- nothing is dropped -- so the full structured record travels with the finding.
+//! drift, never a positive entity. Statement-level JSON (including rank, qualifiers and
+//! references) is retained within explicit per-statement and per-item bounds; omissions are
+//! counted. Deprecated or qualified statements remain evidence, but cannot seed live pivots.
 //!
 //! A curated set of statements also becomes its own pivot entity, so a Wikidata lookup seeds the
 //! rest of the engine: the official website (`P856`) is a [`EntityKind::Domain`], a coordinate
@@ -43,9 +44,11 @@ const PIVOT_CONFIDENCE: f64 = 0.55;
 /// Most search candidates considered when resolving free text: only the top match is taken, but a
 /// broader result set still says the query was ambiguous.
 const SEARCH_LIMIT: usize = 5;
-/// Largest statement-value count rendered from one item. A record larger than this is bounded and
-/// the overflow is reported, never silently dropped.
+/// Maximum number of source statements retained as evidence; overflow is reported.
 const MAX_CLAIM_VALUES: usize = 1_000;
+/// Maximum bytes of serialized JSON preserved for any one statement. Oversized statements are
+/// explicitly counted instead of being silently represented as complete.
+const MAX_STATEMENT_JSON_BYTES: usize = 4_096;
 
 /// A curated property: its `P`-number, the attribute name its value is kept under, and how a pivot
 /// entity is built from it. Every statement is still kept as a raw `claim:P…` attribute; these
@@ -476,15 +479,29 @@ fn rendered_value(value: &Value) -> Option<String> {
     None
 }
 
-/// The rendered values of statement property `pid`, in document order, each from a `value` snak.
-/// **Pure.**
+/// A statement may generate a current-looking entity only when it is not deprecated and carries
+/// no qualifiers. Qualifiers can restrict time, jurisdiction, or applicability; without interpreting
+/// them, suppressing the pivot is safer than presenting it as current. **Pure.**
+fn eligible_for_pivot(statement: &Value) -> bool {
+    matches!(
+        statement.get("rank").and_then(Value::as_str),
+        None | Some("normal" | "preferred")
+    ) && statement
+        .get("qualifiers")
+        .is_none_or(|qualifiers| qualifiers.as_object().is_some_and(serde_json::Map::is_empty))
+}
+
+/// Only unqualified, non-deprecated values are used for classification, friendly current-value
+/// attributes and automatic pivots. The complete bounded statement record is kept separately.
 fn values(statements: Option<&serde_json::Map<String, Value>>, pid: &str) -> Vec<String> {
     statements
         .and_then(|map| map.get(pid))
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
+                .filter(|statement| eligible_for_pivot(statement))
                 .filter_map(|st| rendered_value(st.get("value")?))
+                .take(MAX_CLAIM_VALUES)
                 .collect()
         })
         .unwrap_or_default()
@@ -540,26 +557,46 @@ fn decode(
         }
     }
 
-    // Every statement, curated or not, is kept verbatim so nothing Wikidata returned is dropped.
-    let mut rendered = 0usize;
+    // Retain the statement envelope, not merely value.content: rank, ID, qualifiers and
+    // references distinguish deprecated/historical claims from current observations. Preserve
+    // the legacy `claim` attribute for consumers that already read it. Count all omissions.
+    let mut retained = 0usize;
     let mut dropped = 0usize;
+    let mut oversized = 0usize;
     if let Some(statements) = statements {
-        for (pid, _) in statements {
-            for value in values(Some(statements), pid) {
-                if rendered >= MAX_CLAIM_VALUES {
-                    dropped += 1;
-                    continue;
+        for (pid, entries) in statements {
+            if let Some(entries) = entries.as_array() {
+                for statement in entries {
+                    if retained >= MAX_CLAIM_VALUES {
+                        dropped += 1;
+                        continue;
+                    }
+                    let json = statement.to_string();
+                    if json.len() <= MAX_STATEMENT_JSON_BYTES {
+                        evidence = evidence.with_attr("statement_json", format!("{pid}={json}"));
+                    } else {
+                        oversized += 1;
+                        evidence = evidence.with_attr(
+                            "statement_oversize",
+                            format!("{pid}:{} bytes", json.len()),
+                        );
+                    }
+                    if let Some(value) = statement.get("value").and_then(rendered_value) {
+                        evidence = evidence.with_attr("claim", format!("{pid}={value}"));
+                    }
+                    retained += 1;
                 }
-                evidence = evidence.with_attr("claim", format!("{pid}={value}"));
-                rendered += 1;
+            } else {
+                evidence = evidence.with_attr("statement_schema_warning", format!("{pid}: not an array"));
             }
         }
     }
+    evidence = evidence.with_attr("statements_retained", retained.to_string());
     if dropped > 0 {
-        evidence = evidence.with_attr(
-            "claims_not_shown",
-            format!("{dropped} statement values beyond the {MAX_CLAIM_VALUES} kept"),
-        );
+        evidence = evidence.with_attr("statements_not_shown", dropped.to_string());
+    }
+    if oversized > 0 {
+        evidence = evidence.with_attr("statements_oversized", oversized.to_string());
     }
 
     let mut entities = Vec::new();
@@ -767,6 +804,29 @@ mod tests {
         assert!(claims.contains(&"P856=https://jane.example/"), "{claims:?}");
         // A somevalue snak carries no content and is not rendered.
         assert!(!claims.iter().any(|c| c.starts_with("P777=")), "{claims:?}");
+    }
+
+    #[test]
+    fn deprecated_and_qualified_websites_remain_evidence_without_becoming_pivots() {
+        let item = r#"{"type":"item","id":"Q8","labels":{"en":"Example"},"statements":{
+          "P856":[
+            {"id":"Q8$old","rank":"deprecated","value":{"type":"value","content":"https://old.example/"},"qualifiers":{"P582":[{"value":{"type":"value","content":{"time":"+2001-01-01T00:00:00Z"}}}]},"references":[{"parts":{"P854":[{"value":{"type":"value","content":"https://source.example/"}}]}}]},
+            {"id":"Q8$qualified","rank":"normal","value":{"type":"value","content":"https://dated.example/"},"qualifiers":{"P580":[{"value":{"type":"value","content":{"time":"+1990-01-01T00:00:00Z"}}}]}},
+            {"id":"Q8$current","rank":"preferred","value":{"type":"value","content":"https://current.example/"}}
+          ],"P777":[{"id":"Q8$unknown","rank":"normal","value":{"type":"somevalue"}}]
+        }}"#;
+        let report = report_of(item, "Q8");
+        let subject = entity(&report, &EntityKind::Other, "Example");
+        let ev = &subject.evidence[0];
+        let statements: Vec<&str> = ev.attr_values("statement_json").collect();
+        assert_eq!(statements.len(), 4);
+        assert!(statements.iter().any(|s| s.contains("Q8$old") && s.contains("deprecated") && s.contains("qualifiers") && s.contains("references")));
+        assert!(statements.iter().any(|s| s.contains("Q8$qualified") && s.contains("P580")));
+        assert!(statements.iter().any(|s| s.contains("Q8$unknown") && s.contains("somevalue")));
+        assert_eq!(ev.attributes.get("statements_retained").map(String::as_str), Some("4"));
+        entity(&report, &EntityKind::Domain, "current.example");
+        assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Domain && (e.raw_value == "old.example" || e.raw_value == "dated.example")));
+        assert_eq!(ev.attributes.get("official_website").map(String::as_str), Some("https://current.example/"));
     }
 
     #[test]
