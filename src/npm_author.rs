@@ -193,9 +193,48 @@ fn interpret(
     answer(fetched, "npm registry")?;
     let resp: SearchResp = decode_json(response, SRC, now_unix, "npm registry")?;
     if resp.objects.is_empty() {
+        if resp.total != 0 {
+            return Err(SourceExecutionOutcome::failed(
+                SRC,
+                now_unix,
+                crate::source_outcome::SourceOutcomeKind::SchemaDrift,
+                Some(response.status),
+                "npm reported matches without any returned package records",
+            ));
+        }
         return Err(
             SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
         );
+    }
+    if resp.total < resp.objects.len() as u64
+        || resp.objects.iter().any(|object| {
+            object.package.as_ref().is_none_or(|package| {
+                package.name.as_deref().is_none_or(|name| name.trim().is_empty())
+            })
+        })
+    {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            crate::source_outcome::SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "npm search response has inconsistent counts or missing package names",
+        ));
+    }
+    if resp.objects.iter().any(|object| {
+        !object.package.as_ref().is_some_and(|package| {
+            package.maintainers.iter().any(|person| {
+                person.username.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(handle))
+            })
+        })
+    }) {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            crate::source_outcome::SourceOutcomeKind::SemanticDrift,
+            Some(response.status),
+            "npm maintainer search returned a package not maintained by the queried handle",
+        ));
     }
     let mut entities = build_entities(&resp, handle, scan_id);
     merge_by_uid(&mut entities);
@@ -411,6 +450,11 @@ fn add_subject(
     let mut subject =
         package_evidence(scan_id, format!("npm maintainer of {total} package(s)"), "")
             .with_attr("package_count", total.to_string())
+            .with_attr("observed_package_count", package_names.len().to_string())
+            .with_attr(
+                "pagination_truncated",
+                (total > package_names.len() as u64).to_string(),
+            )
             .with_attr("profile_url", profile_url(handle));
     if !sample.is_empty() {
         subject = subject.with_attr("packages", sample);
@@ -552,6 +596,37 @@ mod tests {
         let report = report_of(r#"{"objects":[],"total":0}"#, "nobody");
         assert!(report.entities.is_empty());
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
+    }
+
+    #[test]
+    fn a_nonempty_total_with_empty_records_is_schema_drift_not_absence() {
+        let report = report_of(r#"{"objects":[],"total":5}"#, "jane");
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn unrelated_maintainer_records_cannot_confirm_a_subject() {
+        let report = report_of(
+            r#"{"objects":[{"package":{"name":"unrelated","maintainers":[{"username":"other","email":"other@example.org"}]}}],"total":1}"#,
+            "jane",
+        );
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SemanticDrift);
+    }
+
+    #[test]
+    fn incomplete_pages_explicitly_report_observed_coverage() {
+        let report = report_of(
+            r#"{"objects":[{"package":{"name":"partial","maintainers":[{"username":"jane"}]}}],"total":413}"#,
+            "jane",
+        );
+        let subject = report.entities.iter().find(|entity| {
+            entity.kind == EntityKind::Username && entity.raw_value == "jane"
+        }).expect("subject");
+        let attributes = &subject.evidence[0].attributes;
+        assert_eq!(attributes.get("observed_package_count").map(String::as_str), Some("1"));
+        assert_eq!(attributes.get("pagination_truncated").map(String::as_str), Some("true"));
     }
 
     #[test]
