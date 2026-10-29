@@ -210,6 +210,12 @@ fn names_a_mailbox_holder(email: &str) -> bool {
 
 /// The new targets an entity contributes to the next generation.
 fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
+    // A top Wikidata hit from a people-name search is not an identity match.
+    // Its published handles/domains remain visible leads, even when an operator
+    // lowers the confidence floor; that setting must not bypass attribution.
+    if entity.has_tag(crate::wikidata::NAME_SEARCH_LEAD_TAG) {
+        return Vec::new();
+    }
     if entity.confidence < policy.expand_confidence_floor {
         return Vec::new();
     }
@@ -1328,6 +1334,56 @@ mod tests {
                 .entities
                 .iter()
                 .any(|e| e.kind == EntityKind::Username && e.value == "weak")
+        );
+    }
+
+    #[test]
+    fn wikidata_namesake_pivots_are_not_dispatched_even_with_zero_floor() {
+        for floor in [crate::gap::EXPAND_FLOOR, 0.0] {
+            let mut domain = ent(EntityKind::Domain, "stranger.example", 0.55);
+            domain.tag(crate::wikidata::NAME_SEARCH_LEAD_TAG);
+            let mut username = ent(EntityKind::Username, "unrelated_person", 0.55);
+            username.tag(crate::wikidata::NAME_SEARCH_LEAD_TAG);
+            let mut collector = Scripted::new()
+                .on(
+                    ScanKind::Email,
+                    "person@example.com",
+                    vec![domain, username],
+                )
+                .on(ScanKind::Exposure, "person@example.com", vec![]);
+            let policy = RecursionPolicy {
+                expand_confidence_floor: floor,
+                ..RecursionPolicy::default()
+            };
+            let report = run(&["person@example.com".to_owned()], &policy, &mut collector);
+            assert_eq!(report.dispatches, 2);
+            assert!(collector.calls.iter().all(|(kind, _)| {
+                kind != "domain" && kind != "username"
+            }));
+            assert!(report
+                .entities
+                .iter()
+                .any(|entity| entity.value == "stranger.example"));
+            assert!(report
+                .entities
+                .iter()
+                .any(|entity| entity.value == "unrelated_person"));
+        }
+        // The attribution gate is specific to name-search leads, not a
+        // blanket prohibition on normal independently obtained pivots.
+        let domain = ent(EntityKind::Domain, "verified.example", 0.55);
+        assert_eq!(
+            expansions(
+                &domain,
+                &RecursionPolicy {
+                    expand_confidence_floor: 0.0,
+                    ..RecursionPolicy::default()
+                }
+            ),
+            vec![Target {
+                kind: ScanKind::Domain,
+                selector: "verified.example".to_owned(),
+            }]
         );
     }
 
