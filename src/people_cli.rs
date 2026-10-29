@@ -265,7 +265,11 @@ mod tests {
     fn same_name_wikidata_item_does_not_merge_with_unrelated_asic_identity() {
         use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
 
-        for kind in [EntityKind::Person, EntityKind::Organisation, EntityKind::Other] {
+        for kind in [
+            EntityKind::Person,
+            EntityKind::Organisation,
+            EntityKind::Other,
+        ] {
             let mut asic = Entity::new(kind.clone(), "Jane Example", 0.7, "scan");
             asic.add_evidence(Evidence::new(
                 EvidenceProvenance::for_scan("asic_persons", "scan"),
@@ -289,7 +293,10 @@ mod tests {
             assert_ne!(entities[0].uid, entities[1].uid);
             assert!(entities[1].raw_value.contains("[Wikidata Q42]"));
             assert_eq!(
-                entities[1].evidence[0].attributes.get("source_label").map(String::as_str),
+                entities[1].evidence[0]
+                    .attributes
+                    .get("source_label")
+                    .map(String::as_str),
                 Some("Jane Example")
             );
         }
