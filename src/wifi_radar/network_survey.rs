@@ -15,12 +15,36 @@ use crate::timefmt::parse_timestamp;
 
 pub const CSV_VERSION: &str = "0.4.0";
 const HEADER: [&str; 30] = [
-    "deviceTime", "latitude", "longitude", "altitude", "speed", "accuracy",
-    "missionId", "recordNumber", "sourceAddress", "destinationAddress", "bssid",
-    "beaconInterval", "serviceSetType", "ssid", "supportedRates",
-    "extendedSupportedRates", "cipherSuites", "akmSuites", "encryptionType",
-    "wps", "channel", "frequencyMhz", "signalStrength", "snr", "nodeType",
-    "standard", "passpoint", "bandwidth", "deviceSerialNumber", "locationAge",
+    "deviceTime",
+    "latitude",
+    "longitude",
+    "altitude",
+    "speed",
+    "accuracy",
+    "missionId",
+    "recordNumber",
+    "sourceAddress",
+    "destinationAddress",
+    "bssid",
+    "beaconInterval",
+    "serviceSetType",
+    "ssid",
+    "supportedRates",
+    "extendedSupportedRates",
+    "cipherSuites",
+    "akmSuites",
+    "encryptionType",
+    "wps",
+    "channel",
+    "frequencyMhz",
+    "signalStrength",
+    "snr",
+    "nodeType",
+    "standard",
+    "passpoint",
+    "bandwidth",
+    "deviceSerialNumber",
+    "locationAge",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,7 +95,12 @@ fn column<'a>(row: &'a [String], columns: &BTreeMap<&str, usize>, name: &str) ->
         .map_or("", String::as_str)
 }
 
-fn optional_u64(row: &[String], columns: &BTreeMap<&str, usize>, name: &str, max: u64) -> Option<Option<u64>> {
+fn optional_u64(
+    row: &[String],
+    columns: &BTreeMap<&str, usize>,
+    name: &str,
+    max: u64,
+) -> Option<Option<u64>> {
     let raw = column(row, columns, name);
     if raw.is_empty() {
         return Some(None);
@@ -79,10 +108,19 @@ fn optional_u64(row: &[String], columns: &BTreeMap<&str, usize>, name: &str, max
     if !raw.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    raw.parse::<u64>().ok().filter(|value| *value <= max).map(Some)
+    raw.parse::<u64>()
+        .ok()
+        .filter(|value| *value <= max)
+        .map(Some)
 }
 
-fn optional_f64(row: &[String], columns: &BTreeMap<&str, usize>, name: &str, low: f64, high: f64) -> Option<Option<f64>> {
+fn optional_f64(
+    row: &[String],
+    columns: &BTreeMap<&str, usize>,
+    name: &str,
+    low: f64,
+    high: f64,
+) -> Option<Option<f64>> {
     let raw = column(row, columns, name);
     if raw.is_empty() {
         return Some(None);
@@ -91,7 +129,11 @@ fn optional_f64(row: &[String], columns: &BTreeMap<&str, usize>, name: &str, low
     (value.is_finite() && (low..=high).contains(&value)).then_some(Some(value))
 }
 
-fn optional_bool(row: &[String], columns: &BTreeMap<&str, usize>, name: &str) -> Option<Option<bool>> {
+fn optional_bool(
+    row: &[String],
+    columns: &BTreeMap<&str, usize>,
+    name: &str,
+) -> Option<Option<bool>> {
     match column(row, columns, name) {
         "" => Some(None),
         "true" => Some(Some(true)),
@@ -100,7 +142,12 @@ fn optional_bool(row: &[String], columns: &BTreeMap<&str, usize>, name: &str) ->
     }
 }
 
-fn optional_text(row: &[String], columns: &BTreeMap<&str, usize>, name: &str, max_bytes: usize) -> Option<Option<String>> {
+fn optional_text(
+    row: &[String],
+    columns: &BTreeMap<&str, usize>,
+    name: &str,
+    max_bytes: usize,
+) -> Option<Option<String>> {
     let raw = column(row, columns, name);
     if raw.len() > max_bytes {
         return None;
@@ -221,9 +268,14 @@ pub fn parse_wifi(bytes: &[u8]) -> Result<WifiCsvReport, Error> {
     let mut rows = csv_rows(&text[offset..])?.into_iter();
     let header = rows.next().ok_or_else(|| invalid("missing header"))?;
     if header.len() != HEADER.len()
-        || !header.iter().zip(HEADER).all(|(actual, expected)| actual.as_str() == expected)
+        || !header
+            .iter()
+            .zip(HEADER)
+            .all(|(actual, expected)| actual.as_str() == expected)
     {
-        return Err(invalid("Wi-Fi 0.4.0 requires the exact documented 30-column header"));
+        return Err(invalid(
+            "Wi-Fi 0.4.0 requires the exact documented 30-column header",
+        ));
     }
     let columns: BTreeMap<&str, usize> = header
         .iter()
@@ -245,7 +297,11 @@ pub fn parse_wifi(bytes: &[u8]) -> Result<WifiCsvReport, Error> {
         source: "unverified_network_survey_wifi_csv_file",
         acquisition: "offline_replay_no_capture_authentication",
         csv_version: CSV_VERSION,
-        status: if observations.is_empty() { "inconclusive" } else { "historical_unverified" },
+        status: if observations.is_empty() {
+            "inconclusive"
+        } else {
+            "historical_unverified"
+        },
         observed: observations.len(),
         rejected,
         observations,
@@ -267,7 +323,8 @@ pub fn render(report: &WifiCsvReport) -> String {
             escape_controls(&row.observed_at),
             row.signal_dbm,
             row.band.unwrap_or("unknown"),
-            row.location_age_ms.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+            row.location_age_ms
+                .map_or_else(|| "unknown".to_owned(), |value| value.to_string())
         );
     }
     out
@@ -281,12 +338,38 @@ mod tests {
 
     fn row() -> String {
         [
-            "2025-10-10T13:58:27Z", "37.7", "-122.4", "10", "0", "22",
-            "PRIVATE-MISSION", "1", "PRIVATE-SOURCE", "PRIVATE-DEST",
-            "3C:5A:B4:11:22:33", "100", "ESS", "SurveyAP", "6;12", "24",
-            "CCMP", "PSK", "WPA2", "true", "1", "2412", "-57", "20",
-            "AP", "IEEE80211AX", "false", "MHZ_20", "PRIVATE-SERIAL", "4916",
-        ].join(",")
+            "2025-10-10T13:58:27Z",
+            "37.7",
+            "-122.4",
+            "10",
+            "0",
+            "22",
+            "PRIVATE-MISSION",
+            "1",
+            "PRIVATE-SOURCE",
+            "PRIVATE-DEST",
+            "3C:5A:B4:11:22:33",
+            "100",
+            "ESS",
+            "SurveyAP",
+            "6;12",
+            "24",
+            "CCMP",
+            "PSK",
+            "WPA2",
+            "true",
+            "1",
+            "2412",
+            "-57",
+            "20",
+            "AP",
+            "IEEE80211AX",
+            "false",
+            "MHZ_20",
+            "PRIVATE-SERIAL",
+            "4916",
+        ]
+        .join(",")
     }
 
     #[test]
@@ -301,7 +384,12 @@ mod tests {
         assert_eq!(record.reported_accuracy_m, Some(22.0));
         assert_eq!(record.location_age_ms, Some(4916));
         let json = serde_json::to_string(&report).unwrap();
-        for secret in ["PRIVATE-MISSION", "PRIVATE-SOURCE", "PRIVATE-DEST", "PRIVATE-SERIAL"] {
+        for secret in [
+            "PRIVATE-MISSION",
+            "PRIVATE-SOURCE",
+            "PRIVATE-DEST",
+            "PRIVATE-SERIAL",
+        ] {
             assert!(!json.contains(secret));
         }
         assert!(!json.contains("mitm_assessment"));
@@ -328,7 +416,14 @@ mod tests {
     fn version_schema_and_input_bounds_fail_closed() {
         let valid = format!("{PREFIX}{}\n", row());
         assert!(parse_wifi(valid.replace("0.4.0", "0.5.0").as_bytes()).is_err());
-        assert!(parse_wifi(valid.replace("channel,frequencyMhz", "frequencyMhz,channel").as_bytes()).is_err());
+        assert!(
+            parse_wifi(
+                valid
+                    .replace("channel,frequencyMhz", "frequencyMhz,channel")
+                    .as_bytes()
+            )
+            .is_err()
+        );
         assert!(parse_wifi(b"# CSV Version=0.4.0\na,b\n\"unterminated").is_err());
         assert!(parse_wifi(&vec![b'x'; 262_145]).is_err());
     }
