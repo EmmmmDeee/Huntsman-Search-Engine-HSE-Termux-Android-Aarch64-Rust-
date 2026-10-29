@@ -91,7 +91,7 @@ hackertarget	adapter	HackerTarget leg reached through indicator_legs from ip, do
 hibp	adapter	HIBP source adapter
 html_text	leaf	the one HTML-to-text reader (Markup tokenizer, html_to_text, attribute) shared by exposure_cli and wayback_cdx's archived-content reading
 http	leaf	single socket-opening transport boundary
-hudsonrock	adapter	Domain-level Hudson Rock Cavalier aggregate leg reached through indicator_legs from domain, scan and /api/lookup
+hudsonrock	adapter	Hudson Rock Cavalier keyless infostealer leg reached through indicator_legs from domain and email, scan and /api/lookup: domain-level aggregates, and one address's infostealer records kept as non-credential breach metadata (stealer families, compromise dates, service counts; never the stolen credentials, logins, machine name or host address)
 hunter	adapter	Hunter domain-search leg reached through domain_cli from domain, scan -k domain and /api/lookup when its key is set
 identity	leaf	legacy/simple person record resolution helper
 identity_resolution	leaf	conservative merge decision policy

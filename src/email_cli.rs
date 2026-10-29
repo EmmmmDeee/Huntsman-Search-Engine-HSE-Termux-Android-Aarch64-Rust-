@@ -643,10 +643,11 @@ mod tests {
             )),
             Ok(reply(200, r#"{"disposable":false}"#)),
             Ok(reply(200, r#"{"Error":"Not found","email":null}"#)),
+            Ok(reply(200, r#"{"stealers":[]}"#)),
         ]);
         match run_keyed(&unkeyed, &Keys::default(), "ada@example.com", 1) {
             EmailRun::Printed { text, .. } => {
-                for source in ["stopforumspam", "kickbox", "xposed_or_not"] {
+                for source in ["stopforumspam", "kickbox", "xposed_or_not", "hudsonrock"] {
                     assert!(text.contains(&format!("{source}\tvalid_zero")), "{text}");
                 }
             }
@@ -655,8 +656,8 @@ mod tests {
         let seen = unkeyed.seen.borrow();
         assert_eq!(
             seen.len(),
-            6,
-            "no key: only the keyless StopForumSpam, Kickbox and XposedOrNot checks are added"
+            7,
+            "no key: only the keyless StopForumSpam, Kickbox, XposedOrNot and HudsonRock checks are added"
         );
         assert_eq!(
             seen[4].url, "https://open.kickbox.com/v1/disposable/example.com",
@@ -736,6 +737,7 @@ mod tests {
                 200,
                 r#"{"data":{"email":"ada@example.com","status":"valid","score":91,"sources":[]}}"#,
             )),
+            Ok(reply(200, r#"{"stealers":[]}"#)),
         ]);
         let (text, report) = match run_keyed(&transport, &keys, "ada@example.com", 1) {
             EmailRun::Printed { text, report } => (text, report),
@@ -781,6 +783,10 @@ mod tests {
                     "https://api.hunter.io/v2/email-verifier?email=ada%40example.com",
                     true
                 ),
+                (
+                    "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email?email=ada%40example.com",
+                    false
+                ),
             ],
             "each key goes only where its provider takes it"
         );
@@ -822,6 +828,7 @@ mod tests {
                 200,
                 r#"{"status":1,"total_results":1,"search_result":[{"domain_name":"ada-lovelace.example"}]}"#,
             )),
+            Ok(reply(200, r#"{"stealers":[]}"#)),
         ]);
         let report = match run_keyed(&transport, &keys, "ada@example.com", 1) {
             EmailRun::Printed { report, .. } => report,
@@ -842,6 +849,7 @@ mod tests {
                 ("kickbox", SourceOutcomeKind::ValidZero),
                 ("xposed_or_not", SourceOutcomeKind::ValidZero),
                 ("whoxy", SourceOutcomeKind::Success),
+                ("hudsonrock", SourceOutcomeKind::ValidZero),
                 // The keyed indicator legs with no key: asked, skipped, and each says so.
                 ("ipqs", SourceOutcomeKind::NotConfigured),
                 ("hunter", SourceOutcomeKind::NotConfigured),
@@ -879,12 +887,12 @@ mod tests {
         }
         assert_eq!(
             offline.seen.borrow().len(),
-            6,
+            7,
             "every source was still tried"
         );
 
         let refused = ScriptedTransport::new(
-            (0..6)
+            (0..7)
                 .map(|_| unreachable(true, "egress-policy: destination is not publicly routable"))
                 .collect(),
         );
