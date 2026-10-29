@@ -509,6 +509,56 @@ fn values(statements: Option<&serde_json::Map<String, Value>>, pid: &str) -> Vec
         .unwrap_or_default()
 }
 
+/// Preserve bounded source statement envelopes and compatible rendered claim values, explicitly
+/// counting omitted or oversized statements. This is evidence, not an automatic pivot. **Pure.**
+fn attach_statement_evidence(
+    mut evidence: Evidence,
+    statements: Option<&serde_json::Map<String, Value>>,
+) -> Evidence {
+    // Retain the statement envelope, not merely value.content: rank, ID, qualifiers and
+    // references distinguish deprecated/historical claims from current observations. Preserve
+    // the legacy `claim` attribute for consumers that already read it. Count all omissions.
+    let mut retained = 0usize;
+    let mut dropped = 0usize;
+    let mut oversized = 0usize;
+    if let Some(statements) = statements {
+        for (pid, entries) in statements {
+            if let Some(entries) = entries.as_array() {
+                for statement in entries {
+                    if retained >= MAX_CLAIM_VALUES {
+                        dropped += 1;
+                        continue;
+                    }
+                    let json = statement.to_string();
+                    if json.len() <= MAX_STATEMENT_JSON_BYTES {
+                        evidence = evidence.with_attr("statement_json", format!("{pid}={json}"));
+                    } else {
+                        oversized += 1;
+                        evidence = evidence
+                            .with_attr("statement_oversize", format!("{pid}:{} bytes", json.len()));
+                    }
+                    if let Some(value) = statement.get("value").and_then(rendered_value) {
+                        evidence = evidence.with_attr("claim", format!("{pid}={value}"));
+                    }
+                    retained += 1;
+                }
+            } else {
+                evidence =
+                    evidence.with_attr("statement_schema_warning", format!("{pid}: not an array"));
+            }
+        }
+    }
+    evidence = evidence.with_attr("statements_retained", retained.to_string());
+    if dropped > 0 {
+        evidence = evidence.with_attr("statements_not_shown", dropped.to_string());
+    }
+    if oversized > 0 {
+        evidence = evidence.with_attr("statements_oversized", oversized.to_string());
+    }
+
+    evidence
+}
+
 /// Build the report from a parsed item. **Pure.**
 fn decode(
     item: &Value,
@@ -559,46 +609,7 @@ fn decode(
         }
     }
 
-    // Retain the statement envelope, not merely value.content: rank, ID, qualifiers and
-    // references distinguish deprecated/historical claims from current observations. Preserve
-    // the legacy `claim` attribute for consumers that already read it. Count all omissions.
-    let mut retained = 0usize;
-    let mut dropped = 0usize;
-    let mut oversized = 0usize;
-    if let Some(statements) = statements {
-        for (pid, entries) in statements {
-            if let Some(entries) = entries.as_array() {
-                for statement in entries {
-                    if retained >= MAX_CLAIM_VALUES {
-                        dropped += 1;
-                        continue;
-                    }
-                    let json = statement.to_string();
-                    if json.len() <= MAX_STATEMENT_JSON_BYTES {
-                        evidence = evidence.with_attr("statement_json", format!("{pid}={json}"));
-                    } else {
-                        oversized += 1;
-                        evidence = evidence
-                            .with_attr("statement_oversize", format!("{pid}:{} bytes", json.len()));
-                    }
-                    if let Some(value) = statement.get("value").and_then(rendered_value) {
-                        evidence = evidence.with_attr("claim", format!("{pid}={value}"));
-                    }
-                    retained += 1;
-                }
-            } else {
-                evidence =
-                    evidence.with_attr("statement_schema_warning", format!("{pid}: not an array"));
-            }
-        }
-    }
-    evidence = evidence.with_attr("statements_retained", retained.to_string());
-    if dropped > 0 {
-        evidence = evidence.with_attr("statements_not_shown", dropped.to_string());
-    }
-    if oversized > 0 {
-        evidence = evidence.with_attr("statements_oversized", oversized.to_string());
-    }
+    evidence = attach_statement_evidence(evidence, statements);
 
     let mut entities = Vec::new();
     push_entity(
