@@ -209,7 +209,10 @@ fn interpret(
     if resp.total < resp.objects.len() as u64
         || resp.objects.iter().any(|object| {
             object.package.as_ref().is_none_or(|package| {
-                package.name.as_deref().is_none_or(|name| name.trim().is_empty())
+                package
+                    .name
+                    .as_deref()
+                    .is_none_or(|name| name.trim().is_empty())
             })
         })
     {
@@ -224,7 +227,10 @@ fn interpret(
     if resp.objects.iter().any(|object| {
         !object.package.as_ref().is_some_and(|package| {
             package.maintainers.iter().any(|person| {
-                person.username.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(handle))
+                person
+                    .username
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(handle))
             })
         })
     }) {
@@ -621,12 +627,20 @@ mod tests {
             r#"{"objects":[{"package":{"name":"partial","maintainers":[{"username":"jane"}]}}],"total":413}"#,
             "jane",
         );
-        let subject = report.entities.iter().find(|entity| {
-            entity.kind == EntityKind::Username && entity.raw_value == "jane"
-        }).expect("subject");
+        let subject = report
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Username && entity.raw_value == "jane")
+            .expect("subject");
         let attributes = &subject.evidence[0].attributes;
-        assert_eq!(attributes.get("observed_package_count").map(String::as_str), Some("1"));
-        assert_eq!(attributes.get("pagination_truncated").map(String::as_str), Some("true"));
+        assert_eq!(
+            attributes.get("observed_package_count").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            attributes.get("pagination_truncated").map(String::as_str),
+            Some("true")
+        );
     }
 
     #[test]
