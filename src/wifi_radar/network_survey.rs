@@ -84,6 +84,9 @@ pub struct WifiCsvReport {
     pub observations: Vec<WifiCsvRecord>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct InvalidField;
+
 fn invalid(reason: &str) -> Error {
     Error::Invalid(format!("Network Survey Wi-Fi CSV: {reason}"))
 }
@@ -100,19 +103,19 @@ fn optional_u64(
     columns: &BTreeMap<&str, usize>,
     name: &str,
     max: u64,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, InvalidField> {
     let raw = column(row, columns, name);
     if raw.is_empty() {
         return Ok(None);
     }
     if !raw.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(());
+        return Err(InvalidField);
     }
     raw.parse::<u64>()
         .ok()
         .filter(|value| *value <= max)
         .map(Some)
-        .ok_or(())
+        .ok_or(InvalidField)
 }
 
 fn optional_f64(
@@ -121,27 +124,27 @@ fn optional_f64(
     name: &str,
     low: f64,
     high: f64,
-) -> Result<Option<f64>, ()> {
+) -> Result<Option<f64>, InvalidField> {
     let raw = column(row, columns, name);
     if raw.is_empty() {
         return Ok(None);
     }
-    let value = raw.parse::<f64>().map_err(|_| ())?;
+    let value = raw.parse::<f64>().map_err(|_| InvalidField)?;
     (value.is_finite() && (low..=high).contains(&value))
         .then_some(Some(value))
-        .ok_or(())
+        .ok_or(InvalidField)
 }
 
 fn optional_bool(
     row: &[String],
     columns: &BTreeMap<&str, usize>,
     name: &str,
-) -> Result<Option<bool>, ()> {
+) -> Result<Option<bool>, InvalidField> {
     match column(row, columns, name) {
         "" => Ok(None),
         "true" => Ok(Some(true)),
         "false" => Ok(Some(false)),
-        _ => Err(()),
+        _ => Err(InvalidField),
     }
 }
 
@@ -150,10 +153,10 @@ fn optional_text(
     columns: &BTreeMap<&str, usize>,
     name: &str,
     max_bytes: usize,
-) -> Result<Option<String>, ()> {
+) -> Result<Option<String>, InvalidField> {
     let raw = column(row, columns, name);
     if raw.len() > max_bytes {
-        return Err(());
+        return Err(InvalidField);
     }
     Ok((!raw.is_empty()).then(|| raw.to_owned()))
 }
