@@ -16,7 +16,7 @@ const MAX_PROOF_BYTES: usize = 1024 * 1024;
 const MAX_CERT_BYTES: usize = 64 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 8192;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RotationCertificate {
     pub certificate_sha256: String,
     pub public_key_sha256: String,
@@ -157,10 +157,16 @@ pub(super) fn inspect(
     if !matches!(scheme, "v3" | "v3.1") {
         return Vec::new();
     }
-    let Some([(start, end)]) = signer::prefixed(value, 0, value.len()).map(|x| x.try_into().ok()).flatten() else {
+    if value.len() > MAX_PROOF_BYTES * 2 {
+        return Vec::new();
+    }
+    let Some(outer) = signer::prefixed(value, 0, value.len()) else {
         return Vec::new();
     };
-    let Some(signers) = signer::prefixed(value, start, end) else {
+    let [(start, end)] = outer.as_slice() else {
+        return Vec::new();
+    };
+    let Some(signers) = signer::prefixed(value, *start, *end) else {
         return Vec::new();
     };
     if signers.len() > MAX_LEVELS {
@@ -275,6 +281,65 @@ mod tests {
         duplicate.extend(level(&old, 0, 0x0201, &[]));
         duplicate.extend(level(&old, 0x0201, 0, signature.as_ref()));
         assert_eq!(parse_proof(&duplicate, &last), Err("duplicate_certificate"));
+    }
+
+    fn v3_with_proof(cert: &[u8], proof: &[u8]) -> Vec<u8> {
+        let mut record = PROOF_OF_ROTATION_ID.to_le_bytes().to_vec();
+        record.extend_from_slice(proof);
+        let digests = prefix(&[]);
+        let certs = prefix(cert);
+        let mut signed = prefix(&digests);
+        signed.extend_from_slice(&prefix(&certs));
+        signed.extend_from_slice(&28_u32.to_le_bytes());
+        signed.extend_from_slice(&35_u32.to_le_bytes());
+        signed.extend_from_slice(&prefix(&prefix(&record)));
+        let mut signer = prefix(&signed);
+        signer.extend_from_slice(&28_u32.to_le_bytes());
+        signer.extend_from_slice(&35_u32.to_le_bytes());
+        signer.extend_from_slice(&prefix(&[]));
+        signer.extend_from_slice(&prefix(signer::certificate_spki(cert).unwrap()));
+        prefix(&prefix(&signer))
+    }
+
+    #[test]
+    fn json_and_evidence_gate_unbound_and_authenticated_proofs() {
+        let rng = ring::rand::SystemRandom::new();
+        let (parent, child) = keys();
+        let old = signer::tests::p256_certificate("Old", parent.public_key().as_ref());
+        let new = signer::tests::p256_certificate("New", child.public_key().as_ref());
+        let mut signed = prefix(&new);
+        signed.extend_from_slice(&0x0201_u32.to_le_bytes());
+        let signature = parent.sign(&rng, &signed).unwrap();
+        let value = v3_with_proof(&new, &proof(&old, &new, signature.as_ref()));
+        let claims = signer::sdk_signers(&value, "v3");
+        assert_eq!(claims.len(), 1);
+        let unbound = inspect(&value, "v3", &claims, &[]);
+        assert_eq!(unbound.len(), 1);
+        assert_eq!(unbound[0].status, "lineage_verified_apk_unverified");
+        assert_eq!(unbound[0].certificates.len(), 2);
+        let check = ContentDigestCheck {
+            scheme: "v3".to_owned(),
+            signer_index: 0,
+            signature_algorithm_id: 0x0201,
+            declared_sha256: String::new(),
+            computed_sha256: String::new(),
+            matches: true,
+            signature_authenticated: true,
+            signature_verification: "verified",
+        };
+        let wrong_scheme = ContentDigestCheck {
+            scheme: "v2".to_owned(),
+            ..check.clone()
+        };
+        assert_eq!(
+            inspect(&value, "v3", &claims, &[wrong_scheme])[0].status,
+            "lineage_verified_apk_unverified"
+        );
+        let bound = inspect(&value, "v3", &claims, &[check]);
+        assert_eq!(bound[0].status, "verified");
+        let json = serde_json::to_value(&bound).unwrap();
+        assert_eq!(json[0]["certificates"].as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["status"], "verified");
     }
 
     #[test]
