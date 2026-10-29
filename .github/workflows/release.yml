@@ -84,6 +84,9 @@ on:
       # rather than waiting for the main-branch release build to find regressions.
       - "scripts/termux-runtime-acceptance.sh"
       - "tests/termux_runtime_acceptance.rs"
+      # Lifecycle publication must receive the same PR release dry-run gate.
+      - "scripts/lifecycle.sh"
+      - "tests/lifecycle_sync.rs"
       - "tests/root_installer.rs"
       - "xtask/**"
       - ".cargo/**"
