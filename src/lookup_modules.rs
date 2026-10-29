@@ -106,6 +106,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         ScanKind::People => vec![
             asic_persons::SRC,
             asic_director::SRC,
+            crate::wikidata::SOURCE,
             seeknow_collector::COLLECTOR_ID,
         ],
         ScanKind::Network => {
@@ -125,8 +126,12 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             crate::opensky::SOURCE,
         ],
     };
-    // Stable deduplication keeps each source's first execution position and
-    // avoids a tree allocation for the small, bounded module list.
+    dedup_preserving_order(modules)
+}
+
+/// Stable deduplication: keep each source's first execution position without a tree allocation for
+/// the small, bounded module list. **Pure.**
+fn dedup_preserving_order(modules: Vec<&'static str>) -> Vec<&'static str> {
     let mut unique = Vec::with_capacity(modules.len());
     for module in modules {
         if !unique.contains(&module) {

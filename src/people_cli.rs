@@ -1,8 +1,8 @@
 //! Collection front-end for `huntsman-recon people`.
 //!
-//! Lookup runs [`crate::asic_persons`] and [`crate::asic_director`] over one injected
-//! [`crate::http::Transport`]. One source's [`Error::Invalid`] or `BotWaf` does not abort
-//! the others. All entities from all sources are merged via [`crate::entity::merge_by_uid`],
+//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`] and [`crate::wikidata`] over
+//! one injected [`crate::http::Transport`]. One source's [`Error::Invalid`] or `BotWaf` does not
+//! abort the others. All entities from all sources are merged via [`crate::entity::merge_by_uid`],
 //! which deduplicates records with the same UID and calls [`crate::entity::Entity::absorb`]
 //! to combine attributes. The merged report is rendered by [`crate::lookup_report::render`],
 //! which feeds the evidence through [`crate::lineage::resolve_with_lineage`]. Tests inject
@@ -21,15 +21,17 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 use crate::textnorm::name_tokens;
+use crate::wikidata;
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on keyless ASIC people and director registers. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers and Wikidata. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
   2. ASIC director register (company director records)
+  3. Wikidata (the top public item for the name, a candidate lead, never a confirmed identity)
 
 Results from all sources are merged by entity UID: duplicate records from different sources are combined into a single entity whose observation set includes all evidence. This consolidation detects when one person has multiple records across registers and surfaces the corroborated attributes.";
 
@@ -106,6 +108,20 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
             asic_director::SRC,
             asic_director::lookup(transport, &name, &scan_id, now_unix)
                 .map(|found| (found.entities, found.outcomes)),
+            now_unix,
+            &mut report,
+            &mut network,
+            &mut failed,
+        );
+    }
+    if transport.runs_module(wikidata::SOURCE) {
+        // Wikidata resolves the name to its top public item: a Person candidate when the item is a
+        // human, never a confirmed identity. Reuses the keyless wikidata source client, so a people
+        // lookup is no longer Australia-only. A single outcome folds in like the register legs.
+        collect(
+            wikidata::SOURCE,
+            wikidata::lookup(transport, &name, &scan_id, now_unix)
+                .map(|found| (found.entities, vec![found.outcome])),
             now_unix,
             &mut report,
             &mut network,
@@ -257,6 +273,12 @@ mod tests {
                     .remove(id)
                     .unwrap_or_else(|| panic!("unexpected resource {id}"));
             }
+            // Wikidata's keyless entity search. An empty result set is the live endpoint's answer
+            // for a name it does not resolve, so a people scan's wikidata leg is a clean valid_zero
+            // here rather than an incidental parse drift off the HTML fallback below.
+            if request.url.contains("wbsearchentities") {
+                return Ok(json_ok(r#"{"search":[]}"#));
+            }
             let html = self.html.borrow();
             if let Some((_, response)) =
                 html.iter().find(|(needle, _)| request.url.contains(needle))
@@ -294,7 +316,11 @@ mod tests {
         }
     }
 
-    const PEOPLE_SOURCE_REQUESTS: usize = 4;
+    /// Every source leg a two-token people scan runs: `asic_persons` (its banned, adviser and
+    /// credit datasets), `asic_director`, and `wikidata`. Each leg makes one request, folds in one
+    /// outcome and persists one ledger entry, so the three counts coincide — every leg here is a
+    /// single-request `valid_zero`.
+    const PEOPLE_SOURCE_REQUESTS: usize = 5;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
@@ -546,5 +572,47 @@ mod tests {
             PeopleRun::Network(msg) => assert!(msg.contains("egress-policy"), "{msg}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_people_scan_runs_wikidata_and_attributes_it_to_its_own_component() {
+        // A people lookup now also queries Wikidata beside the ASIC registers. An empty search is
+        // a clean zero; the saved-ledger provenance must attribute the wikidata outcome to its own
+        // canonical component, not the asic_persons default.
+        struct WikidataPeople;
+        impl Transport for WikidataPeople {
+            fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+                let body: &str = if request.url.contains("wbsearchentities") {
+                    r#"{"search":[]}"#
+                } else {
+                    r#"{"success":true,"result":{"records":[],"total":0}}"#
+                };
+                Ok(json_ok(body))
+            }
+            fn runs_module(&self, _module: &str) -> bool {
+                true
+            }
+        }
+        let report = match run(&WikidataPeople, "Ada Lovelace", 1) {
+            PeopleRun::Printed { report, .. } => report,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            report.outcomes.iter().any(|o| o.module == wikidata::SOURCE),
+            "the wikidata leg must run for a people scan: {report:?}"
+        );
+        let ledger = crate::lookup_save::chain(
+            &report.entities,
+            &report.outcomes,
+            crate::lookup_save::PEOPLE_POLICY,
+        )
+        .unwrap();
+        assert!(
+            ledger
+                .iter()
+                .any(|entry| entry.claim.source == wikidata::SOURCE
+                    && entry.claim.component == "src/wikidata.rs"),
+            "wikidata evidence must persist under src/wikidata.rs, not the asic default"
+        );
     }
 }
