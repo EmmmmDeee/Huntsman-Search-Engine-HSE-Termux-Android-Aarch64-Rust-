@@ -8,16 +8,17 @@ use crate::blockchain;
 use crate::canonical::canonical_bitcoin_address;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
+use crate::eth_rpc;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const CRYPTO_USAGE: &str =
-    "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]";
+    "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS [--save FILE]";
 pub const CRYPTO_HELP: &str = "\
-crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]
-Bitcoin: balance, lifetime received/sent and transaction count from blockchain.info, and from its 20 most recent transactions the first and last transaction times and every address it transacted with, by role: paid_by (paid it), paid_to (it paid) or co_input (spent together with it, the common-input heuristic), each with the transaction, its time and block and the exact satoshis. Sharing a transaction is not common ownership: CoinJoin and payjoin break the co-input heuristic and an exchange address links unrelated users, so no wallet owner is identified. Base: 40-hex-digit EVM address explicitly prefixed base:, with finalized balance in exact wei, outgoing nonce and contract-code presence via the rate-limited public Base JSON-RPC. No keys, full transaction history or ownership assertion. --save FILE writes an unverified ledger; verify can reload it. Makes network requests.";
+crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS [--save FILE]
+Bitcoin: balance, lifetime received/sent and transaction count from blockchain.info, and from its 20 most recent transactions the first and last transaction times and every address it transacted with, by role: paid_by (paid it), paid_to (it paid) or co_input (spent together with it, the common-input heuristic), each with the transaction, its time and block and the exact satoshis. Sharing a transaction is not common ownership: CoinJoin and payjoin break the co-input heuristic and an exchange address links unrelated users, so no wallet owner is identified. Base: 40-hex-digit EVM address explicitly prefixed base:, with finalized balance in exact wei, outgoing nonce and contract-code presence via the rate-limited public Base JSON-RPC. Ethereum: the same for a 40-hex-digit address explicitly prefixed eth:, with finalized balance in exact wei, outgoing nonce and contract-code presence via the rate-limited public Ethereum mainnet JSON-RPC. No keys, full transaction history or ownership assertion. --save FILE writes an unverified ledger; verify can reload it. Makes network requests.";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -36,8 +37,10 @@ impl CryptoArgs {
     /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for a value that
     /// is not a Bitcoin mainnet address.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let (raw, save) =
-            LookupTokens::single(args, "crypto needs exactly one Bitcoin or Base address")?;
+        let (raw, save) = LookupTokens::single(
+            args,
+            "crypto needs exactly one Bitcoin, Base or Ethereum address",
+        )?;
         let address = canonical_address(&raw)?;
         Ok(Self { address, save })
     }
@@ -52,8 +55,11 @@ pub type CryptoRun = SourceRun<Report>;
 pub fn canonical_address(raw: &str) -> Result<String, Error> {
     canonical_bitcoin_address(raw)
         .or_else(|| base_rpc::canonical_selector(raw))
+        .or_else(|| eth_rpc::canonical_selector(raw))
         .ok_or_else(|| {
-            Error::invalid_value("expected Bitcoin mainnet address or base:0x plus 40 hex digits")
+            Error::invalid_value(
+                "expected Bitcoin mainnet address, base:0x or eth:0x plus 40 hex digits",
+            )
         })
 }
 
@@ -76,7 +82,18 @@ pub fn run<T: Transport + ?Sized>(transport: &T, address: &str, now_unix: u64) -
             }
             Err(error) => return CryptoRun::Network(error.to_string()),
         }
-    } else if !address.starts_with("base:") && transport.runs_module(blockchain::SOURCE) {
+    } else if address.starts_with("eth:") && transport.runs_module(eth_rpc::SOURCE) {
+        match eth_rpc::lookup(transport, &address, &scan_id, now_unix) {
+            Ok(found) => {
+                report.entities.extend(found.entities);
+                report.outcomes.push(found.outcome);
+            }
+            Err(error) => return CryptoRun::Network(error.to_string()),
+        }
+    } else if !address.starts_with("base:")
+        && !address.starts_with("eth:")
+        && transport.runs_module(blockchain::SOURCE)
+    {
         match blockchain::lookup(transport, &address, &scan_id, now_unix) {
             Ok(found) => {
                 report.entities.extend(found.entities);

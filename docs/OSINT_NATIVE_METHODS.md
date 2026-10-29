@@ -10,6 +10,7 @@ Independent Huntsman implementations: **no H1DR4 runtime connection**. The sourc
 - `huntsman-recon osint x "query"`: public index discovery leads, not a private X/Grok corpus.
 - `huntsman-recon osint x-api "query"`: official X recent-search first page, requires independently authorized `HUNTSMAN_X_BEARER_TOKEN`.
 - Base account state is provided by `huntsman-recon crypto base:0xADDRESS` (keyless public RPC, canonical owner `src/base_rpc.rs`); this branch adds no separate Base or Alchemy path.
+- Ethereum mainnet account state is provided by `huntsman-recon crypto eth:0xADDRESS` (keyless public RPC, canonical owner `src/eth_rpc.rs` over the shared `src/evm_rpc.rs` core); keyless, no indexing service, no separate Infura or Alchemy path.
 - `huntsman-recon osint plan SEED...`, `osint local QUERY DIRECTORY`, and `osint lookup KIND SELECTOR`: reuse existing graph, local search and provider connectors.
 
 Web UI: Analysis > Source-backed OSINT methods. APIs `POST /api/osint/case` and `POST /api/osint/area-risk` use existing authorization, origin and body-size controls. The area-risk API JSON includes `as_of_unix`, `events`, `center_lat`, `center_lon`, `radius_m`, `category`.
