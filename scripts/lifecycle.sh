@@ -47,6 +47,8 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}
 BIN="$CARGO_TARGET_DIR/debug/huntsman-recon"
 # Ephemeral only: a previous process or persisted state cannot authorise a push.
 SYNC_VERIFIED=0
+SYNC_BASE_HEAD=""
+SYNC_EXPECTED_TREE=""
 
 build() {
   need cargo
@@ -97,11 +99,10 @@ secret_path() {
   return 1
 }
 
-sync_cmd() {
-  need git
-  [[ -d .git ]] || die "not a git checkout; clone the canonical repo before sync"
-  branch="$(git rev-parse --abbrev-ref HEAD)"
-  [[ "$branch" == "main" ]] || die "sync refuses non-main branch: $branch"
+
+# Enumerate candidate paths before hashing or staging them. Repeat this after
+# tests so that a newly created secret-looking path is also refused.
+scan_changed_paths() {
   # Every path that `git add -A` and `git commit` would take, one entry per file and unquoted:
   # untracked files (not the directory that holds them), tracked changes, and what is staged.
   # `git status --porcelain` lists an untracked directory as one entry and quotes a name with a
@@ -126,8 +127,35 @@ sync_cmd() {
       fi
     done
   fi
-  # A direct sync must not bypass build/check/tests. The all command has already
-  # completed them in this process; stored state from another run is not trusted.
+}
+
+# Hash exactly the Git tree that 'git add -A' would stage, without changing the
+# operator's actual index. Git trees cover contents, modes, paths, and deletions.
+# Only ephemeral index files are used; state and global Git configuration survive.
+candidate_tree() (
+  local tmp
+  tmp="$(mktemp -d "$STATE_DIR/lifecycle-index.XXXXXX")" || exit 1
+  trap 'rm -rf "$tmp"' EXIT
+  export GIT_INDEX_FILE="$tmp/index"
+  git read-tree HEAD || exit 1
+  git add -A || exit 1
+  git write-tree
+)
+
+prepare_sync() {
+  need git
+  [[ -d .git ]] || die "not a git checkout; clone the canonical repo before sync"
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  [[ "$branch" == "main" ]] || die "sync refuses non-main branch: $branch"
+  scan_changed_paths
+  SYNC_BASE_HEAD="$(git rev-parse HEAD)" || die "could not read local HEAD"
+  SYNC_EXPECTED_TREE="$(candidate_tree)" || die "could not fingerprint the candidate tree"
+  log "verification candidate head=$SYNC_BASE_HEAD tree=$SYNC_EXPECTED_TREE"
+}
+
+sync_cmd() {
+  # 'all' captures the candidate before build/tests; direct 'sync' captures it here.
+  [[ -n "$SYNC_EXPECTED_TREE" ]] || prepare_sync
   if [[ "$SYNC_VERIFIED" != "1" ]]; then
     log "sync verification: running build, check, and lib tests"
     build
@@ -135,12 +163,31 @@ sync_cmd() {
     test_cmd
     SYNC_VERIFIED=1
   fi
+
+  # A successful test authorises only the *same* source tree. Neither a changing
+  # worktree nor a concurrent checkout/commit may be silently published.
+  [[ "$(git rev-parse HEAD)" == "$SYNC_BASE_HEAD" ]] ||
+    die "HEAD changed during verification; refusing sync"
+  scan_changed_paths
+  local current_tree
+  current_tree="$(candidate_tree)" || die "could not recheck the candidate tree"
+  [[ "$current_tree" == "$SYNC_EXPECTED_TREE" ]] ||
+    die "worktree changed during verification; refusing sync"
+
   write_state sync running "$branch"
   if [[ ${#dirty[@]} -gt 0 ]]; then
     git add -A
+    # Close the race between the second snapshot and the real index write.
+    [[ "$(git write-tree)" == "$SYNC_EXPECTED_TREE" ]] ||
+      die "staged tree differs from verified tree; refusing commit and push"
     git commit -m "lifecycle: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # A pre-commit or commit-msg hook may change what the commit actually holds.
+    [[ "$(git rev-parse 'HEAD^{tree}')" == "$SYNC_EXPECTED_TREE" ]] ||
+      die "committed tree differs from verified tree; refusing push"
     log "committed $(git rev-parse --short HEAD)"
   else
+    [[ "$(git rev-parse 'HEAD^{tree}')" == "$SYNC_EXPECTED_TREE" ]] ||
+      die "clean tree differs from verified tree; refusing push"
     log "clean tree"
   fi
   git remote get-url origin >/dev/null 2>&1 || die "no origin remote"
@@ -159,6 +206,7 @@ case "$cmd" in
   run) check_cmd ;;
   sync) sync_cmd ;;
   all)
+    prepare_sync
     build
     check_cmd
     test_cmd
