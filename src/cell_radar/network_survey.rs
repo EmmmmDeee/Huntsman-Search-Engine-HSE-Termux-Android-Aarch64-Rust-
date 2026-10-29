@@ -2,6 +2,8 @@
 //! Importing a file is not a live radio scan or proof of its author, clock or location.
 //! Device serial numbers and mission identifiers are deliberately not retained.
 
+pub mod nr;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 

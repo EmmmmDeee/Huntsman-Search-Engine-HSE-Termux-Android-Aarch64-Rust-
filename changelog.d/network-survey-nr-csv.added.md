@@ -1,0 +1,4 @@
+- Add keyless, offline Network Survey NR/5G CSV v0.4.0 import via `radar survey-nr --file FILE [--json]` using the existing bounded RFC4180 parser and canonical cell identity model.
+- Validate all 28 documented header fields in order, PLMN/legacy MCC-MNC consistency, 36-bit NCI, 24-bit TAC, PCI, NR-ARFCN, timestamp timezone and optional signal/TA bounds. Unknown values remain unknown; invalid rows are counted, not silently converted to positive sightings.
+- Retain source-claimed timestamp, 5G measurements and separately labelled GNSS uncertainty. Never retain device serial, mission ID, SIM slot or provider name, infer a gNB ID or claim live Android capture.
+- Add pure unit and CLI acceptance tests for maximum identities, leading-zero MNCs, malformed/oversized CSV, missing fields, unknown status, privacy and exit codes. No new dependencies.
