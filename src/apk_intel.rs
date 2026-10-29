@@ -17,6 +17,7 @@ mod intent;
 mod native_framework;
 mod network_config;
 mod risk;
+mod rotation;
 mod sdk;
 mod signer;
 
@@ -58,9 +59,9 @@ const MAX_APK_SIGNATURE_FILE_BYTES: usize = 1024 * 1024;
 const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 /// Hosts and URLs turned into entities, each; the report lists more.
 const MAX_HOST_ENTITIES: usize = 64;
-const LIMITATIONS: &str = "Offline static reading: APK SHA-256 content-digest comparisons alone do not authenticate signatures; supported signed-data signatures are checked separately, but full Android APK verification and certificate-chain trust are not claimed; manifest and signer identity claims remain untrusted; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
+const LIMITATIONS: &str = "Offline static reading: APK SHA-256 content-digest comparisons alone do not authenticate signatures; supported signed-data signatures and AOSP rotation links are checked separately, but full Android APK verification and certificate-chain trust are not claimed; manifest and signer identity claims remain untrusted; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (structural presence, not full Android signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts) and resolve the app's displayed name from resources.arsc, summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER and of their public key (certificate extraction alone is not verification), report SDK-specific v3/v3.1 signer ranges as unverified declarations, compare declared SHA-256 APK content digests using the Android 1 MiB chunk algorithm (a digest match alone is not authentication; supported RSA/ECDSA signed-data signatures are checked separately, not full Android installability), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (structural presence, not full Android signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts) and resolve the app's displayed name from resources.arsc, summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER and of their public key (certificate extraction alone is not verification), report SDK-specific v3/v3.1 signer ranges as unverified declarations and bounded cryptographic proof-of-rotation chains (verified only when bound to an authenticated APK signed-data digest), compare declared SHA-256 APK content digests using the Android 1 MiB chunk algorithm (a digest match alone is not authentication; supported RSA/ECDSA signed-data signatures are checked separately, not full Android installability), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -91,6 +92,7 @@ pub use dex::CodeUrls;
 pub use intent::IntentAnalysis;
 pub use network_config::{DomainRule, NetworkPolicy, PinFingerprint, TrustAnchor};
 pub use risk::Flag;
+pub use rotation::{RotationCertificate, RotationChain};
 pub use sdk::Tracker;
 pub use signer::{Certificate, SdkSigner};
 
@@ -124,6 +126,8 @@ pub struct Analysis {
     pub signers: Vec<Certificate>,
     /// SDK-scoped v3/v3.1 certificate declarations; never proof of a selected or valid signer.
     pub sdk_signers: Vec<SdkSigner>,
+    /// Bounded AOSP proof-of-rotation observations, with explicit authentication status.
+    pub rotation_chains: Vec<RotationChain>,
     pub code: CodeUrls,
     /// The app's displayed name (`android:label`), resolved from `resources.arsc` when it is a
     /// resource reference, or taken inline when the manifest gives a literal. The manifest's own
@@ -710,6 +714,14 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
             .sdk_signers
             .extend(signer::sdk_signers(value, scheme));
     }
+    for (scheme, value) in &archive.signing_values {
+        analysis.rotation_chains.extend(rotation::inspect(
+            value,
+            scheme,
+            &analysis.sdk_signers,
+            &analysis.content_digest_checks,
+        ));
+    }
     for member in &archive.v1 {
         if let Some(bytes) = read(member, MAX_APK_SIGNATURE_FILE_BYTES, &mut analysis) {
             certificates.extend(signer::pkcs7(&bytes, member.name));
@@ -1102,6 +1114,25 @@ fn document_evidence(
     network_policy_attrs(analysis, &mut put);
     content_digest_attrs(analysis, &mut put);
     signer_digest_attrs(analysis, &mut put);
+    put(
+        "apk_rotation_proof_status",
+        analysis
+            .rotation_chains
+            .iter()
+            .map(|chain| format!("{}#{}:{}", chain.scheme, chain.signer_index, chain.status))
+            .collect::<Vec<_>>()
+            .join("; "),
+    );
+    put(
+        "apk_rotation_verified_certificates",
+        analysis
+            .rotation_chains
+            .iter()
+            .filter(|chain| chain.status == "verified")
+            .flat_map(|chain| chain.certificates.iter().map(|cert| cert.certificate_sha256.as_str()))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     if let Some(signer) = analysis.signers.first() {
         put("apk_signer_subject", signer.subject.clone());
         put("apk_signer_valid_from", signer.not_before.clone());
