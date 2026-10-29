@@ -347,6 +347,26 @@ mod tests {
         let json = serde_json::to_value(&bound).unwrap();
         assert_eq!(json[0]["certificates"].as_array().unwrap().len(), 2);
         assert_eq!(json[0]["status"], "verified");
+
+        let mut analysis = super::super::Analysis::default();
+        analysis.rotation_chains = bound;
+        let mut attributes = Vec::new();
+        super::super::signer_digest_attrs(&analysis, &mut |key, value| {
+            attributes.push((key, value));
+        });
+        assert!(attributes.iter().any(|(key, value)| {
+            *key == "apk_rotation_verified_certificates"
+                && value.contains(&crate::sha256::hex32(&sha256(&old)))
+                && value.contains(&crate::sha256::hex32(&sha256(&new)))
+        }));
+        analysis.rotation_chains = unbound;
+        let mut unverified_attributes = Vec::new();
+        super::super::signer_digest_attrs(&analysis, &mut |key, value| {
+            unverified_attributes.push((key, value));
+        });
+        assert!(unverified_attributes.iter().any(|(key, value)| {
+            *key == "apk_rotation_verified_certificates" && value.is_empty()
+        }));
     }
 
     #[test]
