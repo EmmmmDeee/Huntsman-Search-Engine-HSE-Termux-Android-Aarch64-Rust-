@@ -96,12 +96,7 @@ impl Sandbox {
         self.run_with_mock_cargo_mutation(mode, test_exit, "none")
     }
 
-    fn run_with_mock_cargo_mutation(
-        &self,
-        mode: &str,
-        test_exit: u8,
-        mutation: &str,
-    ) -> Output {
+    fn run_with_mock_cargo_mutation(&self, mode: &str, test_exit: u8, mutation: &str) -> Output {
         use std::os::unix::fs::PermissionsExt;
 
         let mock_bin = self.root.join("mock-bin");
@@ -419,7 +414,11 @@ fn direct_sync_refuses_a_commit_hook_that_modifies_staged_content() {
         "{stderr}"
     );
     assert_ne!(sandbox.head(), before, "hook never executed");
-    assert_eq!(sandbox.pushed(), remote_before, "unverified commit was pushed");
+    assert_eq!(
+        sandbox.pushed(),
+        remote_before,
+        "unverified commit was pushed"
+    );
 }
 
 #[test]
