@@ -340,7 +340,15 @@ fn exposure_legs(
 ) -> Option<ExposureRun> {
     let client = crate::cli::credentials::hibp_key_loader(keys)
         .load()
-        .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
+        .map(|(key, _)| {
+            HibpClient::production(
+                Arc::new(UreqTransport::new(
+                    &HibpConfig::default().transport_config(),
+                )),
+                Auth::ApiKey(key),
+                HibpConfig::default(),
+            )
+        });
     let transport = UreqTransport::new(&stolen_tax::transport_config());
     let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
     // DeHashed reuses the opt-in client; its key comes from the same lookup keys.
