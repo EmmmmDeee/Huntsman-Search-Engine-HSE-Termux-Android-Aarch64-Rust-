@@ -1,4 +1,5 @@
 abuseipdb	adapter	AbuseIPDB check leg reached through ip_cli from ip, scan -k ip and /api/lookup when its key is set
+acnc	adapter	ACNC charity register source client folded into a people scan as a candidate lead
 address_au	leaf	Australian address and phone normalization utility
 analysis	runtime	shared analysis fan-out
 api_leg	runtime	shared request path, key binding and status mapping of the free-tier API legs

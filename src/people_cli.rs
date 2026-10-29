@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use crate::acnc;
 use crate::asic_director;
 use crate::asic_persons;
 use crate::canonical::canonical_name;
@@ -26,12 +27,13 @@ use crate::wikidata;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on the keyless ASIC people and director registers and Wikidata. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers, Wikidata, and the ACNC charity register. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
   2. ASIC director register (company director records)
   3. Wikidata (top public item, QID-scoped candidate, never name-only identity corroboration)
+  4. ACNC charity register (registered charities and not-for-profits matched by name)
 
 Results from all sources are merged by entity UID: duplicate records from different sources are combined into a single entity whose observation set includes all evidence. This consolidation detects when one person has multiple records across registers and surfaces the corroborated attributes.";
 
@@ -122,6 +124,22 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
             wikidata::SOURCE,
             wikidata::lookup(transport, &name, &scan_id, now_unix)
                 .map(|found| (scope_wikidata_items(found.entities), vec![found.outcome])),
+            now_unix,
+            &mut report,
+            &mut network,
+            &mut failed,
+        );
+    }
+    if transport.runs_module(acnc::SRC) {
+        // The ACNC charity register: a `people NAME` that names a charity or not-for-profit folds
+        // in the registered organisation, its ABN (an AbnAcn correlation key; the ASIC and GLEIF
+        // legs key on the 9-digit ACN, so an 11-digit ABN does not auto-join those), its official
+        // website (a lead into the domain-recon cluster) and its registered address. A single
+        // outcome folds in like the other register legs.
+        collect(
+            acnc::SRC,
+            acnc::lookup(transport, &name, &scan_id, now_unix)
+                .map(|found| (found.entities, vec![found.outcome])),
             now_unix,
             &mut report,
             &mut network,
@@ -350,6 +368,7 @@ mod tests {
         assert!(!is_name("Ada"));
     }
 
+    use crate::acnc::CHARITY_RES;
     use crate::asic_persons::{ADVISER_RES, BANNED_RES, CREDIT_RES};
     use crate::http::{Request, Response, TransportFailure};
     use crate::relation::{self, RelationKind};
@@ -440,17 +459,18 @@ mod tests {
     }
 
     /// Every source leg a two-token people scan runs: `asic_persons` (its banned, adviser and
-    /// credit datasets), `asic_director`, and `wikidata`. Each leg makes one request, folds in one
-    /// outcome and persists one ledger entry, so the three counts coincide — every leg here is a
-    /// single-request `valid_zero`.
-    const PEOPLE_SOURCE_REQUESTS: usize = 5;
+    /// credit datasets), `asic_director`, `wikidata`, and the `acnc` charity register. Each leg
+    /// makes one request, folds in one outcome and persists one ledger entry, so the three counts
+    /// coincide — every leg here is a single-request `valid_zero`.
+    const PEOPLE_SOURCE_REQUESTS: usize = 6;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
         HashMap::from([
             (BANNED_RES.into(), Ok(empty.clone())),
             (ADVISER_RES.into(), Ok(empty.clone())),
-            (CREDIT_RES.into(), Ok(empty)),
+            (CREDIT_RES.into(), Ok(empty.clone())),
+            (CHARITY_RES.into(), Ok(empty)),
         ])
     }
 

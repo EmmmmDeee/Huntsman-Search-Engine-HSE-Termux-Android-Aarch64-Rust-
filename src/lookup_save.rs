@@ -70,6 +70,7 @@ fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
     match label.split('.').next().unwrap_or(label) {
         "asic_director" => ("asic_director", "src/asic_director.rs"),
         "wikidata" => ("wikidata", "src/wikidata.rs"),
+        "acnc" => ("acnc", "src/acnc.rs"),
         _ => ("asic_persons", "src/asic_persons.rs"),
     }
 }
