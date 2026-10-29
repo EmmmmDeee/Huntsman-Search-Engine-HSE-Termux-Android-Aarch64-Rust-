@@ -84,11 +84,13 @@ fn optional_number(
     columns: &BTreeMap<&str, usize>,
     name: &str,
     max: u64,
-) -> Option<Option<u64>> {
+) -> Result<Option<u64>, &'static str> {
     if column(row, columns, name).is_empty() {
-        Some(None)
+        Ok(None)
     } else {
-        Some(Some(cell_number(row, columns, name, max)?))
+        cell_number(row, columns, name, max)
+            .map(Some)
+            .ok_or("invalid optional number")
     }
 }
 
@@ -98,13 +100,17 @@ fn optional_measurement(
     name: &str,
     low: f64,
     high: f64,
-) -> Option<Option<f64>> {
+) -> Result<Option<f64>, &'static str> {
     let raw = column(row, columns, name);
     if raw.is_empty() {
-        return Some(None);
+        return Ok(None);
     }
-    let value = raw.parse::<f64>().ok()?;
-    (value.is_finite() && (low..=high).contains(&value)).then_some(Some(value))
+    let value = raw.parse::<f64>().map_err(|_| "invalid optional measurement")?;
+    if value.is_finite() && (low..=high).contains(&value) {
+        Ok(Some(value))
+    } else {
+        Err("out-of-range optional measurement")
+    }
 }
 
 fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsvRecord> {
@@ -126,18 +132,18 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     }
     let tac = cell_number(row, columns, "tac", 16_777_215)?;
     let nci = cell_number(row, columns, "nci", 68_719_476_735)?;
-    let narfcn = optional_u32(row, columns, "narfcn", 3_279_165)?;
-    let pci = optional_u32(row, columns, "pci", 1007)?;
-    let timing_advance = optional_u32(row, columns, "ta", 3846)?;
-    let record_number = optional_number(row, columns, "recordNumber", u64::MAX)?;
-    let group_number = optional_number(row, columns, "groupNumber", u64::MAX)?;
-    let location_age_ms = optional_number(row, columns, "locationAge", 86_400_000)?;
-    let ss_rsrp = optional_measurement(row, columns, "ssRsrp", -156.0, -31.0)?;
-    let ss_rsrq = optional_measurement(row, columns, "ssRsrq", -43.0, 20.0)?;
-    let ss_sinr = optional_measurement(row, columns, "ssSinr", -23.0, 40.0)?;
-    let csi_rsrp = optional_measurement(row, columns, "csiRsrp", -140.0, -44.0)?;
-    let csi_rsrq = optional_measurement(row, columns, "csiRsrq", -200.0, 200.0)?;
-    let csi_sinr = optional_measurement(row, columns, "csiSinr", -23.0, 40.0)?;
+    let narfcn = optional_u32(row, columns, "narfcn", 3_279_165).ok()?;
+    let pci = optional_u32(row, columns, "pci", 1007).ok()?;
+    let timing_advance = optional_u32(row, columns, "ta", 3846).ok()?;
+    let record_number = optional_number(row, columns, "recordNumber", u64::MAX).ok()?;
+    let group_number = optional_number(row, columns, "groupNumber", u64::MAX).ok()?;
+    let location_age_ms = optional_number(row, columns, "locationAge", 86_400_000).ok()?;
+    let sync_signal_power = optional_measurement(row, columns, "ssRsrp", -156.0, -31.0).ok()?;
+    let sync_signal_quality = optional_measurement(row, columns, "ssRsrq", -43.0, 20.0).ok()?;
+    let sync_signal_sinr = optional_measurement(row, columns, "ssSinr", -23.0, 40.0).ok()?;
+    let channel_state_power = optional_measurement(row, columns, "csiRsrp", -140.0, -44.0).ok()?;
+    let channel_state_quality = optional_measurement(row, columns, "csiRsrq", -200.0, 200.0).ok()?;
+    let channel_state_sinr = optional_measurement(row, columns, "csiSinr", -23.0, 40.0).ok()?;
     let serving = match column(row, columns, "servingCell") {
         "true" => Some(true),
         "false" => Some(false),
@@ -163,7 +169,7 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     observation.freshness = "offline_unverified";
     observation.sighting.observed_at = Some(timestamp.to_owned());
     observation.sighting.observed_epoch = Some(epoch);
-    observation.sighting.signal_dbm = ss_rsrp;
+    observation.sighting.signal_dbm = sync_signal_power;
 
     let lat = column(row, columns, "latitude").parse::<f64>().ok();
     let lon = column(row, columns, "longitude").parse::<f64>().ok();
@@ -192,11 +198,11 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
         location_age_ms,
         narfcn,
         timing_advance,
-        ss_rsrq_db: ss_rsrq,
-        ss_sinr_db: ss_sinr,
-        csi_rsrp_dbm: csi_rsrp,
-        csi_rsrq_db: csi_rsrq,
-        csi_sinr_db: csi_sinr,
+        ss_rsrq_db: sync_signal_quality,
+        ss_sinr_db: sync_signal_sinr,
+        csi_rsrp_dbm: channel_state_power,
+        csi_rsrq_db: channel_state_quality,
+        csi_sinr_db: channel_state_sinr,
     })
 }
 
@@ -205,11 +211,10 @@ fn optional_u32(
     columns: &BTreeMap<&str, usize>,
     name: &str,
     max: u64,
-) -> Option<Option<u32>> {
-    match optional_number(row, columns, name, max)? {
-        Some(value) => Some(Some(u32::try_from(value).ok()?)),
-        None => Some(None),
-    }
+) -> Result<Option<u32>, &'static str> {
+    optional_number(row, columns, name, max)?
+        .map(|value| u32::try_from(value).map_err(|_| "out-of-range optional number"))
+        .transpose()
 }
 
 /// Parse an explicitly supplied NR CSV, refusing unknown schema versions and column layouts.
@@ -362,7 +367,7 @@ mod tests {
         assert_eq!(record.observation.site, None);
         assert_eq!(record.reported_accuracy_m, Some(22.0));
         assert_eq!(record.location_age_ms, Some(4916));
-        assert_eq!(record.narfcn, Some(3279165));
+        assert_eq!(record.narfcn, Some(3_279_165));
         assert_eq!(record.timing_advance, Some(3846));
         assert_eq!(record.observation.sighting.latitude, None);
         let serialized = serde_json::to_string(&report).unwrap();
