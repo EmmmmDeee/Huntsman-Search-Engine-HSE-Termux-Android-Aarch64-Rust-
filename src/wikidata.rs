@@ -486,9 +486,11 @@ fn eligible_for_pivot(statement: &Value) -> bool {
     matches!(
         statement.get("rank").and_then(Value::as_str),
         None | Some("normal" | "preferred")
-    ) && statement
-        .get("qualifiers")
-        .is_none_or(|qualifiers| qualifiers.as_object().is_some_and(serde_json::Map::is_empty))
+    ) && statement.get("qualifiers").is_none_or(|qualifiers| {
+        qualifiers
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty)
+    })
 }
 
 /// Only unqualified, non-deprecated values are used for classification, friendly current-value
@@ -576,10 +578,8 @@ fn decode(
                         evidence = evidence.with_attr("statement_json", format!("{pid}={json}"));
                     } else {
                         oversized += 1;
-                        evidence = evidence.with_attr(
-                            "statement_oversize",
-                            format!("{pid}:{} bytes", json.len()),
-                        );
+                        evidence = evidence
+                            .with_attr("statement_oversize", format!("{pid}:{} bytes", json.len()));
                     }
                     if let Some(value) = statement.get("value").and_then(rendered_value) {
                         evidence = evidence.with_attr("claim", format!("{pid}={value}"));
@@ -587,7 +587,8 @@ fn decode(
                     retained += 1;
                 }
             } else {
-                evidence = evidence.with_attr("statement_schema_warning", format!("{pid}: not an array"));
+                evidence =
+                    evidence.with_attr("statement_schema_warning", format!("{pid}: not an array"));
             }
         }
     }
@@ -820,13 +821,31 @@ mod tests {
         let ev = &subject.evidence[0];
         let statements: Vec<&str> = ev.attr_values("statement_json").collect();
         assert_eq!(statements.len(), 4);
-        assert!(statements.iter().any(|s| s.contains("Q8$old") && s.contains("deprecated") && s.contains("qualifiers") && s.contains("references")));
-        assert!(statements.iter().any(|s| s.contains("Q8$qualified") && s.contains("P580")));
-        assert!(statements.iter().any(|s| s.contains("Q8$unknown") && s.contains("somevalue")));
-        assert_eq!(ev.attributes.get("statements_retained").map(String::as_str), Some("4"));
+        assert!(statements.iter().any(|s| s.contains("Q8$old")
+            && s.contains("deprecated")
+            && s.contains("qualifiers")
+            && s.contains("references")));
+        assert!(
+            statements
+                .iter()
+                .any(|s| s.contains("Q8$qualified") && s.contains("P580"))
+        );
+        assert!(
+            statements
+                .iter()
+                .any(|s| s.contains("Q8$unknown") && s.contains("somevalue"))
+        );
+        assert_eq!(
+            ev.attributes.get("statements_retained").map(String::as_str),
+            Some("4")
+        );
         entity(&report, &EntityKind::Domain, "current.example");
-        assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Domain && (e.raw_value == "old.example" || e.raw_value == "dated.example")));
-        assert_eq!(ev.attributes.get("official_website").map(String::as_str), Some("https://current.example/"));
+        assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Domain
+            && (e.raw_value == "old.example" || e.raw_value == "dated.example")));
+        assert_eq!(
+            ev.attributes.get("official_website").map(String::as_str),
+            Some("https://current.example/")
+        );
     }
 
     #[test]
