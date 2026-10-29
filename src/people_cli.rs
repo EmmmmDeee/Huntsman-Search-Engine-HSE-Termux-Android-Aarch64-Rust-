@@ -1,6 +1,7 @@
 //! Collection front-end for `huntsman-recon people`.
 //!
-//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::wikidata`] and\n//! [`crate::acnc`] over
+//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::wikidata`] and
+//! [`crate::acnc`] over
 //! one injected [`crate::http::Transport`]. One source's [`Error::Invalid`] or `BotWaf` does not
 //! abort the others. All entities from all sources are merged via [`crate::entity::merge_by_uid`],
 //! which deduplicates records with the same UID and calls [`crate::entity::Entity::absorb`]
