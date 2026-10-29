@@ -31,8 +31,9 @@ pub enum ScanKind {
     /// A `WiFi` network: a BSSID, a coordinate pair or an SSID, classified offline and searched
     /// on `WiGLE` when its credentials are configured.
     Network,
-    /// One Bitcoin address or explicitly Base-prefixed EVM address, enriched
-    /// with its balance and lifetime totals from blockchain.info. Not inferred as a kind of its
+    /// One Bitcoin address or an explicitly prefixed EVM address (`base:` Base mainnet, `eth:`
+    /// Ethereum mainnet), enriched with its on-chain account state (and, for Bitcoin, lifetime
+    /// totals from blockchain.info). Not inferred as a kind of its
     /// own: a bare base58 or bech32 string is ambiguous against usernames and other selectors, so
     /// a crypto route is asked for explicitly.
     CryptoAddress,
@@ -145,7 +146,9 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
 /// number. An SSID is free text, so it is never inferred.
 #[must_use]
 pub fn infer_kind(selector: &str) -> ScanKind {
-    if crate::base_rpc::canonical_selector(selector).is_some() {
+    if crate::base_rpc::canonical_selector(selector).is_some()
+        || crate::eth_rpc::canonical_selector(selector).is_some()
+    {
         ScanKind::CryptoAddress
     } else if canonical_email(selector).is_some() {
         ScanKind::Email

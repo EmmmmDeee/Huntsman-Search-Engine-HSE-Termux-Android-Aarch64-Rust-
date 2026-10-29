@@ -524,6 +524,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "read-only Base mainnet wallet balances, outgoing nonce, and contract-code presence at finalized block tag via public JSON-RPC; no identity attribution",
     },
     ReachableModule {
+        name: "eth_rpc",
+        command: "crypto eth:0xADDRESS | scan -k crypto eth:0xADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1596"],
+        description: "read-only Ethereum mainnet wallet balances, outgoing nonce, and contract-code presence at finalized block tag via public JSON-RPC; no identity attribution",
+    },
+    ReachableModule {
         name: "blockchain",
         command: "crypto BITCOIN-ADDRESS",
         access: "keyless",
