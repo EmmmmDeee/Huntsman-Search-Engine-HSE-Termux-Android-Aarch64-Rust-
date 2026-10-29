@@ -1,1 +1,4 @@
-Added bounded, offline Network Survey LTE CSV v0.5.0 import through `radar survey-lte --file FILE [--json]`. Reuses canonical LTE cell identity validation, preserves source-reported timestamps and separate GNSS uncertainty, rejects unknown schemas and never retains device serial numbers. No root, network request, runtime LLM or new dependency. Offline files do not authenticate the collection device or time. Source format: https://networksurvey.app/manual/data-logging/csv/
+- Add bounded offline Network Survey LTE CSV v0.5.0 import via `radar survey-lte --file FILE [--json]`.
+- Reuse canonical LTE identity validation and preserve source-reported timestamps, MNC leading zeros and GNSS uncertainty.
+- Reject unknown schemas, discard device serials and make no live-radio or authenticated-capture claims.
+- No root, network, runtime LLM or additional dependency. Format: https://networksurvey.app/manual/data-logging/csv/
