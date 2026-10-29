@@ -367,15 +367,10 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            parse_lte(
-                valid
-                    .replace(",1,2,3,", ",1,2,3,")
-                    .replace("false", "maybe")
-                    .as_bytes()
-            )
-            .unwrap()
-            .observations
-            .is_empty()
+            parse_lte(valid.replace("false", "maybe").as_bytes())
+                .unwrap()
+                .observations
+                .is_empty()
         );
         assert!(parse_lte(b"# CSV Version=0.5.0\na,b\n\"unterminated").is_err());
     }
@@ -386,6 +381,7 @@ mod tests {
             "{HEADER}2025-10-10T13:58:27Z,1,2,5,1,1,310-01,1,2,3,-110,0,false,100,\"a,\"\"b\"\"\nline\"\n"
         );
         assert_eq!(parse_lte(data.as_bytes()).unwrap().observed, 1);
-        assert!(parse_lte(&vec![b'x'; MAX_SURVEY_CSV_BYTES as usize + 1]).is_err());
+        let too_big = vec![b'x'; usize::try_from(MAX_SURVEY_CSV_BYTES).unwrap() + 1];
+        assert!(parse_lte(&too_big).is_err());
     }
 }
