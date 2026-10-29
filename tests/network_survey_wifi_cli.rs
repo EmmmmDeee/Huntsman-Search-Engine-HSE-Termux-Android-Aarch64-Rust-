@@ -30,7 +30,11 @@ fn offline_wifi_import_preserves_provenance_and_drops_device_identifiers() {
     fs::write(&file, format!("{PREFIX}{ROW}")).unwrap();
     let output = run(&file);
     fs::remove_file(file).unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["observed"], 1);
     assert_eq!(value["source"], "unverified_network_survey_wifi_csv_file");
@@ -39,7 +43,12 @@ fn offline_wifi_import_preserves_provenance_and_drops_device_identifiers() {
     assert_eq!(value["observations"][0]["reported_accuracy_m"], 22.0);
     assert_eq!(value["observations"][0]["signal_dbm"], -57.0);
     let text = String::from_utf8_lossy(&output.stdout);
-    for secret in ["PRIVATE-MISSION", "PRIVATE-SOURCE", "PRIVATE-DEST", "PRIVATE-SERIAL"] {
+    for secret in [
+        "PRIVATE-MISSION",
+        "PRIVATE-SOURCE",
+        "PRIVATE-DEST",
+        "PRIVATE-SERIAL",
+    ] {
         assert!(!text.contains(secret));
     }
     assert!(!text.contains("mitm_assessment"));
@@ -51,7 +60,14 @@ fn schema_errors_and_empty_valid_import_have_distinct_exit_codes() {
     let file = path("invalid");
     fs::write(&file, PREFIX.replace("0.4.0", "0.9.0")).unwrap();
     assert_eq!(run(&file).status.code(), Some(i32::from(EX_DATAERR)));
-    fs::write(&file, format!("{PREFIX}{}", ROW.replace("3C:5A:B4:11:22:33", "02:00:00:00:00:00"))).unwrap();
+    fs::write(
+        &file,
+        format!(
+            "{PREFIX}{}",
+            ROW.replace("3C:5A:B4:11:22:33", "02:00:00:00:00:00")
+        ),
+    )
+    .unwrap();
     let output = run(&file);
     fs::remove_file(file).unwrap();
     assert_eq!(output.status.code(), Some(i32::from(EX_UNAVAILABLE)));
