@@ -109,7 +109,7 @@ pub fn lookup<T: Transport + ?Sized>(
             .header("accept", "application/vnd.github+json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         credential.as_ref(),
-        &FetchOptions::no_redirects(),
+        &FetchOptions::no_redirects().paced(),
         SRC,
         now_unix,
     )?;
@@ -136,14 +136,9 @@ fn interpret(
                 SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
             );
         }
-        if response.status == 403
-            && response
-                .header_value("x-ratelimit-remaining")
-                .is_some_and(|value| value.trim() == "0")
-        {
+        // `fetch` reads GitHub's rate-limit headers, as for the profile lookup.
+        if fetched.outcome.kind == SourceOutcomeKind::RateLimited {
             let mut outcome = fetched.outcome.clone();
-            outcome.kind = SourceOutcomeKind::RateLimited;
-            outcome.found = None;
             outcome.detail = Some("GitHub API rate limit exhausted".into());
             return Err(outcome);
         }
@@ -393,15 +388,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(zero.outcome.kind, SourceOutcomeKind::ValidZero);
-        let rate = lookup(
-            &OneResponse::with_headers(403, &[("x-ratelimit-remaining", "0")], "{}"),
-            &Keys::default(),
-            "octocat",
-            "scan",
-            1,
-        )
-        .unwrap();
-        assert_eq!(rate.outcome.kind, SourceOutcomeKind::RateLimited);
         let wrong = lookup(
             &OneResponse::json(200, "{}"),
             &Keys::default(),
@@ -411,6 +397,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wrong.outcome.kind, SourceOutcomeKind::ParserDrift);
+        // Last: an exhausted quota paces api.github.com, so a request after it is held back.
+        let rate = lookup(
+            &OneResponse::with_headers(403, &[("x-ratelimit-remaining", "0")], "{}"),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(rate.outcome.kind, SourceOutcomeKind::RateLimited);
+        let held = crate::test_support::ScriptedTransport::new(Vec::new());
+        let paced = lookup(&held, &Keys::default(), "octocat", "scan", 1).unwrap();
+        assert!(held.seen.borrow().is_empty(), "sent while rate limited");
+        assert_eq!(paced.outcome.kind, SourceOutcomeKind::Inconclusive);
     }
 
     #[test]

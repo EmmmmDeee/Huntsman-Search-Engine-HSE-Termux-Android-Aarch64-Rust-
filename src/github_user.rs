@@ -116,7 +116,7 @@ pub fn lookup<T: Transport + ?Sized>(
             .header("accept", "application/vnd.github+json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         credential.as_ref(),
-        &FetchOptions::no_redirects(),
+        &FetchOptions::no_redirects().paced(),
         SRC,
         now_unix,
     )?;
@@ -157,14 +157,10 @@ fn interpret(
                 SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
             );
         }
-        if response.status == 403
-            && response
-                .header_value("x-ratelimit-remaining")
-                .is_some_and(|value| value.trim() == "0")
-        {
+        // `fetch` reads GitHub's rate-limit headers: an exhausted quota or a secondary limit is
+        // `RateLimited`, with the pause until GitHub takes requests again.
+        if fetched.outcome.kind == SourceOutcomeKind::RateLimited {
             let mut outcome = fetched.outcome.clone();
-            outcome.kind = SourceOutcomeKind::RateLimited;
-            outcome.found = None;
             outcome.detail = Some(if authenticated {
                 "GitHub token rate limit exhausted".into()
             } else {
@@ -530,6 +526,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::RateLimited);
+    }
+
+    /// GitHub asks a client not to send again before the reset of an exhausted quota, and warns
+    /// that one that does may be banned. The lookup records the pause, the next lookup before the
+    /// reset sends nothing and says why, and a lookup after it is sent.
+    #[test]
+    fn an_exhausted_quota_holds_every_lookup_until_its_reset() {
+        let limited = OneResponse::with_headers(
+            403,
+            &[
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", "1300"),
+            ],
+            "{}",
+        );
+        let got = lookup(&limited, &Keys::default(), "octocat", "scan", 1_000).unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::RateLimited);
+        assert_eq!(got.outcome.retry_after_secs, Some(300));
+
+        let held = crate::test_support::ScriptedTransport::new(Vec::new());
+        let got = lookup(&held, &Keys::default(), "torvalds", "scan", 1_299).unwrap();
+        assert!(held.seen.borrow().is_empty(), "sent before the reset");
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert!(got.entities.is_empty());
+        assert!(
+            got.outcome
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("circuit is open")),
+            "{:?}",
+            got.outcome
+        );
+
+        let after = crate::test_support::ScriptedTransport::new(vec![Ok(Response {
+            status: 404,
+            headers: Vec::new(),
+            body: b"{}".to_vec(),
+            truncated: false,
+        })]);
+        let got = lookup(&after, &Keys::default(), "torvalds", "scan", 1_300).unwrap();
+        assert_eq!(after.seen.borrow().len(), 1, "not sent after the reset");
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
     }
 
     #[test]
