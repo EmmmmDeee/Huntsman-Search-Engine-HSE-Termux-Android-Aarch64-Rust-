@@ -2,11 +2,10 @@
 //! (`GET /v0/user/{id}.json`).
 //!
 //! One handle resolves to the Hacker News account -- confirmed only when the returned `id` is
-//! exactly the queried handle, never a near-match. The engine folds username selectors to a
-//! canonical lower-case form before this leg (as it does for every username source), so the handle
-//! is looked up and confirmed in that canonical form; Hacker News ids are themselves case-sensitive,
-//! so the exact-echo check both confirms the account and rejects any id the API returns that is not
-//! the one queried. The account
+//! exactly the queried handle, never a near-match. Hacker News ids are case-sensitive, so the
+//! original-case selector is preserved through CLI, scan and HTTP routing specifically for this
+//! source; other username sources retain their existing canonical handling. The exact-echo check
+//! rejects any id the API returns that is not the one queried. The account
 //! keeps its public profile `Url` (`news.ycombinator.com/user?id=`), which ties it back to the
 //! `username` cohort through the relation layer, and its self-written `about` bio is kept verbatim
 //! as evidence with any `http(s)` links in it surfaced as `Url` (and non-platform host `Domain`)

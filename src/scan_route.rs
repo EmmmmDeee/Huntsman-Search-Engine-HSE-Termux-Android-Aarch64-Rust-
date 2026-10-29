@@ -105,13 +105,17 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
     }
 }
 
-/// Canonical selector for a route. `None` means the route cannot run.
+/// Validated selector for a route. Username spelling preserves original case for case-sensitive
+/// providers (Hacker News); other kinds retain their canonical forms. `None` refuses the route.
 #[must_use]
 pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
     match kind {
         ScanKind::Email => canonical_email(raw),
         ScanKind::Exposure => crate::exposure_cli::canonical_selector(raw),
-        ScanKind::Username => canonical_handle(raw),
+        ScanKind::Username => {
+            canonical_handle(raw)?;
+            Some(raw.trim().trim_start_matches('@').to_owned())
+        },
         // The rule `infer_kind` routes a phone by, so every selector routed here is accepted.
         ScanKind::Phone => crate::phone_intl::canonicalize(raw),
         ScanKind::Domain => canonical_domain(raw),
@@ -377,6 +381,31 @@ mod tests {
     }
 
     #[test]
+    fn username_scan_routes_keep_original_case_for_exact_account_lookups() {
+        // CLI scan, saved scans and HTTP lookups all use this same route validation.
+        for (raw, expected) in [
+            ("@PaulHoule", "PaulHoule"),
+            (" PaulHoule ", "PaulHoule"),
+            ("@paulhoule", "paulhoule"),
+        ] {
+            assert_eq!(
+                canonical_selector(ScanKind::Username, raw).as_deref(),
+                Some(expected),
+                "{raw}"
+            );
+            let plan = crate::scan_service::plan(raw, Some("username"))
+                .expect("a valid case-sensitive username must be admitted");
+            assert_eq!(plan.target, expected, "{raw}");
+        }
+        // Other breach/username correlation paths still receive canonical lowercase.
+        assert_eq!(
+            canonical_selector(ScanKind::Exposure, "@PaulHoule").as_deref(),
+            Some("paulhoule")
+        );
+        assert_eq!(canonical_selector(ScanKind::Username, "two words"), None);
+    }
+
+    #[test]
     fn route_selector_is_canonical() {
         assert_eq!(
             canonical_selector(ScanKind::Email, " Ada@Example.ORG "),
@@ -384,7 +413,7 @@ mod tests {
         );
         assert_eq!(
             canonical_selector(ScanKind::Username, "@Ada"),
-            Some("ada".into())
+            Some("Ada".into())
         );
         assert_eq!(
             canonical_selector(ScanKind::People, " Ada   Lovelace "),
