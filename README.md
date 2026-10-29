@@ -179,7 +179,7 @@ cargo run -- people Madonna --save skip.json  # skip still writes nothing; --sav
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup, plus every configured keyed breach leg
 cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet + DeHashed evidence, then each breach's summary, flags and source links (keyed; no key = no request)
 cargo run -- exposure @some_handle  # the same for a username: stolen.tax + OathNet (HIBP and DeHashed search addresses only)
-cargo run -- username octocat             # variants + public GitHub/Bluesky/Mastodon lookups, plus stolen.tax/OathNet when keyed
+cargo run -- username octocat             # variants + public GitHub/Bluesky/Mastodon/npm lookups, plus stolen.tax/OathNet when keyed
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- phone "+1 416 555 0199"        # NANP: plan validity, (416) 555-0199 form, class, Canada
 cargo run -- domain example.com             # crt.sh names, Cert Spotter certificates, DNS records over DoH, each subdomain resolved; network
@@ -462,7 +462,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Username lookup
 
-`username HANDLE [--save FILE]` keeps the operator selector, derives bounded separator/de-decoration variants at candidate confidence, and performs keyless public-profile lookups against GitHub, Bluesky and Mastodon (`mastodon.social`'s public account lookup; a handle with `.` or `-`, which no Mastodon username can hold, is inconclusive rather than absent, and only the server's own `Record not found` is a zero). Provider absence, rate limits, malformed responses, and unsupported handle shapes remain distinct outcomes. `--save` writes an unverified ledger that `verify` can reload.
+`username HANDLE [--save FILE]` keeps the operator selector, derives bounded separator/de-decoration variants at candidate confidence, and performs keyless public-profile lookups against GitHub, Bluesky, Mastodon and the npm registry (`mastodon.social`'s public account lookup; a handle with `.` or `-`, which no Mastodon username can hold, is inconclusive rather than absent, and only the server's own `Record not found` is a zero). Provider absence, rate limits, malformed responses, and unsupported handle shapes remain distinct outcomes. `--save` writes an unverified ledger that `verify` can reload.
 
 ### Phone lookup
 
