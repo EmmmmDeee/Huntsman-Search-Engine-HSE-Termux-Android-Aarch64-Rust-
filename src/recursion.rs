@@ -1377,7 +1377,7 @@ mod tests {
                 report
                     .entities
                     .iter()
-                    .any(|entity| entity.value == "unrelated_person")
+                    .any(|entity| entity.raw_value == "unrelated_person")
             );
         }
         // The attribution gate is specific to name-search leads, not a
