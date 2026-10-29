@@ -1,6 +1,6 @@
 //! Version-pinned, bounded offline Network Survey Wi-Fi CSV interoperability.
 //! Imported rows are unverified historical claims, not live Android scan results.
-//! Deliberately never creates a WifiScan, MITM assessment, or tracking sweep.
+//! Deliberately never creates a `WifiScan`, MITM assessment, or tracking sweep.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -100,18 +100,19 @@ fn optional_u64(
     columns: &BTreeMap<&str, usize>,
     name: &str,
     max: u64,
-) -> Option<Option<u64>> {
+) -> Result<Option<u64>, ()> {
     let raw = column(row, columns, name);
     if raw.is_empty() {
-        return Some(None);
+        return Ok(None);
     }
     if !raw.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
+        return Err(());
     }
     raw.parse::<u64>()
         .ok()
         .filter(|value| *value <= max)
         .map(Some)
+        .ok_or(())
 }
 
 fn optional_f64(
@@ -120,25 +121,27 @@ fn optional_f64(
     name: &str,
     low: f64,
     high: f64,
-) -> Option<Option<f64>> {
+) -> Result<Option<f64>, ()> {
     let raw = column(row, columns, name);
     if raw.is_empty() {
-        return Some(None);
+        return Ok(None);
     }
-    let value = raw.parse::<f64>().ok()?;
-    (value.is_finite() && (low..=high).contains(&value)).then_some(Some(value))
+    let value = raw.parse::<f64>().map_err(|_| ())?;
+    (value.is_finite() && (low..=high).contains(&value))
+        .then_some(Some(value))
+        .ok_or(())
 }
 
 fn optional_bool(
     row: &[String],
     columns: &BTreeMap<&str, usize>,
     name: &str,
-) -> Option<Option<bool>> {
+) -> Result<Option<bool>, ()> {
     match column(row, columns, name) {
-        "" => Some(None),
-        "true" => Some(Some(true)),
-        "false" => Some(Some(false)),
-        _ => None,
+        "" => Ok(None),
+        "true" => Ok(Some(true)),
+        "false" => Ok(Some(false)),
+        _ => Err(()),
     }
 }
 
@@ -147,12 +150,12 @@ fn optional_text(
     columns: &BTreeMap<&str, usize>,
     name: &str,
     max_bytes: usize,
-) -> Option<Option<String>> {
+) -> Result<Option<String>, ()> {
     let raw = column(row, columns, name);
     if raw.len() > max_bytes {
-        return None;
+        return Err(());
     }
-    Some((!raw.is_empty()).then(|| raw.to_owned()))
+    Ok((!raw.is_empty()).then(|| raw.to_owned()))
 }
 
 fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<WifiCsvRecord> {
@@ -174,7 +177,7 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<WifiC
     if !rssi.is_finite() || !(-150.0..=0.0).contains(&rssi) {
         return None;
     }
-    let frequency = optional_u64(row, columns, "frequencyMhz", 7125)?
+    let frequency = optional_u64(row, columns, "frequencyMhz", 7125).ok()?
         .map(i64::try_from)
         .transpose()
         .ok()?
@@ -183,19 +186,19 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<WifiC
     if !column(row, columns, "frequencyMhz").is_empty() && frequency.is_none() {
         return None;
     }
-    let channel = optional_u64(row, columns, "channel", 255)?
+    let channel = optional_u64(row, columns, "channel", 255).ok()?
         .map(u16::try_from)
         .transpose()
         .ok()?;
-    let snr = optional_f64(row, columns, "snr", -100.0, 100.0)?;
-    let wps = optional_bool(row, columns, "wps")?;
-    let passpoint = optional_bool(row, columns, "passpoint")?;
-    let ssid = optional_text(row, columns, "ssid", 32)?;
-    let encryption_type = optional_text(row, columns, "encryptionType", 64)?;
-    let node_type = optional_text(row, columns, "nodeType", 32)?;
-    let bandwidth = optional_text(row, columns, "bandwidth", 32)?;
-    let record_number = optional_u64(row, columns, "recordNumber", u64::MAX)?;
-    let location_age_ms = optional_u64(row, columns, "locationAge", 86_400_000)?;
+    let snr = optional_f64(row, columns, "snr", -100.0, 100.0).ok()?;
+    let wps = optional_bool(row, columns, "wps").ok()?;
+    let passpoint = optional_bool(row, columns, "passpoint").ok()?;
+    let ssid = optional_text(row, columns, "ssid", 32).ok()?;
+    let encryption_type = optional_text(row, columns, "encryptionType", 64).ok()?;
+    let node_type = optional_text(row, columns, "nodeType", 32).ok()?;
+    let bandwidth = optional_text(row, columns, "bandwidth", 32).ok()?;
+    let record_number = optional_u64(row, columns, "recordNumber", u64::MAX).ok()?;
+    let location_age_ms = optional_u64(row, columns, "locationAge", 86_400_000).ok()?;
     let lat = column(row, columns, "latitude").parse::<f64>().ok();
     let lon = column(row, columns, "longitude").parse::<f64>().ok();
     let accuracy = column(row, columns, "accuracy").parse::<f64>().ok();
