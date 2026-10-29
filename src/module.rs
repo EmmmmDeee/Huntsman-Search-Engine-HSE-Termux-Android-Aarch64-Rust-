@@ -434,6 +434,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public GitHub profile lookup",
     },
     ReachableModule {
+        name: "npm_author",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.003"],
+        description: "public npm registry author packages and the maintainer's own published contact",
+    },
+    ReachableModule {
         name: "bluesky_user",
         command: "username HANDLE",
         access: "keyless",
@@ -1576,6 +1585,7 @@ mod tests {
             crate::duolingo::SRC,
             crate::openpgp_keys::SRC,
             crate::github_user::SRC,
+            crate::npm_author::SRC,
             crate::bluesky_user::SRC,
             crate::mastodon_user::SRC,
             crate::keybase::SRC,

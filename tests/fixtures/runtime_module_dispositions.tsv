@@ -136,6 +136,7 @@ network_cli	adapter	network lookup front-end reached from network, scan -k netwo
 network_selector	runtime	network selector grammar (BSSID, SSID, coordinates, cell site) shared by scan_route, network_cli and wigle
 nominatim	adapter	OpenStreetMap Nominatim geocoding source client reached through nominatim_cli from the geocode command
 nominatim_cli	adapter	geocode forward/reverse front-end reached from the geocode command
+npm_author	adapter	keyless npm registry author lookup reached through username_cli from the username command and username scans, keeping the subject handle, only its own published contacts, and co-maintainer leads
 numverify	adapter	Numverify leg reached through phone_cli from phone, scan -k phone and /api/lookup when its key is set
 oathnet	adapter	OathNet breach-search leg reached through exposure_cli from exposure, scan -k exposure and /api/lookup
 openpgp_keys	adapter	keys.openpgp.org verified key-identity source reached through email_cli from email, scan -k email and /api/lookup

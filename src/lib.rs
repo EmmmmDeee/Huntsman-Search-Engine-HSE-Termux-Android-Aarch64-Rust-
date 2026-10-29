@@ -151,6 +151,7 @@ pub mod network_cli;
 pub mod network_selector;
 pub mod nominatim;
 pub mod nominatim_cli;
+pub mod npm_author;
 pub mod numverify;
 pub mod oathnet;
 pub mod openpgp_keys;
