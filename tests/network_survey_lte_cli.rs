@@ -33,13 +33,23 @@ fn offline_csv_is_wired_to_cli_without_disclosing_device_identity() {
     fs::write(&path, csv).unwrap();
     let output = command(&path);
     fs::remove_file(path).unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["source"], "unverified_network_survey_csv_file");
     assert_eq!(report["status"], "historical_unverified");
     assert_eq!(report["observed"], 1);
-    assert_eq!(report["observations"][0]["observation"]["sighting"]["network_id"], "lte:310-01-12345-12345678");
-    assert_eq!(report["observations"][0]["observation"]["sighting"]["latitude"], serde_json::Value::Null);
+    assert_eq!(
+        report["observations"][0]["observation"]["sighting"]["network_id"],
+        "lte:310-01-12345-12345678"
+    );
+    assert_eq!(
+        report["observations"][0]["observation"]["sighting"]["latitude"],
+        serde_json::Value::Null
+    );
     assert_eq!(report["observations"][0]["reported_accuracy_m"], 22.0);
     assert!(!String::from_utf8_lossy(&output.stdout).contains("PRIVATE-SERIAL"));
 }
