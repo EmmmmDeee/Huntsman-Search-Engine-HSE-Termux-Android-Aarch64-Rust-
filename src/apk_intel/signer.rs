@@ -63,6 +63,19 @@ pub struct Certificate {
     pub android_debug: bool,
 }
 
+/// A v3/v3.1 signing-certificate claim scoped to an Android SDK range.
+/// These are structurally checked declarations, not authenticated signer selections.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SdkSigner {
+    pub scheme: String,
+    pub signer_index: usize,
+    pub min_sdk: u32,
+    pub max_sdk: u32,
+    pub certificate_sha256: String,
+    pub public_key_sha256: String,
+    pub authentication: &'static str,
+}
+
 /// One DER element: its tag, where it begins, and the range of its contents (which ends it).
 #[derive(Clone, Copy)]
 struct Tlv {
@@ -622,6 +635,45 @@ pub fn signing_block(value: &[u8], scheme: &str) -> Vec<Certificate> {
     found().unwrap_or_default()
 }
 
+/// Extract SDK-scoped v3/v3.1 signer identities without implying installation or
+/// cryptographic verification. All signers in a scheme must be structurally valid;
+/// malformed SDK copies, missing certificates or oversized lists withhold that scheme.
+pub(super) fn sdk_signers(value: &[u8], scheme: &str) -> Vec<SdkSigner> {
+    if !matches!(scheme, "v3" | "v3.1") {
+        return Vec::new();
+    }
+    let read = || -> Option<Vec<SdkSigner>> {
+        let [(start, end)] = prefixed(value, 0, value.len())?[..] else {
+            return None;
+        };
+        let signers = prefixed(value, start, end)?;
+        if signers.len() > MAX_CERTIFICATES {
+            return None;
+        }
+        let mut result = Vec::new();
+        for (index, (signer_start, signer_end)) in signers.into_iter().enumerate() {
+            let certificates = signer_certificates(value, signer_start, signer_end, scheme)?;
+            let certificate = certificates.first()?;
+            let (data_start, data_end) = prefixed_one(value, signer_start, signer_end)?;
+            let (_, digests_end) = prefixed_one(value, data_start, data_end)?;
+            let (_, certs_end) = prefixed_one(value, digests_end, data_end)?;
+            let min_sdk = u32::try_from(le32(value, certs_end)?).ok()?;
+            let max_sdk = u32::try_from(le32(value, certs_end.checked_add(4)?)?).ok()?;
+            result.push(SdkSigner {
+                scheme: scheme.to_owned(),
+                signer_index: index,
+                min_sdk,
+                max_sdk,
+                certificate_sha256: certificate.sha256.clone(),
+                public_key_sha256: certificate.public_key_sha256.clone(),
+                authentication: "not_verified",
+            });
+        }
+        Some(result)
+    };
+    read().unwrap_or_default()
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -840,6 +892,28 @@ pub(super) mod tests {
             .expect("test record ID");
         corrupted[record_at + 4..record_at + 8].copy_from_slice(&31_u32.to_le_bytes());
         assert!(sha256_digests(&corrupted, "v2").is_none());
+    }
+
+    #[test]
+    fn sdk_signer_ranges_preserve_v3_and_v31_identity_without_authentication() {
+        let der = certificate_der("Rotated SDK Signer");
+        for (scheme, min, max) in [("v3", 28, 32), ("v3.1", 33, u32::MAX)] {
+            let value = signing_value_v3(&der, min, max);
+            let records = sdk_signers(&value, scheme);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].scheme, scheme);
+            assert_eq!((records[0].min_sdk, records[0].max_sdk), (min, max));
+            assert_eq!(records[0].certificate_sha256, hex32(&sha256(&der)));
+            assert_eq!(records[0].authentication, "not_verified");
+            assert!(sdk_signers(&value, "v2").is_empty());
+
+            let mut tampered = value.clone();
+            let outer_sdk = 12 + le32(&tampered, 8).unwrap();
+            tampered[outer_sdk..outer_sdk + 4].copy_from_slice(&(min + 1).to_le_bytes());
+            assert!(sdk_signers(&tampered, scheme).is_empty());
+            assert!(sdk_signers(&value[..value.len() - 1], scheme).is_empty());
+        }
+        assert!(sdk_signers(&signing_value(&der), "v3").is_empty());
     }
 
     #[test]
