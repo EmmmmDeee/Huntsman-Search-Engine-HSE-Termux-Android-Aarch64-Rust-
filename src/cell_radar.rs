@@ -12,6 +12,8 @@
 //! areas. An app cannot read the modem's RRC or NAS signalling, so none of these detects an
 //! IMSI catcher; each is an anomaly to corroborate.
 
+pub mod network_survey;
+
 use std::fmt::Write as _;
 
 use serde::Serialize;
