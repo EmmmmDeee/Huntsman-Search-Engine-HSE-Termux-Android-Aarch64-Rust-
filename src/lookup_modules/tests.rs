@@ -76,6 +76,10 @@ impl Transport for Everywhere {
                 200,
                 br#"[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x0"},{"jsonrpc":"2.0","id":3,"result":"0x0"},{"jsonrpc":"2.0","id":4,"result":"0x"}]"#,
             )
+        } else if url.contains("wbsearchentities") {
+            // Wikidata search with no hit: a clean valid-zero, so a people scan that chose
+            // wikidata still produces its row without an item fetch.
+            (200, br#"{"search":[]}"#)
         } else if url.contains("earth-search") {
             (200, br#"{"type":"FeatureCollection","features":[]}"#)
         } else if url.contains("opensky-network.org") {

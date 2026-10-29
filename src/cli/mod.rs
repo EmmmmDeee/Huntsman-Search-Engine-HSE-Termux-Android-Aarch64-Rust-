@@ -35,7 +35,7 @@ Commands:
   search                Search the built-in fixture or one local text directory
   sources               Classify an indicator and print curated routes (offline)
   domain-lifecycle      Compare imported domain observations offline
-  people                Look up a name on keyless ASIC people registers
+  people                Look up a name on keyless ASIC registers and Wikidata
   email                 Enrich an email and query its public Gravatar profile
   exposure              Keyed breach evidence for an email (HIBP account, stolen.tax, OathNet)
   username              Enrich public profiles, including TikTok self-published bio contacts
