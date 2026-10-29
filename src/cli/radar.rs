@@ -17,7 +17,7 @@ use huntsman_recon::radar;
 use huntsman_recon::web_server::LookupError;
 use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES};
 
-const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar survey-lte --file NETWORK_SURVEY_CSV [--json] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE]";
+const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar survey-lte --file NETWORK_SURVEY_CSV [--json] | radar survey-nr --file NETWORK_SURVEY_CSV [--json] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE]";
 
 /// A misbehaving descendant can keep a sensor stdout pipe open after the
 /// direct child exits. Bound detached drainers to avoid exhausting a server.
@@ -280,6 +280,9 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) == Some("survey-lte") {
         return survey_lte_cmd(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("survey-nr") {
+        return survey_nr_cmd(&args[1..]);
+    }
     if args.first().map(String::as_str) == Some("cells") {
         return cells_cmd(&args[1..]);
     }
@@ -337,6 +340,32 @@ fn survey_lte_cmd(args: &[String]) -> ExitCode {
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };
     if let Err(code) = print_report(&report, options.json, network_survey::render) {
+        return code;
+    }
+    if report.status == "inconclusive" {
+        ExitCode::from(EX_UNAVAILABLE)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Explicit offline 5G NR import. No Android permission, network fetch or RF capture.
+fn survey_nr_cmd(args: &[String]) -> ExitCode {
+    let Some(options) = radar_options(args) else {
+        return fail(EX_USAGE, USAGE);
+    };
+    let Some(file) = options.file else {
+        return fail(EX_USAGE, USAGE);
+    };
+    let raw = match read_bounded(Path::new(file), network_survey::MAX_SURVEY_CSV_BYTES) {
+        Ok(raw) => raw,
+        Err(error) => return fail(EX_NOINPUT, &error.to_string()),
+    };
+    let report = match network_survey::nr::parse_nr(&raw) {
+        Ok(report) => report,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    if let Err(code) = print_report(&report, options.json, network_survey::nr::render) {
         return code;
     }
     if report.status == "inconclusive" {
