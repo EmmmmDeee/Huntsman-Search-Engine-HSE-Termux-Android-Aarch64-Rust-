@@ -99,7 +99,7 @@ fn number(raw: &str, max: u64) -> Result<Option<u64>, InvalidField> {
 
 fn finite(raw: &str, low: f64, high: f64) -> Result<Option<f64>, InvalidField> {
     if raw.is_empty() {
-        return Some(None);
+        return Ok(None);
     }
     let value = raw.parse::<f64>().map_err(|_| InvalidField)?;
     (value.is_finite() && (low..=high).contains(&value))
@@ -109,7 +109,7 @@ fn finite(raw: &str, low: f64, high: f64) -> Result<Option<f64>, InvalidField> {
 
 fn enum_value(raw: &str, allowed: &[&'static str]) -> Result<Option<&'static str>, InvalidField> {
     if raw.is_empty() {
-        return Some(None);
+        return Ok(None);
     }
     allowed
         .iter()
@@ -128,7 +128,7 @@ fn text_field(raw: &str, max_bytes: usize) -> Result<Option<String>, InvalidFiel
 
 fn hex_field(raw: &str, max_digits: usize) -> Result<Option<String>, InvalidField> {
     if raw.is_empty() {
-        return Some(None);
+        return Ok(None);
     }
     let digits = raw.strip_prefix("0x").unwrap_or(raw);
     if digits.is_empty()
@@ -180,7 +180,11 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
         .unwrap_or("UNKNOWN");
     let supported_technologies = enum_value(&row[13], &["UNKNOWN", "BR_EDR", "LE", "DUAL"]).ok()?;
     let advertised_name = text_field(&row[14], 128).ok()?;
-    let channel = number(&row[15], 78).ok()?.map(u8::try_from).transpose().ok()?;
+    let channel = number(&row[15], 78)
+        .ok()?
+        .map(u8::try_from)
+        .transpose()
+        .ok()?;
     let record_number = number(&row[7], u64::MAX).ok()?;
     if record_number == Some(0) {
         return None;
