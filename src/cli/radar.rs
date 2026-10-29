@@ -10,13 +10,14 @@ use std::time::{Duration, Instant};
 
 use super::{fail, terminal_json_pretty};
 use huntsman_recon::cell_radar;
+use huntsman_recon::cell_radar::network_survey;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::radar;
 use huntsman_recon::web_server::LookupError;
 use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES};
 
-const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE]";
+const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar survey-lte --file NETWORK_SURVEY_CSV [--json] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE]";
 
 /// A misbehaving descendant can keep a sensor stdout pipe open after the
 /// direct child exits. Bound detached drainers to avoid exhausting a server.
@@ -276,6 +277,9 @@ fn print_report<T: serde::Serialize>(
 }
 
 pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
+    if args.first().map(String::as_str) == Some("survey-lte") {
+        return survey_lte_cmd(&args[1..]);
+    }
     if args.first().map(String::as_str) == Some("cells") {
         return cells_cmd(&args[1..]);
     }
@@ -309,6 +313,33 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     // An empty OS cache or all-stale observations are not a clean zero and
     // cannot certify that nothing is present right now.
     if matches!(parsed.status, "inconclusive" | "stale_only") {
+        ExitCode::from(EX_UNAVAILABLE)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Explicit local-file import only: never requests Android permissions or sends
+/// the source CSV to a server. The CLI does not infer live radio proximity.
+fn survey_lte_cmd(args: &[String]) -> ExitCode {
+    let Some(options) = radar_options(args) else {
+        return fail(EX_USAGE, USAGE);
+    };
+    let Some(file) = options.file else {
+        return fail(EX_USAGE, USAGE);
+    };
+    let raw = match read_bounded(Path::new(file), network_survey::MAX_SURVEY_CSV_BYTES) {
+        Ok(raw) => raw,
+        Err(error) => return fail(EX_NOINPUT, &error.to_string()),
+    };
+    let report = match network_survey::parse_lte(&raw) {
+        Ok(report) => report,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    if let Err(code) = print_report(&report, options.json, network_survey::render) {
+        return code;
+    }
+    if report.status == "inconclusive" {
         ExitCode::from(EX_UNAVAILABLE)
     } else {
         ExitCode::SUCCESS
