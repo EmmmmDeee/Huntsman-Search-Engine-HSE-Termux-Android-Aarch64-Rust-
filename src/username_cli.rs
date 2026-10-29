@@ -1,7 +1,7 @@
 //! End-to-end front-end for `huntsman-recon username`.
 //!
 //! Derives deterministic handle variants and queries the keyless public GitHub, GitLab, Bluesky, Keybase
-//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
+//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
 //! profile source answered, the lookup ends from its rows through
 //! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
 //! 77), otherwise no usable response (exit 69). The handle's own derived variants are not a
@@ -18,6 +18,7 @@ use crate::error::Error;
 use crate::github_repos;
 use crate::github_user;
 use crate::gitlab_user;
+use crate::hacker_news;
 use crate::http::Transport;
 use crate::keybase;
 use crate::keys::Keys;
@@ -34,7 +35,7 @@ use crate::wikipedia;
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive handle variants and query public GitHub profiles and repositories, GitLab, Bluesky, Keybase, Mastodon, npm registry authorship, crates.io crate ownership, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
+Derive handle variants and query public GitHub profiles and repositories, GitLab, Bluesky, Keybase, Mastodon, npm registry authorship, crates.io crate ownership, Hacker News accounts, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
 
 /// One source's answer: what it found and its outcome, or the refusal that stopped it.
 type Found = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
@@ -56,7 +57,11 @@ impl UsernameArgs {
     /// Invalid/missing handle, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
         let (raw, save) = LookupTokens::single(args, "username needs exactly one HANDLE")?;
-        let username = canonical_username(&raw)?;
+        // Validate charset, length and placeholder through the canonical form, but keep the
+        // operator's ORIGINAL case: Hacker News ids are case-sensitive, so the exact case must
+        // survive to that leg. Every other username source canonicalises its input again.
+        canonical_username(&raw)?;
+        let username = raw.trim().trim_start_matches('@').to_owned();
         Ok(Self { username, save })
     }
 }
@@ -72,9 +77,10 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     transport: &'a T,
     keys: &'a Keys,
     name: &'a str,
+    original: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 10] {
+) -> [(&'static str, Job<'a, Found>); 11] {
     [
         (
             github_user::SRC,
@@ -146,6 +152,15 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
+        (
+            hacker_news::SRC,
+            Box::new(move || {
+                // Hacker News ids are case-sensitive: query the operator's exact case, not the
+                // case-folded `name` every other leg uses.
+                hacker_news::lookup(transport, original, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
     ]
 }
 
@@ -158,6 +173,10 @@ pub fn run<T: Transport + Sync + ?Sized>(
     username: &str,
     now_unix: u64,
 ) -> UsernameRun {
+    // The operator's exact selector. The Hacker News leg keys a case-sensitive id on it, so it is
+    // threaded to that leg verbatim; the report cohort and every case-insensitive source use the
+    // canonical (case-folded) form below.
+    let original = username.trim().trim_start_matches('@').to_owned();
     let username = match canonical_username(username) {
         Ok(username) => username,
         Err(error) => return UsernameRun::Failed(error.to_string()),
@@ -171,7 +190,7 @@ pub fn run<T: Transport + Sync + ?Sized>(
     // Each source asks a different server about the handle alone, so they run at once and the
     // lookup takes as long as the slowest of them. Their answers are folded in this order, so the
     // report is the one they gave when they ran one after another.
-    let sources = public_sources(transport, keys, &username, &scan_id, now_unix);
+    let sources = public_sources(transport, keys, &username, &original, &scan_id, now_unix);
     let (modules, jobs): (Vec<&str>, Vec<Job<'_, Found>>) = sources
         .into_iter()
         .filter(|(module, _)| transport.runs_module(module))
@@ -310,6 +329,7 @@ mod tests {
     const TIKTOK: &str = "www.tiktok.com";
     const NPM: &str = "registry.npmjs.org";
     const CRATES_IO: &str = "crates.io";
+    const HACKER_NEWS: &str = "hacker-news.firebaseio.com";
 
     /// Answers each source by its host, as the sources run at once and in no fixed order; a host
     /// with no reply answers nothing, which no source may take for absence.
@@ -350,7 +370,9 @@ mod tests {
     fn parses_handle_and_save() {
         let parsed =
             UsernameArgs::parse(&["@Jane.Doe".into(), "--save".into(), "out.json".into()]).unwrap();
-        assert_eq!(parsed.username, "jane.doe");
+        // The original case is preserved (only `@` and surrounding space are stripped); the
+        // Hacker News leg needs it, and every other source case-folds again downstream.
+        assert_eq!(parsed.username, "Jane.Doe");
         assert_eq!(parsed.save, Some(PathBuf::from("out.json")));
     }
 
@@ -550,6 +572,10 @@ mod tests {
                     r#"{"user":{"id":1,"login":"max","url":"https://github.com/max"}}"#,
                 ),
             ),
+            (
+                HACKER_NEWS,
+                response(200, r#"{"id":"max","created":1160418092,"karma":42}"#),
+            ),
         ]);
         for _ in 0..8 {
             let UsernameRun::Printed { report, .. } = run(&fake, &Keys::default(), "max", 1) else {
@@ -568,13 +594,14 @@ mod tests {
                     mastodon_user::SRC,
                     tiktok_public_contact::SRC,
                     npm_author::SRC,
-                    crates_io::SRC
+                    crates_io::SRC,
+                    hacker_news::SRC
                 ]
             );
         }
     }
 
-    /// Each source waits on its own server, so ten that take 200 ms each answer in about 200 ms,
+    /// Each source waits on its own server, so eleven that take 200 ms each answer in about 200 ms,
     /// not the second they took one after another.
     #[test]
     fn the_sources_run_at_once() {
@@ -607,16 +634,20 @@ mod tests {
                     r#"{"user":{"id":2,"login":"maxslow","url":"https://github.com/maxslow"}}"#,
                 ),
             ),
+            (
+                HACKER_NEWS,
+                response(200, r#"{"id":"maxslow","created":1160418092,"karma":7}"#),
+            ),
         ]));
         let started = std::time::Instant::now();
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
         let took = started.elapsed();
-        assert_eq!(report.outcomes.len(), 10);
+        assert_eq!(report.outcomes.len(), 11);
         assert!(
             took < std::time::Duration::from_millis(800),
-            "ten 200 ms sources took {took:?}"
+            "eleven 200 ms sources took {took:?}"
         );
     }
 
@@ -646,6 +677,103 @@ mod tests {
                 .any(|entity| entity.kind == EntityKind::Url
                     && entity.has_tag(crate::tags::WIKIPEDIA_EDIT)
                     && entity.value.contains("oldid=900001"))
+        );
+    }
+
+    /// Hacker News ids are case-sensitive, yet the engine case-folds every username selector. The
+    /// Hacker News leg must therefore query the operator's ORIGINAL case, or it authenticates a
+    /// different id. This transport runs only that leg and answers as the real case-sensitive API
+    /// does: the account exists at exactly one id's URL, every other id is the literal `null`.
+    struct HnExactCase {
+        exists: &'static str,
+    }
+
+    impl Transport for HnExactCase {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let hit = request
+                .url
+                .contains(&format!("/v0/user/{}.json", self.exists));
+            let body = if hit {
+                format!(r#"{{"id":"{}","created":1,"karma":1}}"#, self.exists)
+            } else {
+                "null".to_owned()
+            };
+            Ok(response(200, &body))
+        }
+
+        fn runs_module(&self, module: &str) -> bool {
+            module == hacker_news::SRC
+        }
+    }
+
+    fn hacker_news_only(selector: &str, exists: &'static str) -> Report {
+        match run(&HnExactCase { exists }, &Keys::default(), selector, 1) {
+            UsernameRun::Printed { report, .. } => report,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn hacker_news_outcome(report: &Report) -> SourceOutcomeKind {
+        report
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == hacker_news::SRC)
+            .unwrap_or_else(|| panic!("the hacker_news leg ran: {:#?}", report.outcomes))
+            .kind
+    }
+
+    #[test]
+    fn a_mixed_case_hacker_news_id_is_queried_and_confirmed_in_its_original_case() {
+        // The operator asks for `PaulHoule`; the account exists at that exact case. The leg must
+        // query `/user/PaulHoule.json` (not the case-folded `paulhoule`) and confirm it.
+        let report = hacker_news_only("PaulHoule", "PaulHoule");
+        assert_eq!(hacker_news_outcome(&report), SourceOutcomeKind::Success);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Url
+                    && entity.raw_value == "https://news.ycombinator.com/user?id=PaulHoule"),
+            "the confirmed account keeps its original-case profile: {:#?}",
+            report.entities
+        );
+        // Never the case-folded form.
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|entity| entity.raw_value.contains("user?id=paulhoule"))
+        );
+    }
+
+    #[test]
+    fn a_mixed_case_query_never_cross_attributes_a_different_lowercase_account() {
+        // The operator asks for `PaulHoule`, but only the DIFFERENT lowercase `paulhoule` account
+        // exists. Querying the exact case returns the API's `null`: a clean zero, never the
+        // lowercase account fabricated onto the mixed-case query.
+        let report = hacker_news_only("PaulHoule", "paulhoule");
+        assert_eq!(hacker_news_outcome(&report), SourceOutcomeKind::ValidZero);
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|entity| entity.has_tag("hacker-news")),
+            "a different-cased account must not be attributed: {:#?}",
+            report.entities
+        );
+    }
+
+    #[test]
+    fn a_lowercase_hacker_news_id_still_resolves_after_case_folding() {
+        // The all-lowercase selector is unchanged by case-folding, so it resolves as before.
+        let report = hacker_news_only("paulhoule", "paulhoule");
+        assert_eq!(hacker_news_outcome(&report), SourceOutcomeKind::Success);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.has_tag("hacker-news")
+                    && entity.raw_value == "https://news.ycombinator.com/user?id=paulhoule")
         );
     }
 }

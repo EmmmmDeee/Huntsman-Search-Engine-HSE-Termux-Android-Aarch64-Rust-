@@ -94,7 +94,9 @@ fn each_front_end_keeps_its_own_positional_rule() {
 #[test]
 fn valid_arguments_keep_their_save_path_and_positionals() {
     let username = UsernameArgs::parse(&tokens(&["@Jane.Doe", "--save", "out.json"])).unwrap();
-    assert_eq!(username.username, "jane.doe");
+    // Original case is preserved (only `@` and surrounding space are stripped): the case-sensitive
+    // Hacker News leg needs it, and every other username source case-folds again downstream.
+    assert_eq!(username.username, "Jane.Doe");
     assert_eq!(username.save.as_deref(), Some(Path::new("out.json")));
 
     let email = EmailArgs::parse(&tokens(&["jane@example.org", "--save", "mail.json"])).unwrap();
