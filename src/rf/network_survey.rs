@@ -87,7 +87,10 @@ fn number(raw: &str, max: u64) -> Option<Option<u64>> {
     if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    raw.parse::<u64>().ok().filter(|value| *value <= max).map(Some)
+    raw.parse::<u64>()
+        .ok()
+        .filter(|value| *value <= max)
+        .map(Some)
 }
 
 fn finite(raw: &str, low: f64, high: f64) -> Option<Option<f64>> {
@@ -102,7 +105,11 @@ fn enum_value(raw: &str, allowed: &[&'static str]) -> Option<Option<&'static str
     if raw.is_empty() {
         return Some(None);
     }
-    allowed.iter().copied().find(|value| *value == raw).map(Some)
+    allowed
+        .iter()
+        .copied()
+        .find(|value| *value == raw)
+        .map(Some)
 }
 
 fn text_field(raw: &str, max_bytes: usize) -> Option<Option<String>> {
@@ -143,11 +150,8 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
     {
         return None;
     }
-    let address_type = enum_value(
-        &row[18],
-        &["UNKNOWN", "PUBLIC", "RANDOM", "ANONYMOUS"],
-    )?
-    .unwrap_or("UNKNOWN");
+    let address_type =
+        enum_value(&row[18], &["UNKNOWN", "PUBLIC", "RANDOM", "ANONYMOUS"])?.unwrap_or("UNKNOWN");
     // Anonymous advertising cannot establish an address-based observation.
     if address_type == "ANONYMOUS" {
         return None;
@@ -163,15 +167,10 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
     let observed_epoch = parse_timestamp(timestamp)?;
     let signal_dbm = finite(&row[10], -200.0, 200.0)??;
     let tx_power_dbm = finite(&row[11], -200.0, 200.0)?;
-    let technology = enum_value(&row[12], &["UNKNOWN", "BR_EDR", "LE"])?
-        .unwrap_or("UNKNOWN");
-    let supported_technologies =
-        enum_value(&row[13], &["UNKNOWN", "BR_EDR", "LE", "DUAL"])?;
+    let technology = enum_value(&row[12], &["UNKNOWN", "BR_EDR", "LE"])?.unwrap_or("UNKNOWN");
+    let supported_technologies = enum_value(&row[13], &["UNKNOWN", "BR_EDR", "LE", "DUAL"])?;
     let advertised_name = text_field(&row[14], 128)?;
-    let channel = number(&row[15], 78)?
-        .map(u8::try_from)
-        .transpose()
-        .ok()?;
+    let channel = number(&row[15], 78)?.map(u8::try_from).transpose().ok()?;
     let record_number = number(&row[7], u64::MAX)?;
     if record_number == Some(0) {
         return None;
@@ -423,8 +422,7 @@ mod tests {
         for index in [1, 2, 5, 11, 17, 19, 20, 21, 22] {
             fields[index].clear();
         }
-        let report =
-            parse_bluetooth(format!("{PREFIX}{}\n", fields.join(",")).as_bytes()).unwrap();
+        let report = parse_bluetooth(format!("{PREFIX}{}\n", fields.join(",")).as_bytes()).unwrap();
         assert_eq!(report.observed, 1);
         let record = &report.observations[0];
         assert_eq!(record.advertised_name.as_deref(), Some("Lab, \"beacon\""));
