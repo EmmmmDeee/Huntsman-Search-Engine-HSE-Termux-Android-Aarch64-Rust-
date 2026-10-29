@@ -70,7 +70,8 @@ fn parse_proof(
         }
         let (cert_start, cert_end) =
             signer::prefixed_one(bytes, node_data_start, node_data_end).ok_or("malformed")?;
-        if cert_end - cert_start > MAX_CERT_BYTES || cert_end.checked_add(4) != Some(node_data_end) {
+        if cert_end - cert_start > MAX_CERT_BYTES || cert_end.checked_add(4) != Some(node_data_end)
+        {
             return Err("malformed");
         }
         let signed_algorithm = u32::try_from(signer::le32(bytes, cert_end).ok_or("malformed")?)
