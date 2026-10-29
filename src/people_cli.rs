@@ -1,6 +1,6 @@
 //! Collection front-end for `huntsman-recon people`.
 //!
-//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`] and [`crate::wikidata`] over
+//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::wikidata`] and\n//! [`crate::acnc`] over
 //! one injected [`crate::http::Transport`]. One source's [`Error::Invalid`] or `BotWaf` does not
 //! abort the others. All entities from all sources are merged via [`crate::entity::merge_by_uid`],
 //! which deduplicates records with the same UID and calls [`crate::entity::Entity::absorb`]
@@ -35,7 +35,7 @@ The lookup queries independent sources:
   3. Wikidata (top public item, QID-scoped candidate, never name-only identity corroboration)
   4. ACNC charity register (registered charities and not-for-profits matched by name)
 
-Results from all sources are merged by entity UID: duplicate records from different sources are combined into a single entity whose observation set includes all evidence. This consolidation detects when one person has multiple records across registers and surfaces the corroborated attributes.";
+Results are merged only by canonical entity UID. Name-matched Wikidata items and ACNC organisations are source-scoped candidates, not automatic cross-register identity corroboration; precise identifiers retain their normal correlation keys.";
 
 /// Merged entities and outcomes from every people source that ran.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -139,7 +139,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         collect(
             acnc::SRC,
             acnc::lookup(transport, &name, &scan_id, now_unix)
-                .map(|found| (found.entities, vec![found.outcome])),
+                .map(|found| (scope_acnc_charities(found.entities), vec![found.outcome])),
             now_unix,
             &mut report,
             &mut network,
@@ -165,6 +165,46 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         Ok(text) => PeopleRun::Printed { text, report },
         Err(msg) => PeopleRun::Failed(msg),
     }
+}
+
+/// A name-matched ACNC charity is not proven to be the same organisation as an ASIC row
+/// with an identical legal name. Scope only its Organisation identity within the composed
+/// people lookup, using its checksum-valid ABN when available. This also keeps different
+/// registered charities with the same legal name distinct. Preserve the source label as
+/// evidence; precise ABN, website and address entities retain their normal canonical keys.
+fn scope_acnc_charities(mut entities: Vec<Entity>) -> Vec<Entity> {
+    for entity in &mut entities {
+        if entity.kind != crate::entity::EntityKind::Organisation {
+            continue;
+        }
+        let label = entity.raw_value.clone();
+        let abn = entity
+            .evidence
+            .iter()
+            .find_map(|evidence| evidence.attributes.get("ABN"))
+            .filter(|abn| crate::au_id::is_valid_abn(abn));
+        let suffix = abn.map_or_else(
+            || "name-only candidate".to_owned(),
+            |abn| format!("ABN {abn}"),
+        );
+        let scoped = Entity::new(
+            entity.kind.clone(),
+            format!("{label} [ACNC {suffix}]"),
+            entity.confidence,
+            entity.scan_id.clone(),
+        );
+        entity.uid = scoped.uid;
+        entity.value = scoped.value;
+        entity.raw_value = scoped.raw_value;
+        entity.tag("acnc-organisation-scoped");
+        for evidence in &mut entity.evidence {
+            evidence
+                .attributes
+                .entry("source_label".into())
+                .or_insert_with(|| label.clone());
+        }
+    }
+    entities
 }
 
 /// A shared display name is not a verified cross-register identity. Wikidata items have
@@ -357,6 +397,54 @@ mod tests {
                 .map(String::as_str),
             Some("Q42"),
         );
+    }
+
+    #[test]
+    fn acnc_name_matches_do_not_merge_unrelated_organisations() {
+        // A legal-name match alone cannot corroborate an ASIC organisation. Two charities
+        // sharing a name but bearing distinct valid ABNs must also remain distinct.
+        let candidate = |source: &str, abn: Option<&str>| {
+            let mut entity = Entity::new(
+                EntityKind::Organisation,
+                "The Smith Family",
+                0.60,
+                "scan",
+            );
+            let mut evidence = Evidence::new(
+                EvidenceProvenance::for_scan(source, "scan"),
+                "name match only",
+            );
+            if let Some(abn) = abn {
+                evidence = evidence.with_attr("ABN", abn);
+            }
+            entity.add_evidence(evidence);
+            entity
+        };
+        let asic = candidate("asic_persons", None);
+        let acnc = scope_acnc_charities(vec![
+            candidate("acnc", Some("28000030179")),
+            candidate("acnc", Some("28000030228")),
+            candidate("acnc", None),
+        ]);
+        assert_eq!(acnc.len(), 3);
+        assert_ne!(acnc[0].uid, acnc[1].uid);
+        assert_ne!(acnc[0].uid, acnc[2].uid);
+        assert_eq!(
+            acnc[0].evidence[0]
+                .attributes
+                .get("source_label")
+                .map(String::as_str),
+            Some("The Smith Family"),
+        );
+        let mut combined = vec![asic];
+        combined.extend(acnc);
+        merge_by_uid(&mut combined);
+        assert_eq!(
+            combined.len(),
+            4,
+            "a name-only ACNC candidate must not inflate ASIC corroboration",
+        );
+        assert!(combined.iter().all(|entity| entity.source_count() == 1));
     }
 
     #[test]
