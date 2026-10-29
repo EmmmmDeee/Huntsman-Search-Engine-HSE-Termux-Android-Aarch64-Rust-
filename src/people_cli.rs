@@ -319,6 +319,7 @@ pub fn is_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
     use crate::test_support::{html_ok, json_ok};
     use std::cell::RefCell;
     use std::collections::HashMap;
