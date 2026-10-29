@@ -191,6 +191,7 @@ cargo run -- network cell:505:01:17:91      # cell site from radar cells: OpenCe
 cargo run -- network -27.4698,153.0251     # point: WiGLE WiFi + Bluetooth nearby, and the OpenCelliD cell sites in the 1.8 km square (keyed)
 cargo run -- crypto 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa  # keyless blockchain.info: on-chain balance, lifetime totals, tx count, the 20 latest transactions' chronology and counterparties (paid_by, paid_to, co_input; never owners); network
 cargo run -- itunes "Example Co"  # keyless App Store search by keyword: matching apps, sellers, bundle identifiers; network
+cargo run -- wikidata "Douglas Adams"  # keyless Wikidata: the item's full structured record, with website -> domain, coordinate and external-identifier (GitHub, X, VIAF, ORCID, IMDb) pivots; a candidate, not a confirmed identity; network
 cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenStreetMap Nominatim: a place or address to coordinates + full address (a LAT,LON argument is reverse-geocoded instead); network
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
