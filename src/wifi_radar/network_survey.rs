@@ -265,7 +265,9 @@ pub fn parse_wifi(bytes: &[u8]) -> Result<WifiCsvReport, Error> {
     if version != Some(CSV_VERSION) {
         return Err(invalid("missing or unsupported CSV version"));
     }
-    let mut rows = csv_rows(&text[offset..])?.into_iter();
+    let mut rows = csv_rows(&text[offset..])
+        .map_err(|_| invalid("malformed CSV"))?
+        .into_iter();
     let header = rows.next().ok_or_else(|| invalid("missing header"))?;
     if header.len() != HEADER.len()
         || !header
