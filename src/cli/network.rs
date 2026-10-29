@@ -19,6 +19,7 @@ use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX
 use huntsman_recon::fetch::{Credential, FetchOptions, fetch};
 use huntsman_recon::fetch_cli::{FETCH_USAGE, FetchArgs};
 use huntsman_recon::hibp::cli::HibpCommand;
+use huntsman_recon::hibp::client::HibpConfig;
 use huntsman_recon::http::{Request, TransportConfig, UreqTransport, parse_http_uri};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_report::entity_row;
@@ -32,10 +33,14 @@ pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
     // The HIBP command checks the arguments first, so bad arguments are a usage error (64). A
     // keyed subcommand with well-formed arguments and no key is refused by its keyed leg, before
     // any request, as a missing key (66).
+    let transport = std::sync::Arc::new(UreqTransport::new(
+        &HibpConfig::default().transport_config(),
+    ));
     ExitCode::from(
-        HibpCommand::production(crate::cli::credentials::hibp_key_loader(
-            &crate::cli::credentials::lookup_keys(),
-        ))
+        HibpCommand::production(
+            crate::cli::credentials::hibp_key_loader(&crate::cli::credentials::lookup_keys()),
+            transport,
+        )
         .run(
             args,
             &mut std::io::stdin().lock(),

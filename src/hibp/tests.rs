@@ -1061,3 +1061,39 @@ fn token_store_concurrent_writers_all_succeed_with_a_complete_final_document() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn transport_config_carries_this_configs_timeout_and_user_agent() {
+    let config = HibpConfig {
+        timeout: Duration::from_secs(7),
+        user_agent: "huntsman-test-agent".into(),
+        ..HibpConfig::default()
+    };
+    let tc = config.transport_config();
+    assert_eq!(tc.timeout, Duration::from_secs(7));
+    assert_eq!(tc.user_agent, "huntsman-test-agent");
+    // Everything else is the transport default, not drawn from HibpConfig.
+    assert_eq!(
+        tc.max_body,
+        crate::http::TransportConfig::default().max_body
+    );
+}
+
+#[test]
+fn production_sends_through_the_injected_transport() {
+    let fake = Arc::new(Fake::default());
+    fake.push(200, r#"[{"Name":"Example"}]"#);
+    let client = HibpClient::production(fake.clone(), Auth::None, HibpConfig::default());
+    let got = client
+        .breaches(&BreachesFilter {
+            domain: Some("example.com".into()),
+            is_spam_list: None,
+        })
+        .unwrap();
+    assert_eq!(got[0].name, "Example");
+    assert_eq!(
+        fake.requests().len(),
+        1,
+        "production must send through the injected transport"
+    );
+}

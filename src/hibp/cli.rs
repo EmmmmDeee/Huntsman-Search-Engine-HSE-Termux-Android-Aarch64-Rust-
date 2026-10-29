@@ -30,6 +30,7 @@
 
 use std::fmt::{self, Display, Write as _};
 use std::io::{BufRead, Read as _, Write};
+use std::sync::Arc;
 
 use super::client::{Auth, HibpClient, HibpConfig};
 use super::error::HibpError;
@@ -134,11 +135,14 @@ impl HibpCommand {
 
     /// The binary's command: the key from `keys` (the binary passes
     /// [`KeyLoader::default_chain`] with its lookup keys' `HUNTSMAN_HIBP_KEY` slot) and
-    /// [`HibpClient::production`] with the default config.
+    /// [`HibpClient::production`] over `transport`, the transport the binary built and passed in.
     #[must_use]
-    pub fn production(keys: KeyLoader) -> Self {
-        Self::new(keys, |auth| {
-            HibpClient::production(auth, HibpConfig::default())
+    pub fn production(
+        keys: KeyLoader,
+        transport: Arc<dyn crate::http::Transport + Send + Sync>,
+    ) -> Self {
+        Self::new(keys, move |auth| {
+            HibpClient::production(transport.clone(), auth, HibpConfig::default())
         })
     }
 

@@ -40,7 +40,7 @@
 use crate::clock;
 use crate::credential_origin::AuthenticationAuthority;
 use crate::fetch::{AuthStyle, Credential};
-use crate::http::{Request, Response, Transport, TransportConfig, UreqTransport};
+use crate::http::{Request, Response, Transport, TransportConfig};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -111,6 +111,21 @@ impl Default for HibpConfig {
     }
 }
 
+impl HibpConfig {
+    /// The transport settings a production client runs with: this config's timeout and user
+    /// agent over the default byte cap, egress policy and trust roots. The caller builds the
+    /// transport from this, so the one place a concrete transport is constructed is the binary's
+    /// adapter layer, not this library.
+    #[must_use]
+    pub fn transport_config(&self) -> TransportConfig {
+        TransportConfig {
+            timeout: self.timeout,
+            user_agent: self.user_agent.clone(),
+            ..TransportConfig::default()
+        }
+    }
+}
+
 /// The HIBP client. Cheap to clone.
 #[derive(Clone)]
 pub struct HibpClient {
@@ -159,15 +174,16 @@ impl HibpClient {
         }
     }
 
-    /// Production transport with the configured timeout, byte cap and guarded resolver.
+    /// A production client over `transport`, the configured `config` and the shared limiter.
+    /// The caller builds the transport (from [`HibpConfig::transport_config`]); the library no
+    /// longer constructs one, so every `hibp` request goes through one injected transport.
     #[must_use]
-    pub fn production(auth: Auth, config: HibpConfig) -> Self {
-        let transport = UreqTransport::new(&TransportConfig {
-            timeout: config.timeout,
-            user_agent: config.user_agent.clone(),
-            ..TransportConfig::default()
-        });
-        Self::with_config(Arc::new(transport), auth, config, RateLimiter::shared())
+    pub fn production(
+        transport: Arc<dyn Transport + Send + Sync>,
+        auth: Auth,
+        config: HibpConfig,
+    ) -> Self {
+        Self::with_config(transport, auth, config, RateLimiter::shared())
     }
 
     /// The configured auth.
