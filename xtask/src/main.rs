@@ -3,6 +3,7 @@
 
 mod changelog;
 mod completion;
+mod confusables;
 mod coupling;
 mod dual_pass;
 mod error;
@@ -26,7 +27,8 @@ commands:
   roadmap [markdown|json|check]  immutable file tree and ordered implementation handoff
   issue-fix ...           the issue-fix path guard, capture, key scan, and publish
   dual-pass ...           the dual-pass patch-path reader and change applier
-  oui ...                 pack the IEEE MA-L registry into src/oui_ieee.bin, or dump a blob";
+  oui ...                 pack the IEEE MA-L registry into src/oui_ieee.bin, or dump a blob
+  confusables generate ...  write src/evidence_ancestry/lookalike.rs from Unicode's tables";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,6 +42,7 @@ fn main() -> ExitCode {
         Some("issue-fix") => issue_fix::run(&args[1..]),
         Some("dual-pass") => dual_pass::run(&args[1..]),
         Some("oui") => oui::run(&args[1..]),
+        Some("confusables") => confusables::run(&args[1..]),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
