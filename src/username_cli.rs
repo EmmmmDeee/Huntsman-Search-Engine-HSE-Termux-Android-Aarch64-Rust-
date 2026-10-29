@@ -57,7 +57,11 @@ impl UsernameArgs {
     /// Invalid/missing handle, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
         let (raw, save) = LookupTokens::single(args, "username needs exactly one HANDLE")?;
-        let username = canonical_username(&raw)?;
+        // Validate charset, length and placeholder through the canonical form, but keep the
+        // operator's ORIGINAL case: Hacker News ids are case-sensitive, so the exact case must
+        // survive to that leg. Every other username source canonicalises its input again.
+        canonical_username(&raw)?;
+        let username = raw.trim().trim_start_matches('@').to_owned();
         Ok(Self { username, save })
     }
 }
@@ -73,6 +77,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     transport: &'a T,
     keys: &'a Keys,
     name: &'a str,
+    original: &'a str,
     scan: &'a str,
     now_unix: u64,
 ) -> [(&'static str, Job<'a, Found>); 11] {
@@ -150,7 +155,9 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
         (
             hacker_news::SRC,
             Box::new(move || {
-                hacker_news::lookup(transport, name, scan, now_unix)
+                // Hacker News ids are case-sensitive: query the operator's exact case, not the
+                // case-folded `name` every other leg uses.
+                hacker_news::lookup(transport, original, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -166,6 +173,10 @@ pub fn run<T: Transport + Sync + ?Sized>(
     username: &str,
     now_unix: u64,
 ) -> UsernameRun {
+    // The operator's exact selector. The Hacker News leg keys a case-sensitive id on it, so it is
+    // threaded to that leg verbatim; the report cohort and every case-insensitive source use the
+    // canonical (case-folded) form below.
+    let original = username.trim().trim_start_matches('@').to_owned();
     let username = match canonical_username(username) {
         Ok(username) => username,
         Err(error) => return UsernameRun::Failed(error.to_string()),
@@ -179,7 +190,7 @@ pub fn run<T: Transport + Sync + ?Sized>(
     // Each source asks a different server about the handle alone, so they run at once and the
     // lookup takes as long as the slowest of them. Their answers are folded in this order, so the
     // report is the one they gave when they ran one after another.
-    let sources = public_sources(transport, keys, &username, &scan_id, now_unix);
+    let sources = public_sources(transport, keys, &username, &original, &scan_id, now_unix);
     let (modules, jobs): (Vec<&str>, Vec<Job<'_, Found>>) = sources
         .into_iter()
         .filter(|(module, _)| transport.runs_module(module))
@@ -359,7 +370,9 @@ mod tests {
     fn parses_handle_and_save() {
         let parsed =
             UsernameArgs::parse(&["@Jane.Doe".into(), "--save".into(), "out.json".into()]).unwrap();
-        assert_eq!(parsed.username, "jane.doe");
+        // The original case is preserved (only `@` and surrounding space are stripped); the
+        // Hacker News leg needs it, and every other source case-folds again downstream.
+        assert_eq!(parsed.username, "Jane.Doe");
         assert_eq!(parsed.save, Some(PathBuf::from("out.json")));
     }
 
@@ -664,6 +677,103 @@ mod tests {
                 .any(|entity| entity.kind == EntityKind::Url
                     && entity.has_tag(crate::tags::WIKIPEDIA_EDIT)
                     && entity.value.contains("oldid=900001"))
+        );
+    }
+
+    /// Hacker News ids are case-sensitive, yet the engine case-folds every username selector. The
+    /// Hacker News leg must therefore query the operator's ORIGINAL case, or it authenticates a
+    /// different id. This transport runs only that leg and answers as the real case-sensitive API
+    /// does: the account exists at exactly one id's URL, every other id is the literal `null`.
+    struct HnExactCase {
+        exists: &'static str,
+    }
+
+    impl Transport for HnExactCase {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let hit = request
+                .url
+                .contains(&format!("/v0/user/{}.json", self.exists));
+            let body = if hit {
+                format!(r#"{{"id":"{}","created":1,"karma":1}}"#, self.exists)
+            } else {
+                "null".to_owned()
+            };
+            Ok(response(200, &body))
+        }
+
+        fn runs_module(&self, module: &str) -> bool {
+            module == hacker_news::SRC
+        }
+    }
+
+    fn hacker_news_only(selector: &str, exists: &'static str) -> Report {
+        match run(&HnExactCase { exists }, &Keys::default(), selector, 1) {
+            UsernameRun::Printed { report, .. } => report,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn hacker_news_outcome(report: &Report) -> SourceOutcomeKind {
+        report
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == hacker_news::SRC)
+            .unwrap_or_else(|| panic!("the hacker_news leg ran: {:#?}", report.outcomes))
+            .kind
+    }
+
+    #[test]
+    fn a_mixed_case_hacker_news_id_is_queried_and_confirmed_in_its_original_case() {
+        // The operator asks for `PaulHoule`; the account exists at that exact case. The leg must
+        // query `/user/PaulHoule.json` (not the case-folded `paulhoule`) and confirm it.
+        let report = hacker_news_only("PaulHoule", "PaulHoule");
+        assert_eq!(hacker_news_outcome(&report), SourceOutcomeKind::Success);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Url
+                    && entity.raw_value == "https://news.ycombinator.com/user?id=PaulHoule"),
+            "the confirmed account keeps its original-case profile: {:#?}",
+            report.entities
+        );
+        // Never the case-folded form.
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|entity| entity.raw_value.contains("user?id=paulhoule"))
+        );
+    }
+
+    #[test]
+    fn a_mixed_case_query_never_cross_attributes_a_different_lowercase_account() {
+        // The operator asks for `PaulHoule`, but only the DIFFERENT lowercase `paulhoule` account
+        // exists. Querying the exact case returns the API's `null`: a clean zero, never the
+        // lowercase account fabricated onto the mixed-case query.
+        let report = hacker_news_only("PaulHoule", "paulhoule");
+        assert_eq!(hacker_news_outcome(&report), SourceOutcomeKind::ValidZero);
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|entity| entity.has_tag("hacker-news")),
+            "a different-cased account must not be attributed: {:#?}",
+            report.entities
+        );
+    }
+
+    #[test]
+    fn a_lowercase_hacker_news_id_still_resolves_after_case_folding() {
+        // The all-lowercase selector is unchanged by case-folding, so it resolves as before.
+        let report = hacker_news_only("paulhoule", "paulhoule");
+        assert_eq!(hacker_news_outcome(&report), SourceOutcomeKind::Success);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.has_tag("hacker-news")
+                    && entity.raw_value == "https://news.ycombinator.com/user?id=paulhoule")
         );
     }
 }
