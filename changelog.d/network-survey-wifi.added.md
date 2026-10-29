@@ -1,0 +1,1 @@
+- Import bounded Network Survey Wi-Fi CSV v0.4.0 offline with source-claimed time, separate GNSS uncertainty, BSSID validation and privacy filtering; never classify imported rows as live sensor or MITM evidence.
