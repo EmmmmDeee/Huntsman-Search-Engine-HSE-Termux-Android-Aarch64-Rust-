@@ -2,6 +2,8 @@
 //! This is *not* an active scan: Android owns the scan schedule. A remembered
 //! result cannot establish a device's present location or proximity.
 
+pub mod network_survey;
+
 use std::fmt::Write as _;
 
 use serde::Serialize;

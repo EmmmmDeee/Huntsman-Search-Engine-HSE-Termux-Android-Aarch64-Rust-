@@ -48,7 +48,7 @@ fn invalid(message: &str) -> Error {
 
 /// RFC4180-style records, including quoted commas, escaped quotes and newlines.
 /// Input, field, row and column counts are all bounded.
-fn csv_rows(input: &str) -> Result<Vec<Vec<String>>, Error> {
+pub(crate) fn csv_rows(input: &str) -> Result<Vec<Vec<String>>, Error> {
     let mut chars = input.chars().peekable();
     let mut rows = Vec::new();
     let mut row = Vec::new();
