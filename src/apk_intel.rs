@@ -60,7 +60,7 @@ const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOST_ENTITIES: usize = 64;
 const LIMITATIONS: &str = "Offline static reading: APK SHA-256 content-digest comparisons alone do not authenticate signatures; supported signed-data signatures are checked separately, but full Android APK verification and certificate-chain trust are not claimed; manifest and signer identity claims remain untrusted; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (structural presence, not full Android signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts) and resolve the app's displayed name from resources.arsc, summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER and of their public key (certificate extraction alone is not verification), compare declared SHA-256 APK content digests using the Android 1 MiB chunk algorithm (a digest match alone is not authentication; supported RSA/ECDSA signed-data signatures are checked separately, not full Android installability), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (structural presence, not full Android signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts) and resolve the app's displayed name from resources.arsc, summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER and of their public key (certificate extraction alone is not verification), report SDK-specific v3/v3.1 signer ranges as unverified declarations, compare declared SHA-256 APK content digests using the Android 1 MiB chunk algorithm (a digest match alone is not authentication; supported RSA/ECDSA signed-data signatures are checked separately, not full Android installability), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -92,7 +92,7 @@ pub use intent::IntentAnalysis;
 pub use network_config::{DomainRule, NetworkPolicy, PinFingerprint, TrustAnchor};
 pub use risk::Flag;
 pub use sdk::Tracker;
-pub use signer::Certificate;
+pub use signer::{Certificate, SdkSigner};
 
 /// One native library and what its ELF structures declare about it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -122,6 +122,8 @@ pub struct Analysis {
     pub network_policy: Option<NetworkPolicy>,
     /// Each distinct signing certificate, its schemes joined when several present it.
     pub signers: Vec<Certificate>,
+    /// SDK-scoped v3/v3.1 certificate declarations; never proof of a selected or valid signer.
+    pub sdk_signers: Vec<SdkSigner>,
     pub code: CodeUrls,
     /// The app's displayed name (`android:label`), resolved from `resources.arsc` when it is a
     /// resource reference, or taken inline when the manifest gives a literal. The manifest's own
@@ -704,6 +706,7 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     let mut certificates: Vec<Certificate> = Vec::new();
     for (scheme, value) in &archive.signing_values {
         certificates.extend(signer::signing_block(value, scheme));
+        analysis.sdk_signers.extend(signer::sdk_signers(value, scheme));
     }
     for member in &archive.v1 {
         if let Some(bytes) = read(member, MAX_APK_SIGNATURE_FILE_BYTES, &mut analysis) {
@@ -1161,6 +1164,24 @@ fn signer_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, S
     put(
         "apk_signer_public_key_sha256_unverified",
         join(|signer| signer.public_key_sha256.as_str()),
+    );
+    put(
+        "apk_sdk_signer_ranges_unverified",
+        analysis
+            .sdk_signers
+            .iter()
+            .map(|signer| {
+                format!(
+                    "{}#{}:{}-{}:{}",
+                    signer.scheme,
+                    signer.signer_index,
+                    signer.min_sdk,
+                    signer.max_sdk,
+                    signer.certificate_sha256
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
     );
 }
 
@@ -1646,6 +1667,16 @@ mod tests {
         let analysis = analyse(&bytes, &archive);
         assert_eq!(analysis.signers.len(), 1);
         assert_eq!(analysis.signers[0].scheme, "v3");
+        assert_eq!(analysis.sdk_signers.len(), 1);
+        assert_eq!(
+            (analysis.sdk_signers[0].min_sdk, analysis.sdk_signers[0].max_sdk),
+            (28, 35)
+        );
+        let report = run(&bytes, "sdk-signer-fixture.apk", 100).unwrap();
+        assert!(
+            attr(&report.entities[0], "apk_sdk_signer_ranges_unverified")
+                .is_some_and(|value| value.contains("v3#0:28-35:"))
+        );
     }
 
     /// One member of a built APK: its name, bytes and ZIP compression method (8 deflates it).
