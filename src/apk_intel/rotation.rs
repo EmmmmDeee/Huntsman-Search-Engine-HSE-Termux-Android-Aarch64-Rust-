@@ -300,12 +300,12 @@ mod tests {
         signed.extend_from_slice(&28_u32.to_le_bytes());
         signed.extend_from_slice(&35_u32.to_le_bytes());
         signed.extend_from_slice(&prefix(&prefix(&record)));
-        let mut signer = prefix(&signed);
-        signer.extend_from_slice(&28_u32.to_le_bytes());
-        signer.extend_from_slice(&35_u32.to_le_bytes());
-        signer.extend_from_slice(&prefix(&[]));
-        signer.extend_from_slice(&prefix(signer::certificate_spki(cert).unwrap()));
-        prefix(&prefix(&signer))
+        let mut signer_record = prefix(&signed);
+        signer_record.extend_from_slice(&28_u32.to_le_bytes());
+        signer_record.extend_from_slice(&35_u32.to_le_bytes());
+        signer_record.extend_from_slice(&prefix(&[]));
+        signer_record.extend_from_slice(&prefix(signer::certificate_spki(cert).unwrap()));
+        prefix(&prefix(&signer_record))
     }
 
     #[test]
@@ -348,8 +348,10 @@ mod tests {
         assert_eq!(json[0]["certificates"].as_array().unwrap().len(), 2);
         assert_eq!(json[0]["status"], "verified");
 
-        let mut analysis = super::super::Analysis::default();
-        analysis.rotation_chains = bound;
+        let mut analysis = super::super::Analysis {
+            rotation_chains: bound,
+            ..Default::default()
+        };
         let mut attributes = Vec::new();
         super::super::signer_digest_attrs(&analysis, &mut |key, value| {
             attributes.push((key, value));
