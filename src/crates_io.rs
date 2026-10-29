@@ -77,9 +77,8 @@ struct CrateUser {
     url: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct CratesResp {
-    #[serde(default)]
     crates: Vec<CrateInfo>,
 }
 
@@ -177,10 +176,16 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     ) {
         Ok(fetched) => interpret_crates(&fetched),
-        Err(_) => Vec::new(),
+        Err(_) => None,
     };
 
-    let mut entities = build_entities(&user, &crates, &handle, scan_id);
+    let mut entities = build_entities(
+        &user,
+        crates.as_deref().unwrap_or(&[]),
+        &handle,
+        scan_id,
+        crates.as_ref().map(Vec::len),
+    );
     merge_by_uid(&mut entities);
     Ok(Report {
         outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
@@ -247,27 +252,34 @@ fn interpret_user(
 
 /// The published crates of a confirmed account, or an empty list when the listing is unreadable --
 /// the account itself is already confirmed, so a missing listing drops only crate pivots. **Pure.**
-fn interpret_crates(fetched: &Fetched) -> Vec<CrateInfo> {
-    let Ok(response) = whole_response(fetched, "crates.io crates") else {
-        return Vec::new();
+fn interpret_crates(fetched: &Fetched) -> Option<Vec<CrateInfo>> {
+    let response = whole_response(fetched, "crates.io crates").ok()?;
+    answer(fetched, "crates.io crates").ok()?;
+    decode_json::<CratesResp>(response, SRC, 0, "crates.io crates")
+        .ok()
+        .map(|resp| resp.crates)
+}
+
+/// Only a matching HTTPS GitHub profile can be labelled as this registry account's authenticated
+/// profile. An arbitrary self-declared URL is not proof of account linkage. **Pure.**
+fn is_confirmed_github_profile(url: &str, login: &str) -> bool {
+    let Some(path) = url.strip_prefix("https://github.com/") else {
+        return false;
     };
-    if answer(fetched, "crates.io crates").is_err() {
-        return Vec::new();
-    }
-    match decode_json::<CratesResp>(response, SRC, 0, "crates.io crates") {
-        Ok(resp) => resp.crates,
-        Err(_) => Vec::new(),
-    }
+    let username = path.strip_suffix('/').unwrap_or(path);
+    valid_handle(username) && username.eq_ignore_ascii_case(login)
 }
 
 /// The GitHub owner (first path segment) of a `github.com/{owner}/{repo}` URL, lower-cased and
 /// validated as a login, or `None` for any other URL. **Pure.**
 fn github_owner(url: &str) -> Option<String> {
-    let rest = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))?;
-    let owner = rest.split('/').next().unwrap_or("").trim();
-    if valid_handle(owner) {
+    let rest = url.strip_prefix("https://github.com/")?;
+    let (owner, repository) = rest.split_once('/')?;
+    if valid_handle(owner)
+        && !repository.is_empty()
+        && !repository.starts_with(['/', '?', '#'])
+        && !matches!(repository.split('/').next(), Some(".") | Some(".."))
+    {
         Some(owner.to_ascii_lowercase())
     } else {
         None
@@ -281,16 +293,17 @@ fn build_entities(
     crates: &[CrateInfo],
     handle: &str,
     scan_id: &str,
+    crate_count: Option<usize>,
 ) -> Vec<Entity> {
     let mut entities = Vec::new();
-    add_account(user, crates.len(), scan_id, &mut entities);
+    add_account(user, crate_count, scan_id, &mut entities);
     add_crate_links(crates, handle, scan_id, &mut entities);
     entities
 }
 
 /// The confirmed account: its `Username`, the owner's display name as a `Person` when it reads as
 /// one, and the GitHub profile `Url` the account authenticates through. **Pure.**
-fn add_account(user: &CrateUser, crate_count: usize, scan_id: &str, entities: &mut Vec<Entity>) {
+fn add_account(user: &CrateUser, crate_count: Option<usize>, scan_id: &str, entities: &mut Vec<Entity>) {
     let login = user.login.to_ascii_lowercase();
     let name = user
         .name
@@ -301,7 +314,7 @@ fn add_account(user: &CrateUser, crate_count: usize, scan_id: &str, entities: &m
         .url
         .as_deref()
         .map(str::trim)
-        .filter(|url| canonical_url(url).is_some());
+        .filter(|url| is_confirmed_github_profile(url, &login));
 
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SRC, scan_id),
@@ -312,8 +325,22 @@ fn add_account(user: &CrateUser, crate_count: usize, scan_id: &str, entities: &m
     .with_attr("dataset", "crates.io")
     .with_attr("crates_io_id", user.id.to_string())
     .with_attr("profile_url", profile_url(&login))
-    .with_attr("crate_count", crate_count.to_string())
+    .with_attr(
+        "crate_listing",
+        if crate_count.is_some() {
+            "observed_page"
+        } else {
+            "unavailable"
+        },
+    )
     .with_optional_attrs([("display_name", name), ("github_url", github)]);
+    if let Some(count) = crate_count {
+        evidence = evidence.with_attr("crate_page_count", count.to_string());
+        // A full page may be truncated; do not claim it is the complete account total.
+        if count < MAX_CRATES {
+            evidence = evidence.with_attr("crate_count", count.to_string());
+        }
+    }
     if let Some(name) = name {
         evidence = evidence.with_attr("owner", name);
     }
@@ -593,6 +620,34 @@ mod tests {
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert!(has(&report, &EntityKind::Username, "dtolnay"));
         assert!(!has(&report, &EntityKind::Url, "https://docs.rs/anyhow"));
+    }
+
+    #[test]
+    fn mismatched_github_profile_is_not_asserted_as_an_authenticated_link() {
+        let spoof = r#"{"user":{"id":3618,"login":"dtolnay","name":"David Tolnay","url":"https://github.com/someone-else"}}"#;
+        let report = report_of(spoof, r#"{"crates":[]}"#, "dtolnay");
+        assert!(has(&report, &EntityKind::Username, "dtolnay"));
+        assert!(!has(&report, &EntityKind::Url, "https://github.com/someone-else"));
+        let account = report.entities.iter().find(|e| e.kind == EntityKind::Username).expect("account");
+        assert!(!account.evidence[0].attributes.contains_key("github_url"));
+        assert!(!is_confirmed_github_profile("https://example.org/dtolnay", "dtolnay"));
+        assert!(!is_confirmed_github_profile("https://github.com/dtolnay.evil.org", "dtolnay"));
+        assert!(is_confirmed_github_profile("https://github.com/dtolnay", "dtolnay"));
+    }
+
+    #[test]
+    fn missing_or_invalid_crate_listing_is_not_evidence_of_zero_crates() {
+        for body in ["not json", r#"{}"#] {
+            let report = report_of(USER, body, "dtolnay");
+            assert!(has(&report, &EntityKind::Username, "dtolnay"));
+            let account = report.entities.iter().find(|e| e.kind == EntityKind::Username).expect("account");
+            let attrs = &account.evidence[0].attributes;
+            assert_eq!(attrs.get("crate_listing").map(String::as_str), Some("unavailable"));
+            assert!(!attrs.contains_key("crate_count"));
+            assert!(!attrs.contains_key("crate_page_count"));
+        }
+        assert!(github_owner("https://github.com/rust-lang").is_none());
+        assert_eq!(github_owner("https://github.com/rust-lang/rust"), Some("rust-lang".to_owned()));
     }
 
     #[test]
