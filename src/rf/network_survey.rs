@@ -6,8 +6,8 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use crate::rf::survey_csv::{MAX_SURVEY_CSV_BYTES, csv_rows};
 use crate::error::Error;
+use crate::rf::survey_csv::{MAX_SURVEY_CSV_BYTES, csv_rows};
 use crate::rf::{canonical_network_id, is_mac};
 use crate::textnorm::escape_controls;
 use crate::timefmt::parse_timestamp;
