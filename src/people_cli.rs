@@ -153,7 +153,9 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
 /// stable QIDs, while ASIC rows often identify people by name alone. Keep the source's
 /// original label in evidence, but scope the item entity's canonical key to its QID so
 /// same-name strangers cannot merge or inflate corroboration. Other pivot entities keep
-/// their normal canonical keys. This only affects the composed people lookup.
+/// their normal canonical keys, but remain lead-only: a name-search hit is not
+/// sufficient attribution to dispatch its domain or username recursively.
+/// This only affects the composed people lookup.
 fn scope_wikidata_items(mut entities: Vec<Entity>) -> Vec<Entity> {
     for entity in &mut entities {
         if !matches!(
@@ -162,6 +164,7 @@ fn scope_wikidata_items(mut entities: Vec<Entity>) -> Vec<Entity> {
                 | crate::entity::EntityKind::Organisation
                 | crate::entity::EntityKind::Other
         ) {
+            entity.tag(wikidata::NAME_SEARCH_LEAD_TAG);
             continue;
         }
         let Some(qid) = entity
@@ -300,6 +303,39 @@ mod tests {
                 Some("Jane Example")
             );
         }
+    }
+
+    #[test]
+    fn wikidata_name_search_pivots_are_retained_as_unverified_leads() {
+        use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
+
+        let mut person = Entity::new(EntityKind::Person, "Jane Example", 0.6, "scan");
+        person.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("wikidata", "scan"),
+                "candidate item",
+            )
+            .with_attr("qid", "Q42"),
+        );
+        let mut domain = Entity::new(EntityKind::Domain, "stranger.example", 0.55, "scan");
+        domain.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("wikidata", "scan"),
+                "website for unverified candidate",
+            )
+            .with_attr("qid", "Q42"),
+        );
+        let entities = scope_wikidata_items(vec![person, domain]);
+        assert_eq!(entities.len(), 2);
+        assert!(entities[0].has_tag("wikidata-item-scoped"));
+        assert!(!entities[0].has_tag(wikidata::NAME_SEARCH_LEAD_TAG));
+        assert_eq!(entities[1].value, "stranger.example");
+        assert_eq!(entities[1].confidence, 0.55);
+        assert!(entities[1].has_tag(wikidata::NAME_SEARCH_LEAD_TAG));
+        assert_eq!(
+            entities[1].evidence[0].attributes.get("qid").map(String::as_str),
+            Some("Q42"),
+        );
     }
 
     #[test]
