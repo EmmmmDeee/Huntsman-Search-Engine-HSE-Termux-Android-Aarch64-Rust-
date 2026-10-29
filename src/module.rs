@@ -552,7 +552,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "wikidata",
-        command: "wikidata QUERY",
+        command: "wikidata QUERY | scan -k people NAME",
         access: "keyless",
         network: true,
         category: ModuleCategory::Other,
