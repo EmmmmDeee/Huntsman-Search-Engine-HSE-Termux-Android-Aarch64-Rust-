@@ -180,7 +180,8 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<WifiC
     if !rssi.is_finite() || !(-150.0..=0.0).contains(&rssi) {
         return None;
     }
-    let frequency = optional_u64(row, columns, "frequencyMhz", 7125).ok()?
+    let frequency = optional_u64(row, columns, "frequencyMhz", 7125)
+        .ok()?
         .map(i64::try_from)
         .transpose()
         .ok()?
@@ -189,7 +190,8 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<WifiC
     if !column(row, columns, "frequencyMhz").is_empty() && frequency.is_none() {
         return None;
     }
-    let channel = optional_u64(row, columns, "channel", 255).ok()?
+    let channel = optional_u64(row, columns, "channel", 255)
+        .ok()?
         .map(u16::try_from)
         .transpose()
         .ok()?;
