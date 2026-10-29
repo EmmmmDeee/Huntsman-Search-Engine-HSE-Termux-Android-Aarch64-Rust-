@@ -278,7 +278,7 @@ fn github_owner(url: &str) -> Option<String> {
     if valid_handle(owner)
         && !repository.is_empty()
         && !repository.starts_with(['/', '?', '#'])
-        && !matches!(repository.split('/').next(), Some(".") | Some(".."))
+        && !matches!(repository.split('/').next(), Some("." | ".."))
     {
         Some(owner.to_ascii_lowercase())
     } else {
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn missing_or_invalid_crate_listing_is_not_evidence_of_zero_crates() {
-        for body in ["not json", r#"{}"#] {
+        for body in ["not json", r"{}"] {
             let report = report_of(USER, body, "dtolnay");
             assert!(has(&report, &EntityKind::Username, "dtolnay"));
             let account = report
