@@ -44,6 +44,8 @@ pub const SERVE_BIND_ENV: &str = "HSE_BIND";
 pub const CA_BUNDLE_ENV: &str = "HUNTSMAN_CA_BUNDLE";
 /// Optional operator-managed Nominatim-compatible HTTPS origin, without URL path.
 pub const NOMINATIM_BASE_URL_ENV: &str = "HUNTSMAN_NOMINATIM_BASE_URL";
+/// Optional operator-managed Wikibase-compatible HTTPS origin, without URL path.
+pub const WIKIDATA_BASE_URL_ENV: &str = "HUNTSMAN_WIKIDATA_BASE_URL";
 /// The selectors `serve` collects and re-normalises for as long as it runs: `;`- or
 /// newline-separated, `*` for every saved target (`docs/CONTINUOUS_NORMALISATION.md`). Read as
 /// every key is, from `~/.huntsman.env` first, then the environment; unset, the controller is off.
@@ -129,6 +131,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     SERVE_BIND_ENV,
     CA_BUNDLE_ENV,
     NOMINATIM_BASE_URL_ENV,
+    WIKIDATA_BASE_URL_ENV,
     CONTINUOUS_TARGETS_ENV,
     CONTINUOUS_INTERVAL_ENV,
     CONTINUOUS_NOTIFY_ENV,
@@ -224,6 +227,16 @@ pub fn ca_bundle() -> Option<OsString> {
 /// Other library modules must not read the process environment directly.
 pub fn nominatim_base_url() -> Result<Option<String>, std::env::VarError> {
     match std::env::var(NOMINATIM_BASE_URL_ENV) {
+        Ok(origin) => Ok(Some(origin)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The operator-managed Wikibase origin from the environment, an error rather than a silent
+/// default when it is set to non-Unicode. Other library modules must not read the environment.
+pub fn wikidata_base_url() -> Result<Option<String>, std::env::VarError> {
+    match std::env::var(WIKIDATA_BASE_URL_ENV) {
         Ok(origin) => Ok(Some(origin)),
         Err(std::env::VarError::NotPresent) => Ok(None),
         Err(error) => Err(error),

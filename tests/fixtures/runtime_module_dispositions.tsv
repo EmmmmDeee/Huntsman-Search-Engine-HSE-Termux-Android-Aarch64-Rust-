@@ -111,6 +111,8 @@ keybase	adapter	public Keybase identity source client reached through username_c
 keys	leaf	credential file handling
 mastodon_user	adapter	public Mastodon account source client reached through username_cli from username, scan and /api/lookup
 tiktok_public_contact	adapter	keyless public TikTok bio contact client, reached from username_cli and bounded by same guarded transport
+wikidata	adapter	Wikidata entity source client reached through wikidata_cli from the wikidata command
+wikidata_cli	adapter	wikidata query front-end reached from the wikidata command
 wikipedia	adapter	public Wikipedia user-contributions source client reached through username_cli from the username command and scan
 kickbox	adapter	Kickbox disposable-domain leg reached through indicator_legs from email, scan -k email and /api/lookup
 leads	runtime	lead ranking through intelligence report

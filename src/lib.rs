@@ -259,6 +259,8 @@ pub mod web_server;
 pub mod whoxy;
 pub mod wifi_radar;
 pub mod wigle;
+pub mod wikidata;
+pub mod wikidata_cli;
 pub mod wikipedia;
 pub mod x509;
 pub mod xlsx;
