@@ -1348,7 +1348,11 @@ mod tests {
                 .on(
                     ScanKind::Email,
                     "person@example.com",
-                    vec![domain, username],
+                    vec![
+                        ent(EntityKind::Email, "person@example.com", 0.99),
+                        domain,
+                        username,
+                    ],
                 )
                 .on(ScanKind::Exposure, "person@example.com", vec![]);
             let policy = RecursionPolicy {
