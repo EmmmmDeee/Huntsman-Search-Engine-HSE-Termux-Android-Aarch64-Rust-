@@ -25,6 +25,16 @@ use crate::source_outcome::SourceOutcomeKind;
 /// is [`HibpError::NotAnAnswer`]; any other status is the caller's to map, so a 404 "not found"
 /// still reaches it. Nothing the transport said is kept, since it can name the request.
 fn send(http: &dyn Transport, request: Request) -> Result<Response, HibpError> {
+    send_with(http, request, None)
+}
+
+/// [`send`] with `credential`, which [`crate::fetch::fetch`] puts on the request only while it
+/// goes to the credential's own origin.
+fn send_with(
+    http: &dyn Transport,
+    request: Request,
+    credential: Option<&crate::fetch::Credential>,
+) -> Result<Response, HibpError> {
     let transport = |kind| HibpError::Transport {
         message: "request failed".into(),
         kind,
@@ -36,7 +46,7 @@ fn send(http: &dyn Transport, request: Request) -> Result<Response, HibpError> {
     let fetched = crate::fetch::fetch(
         http,
         request,
-        None,
+        credential,
         &crate::fetch::FetchOptions::no_redirects(),
         "hibp",
         crate::clock::unix_now(),

@@ -270,6 +270,69 @@ fn library_code_never_writes_to_the_terminal() {
     );
 }
 
+/// Whether the tokens put a secret on a request themselves: a `header(..)` or
+/// `append_query_param(..)` call whose arguments read a secret with `expose`.
+fn attaches_a_secret(toks: &[String]) -> bool {
+    toks.windows(2).enumerate().any(|(start, w)| {
+        (w[0] == "header" || w[0] == "append_query_param")
+            && w[1] == "("
+            && call_reads_a_secret(&toks[start + 1..])
+    })
+}
+
+/// Whether the call whose `(` begins `toks` reads `expose` before its matching `)`.
+fn call_reads_a_secret(toks: &[String]) -> bool {
+    let mut depth = 0usize;
+    for token in toks {
+        match token.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+            }
+            "expose" => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The one module that puts a secret on a request: `fetch::Credential`, which sends it only to
+/// the origin it is bound to, strips it from every other hop and scrubs it from diagnostics.
+const SECRET_ATTACHER: [&str; 1] = ["src/fetch.rs"];
+
+#[test]
+fn only_the_fetch_credential_puts_a_secret_on_a_request() {
+    let found = offenders(&SECRET_ATTACHER, attaches_a_secret);
+    assert!(
+        found.is_empty(),
+        "production code sets a key on a request itself; pass a `fetch::Credential` built from \
+         an `AuthenticationAuthority` to `fetch` instead: {found:?}"
+    );
+}
+
+#[test]
+fn the_secret_rule_sees_a_header_or_query_key_and_nothing_else() {
+    let reads = |code: &str| attaches_a_secret(&production_tokens(code));
+    assert!(reads(
+        "fn f() { req.header(\"hibp-api-key\", key.expose()); }"
+    ));
+    assert!(reads(
+        "fn f() { req.header(NAME, format!(\"Bearer {}\", s.expose())); }"
+    ));
+    assert!(reads(
+        "fn f() { append_query_param(&url, \"key\", secret.expose()); }"
+    ));
+    assert!(!reads(
+        "fn f() { req.header(\"Accept\", \"application/json\"); let n = key.expose().len(); }"
+    ));
+    assert!(!reads(
+        "#[cfg(test)] mod tests { fn f() { req.header(\"k\", key.expose()); } }"
+    ));
+}
+
 #[test]
 fn library_code_never_ends_the_process() {
     let found = offenders(&PROCESS_BOUNDARY, ends_process);

@@ -142,7 +142,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         const empty = document.getElementById('sempty');
         const list = document.getElementById('slist');
         return spinner.hidden && (!empty.hidden || !list.hidden);
-      }, null, { timeout: 10000 }).catch(() => {});
+      }, null, { timeout: 10000 });
       const m = await page.evaluate(() => {
         const n = performance.getEntriesByType('navigation')[0], f = performance.getEntriesByName('first-contentful-paint')[0];
         return {

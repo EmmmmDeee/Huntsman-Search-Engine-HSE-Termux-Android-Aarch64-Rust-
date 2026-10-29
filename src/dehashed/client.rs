@@ -24,15 +24,19 @@ use thiserror::Error;
 use super::query::{Purpose, Selector};
 use super::types::{Entry, SearchResponse};
 use crate::clock;
-use crate::fetch::{FetchOptions, fetch};
+use crate::credential_origin::AuthenticationAuthority;
+use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::hibp::rate_limit::{DEFAULT_REQUESTS_PER_MINUTE, RateLimiter};
 use crate::http::{Request, Response, Transport};
 use crate::keys::{Keys, Secret};
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
 
-/// The only origin the key is ever sent to.
+/// The base of every request; its origin is the only one the key is ever sent to.
 pub const DEHASHED_API_BASE: &str = "https://api.dehashed.com/v2";
+/// The origin of [`DEHASHED_API_BASE`], as [`crate::http::origin_of`] writes it: the key's
+/// [`Credential`] is pinned to it.
+const KEY_ORIGIN: &str = "https://api.dehashed.com:443";
 /// Header that carries the API key. Redacted in `Debug` output by the HTTP layer.
 pub const API_KEY_HEADER: &str = "Dehashed-Api-Key";
 /// Environment variable holding the API key.
@@ -282,9 +286,10 @@ impl DehashedClient {
 
         let http_request = Request::post(format!("{DEHASHED_API_BASE}/search"), body)
             .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .header(API_KEY_HEADER, self.key.expose());
-        let (response, fetched) = send(self.http.as_ref(), http_request)?;
+            .header("Accept", "application/json");
+        let now_unix = clock::unix_now();
+        let credential = credential(self.key.clone(), now_unix)?;
+        let (response, fetched) = send(self.http.as_ref(), http_request, &credential, now_unix)?;
         let response_sha256 = hex32(&sha256(&response.body));
         let parsed = decode(&response, &fetched)?;
 
@@ -300,13 +305,27 @@ impl DehashedClient {
     }
 }
 
-/// One request through [`fetch`], redirects off, with the response and what the fetch made of
-/// it. A request the guarded egress refused before sending is [`DehashedError::Refused`] (fetch's
-/// `Err`); a request that was attempted but got no response is [`DehashedError::Transport`]
-/// carrying the fetch's cause; nothing the transport said is kept, since it can name the request.
+/// The operator's key as the [`Credential`] [`fetch`] sends in the [`API_KEY_HEADER`] header,
+/// only to [`KEY_ORIGIN`].
+fn credential(key: Secret, now_unix: u64) -> Result<Credential, DehashedError> {
+    AuthenticationAuthority::configured_slot("dehashed.com", API_KEY_ENV, now_unix)
+        .and_then(|authority| {
+            Credential::new(authority, key, AuthStyle::Header(API_KEY_HEADER.into()))
+        })
+        .map(|credential| credential.only_for_origin(KEY_ORIGIN))
+        .map_err(|_| DehashedError::Refused)
+}
+
+/// One request through [`fetch`] with the key, redirects off, with the response and what the
+/// fetch made of it. A request the guarded egress refused before sending is
+/// [`DehashedError::Refused`] (fetch's `Err`); a request that was attempted but got no response is
+/// [`DehashedError::Transport`] carrying the fetch's cause; nothing the transport said is kept,
+/// since it can name the request.
 fn send(
     http: &dyn Transport,
     request: Request,
+    credential: &Credential,
+    now_unix: u64,
 ) -> Result<(Response, SourceExecutionOutcome), DehashedError> {
     // `fetch` returns `Err` only when the request was refused before it was sent (egress policy
     // blocked, or the endpoint URL could not be parsed); every request actually attempted comes
@@ -314,10 +333,10 @@ fn send(
     let fetched = fetch(
         http,
         request,
-        None,
+        Some(credential),
         &FetchOptions::no_redirects(),
         "dehashed",
-        clock::unix_now(),
+        now_unix,
     )
     .map_err(|_| DehashedError::Refused)?;
     let Some(response) = fetched.response else {
