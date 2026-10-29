@@ -16,11 +16,34 @@ use crate::timefmt::parse_timestamp;
 
 pub const NR_CSV_VERSION: &str = "0.4.0";
 const HEADER: [&str; 28] = [
-    "deviceTime", "latitude", "longitude", "altitude", "speed", "accuracy",
-    "missionId", "recordNumber", "groupNumber", "mcc", "mnc", "plmn", "tac",
-    "nci", "narfcn", "pci", "ssRsrp", "ssRsrq", "ssSinr", "csiRsrp",
-    "csiRsrq", "csiSinr", "ta", "servingCell", "provider", "slot",
-    "deviceSerialNumber", "locationAge",
+    "deviceTime",
+    "latitude",
+    "longitude",
+    "altitude",
+    "speed",
+    "accuracy",
+    "missionId",
+    "recordNumber",
+    "groupNumber",
+    "mcc",
+    "mnc",
+    "plmn",
+    "tac",
+    "nci",
+    "narfcn",
+    "pci",
+    "ssRsrp",
+    "ssRsrq",
+    "ssSinr",
+    "csiRsrp",
+    "csiRsrq",
+    "csiSinr",
+    "ta",
+    "servingCell",
+    "provider",
+    "slot",
+    "deviceSerialNumber",
+    "locationAge",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,7 +109,9 @@ fn optional_measurement(
 
 fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsvRecord> {
     let (mcc, mnc) = column(row, columns, "plmn").split_once('-')?;
-    if mcc.len() != 3 || mcc == "000" || !(2..=3).contains(&mnc.len())
+    if mcc.len() != 3
+        || mcc == "000"
+        || !(2..=3).contains(&mnc.len())
         || !mcc.bytes().all(|b| b.is_ascii_digit())
         || !mnc.bytes().all(|b| b.is_ascii_digit())
     {
@@ -121,9 +146,9 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     };
     let timestamp = column(row, columns, "deviceTime");
     if !timestamp.contains('T')
-        || !timestamp.get(19..).is_some_and(|tail| {
-            tail.contains('+') || tail.contains('-') || tail.ends_with('Z')
-        })
+        || !timestamp
+            .get(19..)
+            .is_some_and(|tail| tail.contains('+') || tail.contains('-') || tail.ends_with('Z'))
     {
         return None;
     }
@@ -131,7 +156,8 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     let raw = serde_json::to_vec(&json!([{
         "type": "nr", "mcc": mcc, "mnc": mnc,
         "tac": tac, "nci": nci, "registered": serving, "pci": pci
-    }])).ok()?;
+    }]))
+    .ok()?;
     let mut scan = parse_cells(&raw).ok()?;
     let mut observation = scan.observations.pop()?;
     observation.freshness = "offline_unverified";
@@ -144,10 +170,13 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     let accuracy = column(row, columns, "accuracy").parse::<f64>().ok();
     let location = match (lat, lon, accuracy) {
         (Some(lat), Some(lon), Some(accuracy))
-            if lat.is_finite() && lon.is_finite()
+            if lat.is_finite()
+                && lon.is_finite()
                 && (-90.0..=90.0).contains(&lat)
                 && (-180.0..=180.0).contains(&lon)
-                && accuracy.is_finite() && accuracy > 0.0 && accuracy <= 100_000.0 =>
+                && accuracy.is_finite()
+                && accuracy > 0.0
+                && accuracy <= 100_000.0 =>
         {
             (Some(lat), Some(lon), Some(accuracy))
         }
@@ -213,12 +242,20 @@ pub fn parse_nr(bytes: &[u8]) -> Result<NrCsvReport, Error> {
     let mut rows = csv_rows(&text[offset..])?.into_iter();
     let header = rows.next().ok_or_else(|| invalid("missing header"))?;
     if header.len() != HEADER.len()
-        || !header.iter().zip(HEADER).all(|(actual, expected)| actual.as_str() == expected)
+        || !header
+            .iter()
+            .zip(HEADER)
+            .all(|(actual, expected)| actual.as_str() == expected)
     {
-        return Err(invalid("NR 0.4.0 requires the exact documented 28-column header"));
+        return Err(invalid(
+            "NR 0.4.0 requires the exact documented 28-column header",
+        ));
     }
-    let columns: BTreeMap<&str, usize> = header.iter().enumerate()
-        .map(|(index, name)| (name.as_str(), index)).collect();
+    let columns: BTreeMap<&str, usize> = header
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect();
     let mut observations = Vec::new();
     let mut rejected = 0;
     for row in rows {
@@ -234,7 +271,11 @@ pub fn parse_nr(bytes: &[u8]) -> Result<NrCsvReport, Error> {
         source: "unverified_network_survey_nr_csv_file",
         acquisition: "offline_replay_no_capture_authentication",
         csv_version: NR_CSV_VERSION,
-        status: if observations.is_empty() { "inconclusive" } else { "historical_unverified" },
+        status: if observations.is_empty() {
+            "inconclusive"
+        } else {
+            "historical_unverified"
+        },
         observed: observations.len(),
         rejected,
         observations,
@@ -254,9 +295,14 @@ pub fn render(report: &NrCsvReport) -> String {
             "nr\tid={}\ttime={}\tregistered={}\tgroup={}\tlocation_age_ms={}",
             escape_controls(&cell.sighting.network_id),
             escape_controls(cell.sighting.observed_at.as_deref().unwrap_or("unknown")),
-            cell.registered.map_or("unknown", |v| if v { "yes" } else { "no" }),
-            record.group_number.map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
-            record.location_age_ms.map_or_else(|| "unknown".to_owned(), |n| n.to_string())
+            cell.registered
+                .map_or("unknown", |v| if v { "yes" } else { "no" }),
+            record
+                .group_number
+                .map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
+            record
+                .location_age_ms
+                .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
         );
     }
     out
@@ -270,11 +316,36 @@ mod tests {
 
     fn row() -> String {
         [
-            "2025-10-10T13:58:27.603261-04:00", "37.7749", "-122.4194", "15", "0", "22",
-            "PRIVATE-MISSION", "1", "2", "310", "1", "310-01", "16777215",
-            "68719476735", "3279165", "1007", "-101.5", "-12", "20", "-110",
-            "-15", "10", "3846", "true", "Example", "0", "PRIVATE-SERIAL", "4916",
-        ].join(",")
+            "2025-10-10T13:58:27.603261-04:00",
+            "37.7749",
+            "-122.4194",
+            "15",
+            "0",
+            "22",
+            "PRIVATE-MISSION",
+            "1",
+            "2",
+            "310",
+            "1",
+            "310-01",
+            "16777215",
+            "68719476735",
+            "3279165",
+            "1007",
+            "-101.5",
+            "-12",
+            "20",
+            "-110",
+            "-15",
+            "10",
+            "3846",
+            "true",
+            "Example",
+            "0",
+            "PRIVATE-SERIAL",
+            "4916",
+        ]
+        .join(",")
     }
 
     #[test]
@@ -282,7 +353,10 @@ mod tests {
         let report = parse_nr(format!("{PREFIX}{}\n", row()).as_bytes()).unwrap();
         assert_eq!((report.observed, report.rejected), (1, 0));
         let record = &report.observations[0];
-        assert_eq!(record.observation.sighting.network_id, "nr:310-01-16777215-68719476735");
+        assert_eq!(
+            record.observation.sighting.network_id,
+            "nr:310-01-16777215-68719476735"
+        );
         assert_eq!(record.observation.sighting.signal_dbm, Some(-101.5));
         assert_eq!(record.observation.registered, Some(true));
         assert_eq!(record.observation.site, None);
