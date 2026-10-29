@@ -59,7 +59,7 @@ struct RecordResp {
 /// The fulltext-search envelope: `{data: [{type, id, attributes}, ...]}`.
 #[derive(Debug, Deserialize)]
 struct SearchResp {
-    #[serde(default)]
+    // A missing data collection is schema drift, not an observed empty registry.
     data: Vec<LeiRecord>,
 }
 
@@ -816,6 +816,13 @@ mod tests {
         let report = report_of(r#"{"data":[]}"#, "no such company anywhere");
         assert!(report.entities.is_empty());
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
+    }
+
+    #[test]
+    fn missing_search_data_is_schema_drift_not_a_clean_negative() {
+        let report = report_of(r#"{"meta":{"total":0}}"#, "no such company anywhere");
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
     }
 
     #[test]
