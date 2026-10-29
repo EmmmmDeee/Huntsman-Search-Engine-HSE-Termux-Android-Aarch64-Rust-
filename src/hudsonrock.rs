@@ -119,10 +119,11 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     if employees == 0 && users == 0 {
         return Ok(None);
     }
+    // Provider responses can contain nested infostealer records. Never persist the raw
+    // document: it may contain credentials, host identifiers or other private fields.
     let mut finding = Finding::new(format!("Hudson Rock: {employees} employees, {users} users"))
         .attr("employees", employees.to_string())
-        .attr("users", users.to_string())
-        .attr("raw_answer", text);
+        .attr("users", users.to_string());
     if let Some(stealers) = value.get("stealers").and_then(|v| v.as_array()) {
         finding = finding.attr("stealers", stealers.len().to_string());
     }
@@ -210,16 +211,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keeps_domain_aggregate_counts_and_raw_response() {
-        let body = br#"{"total_employees":5,"total_users":10,"stealers":[]}"#;
+    fn domain_aggregates_never_persist_nested_credentials() {
+        let body = br#"{"total_employees":5,"total_users":10,"stealers":[{"credentials":[{"password":"SENTINEL_PASSWORD_83","username":"private@example.test"}],"computer_name":"PRIVATE_HOST_83","ip":"203.0.113.83"}]}"#;
         let finding = decode(body).unwrap().unwrap();
         assert!(finding.summary.contains("5 employees"));
-        assert!(
-            finding
-                .attrs
-                .iter()
-                .any(|(k, v)| *k == "raw_answer" && v.contains("total_users"))
-        );
+        assert!(finding.attrs.iter().any(|(k, v)| *k == "employees" && v == "5"));
+        assert!(finding.attrs.iter().any(|(k, v)| *k == "users" && v == "10"));
+        assert!(finding.attrs.iter().any(|(k, v)| *k == "stealers" && v == "1"));
+        assert!(!finding.attrs.iter().any(|(k, _)| *k == "raw_answer"));
+        for secret in [
+            "SENTINEL_PASSWORD_83",
+            "private@example.test",
+            "PRIVATE_HOST_83",
+            "203.0.113.83",
+        ] {
+            assert!(!finding.summary.contains(secret));
+            assert!(!finding.attrs.iter().any(|(_, v)| v.contains(secret)));
+        }
     }
 
     #[test]
