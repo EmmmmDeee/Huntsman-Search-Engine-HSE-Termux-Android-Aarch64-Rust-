@@ -133,6 +133,7 @@ pub mod leads;
 pub mod leakix;
 pub mod ledger;
 pub mod lineage;
+pub mod lobsters;
 pub mod lookup_args;
 pub mod lookup_modules;
 pub mod lookup_report;

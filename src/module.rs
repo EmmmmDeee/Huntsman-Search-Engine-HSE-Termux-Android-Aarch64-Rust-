@@ -452,6 +452,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public crates.io account, its GitHub profile and its published crates' repository links",
     },
     ReachableModule {
+        name: "lobsters",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
+        description: "public Lobsters account, its profile and the GitHub handle it self-declares as a cross-platform lead",
+    },
+    ReachableModule {
         name: "bluesky_user",
         command: "username HANDLE",
         access: "keyless",
@@ -1614,6 +1623,7 @@ mod tests {
             crate::github_user::SRC,
             crate::npm_author::SRC,
             crate::crates_io::SRC,
+            crate::lobsters::SRC,
             crate::bluesky_user::SRC,
             crate::mastodon_user::SRC,
             crate::keybase::SRC,
