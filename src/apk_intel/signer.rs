@@ -551,7 +551,7 @@ fn signing_public_key(spki: &[u8], algorithm_id: u32) -> Option<&[u8]> {
 }
 
 /// Return the exact DER SubjectPublicKeyInfo from a well-formed X.509 certificate.
-fn certificate_spki(der: &[u8]) -> Option<&[u8]> {
+pub(super) fn certificate_spki(der: &[u8]) -> Option<&[u8]> {
     let outer = tlv(der, 0, der.len())?;
     if outer.tag != SEQUENCE || outer.end != der.len() {
         return None;
