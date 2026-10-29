@@ -34,7 +34,10 @@ pub struct RotationChain {
     pub certificates: Vec<RotationCertificate>,
 }
 
-fn parse_proof(bytes: &[u8], expected_last: &str) -> Result<Vec<RotationCertificate>, &'static str> {
+fn parse_proof(
+    bytes: &[u8],
+    expected_last: &str,
+) -> Result<Vec<RotationCertificate>, &'static str> {
     if bytes.len() < 4 || bytes.len() > MAX_PROOF_BYTES {
         return Err("malformed");
     }
@@ -67,15 +70,11 @@ fn parse_proof(bytes: &[u8], expected_last: &str) -> Result<Vec<RotationCertific
         }
         let (cert_start, cert_end) =
             signer::prefixed_one(bytes, signed_start, signed_end).ok_or("malformed")?;
-        if cert_end - cert_start > MAX_CERT_BYTES
-            || cert_end.checked_add(4) != Some(signed_end)
-        {
+        if cert_end - cert_start > MAX_CERT_BYTES || cert_end.checked_add(4) != Some(signed_end) {
             return Err("malformed");
         }
-        let signed_algorithm = u32::try_from(
-            signer::le32(bytes, cert_end).ok_or("malformed")?,
-        )
-        .map_err(|_| "malformed")?;
+        let signed_algorithm = u32::try_from(signer::le32(bytes, cert_end).ok_or("malformed")?)
+            .map_err(|_| "malformed")?;
         let cert_bytes = &bytes[cert_start..cert_end];
         let certificate = signer::certificate(cert_bytes, "rotation").ok_or("malformed")?;
         if !seen.insert(sha256(cert_bytes)) {
@@ -107,7 +106,11 @@ fn parse_proof(bytes: &[u8], expected_last: &str) -> Result<Vec<RotationCertific
         previous_algorithm = next_algorithm;
         at = end;
     }
-    if nodes.is_empty() || nodes.last().is_none_or(|last| last.certificate_sha256 != expected_last) {
+    if nodes.is_empty()
+        || nodes
+            .last()
+            .is_none_or(|last| last.certificate_sha256 != expected_last)
+    {
         return Err("signer_mismatch");
     }
     Ok(nodes)
@@ -276,7 +279,10 @@ mod tests {
         let mut corrupted = good.clone();
         *corrupted.last_mut().unwrap() ^= 1;
         assert_eq!(parse_proof(&corrupted, &last), Err("invalid_signature"));
-        assert_eq!(parse_proof(&good[..good.len() - 1], &last), Err("malformed"));
+        assert_eq!(
+            parse_proof(&good[..good.len() - 1], &last),
+            Err("malformed")
+        );
         let mut duplicate = 1_u32.to_le_bytes().to_vec();
         duplicate.extend(level(&old, 0, 0x0201, &[]));
         duplicate.extend(level(&old, 0x0201, 0, signature.as_ref()));
