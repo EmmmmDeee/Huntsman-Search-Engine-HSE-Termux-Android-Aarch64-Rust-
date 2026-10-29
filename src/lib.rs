@@ -100,6 +100,8 @@ pub mod gexf;
 pub mod github_repos;
 pub mod github_user;
 pub mod gitlab_user;
+pub mod gleif;
+pub mod gleif_cli;
 pub mod graph;
 pub mod graph_exec;
 pub mod gravatar;
