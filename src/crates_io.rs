@@ -303,7 +303,12 @@ fn build_entities(
 
 /// The confirmed account: its `Username`, the owner's display name as a `Person` when it reads as
 /// one, and the GitHub profile `Url` the account authenticates through. **Pure.**
-fn add_account(user: &CrateUser, crate_count: Option<usize>, scan_id: &str, entities: &mut Vec<Entity>) {
+fn add_account(
+    user: &CrateUser,
+    crate_count: Option<usize>,
+    scan_id: &str,
+    entities: &mut Vec<Entity>,
+) {
     let login = user.login.to_ascii_lowercase();
     let name = user
         .name
@@ -627,12 +632,29 @@ mod tests {
         let spoof = r#"{"user":{"id":3618,"login":"dtolnay","name":"David Tolnay","url":"https://github.com/someone-else"}}"#;
         let report = report_of(spoof, r#"{"crates":[]}"#, "dtolnay");
         assert!(has(&report, &EntityKind::Username, "dtolnay"));
-        assert!(!has(&report, &EntityKind::Url, "https://github.com/someone-else"));
-        let account = report.entities.iter().find(|e| e.kind == EntityKind::Username).expect("account");
+        assert!(!has(
+            &report,
+            &EntityKind::Url,
+            "https://github.com/someone-else"
+        ));
+        let account = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username)
+            .expect("account");
         assert!(!account.evidence[0].attributes.contains_key("github_url"));
-        assert!(!is_confirmed_github_profile("https://example.org/dtolnay", "dtolnay"));
-        assert!(!is_confirmed_github_profile("https://github.com/dtolnay.evil.org", "dtolnay"));
-        assert!(is_confirmed_github_profile("https://github.com/dtolnay", "dtolnay"));
+        assert!(!is_confirmed_github_profile(
+            "https://example.org/dtolnay",
+            "dtolnay"
+        ));
+        assert!(!is_confirmed_github_profile(
+            "https://github.com/dtolnay.evil.org",
+            "dtolnay"
+        ));
+        assert!(is_confirmed_github_profile(
+            "https://github.com/dtolnay",
+            "dtolnay"
+        ));
     }
 
     #[test]
@@ -640,14 +662,24 @@ mod tests {
         for body in ["not json", r#"{}"#] {
             let report = report_of(USER, body, "dtolnay");
             assert!(has(&report, &EntityKind::Username, "dtolnay"));
-            let account = report.entities.iter().find(|e| e.kind == EntityKind::Username).expect("account");
+            let account = report
+                .entities
+                .iter()
+                .find(|e| e.kind == EntityKind::Username)
+                .expect("account");
             let attrs = &account.evidence[0].attributes;
-            assert_eq!(attrs.get("crate_listing").map(String::as_str), Some("unavailable"));
+            assert_eq!(
+                attrs.get("crate_listing").map(String::as_str),
+                Some("unavailable")
+            );
             assert!(!attrs.contains_key("crate_count"));
             assert!(!attrs.contains_key("crate_page_count"));
         }
         assert!(github_owner("https://github.com/rust-lang").is_none());
-        assert_eq!(github_owner("https://github.com/rust-lang/rust"), Some("rust-lang".to_owned()));
+        assert_eq!(
+            github_owner("https://github.com/rust-lang/rust"),
+            Some("rust-lang".to_owned())
+        );
     }
 
     #[test]
