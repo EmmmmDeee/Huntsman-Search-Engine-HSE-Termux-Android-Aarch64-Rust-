@@ -105,7 +105,7 @@ fn optional_text(row: &[String], columns: &BTreeMap<&str, usize>, name: &str, ma
     if raw.len() > max_bytes {
         return None;
     }
-    (!raw.is_empty()).then(|| raw.to_owned()).map_or(Some(None), |value| Some(Some(value)))
+    Some((!raw.is_empty()).then(|| raw.to_owned()))
 }
 
 fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<WifiCsvRecord> {
@@ -221,7 +221,7 @@ pub fn parse_wifi(bytes: &[u8]) -> Result<WifiCsvReport, Error> {
     let mut rows = csv_rows(&text[offset..])?.into_iter();
     let header = rows.next().ok_or_else(|| invalid("missing header"))?;
     if header.len() != HEADER.len()
-        || !header.iter().zip(HEADER).all(|(actual, expected)| actual == expected)
+        || !header.iter().zip(HEADER).all(|(actual, expected)| actual.as_str() == expected)
     {
         return Err(invalid("Wi-Fi 0.4.0 requires the exact documented 30-column header"));
     }
