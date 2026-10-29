@@ -281,8 +281,9 @@ mod tests {
         assert_eq!(attr("corporate_services"), Some("2"));
         assert_eq!(attr("user_services"), Some("7"));
         assert_eq!(attr("stealer_families"), Some("RedLine,Raccoon"));
-        // The scrub: no stolen credential, login, machine name or host address survives anywhere.
-        for secret in [
+        // The scrub: none of these planted markers (a password, login, machine name or host
+        // address the provider record would carry) survives into the finding anywhere.
+        for planted in [
             "SUPERSECRET123",
             "hunter2",
             "victim@example.com",
@@ -291,9 +292,9 @@ mod tests {
             "portal.example.com",
         ] {
             assert!(
-                !finding.summary.contains(secret)
-                    && !finding.attrs.iter().any(|(_, v)| v.contains(secret)),
-                "leaked {secret}: {finding:?}"
+                !finding.summary.contains(planted)
+                    && !finding.attrs.iter().any(|(_, v)| v.contains(planted)),
+                "leaked {planted}: {finding:?}"
             );
         }
     }
