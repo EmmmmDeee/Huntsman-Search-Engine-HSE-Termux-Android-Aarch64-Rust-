@@ -1,7 +1,7 @@
 //! End-to-end front-end for `huntsman-recon username`.
 //!
 //! Derives deterministic handle variants and queries the keyless public GitHub, GitLab, Bluesky, Keybase
-//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
+//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
 //! profile source answered, the lookup ends from its rows through
 //! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
 //! 77), otherwise no usable response (exit 69). The handle's own derived variants are not a
@@ -18,6 +18,7 @@ use crate::error::Error;
 use crate::github_repos;
 use crate::github_user;
 use crate::gitlab_user;
+use crate::hacker_news;
 use crate::http::Transport;
 use crate::keybase;
 use crate::keys::Keys;
@@ -34,7 +35,7 @@ use crate::wikipedia;
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive handle variants and query public GitHub profiles and repositories, GitLab, Bluesky, Keybase, Mastodon, npm registry authorship, crates.io crate ownership, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
+Derive handle variants and query public GitHub profiles and repositories, GitLab, Bluesky, Keybase, Mastodon, npm registry authorship, crates.io crate ownership, Hacker News accounts, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
 
 /// One source's answer: what it found and its outcome, or the refusal that stopped it.
 type Found = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
@@ -74,7 +75,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     name: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 10] {
+) -> [(&'static str, Job<'a, Found>); 11] {
     [
         (
             github_user::SRC,
@@ -143,6 +144,13 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
             crates_io::SRC,
             Box::new(move || {
                 crates_io::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            hacker_news::SRC,
+            Box::new(move || {
+                hacker_news::lookup(transport, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -310,6 +318,7 @@ mod tests {
     const TIKTOK: &str = "www.tiktok.com";
     const NPM: &str = "registry.npmjs.org";
     const CRATES_IO: &str = "crates.io";
+    const HACKER_NEWS: &str = "hacker-news.firebaseio.com";
 
     /// Answers each source by its host, as the sources run at once and in no fixed order; a host
     /// with no reply answers nothing, which no source may take for absence.
@@ -550,6 +559,10 @@ mod tests {
                     r#"{"user":{"id":1,"login":"max","url":"https://github.com/max"}}"#,
                 ),
             ),
+            (
+                HACKER_NEWS,
+                response(200, r#"{"id":"max","created":1160418092,"karma":42}"#),
+            ),
         ]);
         for _ in 0..8 {
             let UsernameRun::Printed { report, .. } = run(&fake, &Keys::default(), "max", 1) else {
@@ -568,13 +581,14 @@ mod tests {
                     mastodon_user::SRC,
                     tiktok_public_contact::SRC,
                     npm_author::SRC,
-                    crates_io::SRC
+                    crates_io::SRC,
+                    hacker_news::SRC
                 ]
             );
         }
     }
 
-    /// Each source waits on its own server, so ten that take 200 ms each answer in about 200 ms,
+    /// Each source waits on its own server, so eleven that take 200 ms each answer in about 200 ms,
     /// not the second they took one after another.
     #[test]
     fn the_sources_run_at_once() {
@@ -607,16 +621,20 @@ mod tests {
                     r#"{"user":{"id":2,"login":"maxslow","url":"https://github.com/maxslow"}}"#,
                 ),
             ),
+            (
+                HACKER_NEWS,
+                response(200, r#"{"id":"maxslow","created":1160418092,"karma":7}"#),
+            ),
         ]));
         let started = std::time::Instant::now();
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
         let took = started.elapsed();
-        assert_eq!(report.outcomes.len(), 10);
+        assert_eq!(report.outcomes.len(), 11);
         assert!(
             took < std::time::Duration::from_millis(800),
-            "ten 200 ms sources took {took:?}"
+            "eleven 200 ms sources took {took:?}"
         );
     }
 
