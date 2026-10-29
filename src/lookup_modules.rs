@@ -91,6 +91,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             crate::mastodon_user::SRC,
             tiktok_public_contact::SRC,
             crate::npm_author::SRC,
+            crate::crates_io::SRC,
             seeknow_collector::COLLECTOR_ID,
             exposure_cli::STOLEN_TAX_SOURCE,
             oathnet::SOURCE,
