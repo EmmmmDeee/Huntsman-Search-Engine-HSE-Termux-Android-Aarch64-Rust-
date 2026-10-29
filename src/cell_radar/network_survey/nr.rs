@@ -101,12 +101,9 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     }
     let tac = cell_number(row, columns, "tac", 16_777_215)?;
     let nci = cell_number(row, columns, "nci", 68_719_476_735)?;
-    let narfcn = optional_number(row, columns, "narfcn", 3_279_165)?
-        .map(|value| u32::try_from(value).ok()).transpose_option()?;
-    let pci = optional_number(row, columns, "pci", 1007)?
-        .map(|value| u32::try_from(value).ok()).transpose_option()?;
-    let timing_advance = optional_number(row, columns, "ta", 3846)?
-        .map(|value| u32::try_from(value).ok()).transpose_option()?;
+    let narfcn = optional_u32(row, columns, "narfcn", 3_279_165)?;
+    let pci = optional_u32(row, columns, "pci", 1007)?;
+    let timing_advance = optional_u32(row, columns, "ta", 3846)?;
     let record_number = optional_number(row, columns, "recordNumber", u64::MAX)?;
     let group_number = optional_number(row, columns, "groupNumber", u64::MAX)?;
     let location_age_ms = optional_number(row, columns, "locationAge", 86_400_000)?;
@@ -174,13 +171,15 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     })
 }
 
-// A small helper keeps optional integer conversion explicit without unsafe casts.
-trait OptionTranspose<T> {
-    fn transpose_option(self) -> Option<Option<T>>;
-}
-impl<T> OptionTranspose<T> for Option<Option<T>> {
-    fn transpose_option(self) -> Option<Option<T>> {
-        self
+fn optional_u32(
+    row: &[String],
+    columns: &BTreeMap<&str, usize>,
+    name: &str,
+    max: u64,
+) -> Option<Option<u32>> {
+    match optional_number(row, columns, name, max)? {
+        Some(value) => Some(Some(u32::try_from(value).ok()?)),
+        None => Some(None),
     }
 }
 
@@ -214,7 +213,7 @@ pub fn parse_nr(bytes: &[u8]) -> Result<NrCsvReport, Error> {
     let mut rows = csv_rows(&text[offset..])?.into_iter();
     let header = rows.next().ok_or_else(|| invalid("missing header"))?;
     if header.len() != HEADER.len()
-        || !header.iter().zip(HEADER).all(|(actual, expected)| actual == expected)
+        || !header.iter().zip(HEADER).all(|(actual, expected)| actual.as_str() == expected)
     {
         return Err(invalid("NR 0.4.0 requires the exact documented 28-column header"));
     }
