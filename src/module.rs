@@ -680,12 +680,12 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "hudsonrock",
-        command: "domain DOMAIN",
+        command: "domain DOMAIN | email ADDRESS",
         access: "keyless",
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1589.002"],
-        description: "Hudson Rock Cavalier domain-level infostealer aggregates (keyless)",
+        description: "Hudson Rock Cavalier infostealer intelligence (keyless): domain-level aggregates and one address's infostealer records as non-credential breach metadata",
     },
     ReachableModule {
         name: "ip_cli",
