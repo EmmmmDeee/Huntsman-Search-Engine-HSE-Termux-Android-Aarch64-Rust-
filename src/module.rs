@@ -506,6 +506,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public App Store apps for one keyword, with seller and bundle, from Apple's iTunes Search API",
     },
     ReachableModule {
+        name: "wikidata",
+        command: "wikidata QUERY",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1591"],
+        description: "public Wikidata item for a query, its full structured record, and website, coordinate and external-identifier pivots, from Wikidata's keyless search and REST APIs",
+    },
+    ReachableModule {
         name: "nominatim",
         command: "geocode PLACE|LAT,LON",
         access: "keyless",

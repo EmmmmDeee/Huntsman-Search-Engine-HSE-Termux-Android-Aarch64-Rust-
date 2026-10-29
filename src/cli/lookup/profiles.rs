@@ -50,6 +50,7 @@ use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::threat_feeds::{self, Feeds};
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::wigle;
+use huntsman_recon::wikidata_cli::{self, WIKIDATA_USAGE, WikidataArgs};
 
 /// One finished lookup: the rendered report, what it is made of, and how to save it.
 pub(in crate::cli) struct Collected {
@@ -713,6 +714,25 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
     match source_report(itunes_cli::run(
         &transport,
         &parsed.keyword,
+        clock::unix_now(),
+    )) {
+        Ok((text, _)) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+pub(in crate::cli) fn wikidata_cmd(args: &[String]) -> ExitCode {
+    let parsed = match WikidataArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, WIKIDATA_USAGE),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match source_report(wikidata_cli::run(
+        &transport,
+        &parsed.query,
         clock::unix_now(),
     )) {
         Ok((text, _)) => {
