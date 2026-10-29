@@ -51,6 +51,27 @@ fn root_installer_changes_trigger_release_dry_run_on_pull_requests() {
 }
 
 #[test]
+fn lifecycle_publication_changes_trigger_release_dry_run_on_pull_requests() {
+    let wf = release();
+    let paths = wf
+        .split_once("  pull_request:\n    paths:\n")
+        .expect("release must have pull_request path filters")
+        .1
+        .split_once("\npermissions:")
+        .expect("pull_request paths must precede permissions")
+        .0;
+    for required in [
+        "      - \"scripts/lifecycle.sh\"",
+        "      - \"tests/lifecycle_sync.rs\"",
+    ] {
+        assert!(
+            paths.lines().any(|line| line == required),
+            "lifecycle publication changes must trigger release PR dry-run: {required:?}"
+        );
+    }
+}
+
+#[test]
 fn main_pushes_build_and_current_head_publishes_main_channel_pre_releases_only() {
     let wf = release();
     for required in [
