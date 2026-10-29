@@ -706,7 +706,9 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     let mut certificates: Vec<Certificate> = Vec::new();
     for (scheme, value) in &archive.signing_values {
         certificates.extend(signer::signing_block(value, scheme));
-        analysis.sdk_signers.extend(signer::sdk_signers(value, scheme));
+        analysis
+            .sdk_signers
+            .extend(signer::sdk_signers(value, scheme));
     }
     for member in &archive.v1 {
         if let Some(bytes) = read(member, MAX_APK_SIGNATURE_FILE_BYTES, &mut analysis) {
@@ -1669,7 +1671,10 @@ mod tests {
         assert_eq!(analysis.signers[0].scheme, "v3");
         assert_eq!(analysis.sdk_signers.len(), 1);
         assert_eq!(
-            (analysis.sdk_signers[0].min_sdk, analysis.sdk_signers[0].max_sdk),
+            (
+                analysis.sdk_signers[0].min_sdk,
+                analysis.sdk_signers[0].max_sdk
+            ),
             (28, 35)
         );
         let report = run(&bytes, "sdk-signer-fixture.apk", 100).unwrap();
