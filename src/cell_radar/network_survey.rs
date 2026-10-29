@@ -104,7 +104,12 @@ fn csv_rows(input: &str) -> Result<Vec<Vec<String>>, Error> {
     Ok(rows)
 }
 
-fn cell_number(row: &[String], columns: &BTreeMap<&str, usize>, name: &str, max: u64) -> Option<u64> {
+fn cell_number(
+    row: &[String],
+    columns: &BTreeMap<&str, usize>,
+    name: &str,
+    max: u64,
+) -> Option<u64> {
     let value = columns.get(name).and_then(|index| row.get(*index))?;
     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -163,7 +168,8 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<LteCs
         "type": "lte", "mcc": mcc, "mnc": mnc,
         "tac": tac, "ci": eci, "registered": serving,
         "pci": pci, "timing_advance": ta
-    }])).ok()?;
+    }]))
+    .ok()?;
     let mut scan = parse_cells(&raw).ok()?;
     let mut observation = scan.observations.pop()?;
     observation.freshness = "offline_unverified";
@@ -242,9 +248,20 @@ pub fn parse_lte(bytes: &[u8]) -> Result<LteCsvReport, Error> {
         }
     }
     for required in [
-        "deviceTime", "plmn", "tac", "eci", "pci", "rsrp", "ta",
-        "servingCell", "recordNumber", "groupNumber", "latitude",
-        "longitude", "accuracy", "locationAge",
+        "deviceTime",
+        "plmn",
+        "tac",
+        "eci",
+        "pci",
+        "rsrp",
+        "ta",
+        "servingCell",
+        "recordNumber",
+        "groupNumber",
+        "latitude",
+        "longitude",
+        "accuracy",
+        "locationAge",
     ] {
         if !columns.contains_key(required) {
             return Err(invalid("missing required LTE column"));
@@ -267,7 +284,11 @@ pub fn parse_lte(bytes: &[u8]) -> Result<LteCsvReport, Error> {
         source: "unverified_network_survey_csv_file",
         acquisition: "offline_replay_no_capture_authentication",
         csv_version: CSV_VERSION,
-        status: if observations.is_empty() { "inconclusive" } else { "historical_unverified" },
+        status: if observations.is_empty() {
+            "inconclusive"
+        } else {
+            "historical_unverified"
+        },
         observed: observations.len(),
         rejected,
         observations,
@@ -287,9 +308,14 @@ pub fn render(report: &LteCsvReport) -> String {
             "lte\tid={}\ttime={}\tregistered={}\tgroup={}\tlocation_age_ms={}",
             escape_controls(&cell.sighting.network_id),
             escape_controls(cell.sighting.observed_at.as_deref().unwrap_or("unknown")),
-            cell.registered.map_or("unknown", |v| if v { "yes" } else { "no" }),
-            record.group_number.map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
-            record.location_age_ms.map_or_else(|| "unknown".to_owned(), |n| n.to_string())
+            cell.registered
+                .map_or("unknown", |v| if v { "yes" } else { "no" }),
+            record
+                .group_number
+                .map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
+            record
+                .location_age_ms
+                .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
         );
     }
     out
@@ -303,11 +329,16 @@ mod tests {
 
     #[test]
     fn preserves_plmn_time_and_location_uncertainty_without_device_serial() {
-        let data = format!("{HEADER}2025-10-10T13:58:27.603261-04:00,37.7749,-122.4194,22,1,2,310-01,12345,12345678,36,-112.0,39,true,4916,SECRET\n");
+        let data = format!(
+            "{HEADER}2025-10-10T13:58:27.603261-04:00,37.7749,-122.4194,22,1,2,310-01,12345,12345678,36,-112.0,39,true,4916,SECRET\n"
+        );
         let report = parse_lte(data.as_bytes()).unwrap();
         assert_eq!((report.observed, report.rejected), (1, 0));
         let row = &report.observations[0];
-        assert_eq!(row.observation.sighting.network_id, "lte:310-01-12345-12345678");
+        assert_eq!(
+            row.observation.sighting.network_id,
+            "lte:310-01-12345-12345678"
+        );
         assert_eq!(row.observation.sighting.signal_dbm, Some(-112.0));
         assert_eq!(row.observation.registered, Some(true));
         assert_eq!(row.location_age_ms, Some(4916));
@@ -319,18 +350,41 @@ mod tests {
 
     #[test]
     fn malformed_and_unsupported_records_fail_closed() {
-        let valid = format!("{HEADER}2025-10-10T13:58:27Z,1,2,5,1,1,310-01,1,2,3,-110,0,false,100,x\n");
+        let valid =
+            format!("{HEADER}2025-10-10T13:58:27Z,1,2,5,1,1,310-01,1,2,3,-110,0,false,100,x\n");
         assert_eq!(parse_lte(valid.as_bytes()).unwrap().observed, 1);
         assert!(parse_lte(valid.replace("0.5.0", "0.6.0").as_bytes()).is_err());
-        assert!(parse_lte(valid.replace("310-01", "310-1").as_bytes()).unwrap().observations.is_empty());
-        assert!(parse_lte(valid.replace(",3,-110", ",504,-110").as_bytes()).unwrap().observations.is_empty());
-        assert!(parse_lte(valid.replace(",1,2,3,", ",1,2,3,").replace("false", "maybe").as_bytes()).unwrap().observations.is_empty());
+        assert!(
+            parse_lte(valid.replace("310-01", "310-1").as_bytes())
+                .unwrap()
+                .observations
+                .is_empty()
+        );
+        assert!(
+            parse_lte(valid.replace(",3,-110", ",504,-110").as_bytes())
+                .unwrap()
+                .observations
+                .is_empty()
+        );
+        assert!(
+            parse_lte(
+                valid
+                    .replace(",1,2,3,", ",1,2,3,")
+                    .replace("false", "maybe")
+                    .as_bytes()
+            )
+            .unwrap()
+            .observations
+            .is_empty()
+        );
         assert!(parse_lte(b"# CSV Version=0.5.0\na,b\n\"unterminated").is_err());
     }
 
     #[test]
     fn quoted_csv_fields_and_oversize_inputs_are_bounded() {
-        let data = format!("{HEADER}2025-10-10T13:58:27Z,1,2,5,1,1,310-01,1,2,3,-110,0,false,100,\"a,\"\"b\"\"\nline\"\n");
+        let data = format!(
+            "{HEADER}2025-10-10T13:58:27Z,1,2,5,1,1,310-01,1,2,3,-110,0,false,100,\"a,\"\"b\"\"\nline\"\n"
+        );
         assert_eq!(parse_lte(data.as_bytes()).unwrap().observed, 1);
         assert!(parse_lte(&vec![b'x'; MAX_SURVEY_CSV_BYTES as usize + 1]).is_err());
     }
