@@ -25,6 +25,7 @@ use huntsman_recon::exif::{self, EXIF_USAGE, ExifArgs};
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::gleif_cli::{self, GLEIF_USAGE, GleifArgs};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs};
@@ -735,6 +736,21 @@ pub(in crate::cli) fn wikidata_cmd(args: &[String]) -> ExitCode {
         &parsed.query,
         clock::unix_now(),
     )) {
+        Ok((text, _)) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+pub(in crate::cli) fn gleif_cmd(args: &[String]) -> ExitCode {
+    let parsed = match GleifArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, GLEIF_USAGE),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match source_report(gleif_cli::run(&transport, &parsed.query, clock::unix_now())) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS

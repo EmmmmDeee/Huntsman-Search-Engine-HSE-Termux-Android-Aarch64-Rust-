@@ -533,6 +533,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Wikidata item for a query, its full structured record, and website, coordinate and external-identifier pivots, from Wikidata's keyless search and REST APIs",
     },
     ReachableModule {
+        name: "gleif_lei",
+        command: "gleif LEI|NAME",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1591"],
+        description: "public GLEIF legal-entity record for an LEI or name: the registered organisation, its legal and headquarters addresses, and an Australian entity's checksum-validated ACN, from GLEIF's keyless public API",
+    },
+    ReachableModule {
         name: "nominatim",
         command: "geocode PLACE|LAT,LON",
         access: "keyless",

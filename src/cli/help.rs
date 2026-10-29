@@ -61,6 +61,7 @@ const GEO_HELP: &str =
 const FIX_HELP: &str = "fix [--json] [--probe] [--bind ADDR]\nThe same as doctor --fix: run every doctor check, make each repair that can be undone, then check again. It creates ~/.huntsman (mode 700) and an empty ~/.huntsman.env (mode 600) when they are missing, tightens loose permissions, re-runs the install acceptance before recording this binary as installed (the old record is kept as installed-revision.bak-TIME), and removes the Rust build cache only when Cargo tagged it and it is stale or the disk is nearly full. It never deletes a ledger or scan data and never writes or prints a key. Exit 0 when nothing fails afterwards, 78 when something still does.";
 
 /// The help text of a dispatched command, or `None` for a word that is not one.
+#[allow(clippy::too_many_lines)] // one match arm per command; a flat help dispatch stays clearest unsplit
 pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {
         "check" => {
@@ -107,6 +108,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "crypto" => huntsman_recon::crypto_cli::CRYPTO_HELP,
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
         "wikidata" => huntsman_recon::wikidata_cli::WIKIDATA_HELP,
+        "gleif" => huntsman_recon::gleif_cli::GLEIF_HELP,
         "geocode" => huntsman_recon::nominatim_cli::GEOCODE_HELP,
         "exif" => huntsman_recon::exif::EXIF_HELP,
         "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,
