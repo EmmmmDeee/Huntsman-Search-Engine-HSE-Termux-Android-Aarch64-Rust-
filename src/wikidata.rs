@@ -2,10 +2,13 @@
 //!
 //! One lookup resolves a free-text query to a Wikidata item (its `wbsearchentities` top match) or
 //! takes a `Q`-number directly, then reads that item's statements from the keyless REST API
-//! (`/w/rest.php/wikibase/v1/entities/items/{QID}`). The item becomes a [`EntityKind::Person`]
-//! (when it is an instance of human, `P31 = Q5`) or an [`EntityKind::Organisation`], and **every**
-//! statement property Wikidata returns is kept as evidence -- nothing is dropped -- so the full
-//! structured record travels with the finding.
+//! (`/w/rest.php/wikibase/v1/entities/items/{QID}`). The item becomes a [`EntityKind::Person`] when
+//! it is an instance of human (`P31 = Q5`), an [`EntityKind::Organisation`] only when it is an
+//! instance of a known organisation type, and otherwise [`EntityKind::Other`]: an organisation is
+//! asserted on positive type evidence, never assumed as a default. A 200 response that is not the
+//! item document asked for -- an array, a different id, or a non-item envelope -- is source-schema
+//! drift, never a positive entity. **Every** statement property Wikidata returns is kept as
+//! evidence -- nothing is dropped -- so the full structured record travels with the finding.
 //!
 //! A curated set of statements also becomes its own pivot entity, so a Wikidata lookup seeds the
 //! rest of the engine: the official website (`P856`) is a [`EntityKind::Domain`], a coordinate
@@ -24,7 +27,7 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{DEFAULT_USER_AGENT, Request, Transport, percent_encode_unreserved};
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE: &str = "wikidata";
 const PUBLIC_BASE: &str = "https://www.wikidata.org";
@@ -167,9 +170,33 @@ const PROPERTIES: &[Property] = &[
     },
 ];
 
-/// The property whose value classifies the item as a person: instance of (`P31`) human (`Q5`).
+/// The property whose value classifies the item: instance of (`P31`). A human (`Q5`) is a person;
+/// a known organisation type is an organisation; anything else is [`EntityKind::Other`].
 const INSTANCE_OF: &str = "P31";
 const HUMAN: &str = "Q5";
+
+/// `P31` values that positively evidence an organisation. The REST item endpoint returns an item's
+/// own `instance_of` statements but not the subclass-of (`P279`) graph, so classification matches
+/// against this curated set of common organisation types rather than walking the hierarchy. An
+/// item whose `instance_of` is none of these -- a place, a work, a taxon, an event, or a record
+/// with no `P31` at all -- is [`EntityKind::Other`], never defaulted to an organisation. Each QID
+/// is verified against Wikidata; the comment is its English label.
+const ORGANISATION_TYPES: &[&str] = &[
+    "Q43229",   // organization
+    "Q4830453", // business
+    "Q783794",  // company
+    "Q891723",  // public company
+    "Q6881511", // enterprise
+    "Q163740",  // nonprofit organization
+    "Q79913",   // non-governmental organization
+    "Q7278",    // political party
+    "Q3918",    // university
+    "Q2385804", // educational institution
+    "Q327333",  // government agency
+    "Q484652",  // international organization
+    "Q157031",  // foundation
+    "Q43702",   // federation
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
@@ -343,7 +370,7 @@ fn resolve<T: Transport + ?Sized>(
 }
 
 /// Turn one fetched item response into a report; `Err` is the outcome of a response that was not a
-/// readable item document. **Pure.**
+/// readable item document for the requested `qid`. **Pure.**
 fn interpret(
     fetched: &Fetched,
     qid: &str,
@@ -354,6 +381,18 @@ fn interpret(
     let response = whole_response(fetched, "Wikidata item")?;
     answer(fetched, "Wikidata item")?;
     let item: Value = decode_json(response, SOURCE, now_unix, "Wikidata item")?;
+    if !is_item_for(&item, qid) {
+        return Err(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            format!(
+                "Wikidata item response is not item {qid}: a 200 that is not an item envelope, or \
+                 carries a different id, is not evidence for {qid}"
+            ),
+        ));
+    }
     Ok(decode(
         &item,
         qid,
@@ -362,6 +401,19 @@ fn interpret(
         now_unix,
         response.status,
     ))
+}
+
+/// Whether `item` is the REST item document asked for: a JSON object whose `type` is `"item"` and
+/// whose `id` is `qid` (case-insensitively). A 200 response is not proof on its own -- an array, a
+/// non-item envelope, a missing id, or a different item's id would otherwise be attributed to the
+/// requested `qid` and fabricate a finding -- so a mismatch is schema drift, never a positive
+/// entity. **Pure.**
+fn is_item_for(item: &Value, qid: &str) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("item")
+        && item
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.eq_ignore_ascii_case(qid))
 }
 
 /// The best value of a `{lang: "text"}` map for an English-reading operator: English or an
@@ -449,19 +501,18 @@ fn decode(
 ) -> Report {
     let statements = item.get("statements").and_then(Value::as_object);
     let instance_of = values(statements, INSTANCE_OF);
-    let is_person = instance_of.iter().any(|q| q == HUMAN);
     let label = search_label
         .map(str::to_owned)
         .or_else(|| best_language(item.get("labels")))
         .unwrap_or_else(|| qid.to_owned());
     let description = best_language(item.get("descriptions"));
 
-    let kind = if is_person {
-        EntityKind::Person
-    } else {
-        EntityKind::Organisation
+    let kind = classify(&instance_of);
+    let what = match &kind {
+        EntityKind::Person => "person",
+        EntityKind::Organisation => "organisation",
+        _ => "subject of an unstated type",
     };
-    let what = if is_person { "person" } else { "organisation" };
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, scan_id),
         format!(
@@ -544,6 +595,24 @@ fn decode(
     let outcome =
         SourceExecutionOutcome::success(SOURCE, now_unix, entities.len()).with_http_status(status);
     Report { entities, outcome }
+}
+
+/// Classify an item from its `instance_of` (`P31`) values: a human (`Q5`) is an
+/// [`EntityKind::Person`]; an instance of a known organisation type ([`ORGANISATION_TYPES`]) is an
+/// [`EntityKind::Organisation`]; everything else -- a place, a work, a taxon, a record with no
+/// `P31` -- is [`EntityKind::Other`]. An organisation is asserted only on positive type evidence,
+/// never as a fallback, so the engine never invents an organisational classification. **Pure.**
+fn classify(instance_of: &[String]) -> EntityKind {
+    if instance_of.iter().any(|q| q == HUMAN) {
+        EntityKind::Person
+    } else if instance_of
+        .iter()
+        .any(|q| ORGANISATION_TYPES.contains(&q.as_str()))
+    {
+        EntityKind::Organisation
+    } else {
+        EntityKind::Other
+    }
 }
 
 /// Add the pivot entity (or entities) a curated property's value seeds. **Pure.**
@@ -701,10 +770,56 @@ mod tests {
     }
 
     #[test]
-    fn a_non_human_item_is_an_organisation() {
+    fn a_known_organisation_type_is_an_organisation() {
+        // Q4830453 is "business": positive organisation type evidence.
         let org = r#"{"type":"item","id":"Q1","labels":{"en":"Example Org"},"statements":{"P31":[{"value":{"type":"value","content":"Q4830453"}}]}}"#;
         let report = report_of(org, "Q1");
         entity(&report, &EntityKind::Organisation, "Example Org");
+    }
+
+    #[test]
+    fn a_non_organisation_type_or_missing_instance_of_is_other_never_an_organisation() {
+        // A place (Q515 city), a work (Q11424 film), a taxon (Q16521) and a record with no P31 at
+        // all must never be defaulted to an organisation: each is EntityKind::Other. Classifying
+        // any of these as an organisation would fabricate a classification Wikidata did not state.
+        let cases = [
+            (
+                "a city",
+                "Q2",
+                r#"{"type":"item","id":"Q2","labels":{"en":"Example City"},"statements":{"P31":[{"value":{"type":"value","content":"Q515"}}]}}"#,
+                "Example City",
+            ),
+            (
+                "a film",
+                "Q3",
+                r#"{"type":"item","id":"Q3","labels":{"en":"Example Film"},"statements":{"P31":[{"value":{"type":"value","content":"Q11424"}}]}}"#,
+                "Example Film",
+            ),
+            (
+                "a taxon",
+                "Q4",
+                r#"{"type":"item","id":"Q4","labels":{"en":"Examplaceae"},"statements":{"P31":[{"value":{"type":"value","content":"Q16521"}}]}}"#,
+                "Examplaceae",
+            ),
+            (
+                "no instance_of",
+                "Q6",
+                r#"{"type":"item","id":"Q6","labels":{"en":"Untyped Record"},"statements":{}}"#,
+                "Untyped Record",
+            ),
+        ];
+        for (what, qid, body, name) in cases {
+            let report = report_of(body, qid);
+            entity(&report, &EntityKind::Other, name);
+            assert!(
+                !report
+                    .entities
+                    .iter()
+                    .any(|e| matches!(e.kind, EntityKind::Organisation | EntityKind::Person)),
+                "{what}: fabricated a person/organisation classification in {:#?}",
+                report.entities
+            );
+        }
     }
 
     #[test]
@@ -738,14 +853,47 @@ mod tests {
     }
 
     #[test]
-    fn a_body_that_is_not_an_item_is_drift_not_a_zero() {
-        match lookup(&OneResponse::json(200, "[1,2,3]"), "Q000", "scan-wd", 1) {
-            Ok(report) => {
-                // A JSON array decodes as a Value but holds no labels or statements: the item is
-                // its qid with no claims, a thin record, still accepted as the item asked for.
-                assert_eq!(report.entities[0].raw_value, "Q000");
-            }
-            Err(error) => panic!("{error}"),
+    fn a_body_that_is_not_the_item_asked_for_is_schema_drift_not_an_entity() {
+        // A 200 response that is readable JSON but not the requested item document seeds no entity
+        // and is never accepted: attributing a mismatched or malformed envelope to the requested
+        // qid would fabricate a finding. Each is source-schema drift.
+        let mismatched = [
+            ("an array", "[1,2,3]"),
+            ("a non-item envelope", r#"{"type":"property","id":"Q000"}"#),
+            ("a missing id", r#"{"type":"item","labels":{"en":"No Id"}}"#),
+            (
+                "a different item's id",
+                r#"{"type":"item","id":"Q999","labels":{"en":"Someone Else"},"statements":{"P31":[{"value":{"type":"value","content":"Q5"}}]}}"#,
+            ),
+            (
+                "no type field",
+                r#"{"id":"Q000","labels":{"en":"Untyped"}}"#,
+            ),
+        ];
+        for (what, body) in mismatched {
+            let report = report_of(body, "Q000");
+            assert!(
+                report.entities.is_empty(),
+                "{what}: fabricated {:#?}",
+                report.entities
+            );
+            assert_eq!(
+                report.outcome.kind,
+                SourceOutcomeKind::SchemaDrift,
+                "{what}"
+            );
+            assert!(!report.outcome.kind.is_accepted(), "{what}");
         }
+    }
+
+    #[test]
+    fn a_matching_item_envelope_is_the_one_shape_that_is_accepted() {
+        // type "item" plus the requested id (matched case-insensitively) reads as an entity.
+        let report = report_of(
+            r#"{"type":"item","id":"q000","labels":{"en":"Jane Example"},"statements":{"P31":[{"value":{"type":"value","content":"Q5"}}]}}"#,
+            "Q000",
+        );
+        entity(&report, &EntityKind::Person, "Jane Example");
+        assert!(report.outcome.kind.is_accepted());
     }
 }

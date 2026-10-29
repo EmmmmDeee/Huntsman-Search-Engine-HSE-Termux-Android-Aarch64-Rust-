@@ -1,7 +1,9 @@
 //! End-to-end front-end for `huntsman-recon wikidata`: one query resolved to a Wikidata item and
 //! read for its structured record, keyless. A knowledge-base item is a candidate to review, never
 //! a confirmed real-world identity; its published website, location and external profiles ride
-//! out as pivot entities so the rest of the engine can follow them.
+//! out as pivot entities so the rest of the engine can follow them. The item is a person only when
+//! Wikidata says it is a human, an organisation only on a known organisation type, and otherwise
+//! an entity of unstated type -- a classification is never assumed from the absence of evidence.
 
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
@@ -13,7 +15,7 @@ use crate::wikidata;
 pub const WIKIDATA_USAGE: &str = "usage: huntsman-recon wikidata QUERY";
 pub const WIKIDATA_HELP: &str = "\
 wikidata QUERY
-Look up one Wikidata item for QUERY: a Q-number (Q42), or free text resolved to its top matching item. The item is a person (when it is an instance of human) or an organisation, and every statement Wikidata holds for it is kept as evidence. Its official website becomes a domain, a coordinate location a point the geocoder can reverse, and external identifiers (GitHub, X, VIAF, ORCID, IMDb, ...) profile URLs and usernames, so one lookup seeds the others. Keyless, from Wikidata's public search and REST APIs. A knowledge-base record is a candidate to review, not a confirmed identity. Makes network requests.";
+Look up one Wikidata item for QUERY: a Q-number (Q42), or free text resolved to its top matching item. The item is a person when Wikidata says it is a human, an organisation when it is a known organisation type, and otherwise an entity of unstated type (never assumed to be an organisation); every statement Wikidata holds for it is kept as evidence. Its official website becomes a domain, a coordinate location a point the geocoder can reverse, and external identifiers (GitHub, X, VIAF, ORCID, IMDb, ...) profile URLs and usernames, so one lookup seeds the others. Keyless, from Wikidata's public search and REST APIs. A knowledge-base record is a candidate to review, not a confirmed identity. Makes network requests.";
 
 /// The longest query taken, in bytes. A longer one is not a label a knowledge base would match.
 const MAX_WIKIDATA_QUERY_BYTES: usize = 300;
