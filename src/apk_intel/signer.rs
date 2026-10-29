@@ -576,24 +576,22 @@ pub(super) fn verify_rotation_signature(
 ) -> Option<bool> {
     let key = signing_public_key(certificate_spki(parent_der)?, algorithm_id)?;
     let verified = match algorithm_id {
-        0x0101 => ring::signature::UnparsedPublicKey::new(
-            &ring::signature::RSA_PSS_2048_8192_SHA256,
-            key,
-        )
-        .verify(signed_data, signature)
-        .is_ok(),
+        0x0101 => {
+            ring::signature::UnparsedPublicKey::new(&ring::signature::RSA_PSS_2048_8192_SHA256, key)
+                .verify(signed_data, signature)
+                .is_ok()
+        }
         0x0103 => ring::signature::UnparsedPublicKey::new(
             &ring::signature::RSA_PKCS1_2048_8192_SHA256,
             key,
         )
         .verify(signed_data, signature)
         .is_ok(),
-        0x0201 => ring::signature::UnparsedPublicKey::new(
-            &ring::signature::ECDSA_P256_SHA256_ASN1,
-            key,
-        )
-        .verify(signed_data, signature)
-        .is_ok(),
+        0x0201 => {
+            ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_ASN1, key)
+                .verify(signed_data, signature)
+                .is_ok()
+        }
         _ => return None,
     };
     Some(verified)
