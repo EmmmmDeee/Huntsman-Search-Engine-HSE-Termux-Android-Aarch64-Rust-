@@ -115,7 +115,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Username => {
             canonical_handle(raw)?;
             Some(raw.trim().trim_start_matches('@').to_owned())
-        },
+        }
         // The rule `infer_kind` routes a phone by, so every selector routed here is accepted.
         ScanKind::Phone => crate::phone_intl::canonicalize(raw),
         ScanKind::Domain => canonical_domain(raw),
