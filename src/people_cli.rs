@@ -31,7 +31,7 @@ Look up NAME on the keyless ASIC people and director registers and Wikidata. Few
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
   2. ASIC director register (company director records)
-  3. Wikidata (the top public item for the name, a candidate lead, never a confirmed identity)
+  3. Wikidata (top public item, QID-scoped candidate, never name-only identity corroboration)
 
 Results from all sources are merged by entity UID: duplicate records from different sources are combined into a single entity whose observation set includes all evidence. This consolidation detects when one person has multiple records across registers and surfaces the corroborated attributes.";
 
@@ -121,7 +121,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         collect(
             wikidata::SOURCE,
             wikidata::lookup(transport, &name, &scan_id, now_unix)
-                .map(|found| (found.entities, vec![found.outcome])),
+                .map(|found| (scope_wikidata_items(found.entities), vec![found.outcome])),
             now_unix,
             &mut report,
             &mut network,
@@ -147,6 +147,49 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         Ok(text) => PeopleRun::Printed { text, report },
         Err(msg) => PeopleRun::Failed(msg),
     }
+}
+
+/// A shared display name is not a verified cross-register identity. Wikidata items have
+/// stable QIDs, while ASIC rows often identify people by name alone. Keep the source's
+/// original label in evidence, but scope the item entity's canonical key to its QID so
+/// same-name strangers cannot merge or inflate corroboration. Other pivot entities keep
+/// their normal canonical keys. This only affects the composed people lookup.
+fn scope_wikidata_items(mut entities: Vec<Entity>) -> Vec<Entity> {
+    for entity in &mut entities {
+        if !matches!(
+            entity.kind,
+            crate::entity::EntityKind::Person
+                | crate::entity::EntityKind::Organisation
+                | crate::entity::EntityKind::Other
+        ) {
+            continue;
+        }
+        let Some(qid) = entity
+            .evidence
+            .iter()
+            .find_map(|evidence| evidence.attributes.get("qid"))
+        else {
+            continue;
+        };
+        let label = entity.raw_value.clone();
+        let scoped = Entity::new(
+            entity.kind.clone(),
+            format!("{label} [Wikidata {qid}]"),
+            entity.confidence,
+            entity.scan_id.clone(),
+        );
+        entity.uid = scoped.uid;
+        entity.value = scoped.value;
+        entity.raw_value = scoped.raw_value;
+        entity.tag("wikidata-item-scoped");
+        for evidence in &mut entity.evidence {
+            evidence
+                .attributes
+                .entry("source_label".into())
+                .or_insert_with(|| label.clone());
+        }
+    }
+    entities
 }
 
 fn collect(
@@ -217,6 +260,40 @@ mod tests {
     use crate::test_support::{html_ok, json_ok};
     use std::cell::RefCell;
     use std::collections::HashMap;
+
+    #[test]
+    fn same_name_wikidata_item_does_not_merge_with_unrelated_asic_identity() {
+        use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
+
+        for kind in [EntityKind::Person, EntityKind::Organisation, EntityKind::Other] {
+            let mut asic = Entity::new(kind.clone(), "Jane Example", 0.7, "scan");
+            asic.add_evidence(Evidence::new(
+                EvidenceProvenance::for_scan("asic_persons", "scan"),
+                "independent ASIC record",
+            ));
+            let mut wikidata = Entity::new(kind, "Jane Example", 0.6, "scan");
+            wikidata.add_evidence(
+                Evidence::new(
+                    EvidenceProvenance::for_scan("wikidata", "scan"),
+                    "candidate item, not verified identity",
+                )
+                .with_attr("qid", "Q42"),
+            );
+            let mut entities = vec![asic, wikidata];
+            assert_eq!(entities[0].uid, entities[1].uid, "precondition");
+            entities = scope_wikidata_items(entities);
+            merge_by_uid(&mut entities);
+            assert_eq!(entities.len(), 2, "same name must not fuse distinct people");
+            assert_eq!(entities[0].source_count(), 1);
+            assert_eq!(entities[1].source_count(), 1);
+            assert_ne!(entities[0].uid, entities[1].uid);
+            assert!(entities[1].raw_value.contains("[Wikidata Q42]"));
+            assert_eq!(
+                entities[1].evidence[0].attributes.get("source_label").map(String::as_str),
+                Some("Jane Example")
+            );
+        }
+    }
 
     #[test]
     fn a_name_needs_two_alphabetic_tokens_of_at_least_two_characters() {
