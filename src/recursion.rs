@@ -1357,17 +1357,24 @@ mod tests {
             };
             let report = run(&["person@example.com".to_owned()], &policy, &mut collector);
             assert_eq!(report.dispatches, 2);
-            assert!(collector.calls.iter().all(|(kind, _)| {
-                kind != "domain" && kind != "username"
-            }));
-            assert!(report
-                .entities
-                .iter()
-                .any(|entity| entity.value == "stranger.example"));
-            assert!(report
-                .entities
-                .iter()
-                .any(|entity| entity.value == "unrelated_person"));
+            assert!(
+                collector
+                    .calls
+                    .iter()
+                    .all(|(kind, _)| { kind != "domain" && kind != "username" })
+            );
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|entity| entity.value == "stranger.example")
+            );
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|entity| entity.value == "unrelated_person")
+            );
         }
         // The attribution gate is specific to name-search leads, not a
         // blanket prohibition on normal independently obtained pivots.
