@@ -51,6 +51,7 @@ pub mod confidence;
 pub mod coref;
 pub mod correlator;
 pub mod coverage;
+pub mod crates_io;
 pub mod credential_origin;
 pub mod cross_scan;
 pub mod crtsh;

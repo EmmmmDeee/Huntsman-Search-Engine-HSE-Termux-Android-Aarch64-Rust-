@@ -443,6 +443,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public npm registry author packages and the maintainer's own published contact",
     },
     ReachableModule {
+        name: "crates_io",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.003"],
+        description: "public crates.io account, its GitHub profile and its published crates' repository links",
+    },
+    ReachableModule {
         name: "bluesky_user",
         command: "username HANDLE",
         access: "keyless",
@@ -1595,6 +1604,7 @@ mod tests {
             crate::openpgp_keys::SRC,
             crate::github_user::SRC,
             crate::npm_author::SRC,
+            crate::crates_io::SRC,
             crate::bluesky_user::SRC,
             crate::mastodon_user::SRC,
             crate::keybase::SRC,
