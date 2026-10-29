@@ -662,6 +662,23 @@ fn read_member<'a>(
     Ok((bytes, quirk))
 }
 
+/// Fold certificate declarations without claiming that any signature was verified.
+fn fold_signing_certificates(analysis: &mut Analysis, certificates: Vec<Certificate>) {
+    for certificate in certificates {
+        match analysis
+            .signers
+            .iter_mut()
+            .find(|known| known.sha256 == certificate.sha256)
+        {
+            Some(known) => {
+                known.scheme.push_str(", ");
+                known.scheme.push_str(&certificate.scheme);
+            }
+            None => analysis.signers.push(certificate),
+        }
+    }
+}
+
 /// Read the manifest, signatures and code of an archive [`walk`] indexed.
 fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     let mut analysis = Analysis::default();
@@ -714,32 +731,24 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
             .sdk_signers
             .extend(signer::sdk_signers(value, scheme));
     }
-    for (scheme, value) in &archive.signing_values {
-        analysis.rotation_chains.extend(rotation::inspect(
-            value,
-            scheme,
-            &analysis.sdk_signers,
-            &analysis.content_digest_checks,
-        ));
-    }
+    analysis.rotation_chains = archive
+        .signing_values
+        .iter()
+        .flat_map(|(scheme, value)| {
+            rotation::inspect(
+                value,
+                scheme,
+                &analysis.sdk_signers,
+                &analysis.content_digest_checks,
+            )
+        })
+        .collect();
     for member in &archive.v1 {
         if let Some(bytes) = read(member, MAX_APK_SIGNATURE_FILE_BYTES, &mut analysis) {
             certificates.extend(signer::pkcs7(&bytes, member.name));
         }
     }
-    for certificate in certificates {
-        match analysis
-            .signers
-            .iter_mut()
-            .find(|known| known.sha256 == certificate.sha256)
-        {
-            Some(known) => {
-                known.scheme.push_str(", ");
-                known.scheme.push_str(&certificate.scheme);
-            }
-            None => analysis.signers.push(certificate),
-        }
-    }
+    fold_signing_certificates(&mut analysis, certificates);
     for member in &archive.dex {
         if let Some(bytes) = read(member, MAX_APK_DEX_BYTES, &mut analysis) {
             if let Err(error) = analysis.code.read(&bytes) {
@@ -1114,30 +1123,6 @@ fn document_evidence(
     network_policy_attrs(analysis, &mut put);
     content_digest_attrs(analysis, &mut put);
     signer_digest_attrs(analysis, &mut put);
-    put(
-        "apk_rotation_proof_status",
-        analysis
-            .rotation_chains
-            .iter()
-            .map(|chain| format!("{}#{}:{}", chain.scheme, chain.signer_index, chain.status))
-            .collect::<Vec<_>>()
-            .join("; "),
-    );
-    put(
-        "apk_rotation_verified_certificates",
-        analysis
-            .rotation_chains
-            .iter()
-            .filter(|chain| chain.status == "verified")
-            .flat_map(|chain| {
-                chain
-                    .certificates
-                    .iter()
-                    .map(|cert| cert.certificate_sha256.as_str())
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-    );
     if let Some(signer) = analysis.signers.first() {
         put("apk_signer_subject", signer.subject.clone());
         put("apk_signer_valid_from", signer.not_before.clone());
@@ -1202,6 +1187,30 @@ fn signer_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, S
     put(
         "apk_signer_public_key_sha256_unverified",
         join(|signer| signer.public_key_sha256.as_str()),
+    );
+    put(
+        "apk_rotation_proof_status",
+        analysis
+            .rotation_chains
+            .iter()
+            .map(|chain| format!("{}#{}:{}", chain.scheme, chain.signer_index, chain.status))
+            .collect::<Vec<_>>()
+            .join("; "),
+    );
+    put(
+        "apk_rotation_verified_certificates",
+        analysis
+            .rotation_chains
+            .iter()
+            .filter(|chain| chain.status == "verified")
+            .flat_map(|chain| {
+                chain
+                    .certificates
+                    .iter()
+                    .map(|cert| cert.certificate_sha256.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(","),
     );
     put(
         "apk_sdk_signer_ranges_unverified",
