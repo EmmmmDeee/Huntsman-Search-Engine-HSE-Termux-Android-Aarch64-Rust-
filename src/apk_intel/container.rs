@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use super::{
-    Error, MAX_APK_MANIFEST_BYTES, MAX_FILE_BYTES, directory_bounds, hex32, le16, le32, member,
+    Error, MAX_APK_MANIFEST_BYTES, directory_bounds, hex32, le16, le32, member,
     read_member, scan_id, sha256, suspicious,
 };
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
