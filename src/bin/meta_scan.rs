@@ -579,6 +579,67 @@ fn allowed_host(host: Option<&str>, port: u16) -> bool {
     host.is_some_and(|h| allowed.iter().any(|v| h.eq_ignore_ascii_case(v)))
 }
 
+fn serve_scan_request(stream: &mut TcpStream, request: &HttpRequest, port: u16, timeout: Duration) {
+        if request.header("X-Meta-Scan") != Some("1")
+            || request
+                .header("Content-Type")
+                .is_none_or(|v| !v.to_ascii_lowercase().starts_with("application/json"))
+            || request.header("Origin").is_some_and(|v| {
+                v != format!("http://127.0.0.1:{port}")
+                    && v != format!("http://localhost:{port}")
+            })
+        {
+            let _ = json_reply(
+                stream,
+                "403 Forbidden",
+                &json!({"error":"same-origin JSON request and X-Meta-Scan header required"}),
+            );
+            return;
+        }
+        let Ok(input) = serde_json::from_slice::<Value>(&request.body) else {
+            let _ = json_reply(
+                stream,
+                "400 Bad Request",
+                &json!({"error":"invalid JSON body"}),
+            );
+            return;
+        };
+        let Some(username) = input.get("username").and_then(Value::as_str) else {
+            let _ = json_reply(
+                stream,
+                "400 Bad Request",
+                &json!({"error":"username required"}),
+            );
+            return;
+        };
+        let business = input
+            .get("include_business")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let key = configured_secret();
+        let transport = transport(timeout);
+        match scan(
+            &transport,
+            key.as_ref(),
+            username,
+            business,
+            unix_now(),
+            timeout,
+        ) {
+            Ok(report) => {
+                let _ = json_reply(
+                    stream,
+                    "200 OK",
+                    &serde_json::to_value(report)
+                        .unwrap_or_else(|_| json!({"error":"serialisation failed"})),
+                );
+            }
+            Err(reason) => {
+                let _ = json_reply(stream, "400 Bad Request", &json!({"error":reason}));
+            }
+        };
+}
+
 fn serve_client(mut stream: TcpStream, port: u16, timeout: Duration) {
     let request = match read_request(&mut stream) {
         Ok(req) => req,
@@ -615,66 +676,7 @@ fn serve_client(mut stream: TcpStream, port: u16, timeout: Duration) {
                 }),
             );
         }
-        ("POST", "/api/scan") => {
-            if request.header("X-Meta-Scan") != Some("1")
-                || request
-                    .header("Content-Type")
-                    .is_none_or(|v| !v.to_ascii_lowercase().starts_with("application/json"))
-                || request.header("Origin").is_some_and(|v| {
-                    v != format!("http://127.0.0.1:{port}")
-                        && v != format!("http://localhost:{port}")
-                })
-            {
-                let _ = json_reply(
-                    &mut stream,
-                    "403 Forbidden",
-                    &json!({"error":"same-origin JSON request and X-Meta-Scan header required"}),
-                );
-                return;
-            }
-            let Ok(input) = serde_json::from_slice::<Value>(&request.body) else {
-                let _ = json_reply(
-                    &mut stream,
-                    "400 Bad Request",
-                    &json!({"error":"invalid JSON body"}),
-                );
-                return;
-            };
-            let Some(username) = input.get("username").and_then(Value::as_str) else {
-                let _ = json_reply(
-                    &mut stream,
-                    "400 Bad Request",
-                    &json!({"error":"username required"}),
-                );
-                return;
-            };
-            let business = input
-                .get("include_business")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            let key = configured_secret();
-            let transport = transport(timeout);
-            match scan(
-                &transport,
-                key.as_ref(),
-                username,
-                business,
-                unix_now(),
-                timeout,
-            ) {
-                Ok(report) => {
-                    let _ = json_reply(
-                        &mut stream,
-                        "200 OK",
-                        &serde_json::to_value(report)
-                            .unwrap_or_else(|_| json!({"error":"serialisation failed"})),
-                    );
-                }
-                Err(reason) => {
-                    let _ = json_reply(&mut stream, "400 Bad Request", &json!({"error":reason}));
-                }
-            };
-        }
+        ("POST", "/api/scan") => serve_scan_request(&mut stream, &request, port, timeout),
         _ => {
             let _ = json_reply(
                 &mut stream,
@@ -762,7 +764,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
             "-u" | "--username" => out.username = Some(iter.next().ok_or("missing username")?),
             "--batch" => out.batch = Some(iter.next().ok_or("missing batch path")?.into()),
             "--out-json" => {
-                out.out_json = Some(iter.next().ok_or("missing JSON directory")?.into())
+                out.out_json = Some(iter.next().ok_or("missing JSON directory")?.into());
             }
             "--out-txt" => out.out_txt = Some(iter.next().ok_or("missing TXT directory")?.into()),
             "--bind" => out.bind = iter.next().ok_or("missing bind")?,
@@ -774,14 +776,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
                     .next()
                     .ok_or("missing timeout")?
                     .parse()
-                    .map_err(|_| "invalid timeout")?
+                    .map_err(|_| "invalid timeout")?;
             }
             "--read-timeout" => {
                 out.read_timeout = iter
                     .next()
                     .ok_or("missing timeout")?
                     .parse()
-                    .map_err(|_| "invalid timeout")?
+                    .map_err(|_| "invalid timeout")?;
             }
             "-h" | "--help" => return Err(usage().to_owned()),
             _ => return Err(format!("unknown option: {arg}\n{}", usage())),
@@ -822,7 +824,7 @@ fn save_report(dir: &Path, report: &Report, ext: &str, contents: &[u8]) -> Resul
                     .map_err(|e| format!("cannot write report: {e}"))?;
                 return Ok(path);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(format!("cannot create report: {e}")),
         }
     }
