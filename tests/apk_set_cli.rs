@@ -80,6 +80,13 @@ fn apk_set_cli_preserves_hashes_and_explicit_uncertainty() {
     assert_eq!(report["format_hint_unverified"], "apks");
     assert_eq!(report["apk_members"].as_array().map(Vec::len), Some(1));
     assert_eq!(report["package_consistency"], "unverified");
+    assert_eq!(report["signer_continuity"], "unverified");
+    assert_eq!(
+        report["apk_members"][0]["authenticated_sdk_signers"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
     assert_eq!(
         report["apk_members"][0]["sha256"],
         huntsman_recon::sha256::hex32(&huntsman_recon::sha256::sha256(&inner))

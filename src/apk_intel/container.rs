@@ -16,7 +16,19 @@ pub const SOURCE: &str = "apk_set";
 const MAX_NESTED_APKS: usize = 32;
 const MAX_NESTED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TOTAL_INFLATED: usize = 128 * 1024 * 1024;
-const LIMITATIONS: &str = "Offline structural inventory only. APK member hashes cover exact decompressed bytes; container names, manifest package/version and base/split filename hints are unauthenticated. Package consistency is not installability, a valid signature, developer identity or proof of ownership. Proprietary/encrypted containers, ZIP64 and non-ZIP variants are unsupported; no files are extracted, installed or fetched.";
+const MAX_AUTHENTICATED_SIGNERS: usize = 8;
+const LIMITATIONS: &str = "Offline inventory. APK member hashes cover exact decompressed bytes; container names, manifest package/version and base/split filename hints are unauthenticated. Only v3/v3.1 SDK-scoped signer certificates backed by verified signed-data signatures and matching APK content digests are reported as authenticated; v1/v2-only or unsupported signatures remain unverified. Matching or differing SDK-scoped signers do not prove installability, ownership or rotation compatibility. Proprietary/encrypted containers, ZIP64 and non-ZIP variants are unsupported; no files are extracted, installed or fetched.";
+
+/// An SDK-scoped v3/v3.1 signer whose signed-data signature and APK content digest both verify.
+/// This authenticates the stated certificate for these bytes, not Android installability.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct AuthenticatedSdkSigner {
+    pub scheme: String,
+    pub min_sdk: u32,
+    pub max_sdk: u32,
+    pub certificate_sha256: String,
+    pub public_key_sha256: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NestedApk {
@@ -27,6 +39,7 @@ pub struct NestedApk {
     pub manifest_package_unverified: Option<String>,
     pub manifest_version_code_unverified: Option<String>,
     pub manifest_error: Option<String>,
+    pub authenticated_sdk_signers: Vec<AuthenticatedSdkSigner>,
     pub dex_count: usize,
     pub native_abis: Vec<String>,
 }
@@ -40,6 +53,7 @@ pub struct Report {
     pub apk_members: Vec<NestedApk>,
     pub package_consistency: &'static str,
     pub version_consistency: &'static str,
+    pub signer_continuity: &'static str,
     pub limitations: &'static str,
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
@@ -84,6 +98,117 @@ fn consistency<'a>(values: impl Iterator<Item = Option<&'a str>>, count: usize) 
         "unverified"
     } else {
         "consistent_unverified"
+    }
+}
+
+/// Authenticate only the v3/v3.1 signer records for which both the signed-data
+/// signature and the AOSP content digest validate against these exact APK bytes.
+/// Unsupported, malformed, partially authenticated and ambiguous schemes fail closed.
+fn authenticated_sdk_signers(
+    data: &[u8],
+    inventory: &super::Inventory,
+    archive: &super::Archive<'_>,
+) -> Vec<AuthenticatedSdkSigner> {
+    if !inventory.duplicate_signing_scheme_ids.is_empty() {
+        return Vec::new();
+    }
+    let (Some(start), Ok(end_at)) = (archive.signing_start, super::eocd(data)) else {
+        return Vec::new();
+    };
+    let (checks, errors) = super::content_digest::compare(
+        data,
+        start,
+        archive.directory_start,
+        end_at,
+        &archive.signing_values,
+    );
+    if !errors.is_empty() {
+        return Vec::new();
+    }
+    let mut verified = Vec::new();
+    for (scheme, value) in &archive.signing_values {
+        if !matches!(*scheme, "v3" | "v3.1") {
+            continue;
+        }
+        let claims = super::signer::sdk_signers(value, scheme);
+        if claims.is_empty() {
+            return Vec::new();
+        }
+        for claim in claims {
+            if !checks.iter().any(|check| {
+                check.scheme == claim.scheme
+                    && check.signer_index == claim.signer_index
+                    && check.signature_authenticated
+            }) {
+                return Vec::new();
+            }
+            if verified.len() >= MAX_AUTHENTICATED_SIGNERS {
+                return Vec::new();
+            }
+            verified.push(AuthenticatedSdkSigner {
+                scheme: claim.scheme,
+                min_sdk: claim.min_sdk,
+                max_sdk: claim.max_sdk,
+                certificate_sha256: claim.certificate_sha256,
+                public_key_sha256: claim.public_key_sha256,
+            });
+        }
+    }
+    verified.sort();
+    verified.dedup();
+    verified
+}
+
+/// Compare only fully authenticated, SDK-scoped v3/v3.1 claims. A difference
+/// is an observed certificate difference, NOT a verdict on rotation/installability.
+fn signer_continuity(members: &[NestedApk]) -> &'static str {
+    if members.len() < 2
+        || members
+            .iter()
+            .any(|member| member.authenticated_sdk_signers.is_empty())
+    {
+        return "unverified";
+    }
+    let identity = |member: &NestedApk| {
+        let mut claims: Vec<_> = member
+            .authenticated_sdk_signers
+            .iter()
+            .map(|signer| {
+                (
+                    signer.scheme.clone(),
+                    signer.min_sdk,
+                    signer.max_sdk,
+                    signer.certificate_sha256.clone(),
+                )
+            })
+            .collect();
+        claims.sort_unstable();
+        claims
+    };
+    let scopes = |member: &NestedApk| {
+        let mut ranges: Vec<_> = member
+            .authenticated_sdk_signers
+            .iter()
+            .map(|signer| (signer.scheme.clone(), signer.min_sdk, signer.max_sdk))
+            .collect();
+        ranges.sort_unstable();
+        ranges
+    };
+    let first = &members[0];
+    if members
+        .iter()
+        .skip(1)
+        .all(|member| identity(member) == identity(first))
+    {
+        "authenticated_sdk_scope_match"
+    } else if members
+        .iter()
+        .skip(1)
+        .all(|member| scopes(member) == scopes(first))
+    {
+        "authenticated_sdk_scope_difference"
+    } else {
+        "unverified"
     }
 }
 
@@ -175,6 +300,7 @@ fn inspect_nested(
     }
     validate_nested_structure(&bytes)?;
     let (inventory, archive) = super::walk(&bytes)?;
+    let authenticated_sdk_signers = authenticated_sdk_signers(&bytes, &inventory, &archive);
     let (package, version, manifest_error) = nested_manifest(&bytes, &archive);
     Ok(NestedApk {
         path: entry.name.to_owned(),
@@ -184,6 +310,7 @@ fn inspect_nested(
         manifest_package_unverified: package,
         manifest_version_code_unverified: version,
         manifest_error,
+        authenticated_sdk_signers,
         dex_count: inventory.dex_count,
         native_abis: inventory.native_abis,
     })
@@ -257,6 +384,7 @@ fn graph_entities(
     members: &[NestedApk],
     package_consistency: &str,
     version_consistency: &str,
+    signer_continuity: &str,
 ) -> Vec<Entity> {
     let sid = scan_id(SOURCE, label);
     let mut entities = Vec::new();
@@ -268,14 +396,17 @@ fn graph_entities(
         &sid,
         Evidence::new(
             EvidenceProvenance::for_scan(SOURCE, &sid),
-            format!("Offline inventory of multi-APK container {label}; no signatures or package identity verified"),
+            format!(
+                "Offline multi-APK inventory of {label}; SDK-scoped v3/v3.1 signer evidence is separately qualified; manifest identity and Android installability are not verified"
+            ),
         )
         .with_attr("file_sha256", outer_sha)
         .with_attr("file_hash_scope", "exact_input_bytes")
         .with_attr("apk_set_format_hint_unverified", format_hint(label))
         .with_attr("apk_set_member_count", members.len().to_string())
         .with_attr("apk_set_package_consistency", package_consistency)
-        .with_attr("apk_set_version_consistency", version_consistency),
+        .with_attr("apk_set_version_consistency", version_consistency)
+        .with_attr("apk_set_signer_continuity", signer_continuity),
         &[SOURCE, "offline", "apk_container"],
     );
     for nested in members {
@@ -294,6 +425,15 @@ fn graph_entities(
             )
             .with_attr("apk_member_sha256", nested.sha256.as_str())
             .with_attr("apk_member_path", nested.path.as_str())
+            .with_attr(
+                "apk_authenticated_sdk_signer_certificates",
+                nested
+                    .authenticated_sdk_signers
+                    .iter()
+                    .map(|signer| signer.certificate_sha256.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
             .with_attr("apk_container_sha256", outer_sha)
             .with_attr(
                 "apk_manifest_package_unverified",
@@ -333,12 +473,14 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             .map(|member| member.manifest_version_code_unverified.as_deref()),
         members.len(),
     );
+    let signer_continuity = signer_continuity(&members);
     let entities = graph_entities(
         label,
         &outer_sha,
         &members,
         package_consistency,
         version_consistency,
+        signer_continuity,
     );
     let outcomes = vec![SourceExecutionOutcome::success(
         SOURCE,
@@ -353,6 +495,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         apk_members: members,
         package_consistency,
         version_consistency,
+        signer_continuity,
         limitations: LIMITATIONS,
         entities,
         outcomes,
@@ -433,6 +576,13 @@ mod tests {
         assert_eq!(report.apk_members[0].sha256, hex32(&sha256(&inner)));
         assert_eq!(report.apk_members[1].sha256, hex32(&sha256(&inner)));
         assert_eq!(report.package_consistency, "unverified");
+        assert_eq!(report.signer_continuity, "unverified");
+        assert!(
+            report
+                .apk_members
+                .iter()
+                .all(|member| member.authenticated_sdk_signers.is_empty())
+        );
         assert_eq!(
             report.apk_members[0].role_hint_unverified,
             "base_filename_hint"
@@ -440,6 +590,238 @@ mod tests {
         assert!(report.apk_members[0].manifest_error.is_some());
         assert_eq!(report.entities.len(), 2);
         assert_eq!(report.outcomes.len(), 1);
+    }
+
+    fn member_with_signers(signers: Vec<AuthenticatedSdkSigner>) -> NestedApk {
+        NestedApk {
+            path: "base.apk".to_owned(),
+            sha256: "fixture".to_owned(),
+            size_bytes: 0,
+            role_hint_unverified: "unknown_or_split_filename_hint",
+            manifest_package_unverified: None,
+            manifest_version_code_unverified: None,
+            manifest_error: None,
+            authenticated_sdk_signers: signers,
+            dex_count: 0,
+            native_abis: Vec::new(),
+        }
+    }
+
+    fn verified_claim(cert: &str, min_sdk: u32, max_sdk: u32) -> AuthenticatedSdkSigner {
+        AuthenticatedSdkSigner {
+            scheme: "v3".to_owned(),
+            min_sdk,
+            max_sdk,
+            certificate_sha256: cert.to_owned(),
+            public_key_sha256: cert.to_owned(),
+        }
+    }
+
+    #[test]
+    fn signer_continuity_requires_all_members_and_identical_authenticated_scopes() {
+        let a = member_with_signers(vec![verified_claim("aa", 28, 32)]);
+        let same = member_with_signers(vec![verified_claim("aa", 28, 32)]);
+        let different = member_with_signers(vec![verified_claim("bb", 28, 32)]);
+        let different_scope = member_with_signers(vec![verified_claim("aa", 33, 35)]);
+        let missing = member_with_signers(Vec::new());
+        assert_eq!(signer_continuity(std::slice::from_ref(&a)), "unverified");
+        assert_eq!(
+            signer_continuity(&[a.clone(), same]),
+            "authenticated_sdk_scope_match"
+        );
+        assert_eq!(
+            signer_continuity(&[a.clone(), different]),
+            "authenticated_sdk_scope_difference"
+        );
+        assert_eq!(
+            signer_continuity(&[a.clone(), different_scope]),
+            "unverified"
+        );
+        assert_eq!(signer_continuity(&[a, missing]), "unverified");
+    }
+
+    #[test]
+    fn forged_v3_scheme_id_cannot_authenticate_nested_signers() {
+        let inner = apk();
+        let old_directory =
+            usize::try_from(super::le32(&inner, inner.len() - 22 + 16).expect("directory offset"))
+                .expect("directory fits");
+        let fake_signer = b"not signed data";
+        let mut block = Vec::new();
+        let pair_size = u64::try_from(fake_signer.len() + 4).expect("pair size");
+        let block_size = pair_size + 8 + 24;
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(&pair_size.to_le_bytes());
+        block.extend_from_slice(&0xf053_68c0_u32.to_le_bytes());
+        block.extend_from_slice(fake_signer);
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(b"APK Sig Block 42");
+        let mut tampered = inner[..old_directory].to_vec();
+        tampered.extend_from_slice(&block);
+        tampered.extend_from_slice(&inner[old_directory..]);
+        let end = tampered.len() - 22;
+        let new_directory = u32::try_from(old_directory + block.len()).expect("new directory");
+        tampered[end + 16..end + 20].copy_from_slice(&new_directory.to_le_bytes());
+
+        let outer = zip(&[
+            ("base.apk", tampered.as_slice(), 0),
+            ("split.apk", tampered.as_slice(), 0),
+        ]);
+        let report = run(&outer, "forged.apks", 42).expect("structurally valid APK set");
+        assert_eq!(report.signer_continuity, "unverified");
+        assert!(
+            report
+                .apk_members
+                .iter()
+                .all(|member| member.authenticated_sdk_signers.is_empty())
+        );
+    }
+
+    /// Build a structurally valid APK with an actual P-256 signature over its
+    /// v3/v3.1 signed-data and a matching AOSP chunked digest. The synthetic
+    /// certificate is not CA-trusted and installability is not asserted.
+    fn length_prefixed(items: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for item in items {
+            out.extend_from_slice(
+                &u32::try_from(item.len())
+                    .expect("fixture length")
+                    .to_le_bytes(),
+            );
+            out.extend_from_slice(item);
+        }
+        out
+    }
+
+    fn signed_sdk_apk(
+        keypair: &ring::signature::EcdsaKeyPair,
+        rng: &ring::rand::SystemRandom,
+        scheme_id: u32,
+        min_sdk: u32,
+        max_sdk: u32,
+    ) -> Vec<u8> {
+        use ring::signature::KeyPair as _;
+
+        let original = apk();
+        let eocd_at = original.len() - 22;
+        let directory_start =
+            usize::try_from(super::le32(&original, eocd_at + 16).expect("central directory"))
+                .expect("directory fits");
+        let digest = super::super::content_digest::chunked_sha256(
+            &original,
+            directory_start,
+            directory_start,
+            eocd_at,
+        )
+        .expect("AOSP digest");
+        let cert = super::super::signer::tests::p256_certificate(
+            "Signed APK set fixture",
+            keypair.public_key().as_ref(),
+        );
+        let spki = super::super::signer::tests::spki(&cert);
+        let mut digest_record = 0x0201_u32.to_le_bytes().to_vec();
+        digest_record.extend_from_slice(&length_prefixed(&[&digest]));
+        let digests = length_prefixed(&[&digest_record]);
+        let certs = length_prefixed(&[&cert]);
+        let mut signed_data = length_prefixed(&[&digests, &certs]);
+        signed_data.extend_from_slice(&min_sdk.to_le_bytes());
+        signed_data.extend_from_slice(&max_sdk.to_le_bytes());
+        signed_data.extend_from_slice(&length_prefixed(&[&[]]));
+        let signature = keypair.sign(rng, &signed_data).expect("sign fixture");
+        let mut signature_record = 0x0201_u32.to_le_bytes().to_vec();
+        signature_record.extend_from_slice(&length_prefixed(&[signature.as_ref()]));
+        let signatures = length_prefixed(&[&signature_record]);
+        let mut signer = length_prefixed(&[&signed_data]);
+        signer.extend_from_slice(&min_sdk.to_le_bytes());
+        signer.extend_from_slice(&max_sdk.to_le_bytes());
+        signer.extend_from_slice(&length_prefixed(&[&signatures]));
+        signer.extend_from_slice(&length_prefixed(&[spki]));
+        let signers = length_prefixed(&[&signer]);
+        let value = length_prefixed(&[&signers]);
+
+        let pair_size = u64::try_from(value.len() + 4).expect("pair length");
+        let block_size = pair_size + 8 + 24;
+        let mut block = Vec::new();
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(&pair_size.to_le_bytes());
+        block.extend_from_slice(&scheme_id.to_le_bytes());
+        block.extend_from_slice(&value);
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(b"APK Sig Block 42");
+
+        let mut result = original[..directory_start].to_vec();
+        result.extend_from_slice(&block);
+        result.extend_from_slice(&original[directory_start..]);
+        let new_directory =
+            u32::try_from(directory_start + block.len()).expect("signed directory fits");
+        let new_eocd = result.len() - 22;
+        result[new_eocd + 16..new_eocd + 20].copy_from_slice(&new_directory.to_le_bytes());
+        result
+    }
+
+    #[test]
+    fn real_ecdsa_signed_apk_members_match_conflict_and_fail_closed_on_tampering() {
+        let rng = ring::rand::SystemRandom::new();
+        let make_key = || {
+            let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                &rng,
+            )
+            .expect("generate fixture key");
+            ring::signature::EcdsaKeyPair::from_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                pkcs8.as_ref(),
+                &rng,
+            )
+            .expect("load fixture key")
+        };
+        let first_key = make_key();
+        let other_key = make_key();
+
+        for (scheme_id, scheme, min_sdk, max_sdk) in [
+            (0xf053_68c0, "v3", 28, 32),
+            (0x1b93_ad61, "v3.1", 33, u32::MAX),
+        ] {
+            let first = signed_sdk_apk(&first_key, &rng, scheme_id, min_sdk, max_sdk);
+            let other = signed_sdk_apk(&other_key, &rng, scheme_id, min_sdk, max_sdk);
+            let matching = zip(&[("base.apk", &first, 0), ("split.apk", &first, 0)]);
+            let matched = run(&matching, "signed.apks", 42).expect("signed APK set");
+            assert_eq!(matched.signer_continuity, "authenticated_sdk_scope_match");
+            assert_eq!(matched.apk_members[0].authenticated_sdk_signers.len(), 1);
+            assert_eq!(
+                matched.apk_members[0].authenticated_sdk_signers[0].scheme,
+                scheme
+            );
+            assert_eq!(
+                matched.apk_members[0].authenticated_sdk_signers[0].min_sdk,
+                min_sdk
+            );
+            assert_eq!(
+                matched.apk_members[0].authenticated_sdk_signers[0].max_sdk,
+                max_sdk
+            );
+
+            let conflicting = zip(&[("base.apk", &first, 0), ("split.apk", &other, 0)]);
+            let conflicted =
+                run(&conflicting, "different.apks", 42).expect("different authenticated signers");
+            assert_eq!(
+                conflicted.signer_continuity,
+                "authenticated_sdk_scope_difference"
+            );
+
+            // Alter ZIP central-directory metadata without invalidating ZIP
+            // structure. The signed content digest must then fail authentication.
+            let mut tampered = first.clone();
+            let eocd = tampered.len() - 22;
+            let directory = usize::try_from(super::le32(&tampered, eocd + 16).expect("directory"))
+                .expect("directory fits");
+            tampered[directory + 38] ^= 1;
+            let altered = zip(&[("base.apk", &first, 0), ("split.apk", &tampered, 0)]);
+            let rejected =
+                run(&altered, "tampered.apks", 42).expect("structurally valid tampered APK set");
+            assert_eq!(rejected.signer_continuity, "unverified");
+            assert!(rejected.apk_members[1].authenticated_sdk_signers.is_empty());
+        }
     }
 
     #[test]

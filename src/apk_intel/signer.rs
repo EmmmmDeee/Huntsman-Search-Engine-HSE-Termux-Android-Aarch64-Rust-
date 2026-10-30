@@ -802,7 +802,7 @@ pub(super) mod tests {
         out
     }
 
-    fn spki(cert: &[u8]) -> &[u8] {
+    pub(crate) fn spki(cert: &[u8]) -> &[u8] {
         let outer = tlv(cert, 0, cert.len()).unwrap();
         let tbs = children(cert, outer).unwrap()[0];
         let fields = children(cert, tbs).unwrap();
