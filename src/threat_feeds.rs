@@ -11,9 +11,9 @@
 //! reads the copy and sends nothing. A feed that cannot be refreshed is read from its last copy,
 //! and its row says how old that copy is; one never downloaded is a failed row, not "not listed".
 //! A feed that downloads but holds no entry this module can read has changed form, and says so
-//! instead of reading as "not listed". A page served in a list's place (an HTML document: a
-//! landing, terms, "feed has moved" or challenge page) is a failed download: it is never kept, and
-//! the last copy still answers.
+//! instead of reading as "not listed". A page served in a list's place (a landing, terms, "feed
+//! has moved" or challenge page: a body that opens with a tag) is a failed download: it is never
+//! kept, and the last copy still answers.
 //!
 //! A list is only as current as its publisher keeps it. The `Last-Modified` date a download
 //! carries is kept beside the copy, with the copy's length and CRC-32 so it is read only with that
@@ -54,7 +54,8 @@ pub enum Format {
     /// A hosts file: each line an address, then the host names it maps.
     Hosts,
     /// One URL a line, with or without its scheme. A line that is not a URL, such as the HTML
-    /// around a list or a URL inside its markup (`<a href="https://…">`), is skipped.
+    /// around a list or a URL inside its markup (`<a href="https://…">`), is skipped, and a `://`
+    /// after something that is no scheme (a URL in an entry's query) is read as part of the entry.
     Urls,
     /// CSV whose given column (from 0) holds a URL or a host name. Lines starting `#` are
     /// comments, and a header row reads as no entry.
@@ -508,7 +509,7 @@ fn load(
     let kept = path
         .as_deref()
         .and_then(read_copy)
-        .filter(|(body, _)| !is_page(feed, body));
+        .filter(|(body, _)| !is_page(body));
     let kept_date = match (path.as_deref(), &kept) {
         (Some(path), Some((body, _))) => read_updated(path, body),
         _ => KeptDate::Missing,
@@ -526,19 +527,7 @@ fn load(
             });
         }
     }
-    // A page served in the list's place is a failed download: it is not kept, and the copy kept
-    // before it still answers.
-    let downloaded = download(transport, feed, now_unix).and_then(|(body, updated)| {
-        if is_page(feed, &body) {
-            Err((
-                SourceOutcomeKind::ProtocolDrift,
-                format!("an HTML page of {} bytes in place of the list", body.len()),
-            ))
-        } else {
-            Ok((body, updated))
-        }
-    });
-    match downloaded {
+    match download(transport, feed, now_unix) {
         Ok((body, updated)) => {
             let note = path
                 .and_then(|path| keep(&path, &body, updated).err())
@@ -564,23 +553,41 @@ fn load(
     }
 }
 
-/// Whether `body` is a page served in `feed`'s place (a landing, terms, "feed has moved" or
-/// challenge page): an HTML document, by its doctype or its `<html>`, `<head>` or `<body>`, in its
-/// first kilobyte. A list wrapped in markup that is no document (VX Vault's `<pre>`) is the list,
-/// whatever its entries spell, and Tor's Onionoo answer is JSON, never a page. **Pure.**
-fn is_page(feed: &Feed, body: &[u8]) -> bool {
-    if feed.format == Format::Onionoo {
-        return false;
+/// Whether `body` is a page served in a list's place (a landing, terms, "feed has moved" or
+/// challenge page), by how it opens: after a byte-order mark, white space, an XML declaration and
+/// comments, a page opens with a tag (a doctype, `<html>`, a `<meta>` refresh, a `<script>`, a PHP
+/// error's `<br />`), and a list with an entry, a comment line or a header row. The one tag a list
+/// is known to open with is the `<pre>` VX Vault wraps its list in, so that list is the list
+/// whatever its entries spell, and Tor's Onionoo answer, JSON, is never a page. **Pure.**
+fn is_page(body: &[u8]) -> bool {
+    let mut rest = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
+    loop {
+        rest = rest.trim_ascii_start();
+        let close: &[u8] = if rest.starts_with(b"<!--") {
+            b"-->"
+        } else if rest.starts_with(b"<?") {
+            b"?>"
+        } else {
+            break;
+        };
+        match rest.windows(close.len()).position(|window| window == close) {
+            Some(at) => rest = &rest[at + close.len()..],
+            None => return true,
+        }
     }
-    let head =
-        String::from_utf8_lossy(&body[..body.len().min(PAGE_HEAD_BYTES)]).to_ascii_lowercase();
-    ["<!doctype html", "<html", "<head", "<body"]
+    // A tag opens with a letter (`<html>`) or a `!` (`<!DOCTYPE html>`); `<203.0.113.5>` is none.
+    let Some(tag) = rest.strip_prefix(b"<").filter(|tag| {
+        tag.first()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'!')
+    }) else {
+        return false;
+    };
+    let name_len = tag
         .iter()
-        .any(|tag| head.contains(tag))
+        .position(|byte| !byte.is_ascii_alphanumeric())
+        .unwrap_or(tag.len());
+    !tag[..name_len].eq_ignore_ascii_case(b"pre")
 }
-
-/// How much of a body [`is_page`] reads for an HTML document's opening tags.
-const PAGE_HEAD_BYTES: usize = 1024;
 
 /// Where the publisher's date of the copy at `copy` is kept: beside it, with the copy's length
 /// and CRC-32, so it is read only with the body it came with.
@@ -667,6 +674,19 @@ fn download(
             SourceOutcomeKind::ProtocolDrift,
             format!("larger than {MAX_FEED_BYTES} bytes"),
         )),
+        // A page served in the list's place is a failed download, never kept, so the copy kept
+        // before it still answers; it is a challenge when the fetch read it as one.
+        Some(response) if response.status == 200 && is_page(&response.body) => Err((
+            if fetched.outcome.kind == SourceOutcomeKind::BotWaf {
+                SourceOutcomeKind::BotWaf
+            } else {
+                SourceOutcomeKind::ProtocolDrift
+            },
+            format!(
+                "an HTML page of {} bytes in place of the list",
+                response.body.len()
+            ),
+        )),
         Some(response) if response.status == 200 => {
             let updated = response
                 .header_value("last-modified")
@@ -750,6 +770,7 @@ impl Listed {
 
 /// Every entry of a feed body in `format`.
 fn index(format: Format, body: &str) -> Listed {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let mut listed = Listed::default();
     if format == Format::Onionoo {
         index_relays(body, &mut listed);
@@ -814,11 +835,12 @@ fn listed_key(word: &str) -> Option<Key> {
 fn url_key(url: &str) -> Option<Key> {
     let url = url.trim();
     // What comes before `://` must be a URI scheme (RFC 3986: a letter, then letters, digits, `+`,
-    // `-` and `.`), so a `://` inside markup (`<link href="https://…">`) is no URL.
+    // `-` and `.`). A `://` after anything else is inside the entry, as a URL in its query, and
+    // the entry is read without a scheme, so markup around one (`<link href="https://…">`) is no
+    // host.
     let rest = match url.split_once("://") {
         Some((scheme, rest)) if is_scheme(scheme) => rest,
-        Some(_) => return None,
-        None => url,
+        _ => url,
     };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let host = authority.rsplit('@').next().unwrap_or(authority);

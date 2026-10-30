@@ -513,24 +513,27 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
     );
 }
 
-/// A page served in a list's place (a "feed has moved" page whose markup holds URLs, a challenge
-/// page) is no download: it is never kept over the list, and never reads as "not listed".
+/// A page served in a list's place (a "feed has moved" page whose markup holds URLs, a refresh
+/// stub, a challenge page) is no download: it is never kept over the list, and never reads as "not
+/// listed". A challenge is a challenge, as the fetch reads it, and Tor's list is no exception.
 #[test]
 fn a_page_served_in_a_lists_place_never_reads_as_not_listed() {
     let moved = "<html><head><link rel=\"stylesheet\" href=\"https://openphish.com/static/main.css\">\
                  </head>\n<body><a href=\"https://openphish.com/\">The feed has moved</a></body></html>\n";
     let challenge = "<html><title>Just a moment...</title>Cloudflare</html>";
+    let stub = "<meta http-equiv=\"refresh\" content=\"0; url=https://new.example/feed.txt\">\n\
+                https://new.example/feed.txt\n";
     let subjects = [Subject::Name("login.evil.example".into())];
-    for page in [moved, challenge] {
+    for (page, kind) in [
+        (moved, SourceOutcomeKind::ProtocolDrift),
+        (challenge, SourceOutcomeKind::BotWaf),
+        (stub, SourceOutcomeKind::ProtocolDrift),
+    ] {
         let net = Net::serving();
         net.set("openphish", Reply::Body(page.into()));
         let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), None);
         let (entities, rows) = check(&feeds, &subjects, "s", now());
-        assert_eq!(
-            row(&rows, "openphish").kind,
-            SourceOutcomeKind::ProtocolDrift,
-            "{page}"
-        );
+        assert_eq!(row(&rows, "openphish").kind, kind, "{page}");
         assert!(
             listings(&entities, "login.evil.example")
                 .iter()
@@ -543,7 +546,7 @@ fn a_page_served_in_a_lists_place_never_reads_as_not_listed() {
     let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
     let start = now();
     let _ = check(&feeds, &subjects, "s", start);
-    for page in [moved, challenge] {
+    for page in [moved, challenge, stub] {
         net.set("openphish", Reply::Body(page.into()));
         let (entities, rows) = check(&feeds, &subjects, "s", start + 19 * 3_600);
         assert_eq!(row(&rows, "openphish").kind, SourceOutcomeKind::Success);
@@ -562,7 +565,79 @@ fn a_page_served_in_a_lists_place_never_reads_as_not_listed() {
             sample("openphish")
         );
     }
+    // Tor's relay list, JSON, is replaced by no page either.
+    let relay = [address("204.8.96.141")];
+    let _ = check(&feeds, &relay, "s", start);
+    net.set("torexits", Reply::Body(challenge.into()));
+    let (entities, rows) = check(&feeds, &relay, "s", start + 2 * 3_600);
+    assert_eq!(row(&rows, "torexits").kind, SourceOutcomeKind::Success);
+    assert!(
+        listings(&entities, "204.8.96.141")
+            .iter()
+            .any(|(source, _, _)| source == "torexits")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("torexits")).expect("copy"),
+        sample("torexits")
+    );
     std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A body is a page by how it opens, never by what its entries spell: a tag after any byte-order
+/// mark, white space, XML declaration and comments, other than the `<pre>` VX Vault wraps its list
+/// in.
+#[test]
+fn a_body_is_a_page_by_how_it_opens() {
+    let padding = " ".repeat(2_048);
+    for page in [
+        "<!DOCTYPE html><html></html>".to_owned(),
+        "\u{feff}<?xml version=\"1.0\"?>\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\">"
+            .to_owned(),
+        "<meta http-equiv=\"refresh\" content=\"0; url=https://new.example/feed.txt\">".to_owned(),
+        "<script>location = 'https://new.example/feed.txt'</script>".to_owned(),
+        "<br />\n<b>Warning</b>: feed.php on line 3<br />\n198.51.100.20\n".to_owned(),
+        format!("{padding}<!-- generated -->\n<html><body>moved</body></html>"),
+        "<!-- never closed".to_owned(),
+    ] {
+        assert!(is_page(page.as_bytes()), "{page}");
+    }
+    for list in [
+        sample("vxvault").to_owned(),
+        "<PRE>\nhttp://203.0.113.5/<header><body>.exe\n</PRE>\n".to_owned(),
+        sample("torexits").to_owned(),
+        "# <html> is no entry\n198.51.100.20\n".to_owned(),
+        "\u{feff}http://evil.example/<body>\n".to_owned(),
+        "<203.0.113.5>\n".to_owned(),
+        String::new(),
+    ] {
+        assert!(!is_page(list.as_bytes()), "{list}");
+    }
+}
+
+/// An entry is read by its host however a `://` falls in it: after its scheme, in its query (the
+/// entry is read without a scheme) or in markup (no host); and a list's byte-order mark is no part
+/// of its first entry.
+#[test]
+fn an_entry_is_read_by_its_host_wherever_a_scheme_falls_in_it() {
+    let host = |entry: &str| match url_key(entry) {
+        Some(Key::Name(name)) => Some(name),
+        _ => None,
+    };
+    assert_eq!(
+        host("https://login.evil.example/x").as_deref(),
+        Some("login.evil.example")
+    );
+    assert_eq!(
+        host("evil.example/g.php?u=http://x.example/").as_deref(),
+        Some("evil.example")
+    );
+    assert_eq!(host("<link href=\"https://cdn.example/main.css\">"), None);
+    let listed = index(
+        Format::Urls,
+        "\u{feff}http://first.example/a\nhttp://second.example/b\n",
+    );
+    assert_eq!(listed.entries, 2);
+    assert!(listed.names.contains_key("first.example"));
 }
 
 #[test]
@@ -999,7 +1074,7 @@ fn a_copy_that_cannot_be_refreshed_answers_only_for_when_it_was_downloaded() {
 fn a_list_is_the_list_however_it_reads_and_a_kept_page_is_no_copy() {
     let net = Net::serving();
     let vxvault = format!(
-        "{}http://45.131.135.227/Captcha.exe\n",
+        "{}http://45.131.135.227/Captcha.exe\nhttp://203.0.113.5/<header><body>.exe\n",
         sample("vxvault").replace("</pre>\n", "")
     );
     net.set("vxvault", Reply::Body(vxvault));
@@ -1009,16 +1084,23 @@ fn a_list_is_the_list_however_it_reads_and_a_kept_page_is_no_copy() {
     let feodo = address("162.243.103.246");
     let (entities, rows) = check(
         &feeds,
-        &[address("45.131.135.227"), feodo.clone()],
+        &[
+            address("45.131.135.227"),
+            address("203.0.113.5"),
+            feodo.clone(),
+        ],
         "s",
         start,
     );
     assert_eq!(row(&rows, "vxvault").kind, SourceOutcomeKind::Success);
-    assert!(
-        listings(&entities, "45.131.135.227")
-            .iter()
-            .any(|(source, _, _)| source == "vxvault")
-    );
+    for listed in ["45.131.135.227", "203.0.113.5"] {
+        assert!(
+            listings(&entities, listed)
+                .iter()
+                .any(|(source, _, _)| source == "vxvault"),
+            "{listed}"
+        );
+    }
     assert!(
         listings(&entities, "162.243.103.246")
             .iter()
