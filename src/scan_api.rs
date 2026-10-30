@@ -1101,11 +1101,7 @@ impl ScanApi {
         };
         // The general results() loader permits a much larger saved scan. Exports
         // must acquire their smaller I/O budget before allocating parsed records.
-        let (results, _) = match self
-            .service
-            .store()
-            .results_with_byte_budget(id, max_bytes)
-        {
+        let (results, _) = match self.service.store().results_with_byte_budget(id, max_bytes) {
             Ok(found) => found,
             Err(crate::scan_store::StoreError::Invalid(message)) => {
                 return error(413, &message);
@@ -1663,20 +1659,24 @@ mod tests {
         let refused = api.export_with_budget(&id, &csv, saved - 1);
         assert_eq!(refused.status, 413, "{}", refused.text());
 
-        let normal = api.handle(
-            "GET",
-            &format!("/api/scans/{id}/export"),
-            "format=csv",
-        );
+        let normal = api.handle("GET", &format!("/api/scans/{id}/export"), "format=csv");
         assert_eq!(normal.status, 200, "{}", normal.text());
-        assert!(normal.body.starts_with(b"Updated,Type,Module,Source,F/P,Data"));
+        assert!(
+            normal
+                .body
+                .starts_with(b"Updated,Type,Module,Source,F/P,Data")
+        );
 
         // A corrupt saved file must not be parsed for an invalid format.
         std::fs::write(&path, b"not JSON").unwrap();
         let invalid = Params(vec![("format".into(), "unknown".into())]);
         let refused = api.export_with_budget(&id, &invalid, 1);
         assert_eq!(refused.status, 400, "{}", refused.text());
-        assert!(refused.text().contains("unsupported single-scan export format"));
+        assert!(
+            refused
+                .text()
+                .contains("unsupported single-scan export format")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1700,7 +1700,8 @@ mod tests {
         let limited = api.export_with_budget(&id, &html, body_bytes - 1);
         assert_eq!(limited.status, 413, "{}", limited.text());
         assert!(limited.text().contains("export output budget exceeded"));
-        assert!(!limited.body.starts_with(b"<!DOCTYPE html"));
+        assert_eq!(limited.content_type, JSON);
+        assert!(limited.filename.is_none());
 
         let accepted = api.export_with_budget(&id, &html, body_bytes);
         assert_eq!(accepted.status, 200, "{}", accepted.text());
