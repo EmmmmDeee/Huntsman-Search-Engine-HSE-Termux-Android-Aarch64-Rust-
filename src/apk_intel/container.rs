@@ -622,7 +622,7 @@ mod tests {
         let different = member_with_signers(vec![verified_claim("bb", 28, 32)]);
         let different_scope = member_with_signers(vec![verified_claim("aa", 33, 35)]);
         let missing = member_with_signers(Vec::new());
-        assert_eq!(signer_continuity(&[a.clone()]), "unverified");
+        assert_eq!(signer_continuity(std::slice::from_ref(&a)), "unverified");
         assert_eq!(
             signer_continuity(&[a.clone(), same]),
             "authenticated_sdk_scope_match"
