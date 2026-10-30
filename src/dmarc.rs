@@ -287,6 +287,32 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_version_suffixes_are_not_mail_policies() {
+        // RFC 7489 section 6.3: the v tag must be precisely DMARC1.
+        // A DNS TXT record advertising another version is not an enforcement verdict.
+        for raw in [
+            "v=DMARC10; p=reject",
+            "v=DMARC1beta; p=reject",
+            "v=DMARC1 p=reject",
+            "v=DMARC1\0; p=reject",
+            "v=DMARC1x; p=quarantine",
+        ] {
+            assert!(!is_dmarc(raw), "version gate accepted {raw:?}");
+            assert!(parse(raw).is_none(), "parser accepted {raw:?}");
+        }
+        // Valid separators and case-insensitive tag letters still work.
+        for raw in [
+            "v=DMARC1",
+            "V=dmarc1",
+            "v=DMARC1; p=reject",
+            "v=DMARC1 \t; p=quarantine",
+        ] {
+            assert!(is_dmarc(raw), "version gate refused {raw:?}");
+            assert!(parse(raw).is_some(), "parser refused {raw:?}");
+        }
+    }
+
+    #[test]
     fn recognises_only_dmarc_records() {
         assert!(is_dmarc("v=DMARC1; p=reject"));
         assert!(!is_dmarc("v=spf1 -all"));
