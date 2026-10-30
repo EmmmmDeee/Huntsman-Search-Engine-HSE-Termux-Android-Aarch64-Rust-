@@ -1685,16 +1685,15 @@ mod tests {
     fn single_export_rejects_oversized_output_without_returning_partial_bytes() {
         let (api, dir) = api("single-export-output-budget");
         let id = finished(&api);
-        let saved = std::fs::metadata(dir.join(&id).join("results.json"))
-            .unwrap()
-            .len();
-        // The HTML investigation report adds substantial layout around saved
-        // evidence, so its output exceeds the source JSON size.
+        // Missing optional results is a valid, zero-byte input. Use it to
+        // exercise the HTML output limit independently of the input budget:
+        // a large saved JSON fixture may be bigger than rendered HTML.
+        std::fs::remove_file(dir.join(&id).join("results.json")).unwrap();
         let path = format!("/api/scans/{id}/export");
         let normal = api.handle("GET", &path, "format=html");
         assert_eq!(normal.status, 200, "{}", normal.text());
         let body_bytes = u64::try_from(normal.body.len()).unwrap();
-        assert!(body_bytes > saved);
+        assert!(body_bytes > 1, "HTML report must contain output bytes");
 
         let html = Params(vec![("format".into(), "html".into())]);
         let limited = api.export_with_budget(&id, &html, body_bytes - 1);
