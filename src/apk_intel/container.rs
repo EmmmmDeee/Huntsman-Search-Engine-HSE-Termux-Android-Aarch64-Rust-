@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use super::{
-    Error, MAX_APK_MANIFEST_BYTES, directory_bounds, hex32, le16, le32, member,
-    read_member, scan_id, sha256, suspicious,
+    Error, MAX_APK_MANIFEST_BYTES, directory_bounds, hex32, le16, le32, member, read_member,
+    scan_id, sha256, suspicious,
 };
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::source_outcome::SourceExecutionOutcome;
@@ -46,7 +46,10 @@ pub struct Report {
 }
 
 fn format_hint(label: &str) -> &'static str {
-    match label.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()) {
+    match label
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+    {
         Some(ext) if ext == "apks" => "apks",
         Some(ext) if ext == "xapk" => "xapk",
         Some(ext) if ext == "apkm" => "apkm",
@@ -56,8 +59,7 @@ fn format_hint(label: &str) -> &'static str {
 
 fn role_hint(name: &str) -> &'static str {
     let filename = name.rsplit('/').next().unwrap_or(name);
-    if filename.eq_ignore_ascii_case("base.apk")
-        || filename.eq_ignore_ascii_case("base-master.apk")
+    if filename.eq_ignore_ascii_case("base.apk") || filename.eq_ignore_ascii_case("base-master.apk")
     {
         "base_filename_hint"
     } else {
@@ -113,18 +115,21 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         {
             return Err(Error::invalid_value("unsafe APK set member path"));
         }
-        if !seen.insert(entry.name)
-            || !seen_casefolded.insert(entry.name.to_ascii_lowercase())
-        {
-            return Err(Error::invalid_value("duplicate or case-ambiguous APK set member path"));
+        if !seen.insert(entry.name) || !seen_casefolded.insert(entry.name.to_ascii_lowercase()) {
+            return Err(Error::invalid_value(
+                "duplicate or case-ambiguous APK set member path",
+            ));
         }
-        let Some(local_at) = le32(data, at + 42).and_then(|value| usize::try_from(value).ok()) else {
+        let Some(local_at) = le32(data, at + 42).and_then(|value| usize::try_from(value).ok())
+        else {
             return Err(Error::invalid_value("invalid local ZIP header offset"));
         };
         if le16(data, local_at + 6) != Some(entry.flags)
             || le16(data, local_at + 8) != Some(entry.method)
         {
-            return Err(Error::invalid_value("central/local ZIP flags or methods disagree"));
+            return Err(Error::invalid_value(
+                "central/local ZIP flags or methods disagree",
+            ));
         }
         let end = entry
             .payload_start
@@ -145,7 +150,9 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             return Err(Error::invalid_value("APK set exceeds 32 nested APKs"));
         }
         if entry.method != 0 && entry.method != 8 {
-            return Err(Error::invalid_value("unsupported nested APK compression method"));
+            return Err(Error::invalid_value(
+                "unsupported nested APK compression method",
+            ));
         }
         if entry.size > MAX_NESTED_BYTES {
             return Err(Error::invalid_value("nested APK exceeds 64 MiB limit"));
@@ -153,13 +160,20 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         let (bytes, quirk) = read_member(data, &entry, MAX_NESTED_BYTES, &mut budget)
             .map_err(Error::invalid_value)?;
         if quirk.is_some() {
-            return Err(Error::invalid_value("unexpected nested APK compression quirk"));
+            return Err(Error::invalid_value(
+                "unexpected nested APK compression quirk",
+            ));
         }
         let (inventory, archive) = super::walk(&bytes)?;
         let (package, version, manifest_error) = match archive.manifest {
             Some(manifest_member) => {
                 let mut manifest_budget = MAX_APK_MANIFEST_BYTES;
-                match read_member(&bytes, &manifest_member, MAX_APK_MANIFEST_BYTES, &mut manifest_budget) {
+                match read_member(
+                    &bytes,
+                    &manifest_member,
+                    MAX_APK_MANIFEST_BYTES,
+                    &mut manifest_budget,
+                ) {
                     Ok((manifest_bytes, _)) => match super::axml::manifest(&manifest_bytes) {
                         Ok(parsed) => (parsed.package, parsed.version_code, None),
                         Err(error) => (None, None, Some(error)),
@@ -167,7 +181,11 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
                     Err(error) => (None, None, Some(error)),
                 }
             }
-            None => (None, None, Some("missing nested AndroidManifest.xml".to_owned())),
+            None => (
+                None,
+                None,
+                Some("missing nested AndroidManifest.xml".to_owned()),
+            ),
         };
         members.push(NestedApk {
             path: entry.name.to_owned(),
@@ -182,17 +200,23 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         });
     }
     if pos != dir_end {
-        return Err(Error::invalid_value("APK set directory count/size disagree"));
+        return Err(Error::invalid_value(
+            "APK set directory count/size disagree",
+        ));
     }
     if members.is_empty() {
         return Err(Error::invalid_value("APK set has no nested APK members"));
     }
     let package_consistency = consistency(
-        members.iter().map(|member| member.manifest_package_unverified.as_deref()),
+        members
+            .iter()
+            .map(|member| member.manifest_package_unverified.as_deref()),
         members.len(),
     );
     let version_consistency = consistency(
-        members.iter().map(|member| member.manifest_version_code_unverified.as_deref()),
+        members
+            .iter()
+            .map(|member| member.manifest_version_code_unverified.as_deref()),
         members.len(),
     );
     let sid = scan_id(SOURCE, label);
@@ -224,7 +248,10 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             &sid,
             Evidence::new(
                 EvidenceProvenance::for_scan(SOURCE, &sid),
-                format!("Exact decompressed APK bytes in {label}, member {:?}", nested.path),
+                format!(
+                    "Exact decompressed APK bytes in {label}, member {:?}",
+                    nested.path
+                ),
             )
             .with_attr("apk_member_sha256", nested.sha256.as_str())
             .with_attr("apk_member_path", nested.path.as_str())
@@ -233,12 +260,19 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
                 "apk_manifest_package_unverified",
                 nested.manifest_package_unverified.as_deref().unwrap_or(""),
             )
-            .with_attr("apk_member_role_hint_unverified", nested.role_hint_unverified),
+            .with_attr(
+                "apk_member_role_hint_unverified",
+                nested.role_hint_unverified,
+            ),
             &[SOURCE, "offline", "apk_member"],
         );
     }
     merge_by_uid(&mut entities);
-    let outcomes = vec![SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())];
+    let outcomes = vec![SourceExecutionOutcome::success(
+        SOURCE,
+        now_unix,
+        entities.len(),
+    )];
     Ok(Report {
         container_sha256: outer_sha,
         container_size_bytes: data.len(),
@@ -273,7 +307,8 @@ mod tests {
             local[..4].copy_from_slice(b"PK\x03\x04");
             local[8..10].copy_from_slice(&method.to_le_bytes());
             local[14..18].copy_from_slice(&crc.to_le_bytes());
-            local[18..22].copy_from_slice(&u32::try_from(packed.len()).expect("packed").to_le_bytes());
+            local[18..22]
+                .copy_from_slice(&u32::try_from(packed.len()).expect("packed").to_le_bytes());
             local[22..26].copy_from_slice(&u32::try_from(bytes.len()).expect("size").to_le_bytes());
             local[26..28].copy_from_slice(&name_len.to_le_bytes());
             out.extend_from_slice(&local);
@@ -284,8 +319,10 @@ mod tests {
             central[..4].copy_from_slice(b"PK\x01\x02");
             central[10..12].copy_from_slice(&method.to_le_bytes());
             central[16..20].copy_from_slice(&crc.to_le_bytes());
-            central[20..24].copy_from_slice(&u32::try_from(packed.len()).expect("packed").to_le_bytes());
-            central[24..28].copy_from_slice(&u32::try_from(bytes.len()).expect("size").to_le_bytes());
+            central[20..24]
+                .copy_from_slice(&u32::try_from(packed.len()).expect("packed").to_le_bytes());
+            central[24..28]
+                .copy_from_slice(&u32::try_from(bytes.len()).expect("size").to_le_bytes());
             central[28..30].copy_from_slice(&name_len.to_le_bytes());
             central[42..46].copy_from_slice(&offset.to_le_bytes());
             directory.extend_from_slice(&central);
@@ -305,7 +342,10 @@ mod tests {
     }
 
     fn apk() -> Vec<u8> {
-        zip(&[("AndroidManifest.xml", b"not binary xml", 0), ("classes.dex", b"not dex", 0)])
+        zip(&[
+            ("AndroidManifest.xml", b"not binary xml", 0),
+            ("classes.dex", b"not dex", 0),
+        ])
     }
 
     #[test]
@@ -321,7 +361,10 @@ mod tests {
         assert_eq!(report.apk_members[0].sha256, hex32(&sha256(&inner)));
         assert_eq!(report.apk_members[1].sha256, hex32(&sha256(&inner)));
         assert_eq!(report.package_consistency, "unverified");
-        assert_eq!(report.apk_members[0].role_hint_unverified, "base_filename_hint");
+        assert_eq!(
+            report.apk_members[0].role_hint_unverified,
+            "base_filename_hint"
+        );
         assert!(report.apk_members[0].manifest_error.is_some());
         assert_eq!(report.entities.len(), 2);
         assert_eq!(report.outcomes.len(), 1);
@@ -331,16 +374,22 @@ mod tests {
     fn rejects_missing_nested_apks_and_duplicate_names() {
         assert!(run(&zip(&[("toc.pb", b"metadata", 0)]), "x.apks", 1).is_err());
         let inner = apk();
-        assert!(run(
-            &zip(&[("base.apk", &inner, 0), ("base.apk", &inner, 0)]),
-            "x.apks",
-            1
-        ).is_err());
-        assert!(run(
-            &zip(&[("base.apk", &inner, 0), ("BASE.APK", &inner, 0)]),
-            "x.apks",
-            1
-        ).is_err());
+        assert!(
+            run(
+                &zip(&[("base.apk", &inner, 0), ("base.apk", &inner, 0)]),
+                "x.apks",
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &zip(&[("base.apk", &inner, 0), ("BASE.APK", &inner, 0)]),
+                "x.apks",
+                1
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -366,10 +415,7 @@ mod tests {
             consistency([Some("a"), Some("b")].into_iter(), 2),
             "conflicted"
         );
-        assert_eq!(
-            consistency([Some("a"), None].into_iter(), 2),
-            "unverified"
-        );
+        assert_eq!(consistency([Some("a"), None].into_iter(), 2), "unverified");
         assert_eq!(
             consistency([Some("a"), Some("a")].into_iter(), 2),
             "consistent_unverified"
