@@ -242,7 +242,7 @@ Remove it only when you no longer need it; `~/.huntsman.env` holds your
 provider keys:
 
 ```sh
-rm -rf ~/.huntsman ~/.cache/huntsman-recon-target
+rm -rf ~/.huntsman ~/.cache/huntsman-recon-target ~/.cache/huntsman-recon-checkouts
 rm -f ~/.huntsman.env
 ```
 
@@ -271,7 +271,7 @@ huntsman open
 | `huntsman status` | Whether it runs, its PID, memory, threads and address; exits 0 only when the page works. |
 | `huntsman open` | Open the page in the phone's browser. Needs the Termux:API app and `pkg install termux-api`. |
 | `huntsman logs` | Follow the server's log. |
-| `huntsman clean` | Remove the Rust build cache and Huntsman temporary files. |
+| `huntsman clean` | Remove the Rust build cache, the caches `scripts/lifecycle.sh` keeps for each checkout, and Huntsman temporary files. |
 | `huntsman scan-pipe TARGET [KIND]` | Scan, save the ledger under `~/huntsman-reports`, verify it, and write a Markdown report next to it. |
 | `huntsman report SCAN.json` | Write the Markdown report for a saved scan: the full ledger, unredacted, with the result of `verify`. With Termux:API installed, it is also copied to the clipboard. |
 | `huntsman` anything else | Runs `huntsman-recon` with the same arguments, for example `huntsman doctor` or `huntsman email ADDR`. |
