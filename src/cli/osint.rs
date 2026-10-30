@@ -21,7 +21,7 @@ use huntsman_recon::rhinser_nfc;
 use huntsman_recon::rhinser_workspace::{MAX_WORKSPACE_BYTES, Workspace};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-pub(super) const OSINT_HELP: &str = "osint nfc apdu|ndef HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID] | osint workspace FILE init|show|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+pub(super) const OSINT_HELP: &str = "osint nfc apdu|ndef HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
@@ -65,6 +65,13 @@ fn catalog_cmd(args: &[String]) -> ExitCode {
             Some(tool) => emit(&tool, true),
             None => fail(EX_DATAERR, "unknown catalogue tool"),
         },
+        [flag, id, query] if flag == "--query" => match catalog.search_url(id, query) {
+            Ok(url) => {
+                println!("{url}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(EX_DATAERR, &error),
+        },
         [flag, id] if flag == "--url" => match catalog.tool(id) {
             Some(tool) => {
                 println!("{}", tool.tool.url);
@@ -74,7 +81,7 @@ fn catalog_cmd(args: &[String]) -> ExitCode {
         },
         _ => fail(
             EX_USAGE,
-            "usage: osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID]",
+            "usage: osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY]",
         ),
     }
 }
