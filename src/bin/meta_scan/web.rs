@@ -156,7 +156,6 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
     })
 }
 
-
 #[derive(Default)]
 struct Saved {
     reports: Vec<Report>,
