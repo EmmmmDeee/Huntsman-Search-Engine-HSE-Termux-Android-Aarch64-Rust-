@@ -4,8 +4,8 @@
 //! Native HTML forms make all collection, filtering, state and exports Rust-owned.
 
 use super::{
-    API_HOST, HttpRequest, Report, WEB_MAX_CLIENTS, allowed_host, checked_username,
-    configured_secret, http_reply, json_reply, read_request, scan, scan_indexed, transport,
+    API_HOST, CollectionMode, HttpRequest, Report, WEB_MAX_CLIENTS, allowed_host, checked_username,
+    configured_secret, http_reply, json_reply, read_request, scan_mode, transport,
     unix_now,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,7 +26,7 @@ const MAX_PREVIEW_CHARS: usize = 12_000;
 struct Saved {
     reports: Vec<Report>,
     handles: String,
-    provider: bool,
+    mode: CollectionMode,
     business: bool,
 }
 
@@ -302,8 +302,12 @@ fn render_page(state: &WebState, message: Option<&str>) -> String {
             "provider",
             "RapidAPI profile and business enrichment (may be paid)",
         ),
+        (
+            "combined",
+            "Both: keyless indexed discovery and paid provider enrichment",
+        ),
     ] {
-        let selected = if (mode == "provider") == saved.provider {
+        let selected = if CollectionMode::from_name(mode) == Some(saved.mode) {
             " selected"
         } else {
             ""
@@ -375,14 +379,14 @@ fn handle_form_scan(
         }
     };
     let mode = form.get("mode").map_or("indexed", String::as_str);
-    if !matches!(mode, "indexed" | "provider") {
+    let Some(mode) = CollectionMode::from_name(mode) else {
         html_response(
             stream,
             "400 Bad Request",
             &render_page(state, Some("Unknown scan mode")),
         );
         return;
-    }
+    };
     let raw = form.get("handles").map_or("", String::as_str);
     let handles = match checked_handles(raw) {
         Ok(handles) => handles,
@@ -391,10 +395,9 @@ fn handle_form_scan(
             return;
         }
     };
-    let provider = mode == "provider";
     let business = form.get("business").is_some_and(|v| v == "yes");
-    let key = provider.then(configured_secret).flatten();
-    if provider && key.is_none() {
+    let key = mode.requires_key().then(configured_secret).flatten();
+    if mode.requires_key() && key.is_none() {
         html_response(
             stream,
             "400 Bad Request",
@@ -410,18 +413,15 @@ fn handle_form_scan(
     let mut bytes = 0;
     let mut limit_reached = false;
     for handle in handles {
-        let result = if provider {
-            scan(
-                &transport,
-                key.as_ref(),
-                &handle,
-                business,
-                unix_now(),
-                timeout,
-            )
-        } else {
-            scan_indexed(&transport, &handle, unix_now())
-        };
+        let result = scan_mode(
+            &transport,
+            key.as_ref(),
+            &handle,
+            mode,
+            business,
+            unix_now(),
+            timeout,
+        );
         if let Ok(report) = result {
             let size = serde_json::to_vec(&report).map_or(MAX_REPORT_JSON_BYTES + 1, |v| v.len());
             if bytes + size > MAX_REPORT_JSON_BYTES {
@@ -436,7 +436,7 @@ fn handle_form_scan(
     let mut saved = state.saved.lock().unwrap_or_else(PoisonError::into_inner);
     saved.reports = reports;
     raw.clone_into(&mut saved.handles);
-    saved.provider = provider;
+    saved.mode = mode;
     saved.business = business;
     drop(saved);
     let message = if limit_reached {
@@ -540,32 +540,28 @@ fn handle_compat_json(stream: &mut TcpStream, req: &HttpRequest, port: u16, time
         .get("mode")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("indexed");
-    if !matches!(mode, "indexed" | "provider") {
+    let Some(mode) = CollectionMode::from_name(mode) else {
         let _ = json_reply(
-            stream,
-            "400 Bad Request",
+            stream, "400 Bad Request",
             &serde_json::json!({"error":"unknown collection mode"}),
         );
         return;
-    }
+    };
     let business = body
         .get("include_business")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
-    let key = (mode == "provider").then(configured_secret).flatten();
+    let key = mode.requires_key().then(configured_secret).flatten();
     let transport = transport(timeout);
-    let result = if mode == "provider" {
-        scan(
-            &transport,
-            key.as_ref(),
-            username,
-            business,
-            unix_now(),
-            timeout,
-        )
-    } else {
-        scan_indexed(&transport, username, unix_now())
-    };
+    let result = scan_mode(
+        &transport,
+        key.as_ref(),
+        username,
+        mode,
+        business,
+        unix_now(),
+        timeout,
+    );
     match result {
         Ok(report) => {
             let _ = json_reply(
