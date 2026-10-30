@@ -8,10 +8,8 @@ use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +23,9 @@ use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use huntsman_recon::web_query::{self, SearchHit};
 use serde::Serialize;
 use serde_json::{Value, json};
+
+#[path = "meta_scan/web.rs"]
+mod web;
 
 const API_HOST: &str = "facebook-pages-scraper3.p.rapidapi.com";
 const API_ORIGIN: &str = "https://facebook-pages-scraper3.p.rapidapi.com:443";
@@ -550,7 +551,7 @@ fn http_reply(
 ) -> std::io::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
         bytes.len()
     )?;
     stream.write_all(bytes)
@@ -671,175 +672,6 @@ fn allowed_host(host: Option<&str>, port: u16) -> bool {
     host.is_some_and(|h| allowed.iter().any(|v| h.eq_ignore_ascii_case(v)))
 }
 
-fn serve_scan_request(stream: &mut TcpStream, request: &HttpRequest, port: u16, timeout: Duration) {
-    if request.header("X-Meta-Scan") != Some("1")
-        || request
-            .header("Content-Type")
-            .is_none_or(|v| !v.to_ascii_lowercase().starts_with("application/json"))
-        || request.header("Origin").is_some_and(|v| {
-            v != format!("http://127.0.0.1:{port}") && v != format!("http://localhost:{port}")
-        })
-    {
-        let _ = json_reply(
-            stream,
-            "403 Forbidden",
-            &json!({"error":"same-origin JSON request and X-Meta-Scan header required"}),
-        );
-        return;
-    }
-    let Ok(input) = serde_json::from_slice::<Value>(&request.body) else {
-        let _ = json_reply(
-            stream,
-            "400 Bad Request",
-            &json!({"error":"invalid JSON body"}),
-        );
-        return;
-    };
-    let Some(username) = input.get("username").and_then(Value::as_str) else {
-        let _ = json_reply(
-            stream,
-            "400 Bad Request",
-            &json!({"error":"username required"}),
-        );
-        return;
-    };
-    let business = input
-        .get("include_business")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let mode = input
-        .get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("indexed");
-    if !matches!(mode, "indexed" | "provider") {
-        let _ = json_reply(
-            stream,
-            "400 Bad Request",
-            &json!({"error":"unknown collection mode"}),
-        );
-        return;
-    }
-    let key = (mode == "provider").then(configured_secret).flatten();
-    let transport = transport(timeout);
-    let result = if mode == "provider" {
-        scan(
-            &transport,
-            key.as_ref(),
-            username,
-            business,
-            unix_now(),
-            timeout,
-        )
-    } else {
-        scan_indexed(&transport, username, unix_now())
-    };
-    match result {
-        Ok(report) => {
-            let _ = json_reply(
-                stream,
-                "200 OK",
-                &serde_json::to_value(report)
-                    .unwrap_or_else(|_| json!({"error":"serialisation failed"})),
-            );
-        }
-        Err(reason) => {
-            let _ = json_reply(stream, "400 Bad Request", &json!({"error":reason}));
-        }
-    }
-}
-
-fn serve_client(mut stream: TcpStream, port: u16, timeout: Duration) {
-    let request = match read_request(&mut stream) {
-        Ok(req) => req,
-        Err(msg) => {
-            let _ = json_reply(&mut stream, "400 Bad Request", &json!({"error":msg}));
-            return;
-        }
-    };
-    if !allowed_host(request.header("Host"), port) {
-        let _ = json_reply(
-            &mut stream,
-            "403 Forbidden",
-            &json!({"error":"loopback Host header required"}),
-        );
-        return;
-    }
-    match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/") => {
-            let _ = http_reply(
-                &mut stream,
-                "200 OK",
-                "text/html; charset=utf-8",
-                include_str!("meta_scan.html").as_bytes(),
-            );
-        }
-        ("GET", "/api/status") => {
-            let _ = json_reply(
-                &mut stream,
-                "200 OK",
-                &json!({
-                    "name": "Huntsman MetaScan", "provider": API_HOST,
-                    "api_key_configured": configured_secret().is_some(),
-                    "binding": "loopback", "platform": "Termux-compatible, no root"
-                }),
-            );
-        }
-        ("POST", "/api/scan") => serve_scan_request(&mut stream, &request, port, timeout),
-        _ => {
-            let _ = json_reply(
-                &mut stream,
-                "404 Not Found",
-                &json!({"error":"route not found"}),
-            );
-        }
-    }
-}
-
-fn serve(bind: &str, timeout: Duration) -> Result<(), String> {
-    let addr: SocketAddr = bind
-        .parse()
-        .map_err(|_| "bind must be a numeric loopback address:port".to_owned())?;
-    if !addr.ip().is_loopback() || addr.port() < 1024 {
-        return Err("Web UI must bind to loopback and an unprivileged port (>=1024)".to_owned());
-    }
-    let listener = TcpListener::bind(addr).map_err(|e| format!("cannot listen on {bind}: {e}"))?;
-    println!("MetaScan Web UI: http://{bind}/");
-    let active = Arc::new(AtomicUsize::new(0));
-    for connection in listener.incoming() {
-        let Ok(mut client) = connection else {
-            continue;
-        };
-        let old = active.fetch_add(1, Ordering::AcqRel);
-        if old >= WEB_MAX_CLIENTS {
-            active.fetch_sub(1, Ordering::AcqRel);
-            let _ = json_reply(
-                &mut client,
-                "503 Service Unavailable",
-                &json!({"error":"connection capacity reached"}),
-            );
-            continue;
-        }
-        let counter = Arc::clone(&active);
-        let launched = thread::Builder::new()
-            .name("meta-scan-http".into())
-            .stack_size(2 * 1024 * 1024)
-            .spawn(move || {
-                struct Release(Arc<AtomicUsize>);
-                impl Drop for Release {
-                    fn drop(&mut self) {
-                        self.0.fetch_sub(1, Ordering::AcqRel);
-                    }
-                }
-                let _release = Release(counter);
-                serve_client(client, addr.port(), timeout);
-            });
-        if launched.is_err() {
-            active.fetch_sub(1, Ordering::AcqRel);
-        }
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum DisplayStyle {
     #[default]
@@ -952,7 +784,7 @@ fn run() -> Result<(), String> {
     let opts = parse_args(env::args().skip(1))?;
     let timeout = Duration::from_secs((opts.connect_timeout + opts.read_timeout).min(120));
     if opts.serve {
-        return serve(&opts.bind, timeout);
+        return web::serve(&opts.bind, timeout);
     }
     let names = if let Some(file) = opts.batch {
         let meta =
