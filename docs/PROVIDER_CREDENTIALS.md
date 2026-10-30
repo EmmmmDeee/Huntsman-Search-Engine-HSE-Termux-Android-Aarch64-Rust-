@@ -14,6 +14,33 @@ with `huntsman-recon credential-status` and configure a slot using
 `printf '%s' "$API_KEY" | huntsman-recon keys set HUNTSMAN_PROVIDER_KEY --stdin`.
 No credential values are required in CLI arguments, logs or source control.
 
+## SEC EDGAR: declared operator identity (no API key)
+
+The free SEC EDGAR source requires an **operator-controlled, contactable** User-Agent.
+The SEC's published fair-access example identifies the organisation and an administrator
+email. Huntsman therefore **does not send SEC requests** until the running process
+has a valid `HUNTSMAN_SEC_USER_AGENT` value.
+
+On Termux or another shell, set the value using **your own authorised email address**
+before starting `huntsman-recon`:
+
+```sh
+export HUNTSMAN_SEC_USER_AGENT='Huntsman-Recon YourAuthorisedContact@your-domain.example'
+```
+
+Replace the illustrative contact with a monitored email address you control.
+The setting is **not an API key** and is transmitted to SEC as a request header:
+do not use an address you are unwilling to share with that provider. It is
+process-environment configuration; a shell export does not survive a new terminal
+session unless configured in your private shell startup or service environment.
+
+Missing or malformed identity produces a `not_configured` provider outcome and
+no HTTP request, not an invented clean zero. Contact values are not included in
+provider outcome diagnostics or `Request` debug output. Respect the SEC's aggregate
+fair-access ceiling (currently 10 requests/second) and any stricter local pacing.
+
+Primary policy: https://www.sec.gov/search-filings/edgar-search-assistance/accessing-edgar-data
+
 ## Recovered/owned provider slots
 
 | Provider | Runtime slot(s) | Integration state |
