@@ -197,6 +197,7 @@ pub mod relation;
 pub mod resolve;
 pub mod retrieval_artifact;
 pub mod rf;
+pub mod rhinser_catalog;
 pub mod ripestat;
 pub mod robtex;
 pub mod roi;
