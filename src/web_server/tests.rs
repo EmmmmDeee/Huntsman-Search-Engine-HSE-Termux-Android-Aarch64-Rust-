@@ -2093,6 +2093,61 @@ fn scans_request(routes: &Routes, token: Option<&str>, request: &str) -> String 
     ))
 }
 
+/// Heavy saved-scan pages and exports must not spawn unbounded 4 MiB-stack workers.
+/// Even with both places occupied, the operator can still inspect status or stop the scan.
+#[test]
+fn saved_scan_heavy_admission_keeps_control_routes_responsive() {
+    let (routes, id, dir) = scan_routes("heavy-admission");
+    let api = routes.scans.as_ref().expect("scan API installed");
+    let permits: Vec<_> = (0..MAX_HEAVY_SCAN_REQUESTS)
+        .map(|_| {
+            Slot::take_of(api.web_request_slots(), MAX_HEAVY_SCAN_REQUESTS)
+                .expect("free heavy worker permit")
+        })
+        .collect();
+    let export = format!("GET /api/scans/{id}/export?format=csv HTTP/1.1\r\n{HEADER}\r\n");
+    let blocked = scans_request(&routes, None, &export);
+    assert!(blocked.starts_with("HTTP/1.1 503"), "{blocked}");
+    assert!(
+        blocked.contains("saved-scan response capacity"),
+        "{blocked}"
+    );
+    let status = scans_request(
+        &routes,
+        None,
+        &format!("GET /api/scans/{id} HTTP/1.1\r\n{HEADER}\r\n"),
+    );
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    let listing = scans_request(&routes, None, &format!("GET /api/scans HTTP/1.1\r\n{HEADER}\r\n"));
+    assert!(listing.starts_with("HTTP/1.1 200"), "{listing}");
+    let stop = scans_request(
+        &routes,
+        None,
+        &format!("POST /api/scans/{id}/stop HTTP/1.1\r\n{HEADER}\r\n"),
+    );
+    assert!(
+        !stop.starts_with("HTTP/1.1 503"),
+        "scan stop must bypass heavy response saturation: {stop}"
+    );
+    // Authorization checks precede resource admission, even during overload.
+    let refused = scans_request(
+        &routes,
+        None,
+        &format!("GET /api/scans/{id}/export?format=csv HTTP/1.1\r\n\r\n"),
+    );
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+    drop(permits);
+    assert_eq!(api.web_request_slots().load(Ordering::Acquire), 0);
+    let recovered = scans_request(&routes, None, &export);
+    assert!(recovered.starts_with("HTTP/1.1 200"), "{recovered}");
+    assert_eq!(
+        api.web_request_slots().load(Ordering::Acquire),
+        0,
+        "finished response must release its heavy admission slot"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// An Excel export is bytes, sent whole after its headers, its length counted in bytes.
 #[test]
 fn an_excel_export_is_sent_as_bytes_with_its_exact_length() {
