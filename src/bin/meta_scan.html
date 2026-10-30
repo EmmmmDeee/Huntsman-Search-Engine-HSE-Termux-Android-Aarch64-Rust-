@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101a2b">
+<title>Huntsman MetaScan · Facebook page intelligence</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,Roboto,sans-serif;background:#0c1422;color:#e8edf8}
+*{box-sizing:border-box}body{margin:0;line-height:1.48}
+main{max-width:1000px;margin:auto;padding:clamp(16px,4vw,36px)}
+header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:24px}
+h1{font-size:clamp(26px,6vw,38px);margin:0;letter-spacing:-.04em}
+h2{font-size:20px;margin:0 0 14px}
+p{color:#b9c6dc;margin:8px 0}
+.tag{color:#9fd6ff;font-size:13px;text-transform:uppercase;letter-spacing:.11em;font-weight:700}
+.small{font-size:13px;color:#aec0d6}
+.status{border:1px solid #42617d;border-radius:30px;padding:7px 12px;background:#16263b;font-size:13px}
+.card{border:1px solid #30445e;border-radius:17px;background:#111e31;box-shadow:0 12px 44px #0002;padding:clamp(16px,3vw,26px);margin-bottom:20px}
+label{display:block;font-size:14px;font-weight:650;margin:12px 0 7px}
+textarea{display:block;width:100%;border:1px solid #526985;background:#0b1523;color:#fff;border-radius:11px;padding:14px;font:15px/1.6 ui-monospace,monospace;resize:vertical;min-height:110px}
+button{appearance:none;border:1px solid #61738f;border-radius:11px;background:#1f3552;color:#f4f8ff;padding:11px 16px;font:600 14px system-ui;cursor:pointer}
+button:hover{filter:brightness(1.13)}
+button:focus-visible,textarea:focus-visible{outline:3px solid #79baff;outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.primary{background:#1672d2;border-color:#368ceb}
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:15px}
+.checkbox{display:inline-flex;align-items:center;gap:9px;margin:0}
+.checkbox input{width:19px;height:19px;accent-color:#46a4ff}
+.notice{border-left:3px solid #e7ae54;padding:6px 12px;background:#37291750;margin:16px 0;border-radius:3px;font-size:13px}
+.results-head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:16px}
+.result{border:1px solid #3b526c;border-radius:12px;margin-top:15px;overflow:hidden}
+.result-head{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 15px;background:#182b44}
+.result-body{padding:12px 15px}
+.badge{font-size:12px;font-weight:700;border-radius:99px;padding:4px 9px;background:#424b61}
+.badge.observed{background:#135e51;color:#c2ffec}
+.badge.not_configured,.badge.entitlement_denied,.badge.rate_limited{background:#71521b;color:#ffedc4}
+.badge:not(.observed){outline:1px solid #ffffff22}
+pre{overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font-size:12px;line-height:1.55;color:#cbd8e9;background:#0c1728;padding:12px;border-radius:8px;max-height:370px;overflow-y:auto}
+summary{cursor:pointer;color:#a6d7ff;font-weight:600;font-size:14px}
+a{color:#8bcaff}
+footer{color:#91a4be;font-size:12px;margin:24px 0}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div><div class="tag">Huntsman · Native Rust</div><h1>MetaScan</h1><p>Public Facebook page intelligence</p></div>
+<div class="status" id="status">Checking provider configuration…</div>
+</header>
+<section class="card" aria-label="New scan">
+<h2>Run collection</h2>
+<p>Enter one Facebook page handle per line, up to 20. The original four MetaScan collection routes are supported when the RapidAPI subscription permits them.</p>
+<label for="handles">Public page handles</label>
+<textarea id="handles" spellcheck="false" placeholder="nasa&#10;HackUnderway" maxlength="3000" autocomplete="off"></textarea>
+<div class="row">
+<label class="checkbox"><input type="checkbox" id="business" checked>Business homepage, About &amp; transparency</label>
+</div>
+<div class="row">
+<button class="primary" id="scan">Start collection</button>
+<button id="json" disabled>Export JSON</button>
+<button id="txt" disabled>Export TXT</button>
+</div>
+<p id="progress" role="status" aria-live="polite" class="small">Ready. Data is not collected until you start a scan.</p>
+<div class="notice">Provider responses are third-party observations, not verified identity claims. This interface runs on your device and does not expose your API key to the browser. Missing fields and access denials are not treated as negative findings.</div>
+</section>
+<section class="card" id="reportSection" aria-label="Collected evidence">
+<div class="results-head"><h2>Results</h2><span class="small" id="count">No scan yet</span></div>
+<div id="results" aria-live="polite"><p>Run a scan to see separately classified outcomes for each collection route.</p></div>
+</section>
+<footer>Loopback-only Web UI. No root, Python, external frontend assets or telemetry. Uses Huntsman's bounded Rust HTTP transport. MetaScan functionality attributed to HackUnderway (MIT).</footer>
+</main>
+<script>
+(function () {
+  'use strict';
+  const $ = function (id) { return document.getElementById(id); };
+  const collected = [];
+  const labels = [
+    ['profile', 'Profile reconnaissance'],
+    ['business_home', 'Business homepage'],
+    ['business_about', 'About information'],
+    ['business_transparency', 'Page transparency']
+  ];
+  function text(tag, value, className) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = value == null ? '' : String(value);
+    return node;
+  }
+  function renderReport(report) {
+    const box = text('article', '', 'result');
+    const header = text('div', '', 'result-head');
+    const name = text('strong', '@' + report.username);
+    const link = document.createElement('a');
+    link.href = report.page_url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Open page ↗';
+    header.append(name, link);
+    box.appendChild(header);
+    const container = text('div', '', 'result-body');
+    container.appendChild(text('p', 'Source: ' + report.provider + ' · ' + report.verification, 'small'));
+    labels.forEach(function (pair) {
+      const outcome = report[pair[0]];
+      if (!outcome) return;
+      const row = text('div', '', 'result');
+      const title = text('div', '', 'result-head');
+      title.appendChild(text('strong', pair[1]));
+      title.appendChild(text('span', outcome.state, 'badge ' + outcome.state));
+      row.appendChild(title);
+      const body = text('div', '', 'result-body');
+      if (outcome.http_status) body.appendChild(text('p', 'HTTP ' + outcome.http_status, 'small'));
+      if (outcome.message) body.appendChild(text('p', outcome.message, 'small'));
+      if (outcome.data != null) {
+        const details = document.createElement('details');
+        details.open = true;
+        details.appendChild(text('summary', 'Provider JSON response'));
+        details.appendChild(text('pre', JSON.stringify(outcome.data, null, 2)));
+        body.appendChild(details);
+      }
+      row.appendChild(body);
+      container.appendChild(row);
+    });
+    box.appendChild(container);
+    $('results').appendChild(box);
+  }
+  function download(ext, content, mime) {
+    const blob = new Blob([content], {type: mime});
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'huntsman_meta_scan_' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + ext;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+  async function start() {
+    if ($('scan').disabled) return;
+    const names = $('handles').value.split(/[\r\n]+/).map(function (s) {
+      return s.trim().replace(/^@/, '');
+    }).filter(Boolean);
+    if (!names.length || names.length > 20 || names.some(function (s) {
+      return !/^[A-Za-z0-9._-]{1,100}$/.test(s) || s === '.' || s === '..';
+    })) {
+      $('progress').textContent = 'Enter 1–20 valid Facebook handles, one per line.';
+      return;
+    }
+    collected.length = 0;
+    $('results').replaceChildren();
+    $('scan').disabled = true;
+    $('json').disabled = true;
+    $('txt').disabled = true;
+    try {
+      for (let i = 0; i < names.length; i++) {
+        $('progress').textContent = 'Collecting ' + (i + 1) + ' of ' + names.length + ': @' + names[i];
+        try {
+          const response = await fetch('/api/scan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-Meta-Scan': '1'},
+            body: JSON.stringify({username: names[i], include_business: $('business').checked})
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || 'HTTP ' + response.status);
+          collected.push(payload);
+          renderReport(payload);
+        } catch (error) {
+          const failed = text('p', '@' + names[i] + ': ' + String(error), 'notice');
+          $('results').appendChild(failed);
+        }
+        $('count').textContent = collected.length + ' report(s)';
+      }
+      $('progress').textContent = 'Completed ' + names.length + ' request(s). Review endpoint statuses before interpreting the results.';
+    } finally {
+      $('scan').disabled = false;
+      $('json').disabled = collected.length === 0;
+      $('txt').disabled = collected.length === 0;
+    }
+  }
+  $('scan').addEventListener('click', start);
+  $('json').addEventListener('click', function () {
+    download('json', JSON.stringify(collected, null, 2), 'application/json');
+  });
+  $('txt').addEventListener('click', function () {
+    const output = collected.map(function (report) {
+      const lines = [
+        'Huntsman MetaScan', 'Username: ' + report.username,
+        'Page: ' + report.page_url, 'Time: ' + report.observed_at_unix,
+        'Verification: ' + report.verification, ''
+      ];
+      labels.forEach(function (pair) {
+        if (!report[pair[0]]) return;
+        const item = report[pair[0]];
+        lines.push('[' + pair[1] + ']', 'Status: ' + item.state, 'HTTP: ' + (item.http_status || 'n/a'));
+        if (item.message) lines.push('Note: ' + item.message);
+        if (item.data != null) lines.push(JSON.stringify(item.data, null, 2));
+        lines.push('');
+      });
+      return lines.join('\n');
+    }).join('\n---\n');
+    download('txt', output, 'text/plain');
+  });
+  fetch('/api/status').then(function (r) { return r.json(); }).then(function (status) {
+    $('status').textContent = status.api_key_configured ? '● API key configured' : '○ API key not configured';
+  }).catch(function () { $('status').textContent = 'Configuration unavailable'; });
+}());
+</script>
+</body>
+</html>
