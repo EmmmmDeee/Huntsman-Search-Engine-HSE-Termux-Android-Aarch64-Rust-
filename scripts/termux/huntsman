@@ -207,10 +207,12 @@ cmd_logs() {
 }
 
 cmd_clean() {
-  # A prebuilt install never compiles, so the Rust build cache is dead weight.
+  # A prebuilt install never compiles, so the Rust build cache is dead weight, and so are the
+  # caches scripts/lifecycle.sh keeps for each checkout.
   local cache="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}"
-  rm -rf "$cache" "${TMPDIR:-$PREFIX/tmp}"/huntsman-* 2>/dev/null || true
-  ok "removed $cache and Huntsman temporary files (runit rotates the service log itself)"
+  local checkouts="$HOME/.cache/huntsman-recon-checkouts"
+  rm -rf "$cache" "$checkouts" "${TMPDIR:-$PREFIX/tmp}"/huntsman-* 2>/dev/null || true
+  ok "removed $cache, $checkouts and Huntsman temporary files (runit rotates the service log itself)"
 }
 
 # Keep filenames bounded on Android filesystems, including very long or Unicode selectors.
