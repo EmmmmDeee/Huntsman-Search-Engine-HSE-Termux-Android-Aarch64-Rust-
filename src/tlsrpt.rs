@@ -89,8 +89,8 @@ mod tests {
 
     #[test]
     fn uppercase_mailto_scheme_keeps_report_recipient() {
-        let record = parse("v=TLSRPTv1; rua=MAILTO:Reports@Example.org!10m")
-            .expect("TLS-RPT record");
+        let record =
+            parse("v=TLSRPTv1; rua=MAILTO:Reports@Example.org!10m").expect("TLS-RPT record");
         assert_eq!(record.emails, ["Reports@Example.org"]);
         assert!(record.urls.is_empty());
     }
