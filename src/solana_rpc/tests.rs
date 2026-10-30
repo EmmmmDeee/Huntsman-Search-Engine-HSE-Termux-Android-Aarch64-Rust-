@@ -237,7 +237,7 @@ fn wallet_balance_owner_and_recent_history_become_provenance_not_ownership() {
 fn a_token_account_names_its_controllers_but_not_its_shared_mint() {
     let found = observe(TOKEN_ACCOUNT, &batch(TOKEN_ACCOUNT_STATE, "[]"));
     assert_eq!(found.outcome.kind, SourceOutcomeKind::Success);
-    let account = entity(&found, TOKEN_ACCOUNT);
+    let holding = entity(&found, TOKEN_ACCOUNT);
     for (key, value) in [
         ("account_class", "token_account"),
         ("owner_program_name", "SPL Token"),
@@ -252,10 +252,10 @@ fn a_token_account_names_its_controllers_but_not_its_shared_mint() {
         ("token_close_authority", "none"),
         ("recent_transactions_listed", "0"),
     ] {
-        assert_eq!(attr(account, key), value, "{key}");
+        assert_eq!(attr(holding, key), value, "{key}");
     }
     assert!(
-        !account.evidence[0]
+        !holding.evidence[0]
             .attributes
             .contains_key("latest_listed_signature")
     );
@@ -288,7 +288,7 @@ fn a_token_account_names_its_controllers_but_not_its_shared_mint() {
 #[test]
 fn token_2022_layouts_are_told_apart_by_their_type_byte() {
     let held = observe(TOKEN_2022_ACCOUNT, &batch(TOKEN_2022_ACCOUNT_STATE, "[]"));
-    let account = entity(&held, TOKEN_2022_ACCOUNT);
+    let holding = entity(&held, TOKEN_2022_ACCOUNT);
     for (key, value) in [
         ("account_class", "token_account"),
         ("token_program", "spl_token_2022"),
@@ -300,7 +300,7 @@ fn token_2022_layouts_are_told_apart_by_their_type_byte() {
         ("token_close_authority", CLOSE_AUTHORITY),
         ("data_size", "170"),
     ] {
-        assert_eq!(attr(account, key), value, "{key}");
+        assert_eq!(attr(holding, key), value, "{key}");
     }
     assert_eq!(
         attr(entity(&held, CLOSE_AUTHORITY), "role"),
@@ -374,7 +374,7 @@ fn an_upgradeable_program_names_its_program_data_without_pivots() {
     let program = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
     let found = observe(program, &batch(TOKEN_PROGRAM_ACCOUNT, "[]"));
     assert_eq!(found.entities.len(), 1);
-    let account = entity(&found, program);
+    let loader_entity = entity(&found, program);
     for (key, value) in [
         ("account_class", "program"),
         ("executable", "true"),
@@ -384,7 +384,7 @@ fn an_upgradeable_program_names_its_program_data_without_pivots() {
             "3gvYRKWyXRR9xKWe1ZjPhLY5ZJRN7KDB4rFZFGoJfFk2",
         ),
     ] {
-        assert_eq!(attr(account, key), value, "{key}");
+        assert_eq!(attr(loader_entity, key), value, "{key}");
     }
 }
 
