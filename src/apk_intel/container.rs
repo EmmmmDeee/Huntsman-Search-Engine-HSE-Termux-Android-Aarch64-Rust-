@@ -175,10 +175,10 @@ fn signer_continuity(members: &[NestedApk]) -> &'static str {
             .iter()
             .map(|signer| {
                 (
-                    signer.scheme.as_str(),
+                    signer.scheme.clone(),
                     signer.min_sdk,
                     signer.max_sdk,
-                    signer.certificate_sha256.as_str(),
+                    signer.certificate_sha256.clone(),
                 )
             })
             .collect();
@@ -189,15 +189,23 @@ fn signer_continuity(members: &[NestedApk]) -> &'static str {
         let mut ranges: Vec<_> = member
             .authenticated_sdk_signers
             .iter()
-            .map(|signer| (signer.scheme.as_str(), signer.min_sdk, signer.max_sdk))
+            .map(|signer| (signer.scheme.clone(), signer.min_sdk, signer.max_sdk))
             .collect();
         ranges.sort_unstable();
         ranges
     };
     let first = &members[0];
-    if members.iter().skip(1).all(|member| identity(member) == identity(first)) {
+    if members
+        .iter()
+        .skip(1)
+        .all(|member| identity(member) == identity(first))
+    {
         "authenticated_sdk_scope_match"
-    } else if members.iter().skip(1).all(|member| scopes(member) == scopes(first)) {
+    } else if members
+        .iter()
+        .skip(1)
+        .all(|member| scopes(member) == scopes(first))
+    {
         "authenticated_sdk_scope_difference"
     } else {
         "unverified"
@@ -567,7 +575,12 @@ mod tests {
         assert_eq!(report.apk_members[1].sha256, hex32(&sha256(&inner)));
         assert_eq!(report.package_consistency, "unverified");
         assert_eq!(report.signer_continuity, "unverified");
-        assert!(report.apk_members.iter().all(|member| member.authenticated_sdk_signers.is_empty()));
+        assert!(
+            report
+                .apk_members
+                .iter()
+                .all(|member| member.authenticated_sdk_signers.is_empty())
+        );
         assert_eq!(
             report.apk_members[0].role_hint_unverified,
             "base_filename_hint"
