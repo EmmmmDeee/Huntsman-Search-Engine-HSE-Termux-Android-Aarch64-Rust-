@@ -371,6 +371,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "ACNC charity register lookup",
     },
     ReachableModule {
+        name: "sec_edgar",
+        command: "people NAME",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Corporate,
+        attack_techniques: &["T1591.002", "T1591.004"],
+        description: "SEC EDGAR filer lookup",
+    },
+    ReachableModule {
         name: "email_parse",
         command: "email ADDR",
         access: "offline",

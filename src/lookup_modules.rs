@@ -108,6 +108,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             asic_director::SRC,
             crate::wikidata::SOURCE,
             crate::acnc::SRC,
+            crate::sec_edgar::SOURCE,
             seeknow_collector::COLLECTOR_ID,
         ],
         ScanKind::Network => {

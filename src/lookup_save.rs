@@ -71,6 +71,7 @@ fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
         "asic_director" => ("asic_director", "src/asic_director.rs"),
         "wikidata" => ("wikidata", "src/wikidata.rs"),
         "acnc" => ("acnc", "src/acnc.rs"),
+        "sec_edgar" => ("sec_edgar", "src/sec_edgar.rs"),
         _ => ("asic_persons", "src/asic_persons.rs"),
     }
 }

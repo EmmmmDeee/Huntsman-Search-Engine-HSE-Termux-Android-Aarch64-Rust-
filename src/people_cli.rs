@@ -21,6 +21,7 @@ use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
+use crate::sec_edgar;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 use crate::textnorm::name_tokens;
 use crate::wikidata;
@@ -28,15 +29,16 @@ use crate::wikidata;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on the keyless ASIC people and director registers, Wikidata, and the ACNC charity register. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, and SEC EDGAR. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
   2. ASIC director register (company director records)
   3. Wikidata (top public item, QID-scoped candidate, never name-only identity corroboration)
   4. ACNC charity register (registered charities and not-for-profits matched by name)
+  5. SEC EDGAR (US filers, officers, directors and 10% owners from insider forms 3, 4 and 5, matched by name)
 
-Results are merged only by canonical entity UID. Name-matched Wikidata items and ACNC organisations are source-scoped candidates, not automatic cross-register identity corroboration; precise identifiers retain their normal correlation keys.";
+Results are merged only by canonical entity UID. Name-matched Wikidata items, ACNC organisations and SEC EDGAR filers are source-scoped candidates, not automatic cross-register identity corroboration; precise identifiers retain their normal correlation keys.";
 
 /// Merged entities and outcomes from every people source that ran.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -147,6 +149,21 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
             &mut failed,
         );
     }
+    if transport.runs_module(sec_edgar::SOURCE) {
+        // SEC EDGAR: a people NAME that names a US filer or company folds in the filer as a Person
+        // or Organisation candidate, its official website (a lead into the domain-recon cluster),
+        // its business and mailing address, and its LEI (a correlation key that joins the gleif
+        // leg). A full-text name match in the filing index is never a confirmed identity.
+        collect(
+            sec_edgar::SOURCE,
+            sec_edgar::lookup(transport, &name, &scan_id, now_unix)
+                .map(|found| (scope_sec_edgar_filers(found.entities), vec![found.outcome])),
+            now_unix,
+            &mut report,
+            &mut network,
+            &mut failed,
+        );
+    }
 
     // Entities with identical UIDs from different sources are merged: duplicate records
     // are combined into one entity whose observation set includes evidence from all sources.
@@ -198,6 +215,47 @@ fn scope_acnc_charities(mut entities: Vec<Entity>) -> Vec<Entity> {
         entity.value = scoped.value;
         entity.raw_value = scoped.raw_value;
         entity.tag("acnc-organisation-scoped");
+        for evidence in &mut entity.evidence {
+            evidence
+                .attributes
+                .entry("source_label".into())
+                .or_insert_with(|| label.clone());
+        }
+    }
+    entities
+}
+
+/// A name-matched SEC EDGAR filer is not proven to be the same party as a same-named ASIC row or
+/// Wikidata item. Scope its Person or Organisation identity within the composed people lookup by its
+/// CIK -- the stable key EDGAR assigns each filer -- so same-name strangers cannot merge or inflate
+/// corroboration. Keep the published name in evidence; precise website, domain and address entities
+/// retain their normal canonical keys.
+fn scope_sec_edgar_filers(mut entities: Vec<Entity>) -> Vec<Entity> {
+    for entity in &mut entities {
+        if entity.kind != crate::entity::EntityKind::Person
+            && entity.kind != crate::entity::EntityKind::Organisation
+        {
+            continue;
+        }
+        let label = entity.raw_value.clone();
+        let cik = entity
+            .evidence
+            .iter()
+            .find_map(|evidence| evidence.attributes.get("cik"));
+        let suffix = cik.map_or_else(
+            || "unkeyed candidate".to_owned(),
+            |cik| format!("CIK {cik}"),
+        );
+        let scoped = Entity::new(
+            entity.kind.clone(),
+            format!("{label} [SEC {suffix}]"),
+            entity.confidence,
+            entity.scan_id.clone(),
+        );
+        entity.uid = scoped.uid;
+        entity.value = scoped.value;
+        entity.raw_value = scoped.raw_value;
+        entity.tag("sec-edgar-filer-scoped");
         for evidence in &mut entity.evidence {
             evidence
                 .attributes
@@ -507,6 +565,14 @@ mod tests {
             if request.url.contains("wbsearchentities") {
                 return Ok(json_ok(r#"{"search":[]}"#));
             }
+            // SEC EDGAR's full-text search. An empty hits set is the live endpoint's answer for a
+            // name it does not resolve, so a people scan's sec_edgar leg is a clean valid_zero here
+            // (one request, no submissions follow-up) rather than a parse drift off the HTML fallback.
+            if request.url.contains("efts.sec.gov") {
+                return Ok(json_ok(
+                    r#"{"hits":{"total":{"value":0,"relation":"eq"},"hits":[]}}"#,
+                ));
+            }
             let html = self.html.borrow();
             if let Some((_, response)) =
                 html.iter().find(|(needle, _)| request.url.contains(needle))
@@ -545,10 +611,11 @@ mod tests {
     }
 
     /// Every source leg a two-token people scan runs: `asic_persons` (its banned, adviser and
-    /// credit datasets), `asic_director`, `wikidata`, and the `acnc` charity register. Each leg
+    /// credit datasets), `asic_director`, `wikidata`, the `acnc` charity register, and `sec_edgar`
+    /// (its full-text search, which on an empty result makes no submissions follow-up). Each leg
     /// makes one request, folds in one outcome and persists one ledger entry, so the three counts
     /// coincide — every leg here is a single-request `valid_zero`.
-    const PEOPLE_SOURCE_REQUESTS: usize = 6;
+    const PEOPLE_SOURCE_REQUESTS: usize = 7;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);

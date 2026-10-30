@@ -199,6 +199,7 @@ scan_service	runtime	saved-scan runner reached through scans run and the scan AP
 scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
 scan_uncertainty	runtime	read-only evidence-derived scan uncertainty register used by the scan API and mobile Summary view
 search	diagnostic	local search utility
+sec_edgar	adapter	keyless SEC EDGAR full-text and submissions client folded into a people scan as a candidate lead (US issuers and insiders; LEI joins gleif, website into domain recon, addresses into geocode)
 securitytrails	adapter	SecurityTrails subdomain leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 seeknow	adapter	SeekNow/See-Know source client
 seeknow_cli	diagnostic	SeekNow command front-end
