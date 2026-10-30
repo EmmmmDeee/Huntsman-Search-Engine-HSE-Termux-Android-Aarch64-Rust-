@@ -16,7 +16,7 @@
 //!
 //! EDGAR needs no API key. Automated traffic must declare a genuine contactable operator
 //! User-Agent and respect the provider's access limits. Without an operator-authorised
-//! contact, this leg reports NotConfigured and sends no request; the header is never logged.
+//! contact, this leg reports `NotConfigured` and sends no request; the header is never logged.
 //!
 //! Evidence integrity is fail-closed, mirroring `gleif` and `acnc`: a challenge page, a truncated
 //! body or an unreadable/contract-breaking envelope is schema drift, never evidence; only a filer
