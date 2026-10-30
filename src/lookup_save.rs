@@ -808,7 +808,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn username_legs_keep_collector_provenance_in_direct_and_folded_ledgers() {
         let sources = [
@@ -819,7 +818,10 @@ mod tests {
             (crate::keybase::SRC, "src/keybase.rs"),
             (crate::wikipedia::SRC, "src/wikipedia.rs"),
             (crate::mastodon_user::SRC, "src/mastodon_user.rs"),
-            (crate::tiktok_public_contact::SRC, "src/tiktok_public_contact.rs"),
+            (
+                crate::tiktok_public_contact::SRC,
+                "src/tiktok_public_contact.rs",
+            ),
             (crate::npm_author::SRC, "src/npm_author.rs"),
             (crate::crates_io::SRC, "src/crates_io.rs"),
             (crate::hacker_news::SRC, "src/hacker_news.rs"),
