@@ -1441,23 +1441,7 @@ fn route(
             .unwrap_or_else(|_| "{\"count\":0,\"modules\":[]}".into());
             json_ok(&body, head)
         }
-        RHINSER_CATALOG_PATH => match crate::rhinser_catalog::Catalog::load() {
-            Ok(catalog) => match serde_json::to_string_pretty(&catalog) {
-                Ok(body) => json_ok(&body, head),
-                Err(_) => response(
-                    500,
-                    "application/json; charset=utf-8",
-                    "{\"error\":\"catalogue serialization unavailable\"}\n",
-                    head,
-                ),
-            },
-            Err(_) => response(
-                500,
-                "application/json; charset=utf-8",
-                "{\"error\":\"catalogue unavailable\"}\n",
-                head,
-            ),
-        },
+        RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
@@ -1576,6 +1560,27 @@ fn bind_failure(addr: SocketAddr, error: &std::io::Error) -> Error {
         _ => error.to_string(),
     };
     Error::Store(format!("serve bind {addr}: {reason}"))
+}
+
+/// Read-only catalogue response shared by local and token-protected HTTP clients.
+fn rhinser_catalog_response(head: bool) -> String {
+    match crate::rhinser_catalog::Catalog::load() {
+        Ok(catalog) => match serde_json::to_string_pretty(&catalog) {
+            Ok(body) => json_ok(&body, head),
+            Err(_) => response(
+                500,
+                "application/json; charset=utf-8",
+                "{\"error\":\"catalogue serialization unavailable\"}\n",
+                head,
+            ),
+        },
+        Err(_) => response(
+            500,
+            "application/json; charset=utf-8",
+            "{\"error\":\"catalogue unavailable\"}\n",
+            head,
+        ),
+    }
 }
 
 /// `GET /api/blueprint`: the OSINT app blueprint as JSON, or with `format=docx` as the Word
