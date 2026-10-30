@@ -72,7 +72,7 @@ impl Workspace {
     /// # Errors
     /// Invalid schema, invalid links, oversized input or duplicate keys.
     pub fn from_json(data: &[u8]) -> Result<Self, String> {
-        if data.len() > MAX_WORKSPACE_BYTES as usize {
+        if u64::try_from(data.len()).unwrap_or(u64::MAX) > MAX_WORKSPACE_BYTES {
             return Err("workspace exceeds size limit".to_owned());
         }
         let workspace: Self = serde_json::from_slice(data).map_err(|error| error.to_string())?;
