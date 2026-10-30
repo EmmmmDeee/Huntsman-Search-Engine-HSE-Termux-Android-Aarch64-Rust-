@@ -516,6 +516,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn git_provenance_distinguishes_head_index_and_worktree() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-provenance-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("fixture directory");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git fixture process");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        fs::write(root.join("tracked.txt"), "original").expect("tracked fixture");
+        git(&["add", "tracked.txt"]);
+        git(&[
+            "-c",
+            "user.name=Huntsman Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "baseline",
+        ]);
+        assert_eq!(
+            inventory_provenance(&root).unwrap(),
+            InventoryProvenance {
+                index_differs_from_head: false,
+                tracked_worktree_edits: false,
+                untracked_paths_excluded: false,
+            }
+        );
+        fs::write(root.join("tracked.txt"), "unstaged").expect("unstaged fixture");
+        assert!(inventory_provenance(&root).unwrap().tracked_worktree_edits);
+        git(&["add", "tracked.txt"]);
+        let after_stage = inventory_provenance(&root).unwrap();
+        assert!(after_stage.index_differs_from_head);
+        assert!(!after_stage.tracked_worktree_edits);
+        fs::write(root.join("candidate.txt"), "untracked").expect("untracked fixture");
+        assert!(inventory_provenance(&root).unwrap().untracked_paths_excluded);
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
     fn dependencies_override_simple_priority() {
         let make = |id: &str, priority, dependencies: Vec<&str>| Task {
             id: id.to_owned(),
