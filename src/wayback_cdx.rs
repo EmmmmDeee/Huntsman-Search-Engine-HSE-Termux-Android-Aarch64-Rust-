@@ -5,11 +5,14 @@
 //! search links or proof that a historic page's contents are true. Every accepted URL
 //! carries its CDX timestamp, digest and replay link as unverified source evidence.
 //! Then at most [`archived_page::MAX_PAGES`] of those captures (contact, about and team pages first,
-//! then the site root, newest first) are read from the archive's raw replay
-//! (`/web/TIMESTAMP` + `id_/URL`, the bytes as captured), and the e-mail addresses and phone
-//! numbers on them become historical leads, each naming the capture it came from. A
+//! then the site root, newest first) that the index did not record as something other than a web
+//! page are read from the archive's raw replay (`/web/TIMESTAMP` + `id_/URL`, the bytes as
+//! captured), and the e-mail addresses and phone numbers on them become historical leads, each
+//! naming the capture it came from. A
 //! returned URL is *never fetched* from its own site: it cannot redirect the scanner or
 //! reach a local/private host. The only network origin contacted is web.archive.org.
+
+use std::fmt::Write as _;
 
 use crate::archived_page::{self, Admission, Archive, Capture};
 use crate::canonical::canonical_domain;
@@ -72,42 +75,58 @@ pub fn lookup<T: Transport + ?Sized>(
 }
 
 /// The captures to read for content, chosen by [`archived_page::choose`] from the URLs found
-/// that the index recorded as web pages: a PDF, an archive or an image whose path names a contact
-/// page is a historical URL lead, never one of the pages read.
-fn content_captures(entities: &[Entity]) -> Vec<Capture> {
-    archived_page::choose(
-        entities
-            .iter()
-            .filter(|entity| entity.kind == EntityKind::Url)
-            .flat_map(|entity| &entity.evidence)
-            .filter(|evidence| {
-                evidence
-                    .attr_values("capture_mimetype")
-                    .next()
-                    .is_some_and(archived_page::is_web_page_type)
+/// that the index did not record as something other than a web page, and how many it did: a PDF,
+/// an archive or an image whose path names a contact page is a historical URL lead, never one of
+/// the pages read. A capture the index recorded no type for ([`type_unrecorded`]) can be read, and
+/// the replay's own type decides.
+fn content_captures(entities: &[Entity]) -> (Vec<Capture>, usize) {
+    let mut not_pages = 0usize;
+    let captures: Vec<Capture> = entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Url)
+        .flat_map(|entity| &entity.evidence)
+        .filter(|evidence| {
+            let page = evidence
+                .attr_values("capture_mimetype")
+                .next()
+                .is_none_or(|mimetype| {
+                    type_unrecorded(mimetype) || archived_page::is_web_page_type(mimetype)
+                });
+            not_pages += usize::from(!page);
+            page
+        })
+        .filter_map(|evidence| {
+            Some(Capture {
+                timestamp: evidence
+                    .attr_values("capture_timestamp_utc")
+                    .next()?
+                    .to_owned(),
+                url: evidence.attr_values("original_url").next()?.to_owned(),
             })
-            .filter_map(|evidence| {
-                Some(Capture {
-                    timestamp: evidence
-                        .attr_values("capture_timestamp_utc")
-                        .next()?
-                        .to_owned(),
-                    url: evidence.attr_values("original_url").next()?.to_owned(),
-                })
-            }),
-    )
+        })
+        .collect();
+    (archived_page::choose(captures), not_pages)
+}
+
+/// Whether the index recorded no type of its own for a capture: `-` or `unk`, or a revisit
+/// record's `warc/revisit`, which stands for an earlier capture of the same bytes. **Pure.**
+fn type_unrecorded(mimetype: &str) -> bool {
+    ["-", "unk", "warc/revisit"]
+        .iter()
+        .any(|unrecorded| mimetype.trim().eq_ignore_ascii_case(unrecorded))
 }
 
 /// Read the chosen captures and add the contact details they published to `report`, saying in
-/// its outcome's detail how many pages were read and why any was not.
+/// its outcome's detail how many pages were read, why any was not, and how many captures the
+/// index recorded as no web page.
 fn read_contents<T: Transport + ?Sized>(
     transport: &T,
     report: &mut Report,
     scan_id: &str,
     now_unix: u64,
 ) {
-    let captures = content_captures(&report.entities);
-    if captures.is_empty() {
+    let (captures, not_pages) = content_captures(&report.entities);
+    if captures.is_empty() && not_pages == 0 {
         return;
     }
     let mut read = 0usize;
@@ -133,6 +152,12 @@ fn read_contents<T: Transport + ?Sized>(
     if !unread.is_empty() {
         detail.push_str("; not read: ");
         detail.push_str(&unread.join(", "));
+    }
+    if not_pages > 0 {
+        let _ = write!(
+            detail,
+            "; {not_pages} capture(s) the index recorded as no web page, not read"
+        );
     }
     report.outcome.detail = Some(match report.outcome.detail.take() {
         Some(existing) => format!("{existing}; {detail}"),
@@ -607,6 +632,50 @@ mod tests {
             detail.contains("archived content: 1 of 1 page(s) read"),
             "{detail}"
         );
+        assert!(
+            detail.ends_with("; 3 capture(s) the index recorded as no web page, not read"),
+            "{detail}"
+        );
+    }
+
+    /// An index answer with no web page reads none and says so, never leaving the archived
+    /// content unaccounted for; a capture the index recorded no type for is read, and its
+    /// replay's own type decides.
+    #[test]
+    fn captures_the_index_typed_as_no_page_are_counted_and_untyped_ones_read() {
+        let cdx = r#"[["timestamp","original","statuscode","digest","mimetype"],["20230101000000","https://example.org/about/report.pdf","200","A","application/pdf"],["20220101000000","https://example.org/logo.png","200","B","image/png"]]"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![Ok(response(cdx))]);
+        let report = lookup(&transport, "example.org", "scan", NOW).unwrap();
+        assert_eq!(transport.seen.borrow().len(), 1);
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(
+            report.outcome.detail.as_deref(),
+            Some(
+                "archived content: 0 of 0 page(s) read, 0 contact detail(s) found; \
+                 2 capture(s) the index recorded as no web page, not read"
+            )
+        );
+
+        let cdx = r#"[["timestamp","original","statuscode","digest","mimetype"],["20230101000000","https://example.org/contact","200","A","warc/revisit"],["20220101000000","https://example.org/about","200","B","unk"],["20210101000000","https://example.org/team","200","C",""]]"#;
+        let contact = r#"<html><body><a href="mailto:info%40example.org">us</a></body></html>"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(response(cdx)),
+            Ok(page(200, "text/html", contact)),
+            Ok(page(200, "text/html", contact)),
+            Ok(page(200, "text/html", contact)),
+        ]);
+        let report = lookup(&transport, "example.org", "scan", NOW).unwrap();
+        assert_eq!(transport.seen.borrow().len(), 4);
+        let detail = report.outcome.detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("archived content: 3 of 3 page(s) read"),
+            "{detail}"
+        );
+        assert!(!detail.contains("recorded as no web page"), "{detail}");
+        for unrecorded in ["-", "UNK", "warc/revisit"] {
+            assert!(type_unrecorded(unrecorded), "{unrecorded}");
+        }
+        assert!(!type_unrecorded("application/pdf"));
     }
 
     #[test]
@@ -625,6 +694,7 @@ mod tests {
         // The site root canonicalises to `https://example.org`.
         let report = parse_response(&response(body), "example.org", "scan", NOW).unwrap();
         let chosen: Vec<String> = content_captures(&report.entities)
+            .0
             .into_iter()
             .map(|capture| capture.url)
             .collect();
