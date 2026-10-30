@@ -19,7 +19,7 @@ const PROCESS_BOUNDARY: [&str; 3] = ["src/cli", "src/bin", "src/main.rs"];
 /// The one library module that reads the environment. Its accessors are the configuration surface.
 const ENVIRONMENT_READER: [&str; 1] = ["src/environment.rs"];
 /// The modules that own a socket: the outbound transport, the inbound listener, and the
-/// listener's loopback health probe that `doctor` runs, and the standalone MetaScan
+/// listener's loopback health probe that `doctor` runs, and the standalone `MetaScan`
 /// loopback listener.
 const SOCKET_OWNERS: [&str; 4] = [
     "src/http.rs",
