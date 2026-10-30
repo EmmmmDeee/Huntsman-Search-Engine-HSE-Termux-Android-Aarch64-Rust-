@@ -8,7 +8,9 @@ use crate::value_syntax::record_tag;
 #[must_use]
 pub fn is_spf(txt: &str) -> bool {
     let bytes = txt.as_bytes();
-    bytes.get(..6).is_some_and(|version| version.eq_ignore_ascii_case(b"v=spf1"))
+    bytes
+        .get(..6)
+        .is_some_and(|version| version.eq_ignore_ascii_case(b"v=spf1"))
         && bytes.get(6).is_none_or(|next| *next == b' ')
 }
 
@@ -283,7 +285,10 @@ mod tests {
             "v=spf1; -all",
         ] {
             assert!(!is_spf(raw), "accepted unsupported SPF version: {raw:?}");
-            assert!(parse(raw).is_none(), "parsed unsupported SPF version: {raw:?}");
+            assert!(
+                parse(raw).is_none(),
+                "parsed unsupported SPF version: {raw:?}"
+            );
         }
         // Retain case-insensitive recognition and existing valid records.
         for raw in ["v=spf1", "v=spf1 -all", "V=SPF1 +mx -all"] {
