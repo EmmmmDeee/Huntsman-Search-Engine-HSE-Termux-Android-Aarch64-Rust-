@@ -128,7 +128,10 @@ fn exposure_component(source: &str) -> Option<&'static str> {
 }
 
 fn exposure_provenance(source: &str) -> (&str, &'static str) {
-    (source, exposure_component(source).unwrap_or("src/exposure_cli.rs"))
+    (
+        source,
+        exposure_component(source).unwrap_or("src/exposure_cli.rs"),
+    )
 }
 
 pub const EXPOSURE_POLICY: SavePolicy = SavePolicy {
