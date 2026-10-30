@@ -61,7 +61,9 @@ fn android_repo_mapper_changes_trigger_release_dry_run_on_pull_requests() {
         .expect("pull_request paths must precede permissions")
         .0;
     assert!(
-        paths.lines().any(|line| line == "      - \"tools/agent_repo_map.rs\""),
+        paths
+            .lines()
+            .any(|line| line == "      - \"tools/agent_repo_map.rs\""),
         "Android mapper Rust changes must trigger release PR dry-run"
     );
 }
