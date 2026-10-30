@@ -213,7 +213,8 @@ impl Workspace {
             _ => return Err("unknown tool action".to_owned()),
         };
         list.retain(|id| id != tool_id);
-        if list.len() >= if mode == "recent" { MAX_RECENT } else { MAX_ENTRIES } {
+        let limit = if mode == "recent" { MAX_RECENT } else { MAX_ENTRIES };
+        if list.len() >= limit {
             list.remove(0);
         }
         list.push(tool_id.to_owned());
