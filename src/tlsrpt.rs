@@ -96,8 +96,14 @@ mod tests {
             "v=TLSRPTv1extra; rua=mailto:reports@example.com",
             "v=TLSRPTv1 rua=mailto:reports@example.com",
         ] {
-            assert!(!is_tlsrpt(raw), "accepted unsupported TLSRPT version: {raw:?}");
-            assert!(parse(raw).is_none(), "parsed unsupported TLSRPT version: {raw:?}");
+            assert!(
+                !is_tlsrpt(raw),
+                "accepted unsupported TLSRPT version: {raw:?}"
+            );
+            assert!(
+                parse(raw).is_none(),
+                "parsed unsupported TLSRPT version: {raw:?}"
+            );
         }
         for raw in [
             "v=TLSRPTv1",
@@ -105,7 +111,10 @@ mod tests {
             " v=tlsrptV1 ; rua=mailto:reports@example.com",
         ] {
             assert!(is_tlsrpt(raw), "refused supported TLSRPT version: {raw:?}");
-            assert!(parse(raw).is_some(), "failed to parse TLSRPT record: {raw:?}");
+            assert!(
+                parse(raw).is_some(),
+                "failed to parse TLSRPT record: {raw:?}"
+            );
         }
     }
 
