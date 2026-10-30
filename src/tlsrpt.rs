@@ -85,6 +85,28 @@ mod tests {
     }
 
     #[test]
+    fn version_tag_requires_exact_tlsrpt_v1() {
+        for raw in [
+            "v=TLSRPTv2; rua=mailto:reports@example.com",
+            "v=TLSRPTv10; rua=mailto:reports@example.com",
+            "v=TLSRPTv; rua=mailto:reports@example.com",
+            "v=TLSRPTv1extra; rua=mailto:reports@example.com",
+            "v=TLSRPTv1 rua=mailto:reports@example.com",
+        ] {
+            assert!(!is_tlsrpt(raw), "accepted unsupported TLSRPT version: {raw:?}");
+            assert!(parse(raw).is_none(), "parsed unsupported TLSRPT version: {raw:?}");
+        }
+        for raw in [
+            "v=TLSRPTv1",
+            "v=TLSRPTv1; rua=mailto:reports@example.com",
+            " v=tlsrptV1 ; rua=mailto:reports@example.com",
+        ] {
+            assert!(is_tlsrpt(raw), "refused supported TLSRPT version: {raw:?}");
+            assert!(parse(raw).is_some(), "failed to parse TLSRPT record: {raw:?}");
+        }
+    }
+
+    #[test]
     fn rejects_non_tlsrpt() {
         assert!(!is_tlsrpt("v=spf1 -all"));
         assert!(parse("v=DMARC1; p=reject").is_none());
