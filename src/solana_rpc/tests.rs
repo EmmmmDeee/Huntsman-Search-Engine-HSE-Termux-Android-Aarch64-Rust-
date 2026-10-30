@@ -788,6 +788,18 @@ fn a_listed_row_missing_a_field_or_with_a_bad_signature_is_unreadable() {
             SIGNATURES.replace(SIGNATURE_NEW, &"2".repeat(89)),
             "a signature too long",
         ),
+        (
+            SIGNATURES.replace(SIGNATURE_NEW, "1"),
+            "a short base58 string is not a 64-byte signature",
+        ),
+        (
+            SIGNATURES.replace(SIGNATURE_NEW, &"1".repeat(65)),
+            "a 65-byte all-zero signature is not a 64-byte signature",
+        ),
+        (
+            SIGNATURES.replace(SIGNATURE_NEW, &"z".repeat(88)),
+            "a base58 signature overflowing 64 bytes",
+        ),
     ] {
         let found = observe(WALLET, &batch(WALLET_ACCOUNT, &malformed));
         let wallet = entity(&found, WALLET);
