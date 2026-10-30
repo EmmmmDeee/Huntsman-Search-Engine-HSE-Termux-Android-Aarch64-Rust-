@@ -622,34 +622,11 @@ impl CrawlState {
             let steps = normalize_batch(collector, &batch, steps);
             let mut steps = steps.into_iter();
             for target in batch {
-                let mut step = steps
+                let step = steps
                     .next()
                     .unwrap_or_else(|| missing_batch_step(&target, 0));
-                // Generation 0 is the operator's seeds; every later target is a pivot the crawl
-                // found, whose lookup's echo of it as the operator's seed is not kept.
-                if generation > 0 {
-                    let followed_at = self
-                        .followed_at
-                        .get(&target.owned_key())
-                        .copied()
-                        .unwrap_or(policy.expand_confidence_floor);
-                    forget_pivot_echo(&mut step.entities, followed_at);
-                }
-                self.dispatches += 1;
                 dispatched += 1;
-                self.outcomes.extend(step.outcomes);
-                for mut entity in step.entities {
-                    entity.generation = generation;
-                    self.edges.push(PivotEdge {
-                        from_kind: target.kind.command().to_owned(),
-                        from_selector: target.selector.clone(),
-                        to_kind: entity.kind.as_str().to_owned(),
-                        to_value: entity.value.clone(),
-                        generation,
-                    });
-                    self.queue_expansions(&entity, policy, &mut next);
-                    self.entities.push(entity);
-                }
+                self.take_step(generation, &target, step, policy, &mut next);
             }
             stopped |= self.batch_done(collector, generation, remaining.by_ref(), &mut next);
             if stopped {
@@ -664,6 +641,42 @@ impl CrawlState {
             entities_after: self.entities.len(),
         });
         (next.into_queue(), stopped)
+    }
+
+    /// Reduce what one dispatch of `target` returned into the crawl: its outcomes, and each entity
+    /// with the edge it was reached by and the targets it queues for the next generation.
+    /// Generation 0 is the operator's seeds; every later target is a pivot the crawl found, whose
+    /// lookup's echo of it as the operator's seed is not kept ([`forget_pivot_echo`]).
+    fn take_step(
+        &mut self,
+        generation: u32,
+        target: &Target,
+        mut step: Step,
+        policy: &RecursionPolicy,
+        next: &mut Frontier,
+    ) {
+        if generation > 0 {
+            let followed_at = self
+                .followed_at
+                .get(&target.owned_key())
+                .copied()
+                .unwrap_or(policy.expand_confidence_floor);
+            forget_pivot_echo(&mut step.entities, followed_at);
+        }
+        self.dispatches += 1;
+        self.outcomes.extend(step.outcomes);
+        for mut entity in step.entities {
+            entity.generation = generation;
+            self.edges.push(PivotEdge {
+                from_kind: target.kind.command().to_owned(),
+                from_selector: target.selector.clone(),
+                to_kind: entity.kind.as_str().to_owned(),
+                to_value: entity.value.clone(),
+                generation,
+            });
+            self.queue_expansions(&entity, policy, next);
+            self.entities.push(entity);
+        }
     }
 
     /// After a wave is reduced into the crawl: let the collector checkpoint what the crawl holds,
