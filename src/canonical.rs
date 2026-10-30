@@ -91,6 +91,15 @@ pub fn canonical_bitcoin_address(raw: &str) -> Option<String> {
 /// checksum, so a value carrying this prefix keeps its letter case wherever it is canonicalised.
 pub const SOLANA_PREFIX: &str = "sol:";
 
+/// How a handle is routed to a lookup: as written, without its leading `@`s, ignoring ASCII case.
+/// Two spellings with one route key are one lookup (`PG_Smith` and `pg_smith`); spellings that
+/// differ otherwise (`pg-smith`, `pgsmith`) can be different accounts where a platform keeps
+/// separators, so each is looked up even though they share a [`canonical_handle`]. **Pure.**
+#[must_use]
+pub fn handle_route_key(raw: &str) -> String {
+    raw.trim().trim_start_matches('@').to_ascii_lowercase()
+}
+
 #[must_use]
 pub fn canonical_handle(raw: &str) -> Option<String> {
     let raw = raw.trim().trim_start_matches('@');
