@@ -8,11 +8,14 @@ pub struct TlsRptRecord {
     pub urls: Vec<String>,
 }
 
+/// RFC 8460 version 1 requires the entire first version tag to be
+/// `v=TLSRPTv1`. Unsupported versions must not be reported as policy.
 #[must_use]
 pub fn is_tlsrpt(txt: &str) -> bool {
-    let trimmed = txt.trim_start();
-    let bytes = trimmed.as_bytes();
-    bytes.len() >= 9 && bytes[..9].eq_ignore_ascii_case(b"v=TLSRPTv")
+    txt.trim_start()
+        .split(';')
+        .next()
+        .is_some_and(|version| version.trim_end().eq_ignore_ascii_case("v=TLSRPTv1"))
 }
 
 #[must_use]
@@ -82,6 +85,37 @@ mod tests {
         assert_eq!(record.emails, ["a@b.example"]);
         assert_eq!(record.emails, dmarc.rua);
         assert_eq!(record.urls, ["https://r.example/v1"]);
+    }
+
+    #[test]
+    fn version_tag_requires_exact_tlsrpt_v1() {
+        for raw in [
+            "v=TLSRPTv2; rua=mailto:reports@example.com",
+            "v=TLSRPTv10; rua=mailto:reports@example.com",
+            "v=TLSRPTv; rua=mailto:reports@example.com",
+            "v=TLSRPTv1extra; rua=mailto:reports@example.com",
+            "v=TLSRPTv1 rua=mailto:reports@example.com",
+        ] {
+            assert!(
+                !is_tlsrpt(raw),
+                "accepted unsupported TLSRPT version: {raw:?}"
+            );
+            assert!(
+                parse(raw).is_none(),
+                "parsed unsupported TLSRPT version: {raw:?}"
+            );
+        }
+        for raw in [
+            "v=TLSRPTv1",
+            "v=TLSRPTv1; rua=mailto:reports@example.com",
+            " v=tlsrptV1 ; rua=mailto:reports@example.com",
+        ] {
+            assert!(is_tlsrpt(raw), "refused supported TLSRPT version: {raw:?}");
+            assert!(
+                parse(raw).is_some(),
+                "failed to parse TLSRPT record: {raw:?}"
+            );
+        }
     }
 
     #[test]

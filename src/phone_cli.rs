@@ -639,5 +639,19 @@ mod tests {
                 panic!("a +1 number with area code 123 was accepted: {other:?}")
             }
         }
+        // A +1 number of the wrong length is parsed and refused by the plan, which says why.
+        for short_or_long in ["+1 202 555 010", "+1 202 555 01000"] {
+            match run(short_or_long, 1) {
+                PhoneRun::Failed(why) => {
+                    assert!(
+                        why.contains("ten digits after +1"),
+                        "{short_or_long}: {why}"
+                    );
+                }
+                other @ PhoneRun::Printed { .. } => {
+                    panic!("{short_or_long} was accepted: {other:?}")
+                }
+            }
+        }
     }
 }
