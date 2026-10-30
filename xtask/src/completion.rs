@@ -62,8 +62,7 @@ fn inventory_provenance(root: &Path) -> Result<InventoryProvenance> {
             &["diff", "--cached", "--name-only", "-z", "HEAD"],
         )?
         .is_empty(),
-        tracked_worktree_edits: !git_stdout(root, &["diff", "--name-only", "-z"])?
-            .is_empty(),
+        tracked_worktree_edits: !git_stdout(root, &["diff", "--name-only", "-z"])?.is_empty(),
         untracked_paths_excluded: !git_stdout(
             root,
             &["ls-files", "--others", "--exclude-standard", "-z"],
@@ -565,7 +564,11 @@ mod tests {
         assert!(after_stage.index_differs_from_head);
         assert!(!after_stage.tracked_worktree_edits);
         fs::write(root.join("candidate.txt"), "untracked").expect("untracked fixture");
-        assert!(inventory_provenance(&root).unwrap().untracked_paths_excluded);
+        assert!(
+            inventory_provenance(&root)
+                .unwrap()
+                .untracked_paths_excluded
+        );
         fs::remove_dir_all(&root).expect("cleanup");
     }
 
