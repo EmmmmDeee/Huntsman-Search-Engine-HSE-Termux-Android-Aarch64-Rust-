@@ -81,11 +81,31 @@ struct EndpointResult {
 }
 
 impl EndpointResult {
-    fn new(source: &'static str, state: &'static str, status: Option<u16>, data: Option<Value>, message: Option<&str>) -> Self {
-        Self { source, state, http_status: status, data, message: message.map(str::to_owned) }
+    fn new(
+        source: &'static str,
+        state: &'static str,
+        status: Option<u16>,
+        data: Option<Value>,
+        message: Option<&str>,
+    ) -> Self {
+        Self {
+            source,
+            state,
+            http_status: status,
+            data,
+            message: message.map(str::to_owned),
+        }
     }
     fn missing(source: &'static str) -> Self {
-        Self::new(source, "not_configured", None, None, Some("Set RAPIDAPI_KEY in the environment or ~/.huntsman.env; no provider request was made"))
+        Self::new(
+            source,
+            "not_configured",
+            None,
+            None,
+            Some(
+                "Set RAPIDAPI_KEY in the environment or ~/.huntsman.env; no provider request was made",
+            ),
+        )
     }
     fn successful(&self) -> bool {
         self.state == "observed"
@@ -108,9 +128,18 @@ struct Report {
 impl Report {
     fn has_observation(&self) -> bool {
         self.profile.successful()
-            || self.business_home.as_ref().is_some_and(EndpointResult::successful)
-            || self.business_about.as_ref().is_some_and(EndpointResult::successful)
-            || self.business_transparency.as_ref().is_some_and(EndpointResult::successful)
+            || self
+                .business_home
+                .as_ref()
+                .is_some_and(EndpointResult::successful)
+            || self
+                .business_about
+                .as_ref()
+                .is_some_and(EndpointResult::successful)
+            || self
+                .business_transparency
+                .as_ref()
+                .is_some_and(EndpointResult::successful)
     }
 
     fn as_text(&self) -> String {
@@ -128,7 +157,8 @@ impl Report {
                 out.push_str(&format!(
                     "[{label}]\nStatus: {}\nHTTP: {}\n",
                     item.state,
-                    item.http_status.map_or_else(|| "n/a".to_owned(), |n| n.to_string())
+                    item.http_status
+                        .map_or_else(|| "n/a".to_owned(), |n| n.to_string())
                 ));
                 if let Some(message) = &item.message {
                     out.push_str(&format!("Note: {message}\n"));
@@ -146,11 +176,17 @@ impl Report {
 
 fn checked_username(raw: &str) -> Result<String, &'static str> {
     let username = raw.trim().trim_start_matches('@');
-    if username.is_empty() || username.len() > 100
-        || !username.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        || username == "." || username == ".."
+    if username.is_empty()
+        || username.len() > 100
+        || !username
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || username == "."
+        || username == ".."
     {
-        return Err("Facebook handle must be 1..100 ASCII letters, digits, periods, dashes or underscores");
+        return Err(
+            "Facebook handle must be 1..100 ASCII letters, digits, periods, dashes or underscores",
+        );
     }
     Ok(username.to_owned())
 }
@@ -164,14 +200,32 @@ fn provider_result<T: Transport + ?Sized>(
     timeout: Duration,
 ) -> EndpointResult {
     let source = endpoint.id();
-    let Some(secret) = secret else { return EndpointResult::missing(source); };
-    let Ok(authority) = AuthenticationAuthority::configured_slot("rapidapi-facebook-pages-scraper3", KEY_SLOT, now) else {
-        return EndpointResult::new(source, "refused", None, None, Some("Credential authority was refused"));
+    let Some(secret) = secret else {
+        return EndpointResult::missing(source);
+    };
+    let Ok(authority) =
+        AuthenticationAuthority::configured_slot("rapidapi-facebook-pages-scraper3", KEY_SLOT, now)
+    else {
+        return EndpointResult::new(
+            source,
+            "refused",
+            None,
+            None,
+            Some("Credential authority was refused"),
+        );
     };
     let Ok(credential) = Credential::new(
-        authority, secret.clone(), AuthStyle::Header("x-rapidapi-key".into())
+        authority,
+        secret.clone(),
+        AuthStyle::Header("x-rapidapi-key".into()),
     ) else {
-        return EndpointResult::new(source, "refused", None, None, Some("Credential was refused"));
+        return EndpointResult::new(
+            source,
+            "refused",
+            None,
+            None,
+            Some("Credential was refused"),
+        );
     };
     let credential = credential.only_for_origin(API_ORIGIN);
     let url = endpoint.url(username);
@@ -183,14 +237,32 @@ fn provider_result<T: Transport + ?Sized>(
     // At most three attempts. Do not automatically retry a 429: it may incur paid quota.
     for attempt in 0..3 {
         let fetched = match fetch(
-            transport, request.clone(), Some(&credential),
-            &FetchOptions::no_redirects(), source, now
+            transport,
+            request.clone(),
+            Some(&credential),
+            &FetchOptions::no_redirects(),
+            source,
+            now,
         ) {
             Ok(response) => response,
-            Err(_) => return EndpointResult::new(source, "refused", None, None, Some("Request refused by outbound policy")),
+            Err(_) => {
+                return EndpointResult::new(
+                    source,
+                    "refused",
+                    None,
+                    None,
+                    Some("Request refused by outbound policy"),
+                );
+            }
         };
         let Some(response) = fetched.response else {
-            return EndpointResult::new(source, "network_error", None, None, Some("No usable HTTP response"));
+            return EndpointResult::new(
+                source,
+                "network_error",
+                None,
+                None,
+                Some("No usable HTTP response"),
+            );
         };
         if matches!(response.status, 500 | 502 | 503 | 504) && attempt < 2 {
             thread::sleep(Duration::from_millis(600 * (1_u64 << attempt)));
@@ -198,36 +270,129 @@ fn provider_result<T: Transport + ?Sized>(
         }
         let status = Some(response.status);
         match response.status {
-            401 => return EndpointResult::new(source, "authentication_rejected", status, None, Some("RapidAPI rejected the configured key")),
-            402 | 403 => return EndpointResult::new(source, "entitlement_denied", status, None, Some("Subscription or endpoint access is unavailable")),
-            404 => return EndpointResult::new(source, "not_found", status, None, Some("Provider returned 404; this is not proof the Facebook page is absent")),
-            429 => return EndpointResult::new(source, "rate_limited", status, None, Some("Provider rate limit reached; retry after the provider allows it")),
-            500..=599 => return EndpointResult::new(source, "upstream_error", status, None, Some("RapidAPI upstream service error")),
-            200..=299 => {},
-            _ => return EndpointResult::new(source, "http_error", status, None, Some("RapidAPI returned an unexpected HTTP status")),
+            401 => {
+                return EndpointResult::new(
+                    source,
+                    "authentication_rejected",
+                    status,
+                    None,
+                    Some("RapidAPI rejected the configured key"),
+                );
+            }
+            402 | 403 => {
+                return EndpointResult::new(
+                    source,
+                    "entitlement_denied",
+                    status,
+                    None,
+                    Some("Subscription or endpoint access is unavailable"),
+                );
+            }
+            404 => {
+                return EndpointResult::new(
+                    source,
+                    "not_found",
+                    status,
+                    None,
+                    Some("Provider returned 404; this is not proof the Facebook page is absent"),
+                );
+            }
+            429 => {
+                return EndpointResult::new(
+                    source,
+                    "rate_limited",
+                    status,
+                    None,
+                    Some("Provider rate limit reached; retry after the provider allows it"),
+                );
+            }
+            500..=599 => {
+                return EndpointResult::new(
+                    source,
+                    "upstream_error",
+                    status,
+                    None,
+                    Some("RapidAPI upstream service error"),
+                );
+            }
+            200..=299 => {}
+            _ => {
+                return EndpointResult::new(
+                    source,
+                    "http_error",
+                    status,
+                    None,
+                    Some("RapidAPI returned an unexpected HTTP status"),
+                );
+            }
         }
         if response.truncated {
-            return EndpointResult::new(source, "truncated", status, None, Some("Response exceeded 1 MiB limit"));
+            return EndpointResult::new(
+                source,
+                "truncated",
+                status,
+                None,
+                Some("Response exceeded 1 MiB limit"),
+            );
         }
         if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
-            return EndpointResult::new(source, "unusable_response", status, None, Some("Response failed Huntsman content validation"));
+            return EndpointResult::new(
+                source,
+                "unusable_response",
+                status,
+                None,
+                Some("Response failed Huntsman content validation"),
+            );
         }
         let Ok(data) = serde_json::from_slice::<Value>(&response.body) else {
-            return EndpointResult::new(source, "invalid_json", status, None, Some("Response was not valid JSON"));
+            return EndpointResult::new(
+                source,
+                "invalid_json",
+                status,
+                None,
+                Some("Response was not valid JSON"),
+            );
         };
-        if data.is_null() || data.as_object().is_some_and(|m| m.is_empty())
+        if data.is_null()
+            || data.as_object().is_some_and(|m| m.is_empty())
             || data.as_array().is_some_and(Vec::is_empty)
         {
-            return EndpointResult::new(source, "empty", status, None, Some("Provider returned no records"));
+            return EndpointResult::new(
+                source,
+                "empty",
+                status,
+                None,
+                Some("Provider returned no records"),
+            );
         }
-        if data.get("error").is_some_and(|e| !e.is_null() && e != &Value::Bool(false))
+        if data
+            .get("error")
+            .is_some_and(|e| !e.is_null() && e != &Value::Bool(false))
             || data.get("success") == Some(&Value::Bool(false))
         {
-            return EndpointResult::new(source, "provider_error", status, None, Some("Provider reported an error in its JSON response"));
+            return EndpointResult::new(
+                source,
+                "provider_error",
+                status,
+                None,
+                Some("Provider reported an error in its JSON response"),
+            );
         }
-        return EndpointResult::new(source, "observed", status, Some(data), Some("Unverified third-party response; corroborate before attribution"));
+        return EndpointResult::new(
+            source,
+            "observed",
+            status,
+            Some(data),
+            Some("Unverified third-party response; corroborate before attribution"),
+        );
     }
-    EndpointResult::new(source, "upstream_error", None, None, Some("Retries exhausted"))
+    EndpointResult::new(
+        source,
+        "upstream_error",
+        None,
+        None,
+        Some("Retries exhausted"),
+    )
 }
 
 fn scan<T: Transport + ?Sized>(
@@ -254,7 +419,9 @@ fn scan<T: Transport + ?Sized>(
 }
 
 fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |x| x.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |x| x.as_secs())
 }
 
 fn configured_secret() -> Option<Secret> {
@@ -267,18 +434,33 @@ fn configured_secret() -> Option<Secret> {
 
 fn transport(timeout: Duration) -> UreqTransport {
     UreqTransport::new(&TransportConfig {
-        timeout, max_body: MAX_PROVIDER_BODY,
+        timeout,
+        max_body: MAX_PROVIDER_BODY,
         user_agent: concat!("huntsman-meta-scan/", env!("CARGO_PKG_VERSION")).to_owned(),
         ..TransportConfig::default()
     })
 }
 
 fn json_reply(stream: &mut TcpStream, status: &str, value: &Value) -> std::io::Result<()> {
-    http_reply(stream, status, "application/json; charset=utf-8", value.to_string().as_bytes())
+    http_reply(
+        stream,
+        status,
+        "application/json; charset=utf-8",
+        value.to_string().as_bytes(),
+    )
 }
 
-fn http_reply(stream: &mut TcpStream, status: &str, mime: &str, bytes: &[u8]) -> std::io::Result<()> {
-    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n", bytes.len())?;
+fn http_reply(
+    stream: &mut TcpStream,
+    status: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
+        bytes.len()
+    )?;
     stream.write_all(bytes)
 }
 
@@ -292,23 +474,34 @@ struct HttpRequest {
 
 impl HttpRequest {
     fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
-    stream.set_read_timeout(Some(Duration::from_secs(5))).map_err(|_| "read timeout setup failed")?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|_| "read timeout setup failed")?;
     let mut bytes = Vec::with_capacity(2048);
     let mut chunk = [0_u8; 1024];
     let header_end = loop {
         let n = stream.read(&mut chunk).map_err(|_| "request read failed")?;
-        if n == 0 { return Err("connection closed while reading headers"); }
+        if n == 0 {
+            return Err("connection closed while reading headers");
+        }
         bytes.extend_from_slice(&chunk[..n]);
         if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-            if i + 4 > HTTP_MAX_HEAD { return Err("headers too large"); }
+            if i + 4 > HTTP_MAX_HEAD {
+                return Err("headers too large");
+            }
             break i + 4;
         }
-        if bytes.len() > HTTP_MAX_HEAD { return Err("headers too large"); }
+        if bytes.len() > HTTP_MAX_HEAD {
+            return Err("headers too large");
+        }
     };
     let text = std::str::from_utf8(&bytes[..header_end]).map_err(|_| "invalid request headers")?;
     let mut lines = text.split("\r\n");
@@ -319,36 +512,62 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
     if parts.next() != Some("HTTP/1.1") || parts.next().is_some() {
         return Err("HTTP/1.1 required");
     }
-    if path.len() > 256 || !path.starts_with('/') { return Err("invalid path"); }
+    if path.len() > 256 || !path.starts_with('/') {
+        return Err("invalid path");
+    }
     let mut headers = Vec::new();
     for line in lines {
-        if line.is_empty() { break; }
+        if line.is_empty() {
+            break;
+        }
         let (name, value) = line.split_once(':').ok_or("invalid header")?;
-        if name.trim().is_empty() { return Err("invalid header"); }
+        if name.trim().is_empty() {
+            return Err("invalid header");
+        }
         headers.push((name.trim().to_owned(), value.trim().to_owned()));
     }
-    let lengths: Vec<_> = headers.iter()
+    let lengths: Vec<_> = headers
+        .iter()
         .filter(|(n, _)| n.eq_ignore_ascii_case("content-length"))
-        .map(|(_, v)| v.as_str()).collect();
-    if lengths.len() > 1 { return Err("duplicate content length"); }
-    if headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("transfer-encoding")) {
+        .map(|(_, v)| v.as_str())
+        .collect();
+    if lengths.len() > 1 {
+        return Err("duplicate content length");
+    }
+    if headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("transfer-encoding"))
+    {
         return Err("transfer encoding not supported");
     }
     let length = match lengths.first() {
         Some(s) => s.parse::<usize>().map_err(|_| "invalid content length")?,
         None => 0,
     };
-    if length > HTTP_MAX_BODY { return Err("body exceeds limit"); }
+    if length > HTTP_MAX_BODY {
+        return Err("body exceeds limit");
+    }
     let mut body = bytes[header_end..].to_vec();
-    if body.len() > length { return Err("unexpected request body"); }
+    if body.len() > length {
+        return Err("unexpected request body");
+    }
     while body.len() < length {
         let remain = length - body.len();
         let take = remain.min(chunk.len());
-        let n = stream.read(&mut chunk[..take]).map_err(|_| "body read failed")?;
-        if n == 0 { return Err("incomplete request body"); }
+        let n = stream
+            .read(&mut chunk[..take])
+            .map_err(|_| "body read failed")?;
+        if n == 0 {
+            return Err("incomplete request body");
+        }
         body.extend_from_slice(&chunk[..n]);
     }
-    Ok(HttpRequest { method, path, headers, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
 }
 
 fn allowed_host(host: Option<&str>, port: u16) -> bool {
@@ -369,44 +588,87 @@ fn serve_client(mut stream: TcpStream, port: u16, timeout: Duration) {
         }
     };
     if !allowed_host(request.header("Host"), port) {
-        let _ = json_reply(&mut stream, "403 Forbidden", &json!({"error":"loopback Host header required"}));
+        let _ = json_reply(
+            &mut stream,
+            "403 Forbidden",
+            &json!({"error":"loopback Host header required"}),
+        );
         return;
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => {
-            let _ = http_reply(&mut stream, "200 OK", "text/html; charset=utf-8", include_str!("meta_scan.html").as_bytes());
+            let _ = http_reply(
+                &mut stream,
+                "200 OK",
+                "text/html; charset=utf-8",
+                include_str!("meta_scan.html").as_bytes(),
+            );
         }
         ("GET", "/api/status") => {
-            let _ = json_reply(&mut stream, "200 OK", &json!({
-                "name": "Huntsman MetaScan", "provider": API_HOST,
-                "api_key_configured": configured_secret().is_some(),
-                "binding": "loopback", "platform": "Termux-compatible, no root"
-            }));
+            let _ = json_reply(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "name": "Huntsman MetaScan", "provider": API_HOST,
+                    "api_key_configured": configured_secret().is_some(),
+                    "binding": "loopback", "platform": "Termux-compatible, no root"
+                }),
+            );
         }
         ("POST", "/api/scan") => {
             if request.header("X-Meta-Scan") != Some("1")
-                || request.header("Content-Type").is_none_or(|v| !v.to_ascii_lowercase().starts_with("application/json"))
+                || request
+                    .header("Content-Type")
+                    .is_none_or(|v| !v.to_ascii_lowercase().starts_with("application/json"))
                 || request.header("Origin").is_some_and(|v| {
-                    v != format!("http://127.0.0.1:{port}") && v != format!("http://localhost:{port}")
+                    v != format!("http://127.0.0.1:{port}")
+                        && v != format!("http://localhost:{port}")
                 })
             {
-                let _ = json_reply(&mut stream, "403 Forbidden", &json!({"error":"same-origin JSON request and X-Meta-Scan header required"}));
+                let _ = json_reply(
+                    &mut stream,
+                    "403 Forbidden",
+                    &json!({"error":"same-origin JSON request and X-Meta-Scan header required"}),
+                );
                 return;
             }
             let Ok(input) = serde_json::from_slice::<Value>(&request.body) else {
-                let _ = json_reply(&mut stream, "400 Bad Request", &json!({"error":"invalid JSON body"}));
+                let _ = json_reply(
+                    &mut stream,
+                    "400 Bad Request",
+                    &json!({"error":"invalid JSON body"}),
+                );
                 return;
             };
             let Some(username) = input.get("username").and_then(Value::as_str) else {
-                let _ = json_reply(&mut stream, "400 Bad Request", &json!({"error":"username required"}));
+                let _ = json_reply(
+                    &mut stream,
+                    "400 Bad Request",
+                    &json!({"error":"username required"}),
+                );
                 return;
             };
-            let business = input.get("include_business").and_then(Value::as_bool).unwrap_or(true);
+            let business = input
+                .get("include_business")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
             let key = configured_secret();
             let transport = transport(timeout);
-            match scan(&transport, key.as_ref(), username, business, unix_now(), timeout) {
+            match scan(
+                &transport,
+                key.as_ref(),
+                username,
+                business,
+                unix_now(),
+                timeout,
+            ) {
                 Ok(report) => {
-                    let _ = json_reply(&mut stream, "200 OK", &serde_json::to_value(report).unwrap_or_else(|_| json!({"error":"serialisation failed"})));
+                    let _ = json_reply(
+                        &mut stream,
+                        "200 OK",
+                        &serde_json::to_value(report)
+                            .unwrap_or_else(|_| json!({"error":"serialisation failed"})),
+                    );
                 }
                 Err(reason) => {
                     let _ = json_reply(&mut stream, "400 Bad Request", &json!({"error":reason}));
@@ -414,13 +676,19 @@ fn serve_client(mut stream: TcpStream, port: u16, timeout: Duration) {
             };
         }
         _ => {
-            let _ = json_reply(&mut stream, "404 Not Found", &json!({"error":"route not found"}));
+            let _ = json_reply(
+                &mut stream,
+                "404 Not Found",
+                &json!({"error":"route not found"}),
+            );
         }
     }
 }
 
 fn serve(bind: &str, timeout: Duration) -> Result<(), String> {
-    let addr: SocketAddr = bind.parse().map_err(|_| "bind must be a numeric loopback address:port".to_owned())?;
+    let addr: SocketAddr = bind
+        .parse()
+        .map_err(|_| "bind must be a numeric loopback address:port".to_owned())?;
     if !addr.ip().is_loopback() || addr.port() < 1024 {
         return Err("Web UI must bind to loopback and an unprivileged port (>=1024)".to_owned());
     }
@@ -428,20 +696,29 @@ fn serve(bind: &str, timeout: Duration) -> Result<(), String> {
     println!("MetaScan Web UI: http://{bind}/");
     let active = Arc::new(AtomicUsize::new(0));
     for connection in listener.incoming() {
-        let Ok(mut client) = connection else { continue; };
+        let Ok(mut client) = connection else {
+            continue;
+        };
         let old = active.fetch_add(1, Ordering::AcqRel);
         if old >= WEB_MAX_CLIENTS {
             active.fetch_sub(1, Ordering::AcqRel);
-            let _ = json_reply(&mut client, "503 Service Unavailable", &json!({"error":"connection capacity reached"}));
+            let _ = json_reply(
+                &mut client,
+                "503 Service Unavailable",
+                &json!({"error":"connection capacity reached"}),
+            );
             continue;
         }
         let counter = Arc::clone(&active);
-        let launched = thread::Builder::new().name("meta-scan-http".into())
+        let launched = thread::Builder::new()
+            .name("meta-scan-http".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || {
                 struct Release(Arc<AtomicUsize>);
                 impl Drop for Release {
-                    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::AcqRel);
+                    }
                 }
                 let _release = Release(counter);
                 serve_client(client, addr.port(), timeout);
@@ -472,20 +749,40 @@ fn usage() -> &'static str {
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
-    let mut out = Options { bind: DEFAULT_BIND.to_owned(), business: true, connect_timeout: 15, read_timeout: 45, ..Options::default() };
+    let mut out = Options {
+        bind: DEFAULT_BIND.to_owned(),
+        business: true,
+        connect_timeout: 15,
+        read_timeout: 45,
+        ..Options::default()
+    };
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-u" | "--username" => out.username = Some(iter.next().ok_or("missing username")?),
             "--batch" => out.batch = Some(iter.next().ok_or("missing batch path")?.into()),
-            "--out-json" => out.out_json = Some(iter.next().ok_or("missing JSON directory")?.into()),
+            "--out-json" => {
+                out.out_json = Some(iter.next().ok_or("missing JSON directory")?.into())
+            }
             "--out-txt" => out.out_txt = Some(iter.next().ok_or("missing TXT directory")?.into()),
             "--bind" => out.bind = iter.next().ok_or("missing bind")?,
             "--no-business" => out.business = false,
             "--show-raw" => out.show_raw = true,
             "--serve" => out.serve = true,
-            "--connect-timeout" => out.connect_timeout = iter.next().ok_or("missing timeout")?.parse().map_err(|_| "invalid timeout")?,
-            "--read-timeout" => out.read_timeout = iter.next().ok_or("missing timeout")?.parse().map_err(|_| "invalid timeout")?,
+            "--connect-timeout" => {
+                out.connect_timeout = iter
+                    .next()
+                    .ok_or("missing timeout")?
+                    .parse()
+                    .map_err(|_| "invalid timeout")?
+            }
+            "--read-timeout" => {
+                out.read_timeout = iter
+                    .next()
+                    .ok_or("missing timeout")?
+                    .parse()
+                    .map_err(|_| "invalid timeout")?
+            }
             "-h" | "--help" => return Err(usage().to_owned()),
             _ => return Err(format!("unknown option: {arg}\n{}", usage())),
         }
@@ -493,14 +790,23 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
     if !(1..=120).contains(&out.connect_timeout) || !(1..=120).contains(&out.read_timeout) {
         return Err("timeouts must be 1..120 seconds".to_owned());
     }
-    let choices = usize::from(out.serve) + usize::from(out.batch.is_some()) + usize::from(out.username.is_some());
-    if choices != 1 { return Err(format!("select exactly one of --serve, --batch, or -u\n{}", usage())); }
+    let choices = usize::from(out.serve)
+        + usize::from(out.batch.is_some())
+        + usize::from(out.username.is_some());
+    if choices != 1 {
+        return Err(format!(
+            "select exactly one of --serve, --batch, or -u\n{}",
+            usage()
+        ));
+    }
     Ok(out)
 }
 
 fn save_report(dir: &Path, report: &Report, ext: &str, contents: &[u8]) -> Result<PathBuf, String> {
     fs::create_dir_all(dir).map_err(|e| format!("cannot create report directory: {e}"))?;
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     for suffix in 0..10 {
         let path = dir.join(format!("{}_{}_{}.{}", report.username, stamp, suffix, ext));
         let mut opts = OpenOptions::new();
@@ -512,9 +818,10 @@ fn save_report(dir: &Path, report: &Report, ext: &str, contents: &[u8]) -> Resul
         }
         match opts.open(&path) {
             Ok(mut file) => {
-                file.write_all(contents).map_err(|e| format!("cannot write report: {e}"))?;
+                file.write_all(contents)
+                    .map_err(|e| format!("cannot write report: {e}"))?;
                 return Ok(path);
-            },
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(format!("cannot create report: {e}")),
         }
@@ -525,20 +832,33 @@ fn save_report(dir: &Path, report: &Report, ext: &str, contents: &[u8]) -> Resul
 fn run() -> Result<(), String> {
     let opts = parse_args(env::args().skip(1))?;
     let timeout = Duration::from_secs((opts.connect_timeout + opts.read_timeout).min(120));
-    if opts.serve { return serve(&opts.bind, timeout); }
+    if opts.serve {
+        return serve(&opts.bind, timeout);
+    }
     let names = if let Some(file) = opts.batch {
-        let meta = fs::metadata(&file).map_err(|e| format!("cannot read batch file metadata: {e}"))?;
-        if meta.len() > 64 * 1024 { return Err("batch file exceeds 64 KiB".into()); }
+        let meta =
+            fs::metadata(&file).map_err(|e| format!("cannot read batch file metadata: {e}"))?;
+        if meta.len() > 64 * 1024 {
+            return Err("batch file exceeds 64 KiB".into());
+        }
         let raw = fs::read_to_string(&file).map_err(|e| format!("cannot read batch file: {e}"))?;
-        let names: Vec<String> = raw.lines().map(str::trim)
+        let names: Vec<String> = raw
+            .lines()
+            .map(str::trim)
             .filter(|v| !v.is_empty() && !v.starts_with('#'))
-            .map(str::to_owned).collect();
-        if names.is_empty() || names.len() > 200 { return Err("batch requires 1..200 usernames".into()); }
+            .map(str::to_owned)
+            .collect();
+        if names.is_empty() || names.len() > 200 {
+            return Err("batch requires 1..200 usernames".into());
+        }
         names
     } else {
         vec![opts.username.ok_or("username missing")?]
     };
-    let names: Vec<String> = names.into_iter().map(|x| checked_username(&x).map_err(str::to_owned)).collect::<Result<_, _>>()?;
+    let names: Vec<String> = names
+        .into_iter()
+        .map(|x| checked_username(&x).map_err(str::to_owned))
+        .collect::<Result<_, _>>()?;
     let secret = configured_secret();
     if secret.is_none() {
         return Err("RAPIDAPI_KEY is not configured; set it in ~/.huntsman.env (chmod 600) or the environment".into());
@@ -546,22 +866,45 @@ fn run() -> Result<(), String> {
     let transport = transport(timeout);
     let mut successful = 0;
     for name in names {
-        let report = scan(&transport, secret.as_ref(), &name, opts.business, unix_now(), timeout).map_err(str::to_owned)?;
-        if report.has_observation() { successful += 1; }
+        let report = scan(
+            &transport,
+            secret.as_ref(),
+            &name,
+            opts.business,
+            unix_now(),
+            timeout,
+        )
+        .map_err(str::to_owned)?;
+        if report.has_observation() {
+            successful += 1;
+        }
         if opts.show_raw {
-            println!("{}", serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+            );
         } else {
             println!("{}", report.as_text());
         }
         if let Some(dir) = &opts.out_json {
             let payload = serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?;
-            println!("Saved: {}", save_report(dir, &report, "json", &payload)?.display());
+            println!(
+                "Saved: {}",
+                save_report(dir, &report, "json", &payload)?.display()
+            );
         }
         if let Some(dir) = &opts.out_txt {
-            println!("Saved: {}", save_report(dir, &report, "txt", report.as_text().as_bytes())?.display());
+            println!(
+                "Saved: {}",
+                save_report(dir, &report, "txt", report.as_text().as_bytes())?.display()
+            );
         }
     }
-    if successful == 0 { return Err("No provider observations were returned; see per-endpoint outcomes above".into()); }
+    if successful == 0 {
+        return Err(
+            "No provider observations were returned; see per-endpoint outcomes above".into(),
+        );
+    }
     Ok(())
 }
 
@@ -575,8 +918,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use huntsman_recon::http::{Response, TransportFailure};
+    use std::sync::Mutex;
 
     struct Fake {
         status: u16,
@@ -586,7 +929,12 @@ mod tests {
     }
     impl Fake {
         fn new(status: u16, body: &'static str) -> Self {
-            Self { status, body, truncated: false, sent: Mutex::new(Vec::new()) }
+            Self {
+                status,
+                body,
+                truncated: false,
+                sent: Mutex::new(Vec::new()),
+            }
         }
     }
     impl Transport for Fake {
@@ -603,7 +951,17 @@ mod tests {
 
     #[test]
     fn usernames_cannot_smuggle_paths_or_queries() {
-        for bad in ["", "/", "abc/def", "x?key=1", "https://facebook.com/example", "a\nb", "..", "a b", "a#b"] {
+        for bad in [
+            "",
+            "/",
+            "abc/def",
+            "x?key=1",
+            "https://facebook.com/example",
+            "a\nb",
+            "..",
+            "a b",
+            "a#b",
+        ] {
             assert!(checked_username(bad).is_err(), "{bad}");
         }
         assert_eq!(checked_username("@nasa").unwrap(), "nasa");
@@ -614,7 +972,15 @@ mod tests {
     fn the_four_original_endpoints_are_called_without_leaking_key_into_urls() {
         let fake = Fake::new(200, r#"{"name":"Example","followers":42}"#);
         let key = Secret::new("test-provider-key").unwrap();
-        let report = scan(&fake, Some(&key), "nasa", true, 1234, Duration::from_secs(10)).unwrap();
+        let report = scan(
+            &fake,
+            Some(&key),
+            "nasa",
+            true,
+            1234,
+            Duration::from_secs(10),
+        )
+        .unwrap();
         assert!(report.has_observation());
         assert_eq!(report.profile.state, "observed");
         let requests = fake.sent.lock().unwrap();
@@ -626,11 +992,19 @@ mod tests {
             "/get-business-about-profile-transparency-page-details",
         ]) {
             assert!(request.url.contains(path));
-            assert!(request.url.contains("urlSupplier=https%3A%2F%2Fwww.facebook.com%2Fnasa"));
+            assert!(
+                request
+                    .url
+                    .contains("urlSupplier=https%3A%2F%2Fwww.facebook.com%2Fnasa")
+            );
             assert!(!request.url.contains("test-provider-key"));
             assert_eq!(request.header_value("x-rapidapi-host"), Some(API_HOST));
         }
-        assert!(requests[0].url.contains("&url=https%3A%2F%2Fwww.facebook.com%2Fnasa"));
+        assert!(
+            requests[0]
+                .url
+                .contains("&url=https%3A%2F%2Fwww.facebook.com%2Fnasa")
+        );
         assert!(!requests[1].url.contains("&url="));
     }
 
@@ -668,12 +1042,27 @@ mod tests {
         assert!(!allowed_host(Some("127.0.0.1:9000"), 8787));
         assert!(allowed_host(Some("127.0.0.1:8787"), 8787));
         assert!(allowed_host(Some("localhost:8787"), 8787));
-        assert!(parse_args(["--serve".to_owned(), "--bind".to_owned(), "0.0.0.0:8787".to_owned()]).is_ok());
+        assert!(
+            parse_args([
+                "--serve".to_owned(),
+                "--bind".to_owned(),
+                "0.0.0.0:8787".to_owned()
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
     fn batch_and_single_modes_are_exclusive() {
-        assert!(parse_args(["-u".into(), "a".into(), "--batch".into(), "users.txt".into()]).is_err());
+        assert!(
+            parse_args([
+                "-u".into(),
+                "a".into(),
+                "--batch".into(),
+                "users.txt".into()
+            ])
+            .is_err()
+        );
         assert!(parse_args(["--connect-timeout".into(), "0".into(), "--serve".into()]).is_err());
         assert!(parse_args(["--serve".into()]).is_ok());
     }
