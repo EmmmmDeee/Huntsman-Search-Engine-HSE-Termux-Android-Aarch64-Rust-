@@ -522,7 +522,8 @@ fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
 struct CrawlState {
     visited: BTreeSet<(String, String)>,
     /// The highest confidence of any entity a queued target was followed from, by its key: what a
-    /// pivot's lookup may hold it at, as the lookup's echo of its selector says nothing of it.
+    /// pivot's lookup may hold it at, as the lookup's echo of its selector says nothing of it. An
+    /// echo is followed from at no more than the pivot it echoes ([`pivot_held_at`]).
     followed_at: BTreeMap<(String, String), f64>,
     entities: Vec<Entity>,
     edges: Vec<PivotEdge>,
@@ -646,7 +647,8 @@ impl CrawlState {
     /// entity is routed and recorded as the lookup returned it, so a lookup's echo of its own
     /// selector still says that selector was looked up ([`route_selectors`]) and still shows the
     /// lookup in the lineage. Generation 0 is the operator's seeds; every later target is a pivot
-    /// the crawl found, whose echo is then not kept as the operator's seed ([`forget_pivot_echo`]).
+    /// the crawl found, whose echo is then not kept as the operator's seed ([`forget_pivot_echo`]),
+    /// and what each entity queues is followed at the confidence it is kept at ([`pivot_held_at`]).
     fn take_step(
         &mut self,
         generation: u32,
@@ -672,7 +674,10 @@ impl CrawlState {
                 to_value: entity.value.clone(),
                 generation,
             });
-            self.queue_expansions(&entity, policy, next);
+            let held_at = followed_at.map_or(entity.confidence, |followed_at| {
+                pivot_held_at(&entity, followed_at)
+            });
+            self.queue_expansions(&entity, held_at, policy, next);
             if let Some(followed_at) = followed_at {
                 if !forget_pivot_echo(&mut entity, followed_at) {
                     continue;
@@ -719,9 +724,15 @@ impl CrawlState {
         true
     }
 
-    /// Queue the next-generation targets an entity contributes, honouring the per-generation
-    /// frontier cap. An overflow is a resource limit, not silently lost work.
-    fn queue_expansions(&mut self, entity: &Entity, policy: &RecursionPolicy, next: &mut Frontier) {
+    /// Queue the next-generation targets an entity held at `held_at` contributes, honouring the
+    /// per-generation frontier cap. An overflow is a resource limit, not silently lost work.
+    fn queue_expansions(
+        &mut self,
+        entity: &Entity,
+        held_at: f64,
+        policy: &RecursionPolicy,
+        next: &mut Frontier,
+    ) {
         for candidate in expansions(entity, policy) {
             let key = candidate.owned_key();
             // Already dispatched, or already queued for the next generation: skip before the cap
@@ -731,14 +742,14 @@ impl CrawlState {
                 continue;
             }
             if next.contains_key(&key) {
-                self.follow_at(key, entity.confidence);
+                self.follow_at(key, held_at);
                 continue;
             }
             if next.len() >= policy.max_frontier_per_generation {
                 self.resource_limited = true;
                 continue;
             }
-            self.follow_at(key, entity.confidence);
+            self.follow_at(key, held_at);
             next.push(candidate);
         }
     }
@@ -763,6 +774,7 @@ fn forget_pivot_echo(entity: &mut Entity, followed_at: f64) -> bool {
     if !entity.evidence.iter().any(Evidence::is_operator_seed) {
         return true;
     }
+    let held_at = pivot_held_at(entity, followed_at);
     // Each echo the lookup folded in was one observation of the entity; none was a source's.
     let echoes: u32 = entity
         .evidence
@@ -774,9 +786,21 @@ fn forget_pivot_echo(entity: &mut Entity, followed_at: f64) -> bool {
         .evidence
         .retain(|evidence| !evidence.is_operator_seed());
     entity.tags.retain(|tag| tag != "seed");
-    entity.confidence = entity.confidence.min(followed_at);
+    entity.confidence = held_at;
     entity.corroboration = entity.corroboration.saturating_sub(echoes).max(1);
     !entity.evidence.is_empty()
+}
+
+/// The confidence a pivot lookup's `entity` is held at once its echo is forgotten
+/// ([`forget_pivot_echo`]): an echo at no more than `followed_at`, the confidence the crawl followed
+/// the pivot at, and any other entity at its own. What it queues is followed at the same, so a
+/// target an echo queues is never held above the pivot either. **Pure.**
+fn pivot_held_at(entity: &Entity, followed_at: f64) -> f64 {
+    if entity.evidence.iter().any(Evidence::is_operator_seed) {
+        entity.confidence.min(followed_at)
+    } else {
+        entity.confidence
+    }
 }
 
 /// Run a bounded recursive crawl from `seeds`, dispatching live lookups through `collector`.
@@ -1426,7 +1450,7 @@ mod tests {
 
     /// A pivot is something the crawl found, so the lookup of it echoing it back as the
     /// operator's seed never makes it one: a handle guessed from an e-mail's local part leaves the
-    /// crawl at the confidence it was followed at, untagged and with no operator-supplied record,
+    /// crawl at the confidence it was followed at, untagged and with no seed record,
     /// keeping what a source said of it. The operator's own e-mail stays the seed.
     #[test]
     fn a_pivot_the_crawl_found_never_leaves_it_as_the_operators_seed() {
@@ -1513,6 +1537,48 @@ mod tests {
         let before = finding.clone();
         assert!(forget_pivot_echo(&mut finding, 0.1));
         assert_eq!(finding, before);
+    }
+
+    /// What a pivot's echo queues is followed at no more than the pivot: a spelling a source
+    /// reported of a handle guessed from an e-mail's local part, looked up from the guess's echo,
+    /// leaves the crawl at the guess's confidence, not at the echo's, nor as the operator's seed.
+    #[test]
+    fn what_a_pivots_echo_queues_is_followed_at_no_more_than_the_pivot() {
+        let email = "pg.smith@corp.example";
+        let mailbox_only = RecursionPolicy {
+            expose_emails: false,
+            ..policy()
+        };
+        let mut guess = asked("pgsmith");
+        guess.absorb(observed(EntityKind::Username, "pg_smith", "github_twitter"));
+        let mut reported = asked("pg_smith");
+        reported.absorb(observed(EntityKind::Username, "pg_smith", "hacker_news"));
+        let mut collector = Scripted::new()
+            .on(ScanKind::Email, email, vec![guessed("pg-smith")])
+            .on(ScanKind::Username, "pgsmith", vec![guess])
+            .on(ScanKind::Username, "pg_smith", vec![reported]);
+        let report = run(&[email.to_owned()], &mailbox_only, &mut collector);
+        let handles: Vec<&str> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind == "username")
+            .map(|(_, selector)| selector.as_str())
+            .collect();
+        assert_eq!(handles, ["pgsmith", "pg_smith"]);
+        let kept: Vec<&Entity> = report
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::Username)
+            .collect();
+        assert!(!kept.is_empty());
+        for handle in kept {
+            assert!(handle.confidence <= 0.7, "{handle:?}");
+            assert!(!handle.has_tag("seed"), "{handle:?}");
+            assert!(
+                !handle.evidence.iter().any(Evidence::is_operator_seed),
+                "{handle:?}"
+            );
+        }
     }
 
     /// A pivot's lookup is routed and recorded as it returned, before its echo is forgotten: a
