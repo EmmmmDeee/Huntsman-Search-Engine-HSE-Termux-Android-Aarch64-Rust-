@@ -184,19 +184,56 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
     au_national_key(&compact)
 }
 
+/// The one canonical form of a phone number, which every phone value is read by (an entity, a
+/// classified token, a selector, `phone_intl::canonicalize`): an explicit international number or
+/// a recognised Australian national number in E.164, else `None`. **Pure.**
+///
+/// - The number starts at its first digit or `+`, so `tel:+1…` and `(+44)…` are read as written.
+/// - A `00` international prefix is a `+` (`0044 20…` is `+4420…`).
+/// - A number with digits after an extension marker (`x12`, `ext 22`, `;ext=12`, `#12`) is
+///   refused: dropping the marker would join the extension onto the number.
+/// - A `+61` number is Australian or none, keeping no trunk zero (`+61 (0)4…` is `+614…`).
+/// - Any other `+` number holds 10 to 15 digits, its country code not starting with `0`; the
+///   country of a bare non-Australian national number is never guessed.
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
-    let compact: String = raw
-        .chars()
-        .filter(|character| character.is_ascii_digit() || *character == '+')
-        .collect();
-    if compact.starts_with("+61") {
-        return normalise_au_phone(&compact);
+    let number =
+        raw.trim_start_matches(|character: char| !(character.is_ascii_digit() || character == '+'));
+    if has_digits_after_a_marker(number) {
+        return None;
     }
-    if compact.starts_with('+') {
-        return phone_e164_error(&compact).is_none().then_some(compact);
+    let digits = |text: &str| -> String { text.chars().filter(char::is_ascii_digit).collect() };
+    let candidate = if number.starts_with('+') {
+        format!("+{}", digits(number))
+    } else if number.starts_with("00") {
+        format!("+{}", digits(number).strip_prefix("00")?)
+    } else {
+        return normalise_au_phone(number);
+    };
+    if candidate.starts_with("+61") {
+        return normalise_au_phone(&candidate);
     }
-    normalise_au_phone(&compact)
+    phone_e164_error(&candidate).is_none().then_some(candidate)
+}
+
+/// Whether a letter, `#`, `;` or `,` stands between two of `raw`'s digits: an extension, a
+/// dialling pause or a vanity word, after which the remaining digits are not the number's own.
+/// Words after the last digit (`(office)`) are not. **Pure.**
+fn has_digits_after_a_marker(raw: &str) -> bool {
+    let mut seen_digit = false;
+    let mut marker = false;
+    for character in raw.chars() {
+        if character.is_ascii_digit() {
+            if marker {
+                return true;
+            }
+            seen_digit = true;
+        } else if seen_digit && (character.is_alphabetic() || matches!(character, '#' | ';' | ','))
+        {
+            marker = true;
+        }
+    }
+    false
 }
 
 /// Shape defect in an email local part. One rule shared by
@@ -685,11 +722,37 @@ mod au_phone_key_contract {
         assert_eq!(canonical_phone("0412 345 678"), want);
     }
 
+    /// Every way a number reaches a key gives the key a scan of it gives: a `00` prefix is a
+    /// `+`, and an extension is never joined onto the number.
+    #[test]
+    fn a_phone_has_one_key_however_it_is_written() {
+        let want = Some("+442079460958".to_string());
+        for written in [
+            "+44 20 7946 0958",
+            "0044 20 7946 0958",
+            "tel:+44-20-7946-0958",
+        ] {
+            assert_eq!(canonical_phone(written), want, "{written}");
+        }
+        for extended in [
+            "+1 415 555 2671 ext 22",
+            "+44 20 7946 0958 x12",
+            "0044 20 7946 0958;ext=3",
+        ] {
+            assert_eq!(canonical_phone(extended), None, "{extended}");
+        }
+        assert_eq!(
+            canonical_phone("+1 415 555 2671 (office)").as_deref(),
+            Some("+14155552671")
+        );
+    }
+
     #[test]
     fn au_country_code_requires_au_national_length() {
         assert_eq!(normalise_au_phone("+61 4123 4567 8901"), None);
         assert_eq!(normalise_au_phone("+61 9 1234 5678"), None);
         assert_eq!(canonical_phone("+61 4123 4567 8901"), None);
+        assert_eq!(canonical_phone("0061 4123 4567 8901"), None);
         assert_eq!(
             normalise_au_phone("+61 1300 123 456").as_deref(),
             Some("+611300123456")
