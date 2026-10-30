@@ -31,9 +31,6 @@ use crate::http::{DEFAULT_USER_AGENT, Request, Transport, percent_encode_unreser
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE: &str = "wikidata";
-/// A pivot from an unverified people-name search is a retained lead, not an
-/// independently attributable target for automatic recursive dispatch.
-pub const NAME_SEARCH_LEAD_TAG: &str = "wikidata-name-lead";
 const PUBLIC_BASE: &str = "https://www.wikidata.org";
 /// HTTPS origin for an operator-managed Wikibase-compatible service. When absent, the public
 /// Wikidata endpoint is used.
