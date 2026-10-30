@@ -236,15 +236,14 @@ pub fn lookup<T: Transport + ?Sized>(
         if net.fac_count.unwrap_or(0) > MAX_FACILITY_ROWS as u64 {
             let _ = write!(
                 detail,
-                "; netfac skipped: facility count exceeds bounded {}-record limit",
-                MAX_FACILITY_ROWS
+                "; netfac skipped: facility count exceeds bounded {MAX_FACILITY_ROWS}-record limit"
             );
         } else if let Some(net_id) = net.id {
             match facility_entities(
                 transport,
                 net_id,
                 asn,
-                net.fac_count.unwrap_or(0) as usize,
+                usize::try_from(net.fac_count.unwrap_or(0)).unwrap_or(MAX_FACILITY_ROWS + 1),
                 scan_id,
                 now_unix,
             ) {
@@ -520,7 +519,7 @@ fn facility_entities<T: Transport + ?Sized>(
     }
     if records.iter().any(|record| {
         record.net_id != Some(net_id)
-            || !record.fac_id.is_some_and(|id| id > 0)
+            || record.fac_id.is_none_or(|id| id == 0)
             || record.local_asn.is_some_and(|asn| asn != expected_asn)
             || record
                 .status
