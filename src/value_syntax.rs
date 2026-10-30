@@ -189,12 +189,14 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
 /// a recognised Australian national number in E.164, else `None`. **Pure.**
 ///
 /// - The number starts at its first digit or `+`, so `tel:+1…` and `(+44)…` are read as written.
-/// - A `00` international prefix is a `+` (`0044 20…` is `+4420…`).
+/// - A `00` or Australian `0011` international prefix is a `+` (`0044 20…`, `0011 44 20…` are
+///   `+4420…`).
 /// - A number with digits after an extension marker (`x12`, `ext 22`, `;ext=12`, `#12`) is
 ///   refused: dropping the marker would join the extension onto the number.
 /// - A `+61` number is Australian or none, keeping no trunk zero (`+61 (0)4…` is `+614…`).
-/// - Any other `+` number holds 10 to 15 digits, its country code not starting with `0`; the
-///   country of a bare non-Australian national number is never guessed.
+/// - A `+1` number is the North American plan's ten digits after the `1`; any other `+` number
+///   holds 10 to 15 digits, its country code not starting with `0`, and one `+` only. The country
+///   of a bare non-Australian national number is never guessed.
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
     let number =
@@ -202,19 +204,37 @@ pub fn canonical_phone(raw: &str) -> Option<String> {
     if has_digits_after_a_marker(number) {
         return None;
     }
-    let digits = |text: &str| -> String { text.chars().filter(char::is_ascii_digit).collect() };
-    let candidate = if number.starts_with('+') {
-        format!("+{}", digits(number))
-    } else if number.starts_with("00") {
-        format!("+{}", digits(number).strip_prefix("00")?)
+    // Every `+` is kept, so a second one (two numbers run together) is refused below.
+    let dialled: String = number
+        .chars()
+        .filter(|character| character.is_ascii_digit() || *character == '+')
+        .collect();
+    let candidate = if dialled.starts_with('+') {
+        dialled
+    } else if let Some(international) = INTERNATIONAL_PREFIXES
+        .iter()
+        .find_map(|prefix| dialled.strip_prefix(prefix))
+    {
+        format!("+{international}")
     } else {
         return normalise_au_phone(number);
     };
     if candidate.starts_with("+61") {
         return normalise_au_phone(&candidate);
     }
+    // The North American plan's numbers are all ten digits after the `1`.
+    if candidate.starts_with("+1") && candidate.len() != NANP_E164_LEN {
+        return None;
+    }
     phone_e164_error(&candidate).is_none().then_some(candidate)
 }
+
+/// The international dialling prefixes a number may be written after in place of `+`: Australia's
+/// `0011` first, so its `11` is never read as a country code, then the common `00`.
+const INTERNATIONAL_PREFIXES: [&str; 2] = ["0011", "00"];
+
+/// A North American number in E.164: `+`, `1` and ten digits.
+const NANP_E164_LEN: usize = 12;
 
 /// Whether a letter, `#`, `;` or `,` stands between two of `raw`'s digits: an extension, a
 /// dialling pause or a vanity word, after which the remaining digits are not the number's own.
@@ -745,6 +765,10 @@ mod au_phone_key_contract {
             canonical_phone("+1 415 555 2671 (office)").as_deref(),
             Some("+14155552671")
         );
+        assert_eq!(canonical_phone("0011 44 20 7946 0958"), want);
+        // Two numbers run together, and a zero-padded identifier, are no number.
+        assert_eq!(canonical_phone("+44 +1 415 555 2671"), None);
+        assert_eq!(canonical_phone("001234567890"), None);
     }
 
     #[test]
