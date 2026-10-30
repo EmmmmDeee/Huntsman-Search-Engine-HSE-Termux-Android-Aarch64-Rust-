@@ -454,6 +454,14 @@ fn a_spiderfoot_name_chooses_every_module_that_does_its_work() {
         );
     }
     assert!(!chosen.runs("shodan"));
+    // A retired module, which a scan saved before may name, chooses nothing and refuses nothing.
+    let retired = selection(&[
+        "coinblocker".to_owned(),
+        "SFP_CoinBlocker".to_owned(),
+        "cinsscore".to_owned(),
+    ])
+    .expect("a retired module's name is accepted");
+    assert!(retired.runs("cinsscore") && !retired.runs("coinblocker"));
     let resolve = selection(&["sfp_dnsresolve".to_owned()]).expect("a Spiderfoot name");
     assert!(resolve.runs("dns") && resolve.runs("dnsresolve"));
     assert!(selection(&[]).expect("no name").is_all());

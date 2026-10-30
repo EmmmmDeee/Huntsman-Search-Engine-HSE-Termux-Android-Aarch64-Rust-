@@ -657,7 +657,12 @@ fn reputation_descriptors(
         }
     } else if let Some(feed) = attr("threat_feed") {
         // A threat feed's listing, as Spiderfoot's feed modules write it: always the blacklisted
-        // element, and the malicious one too when the feed lists threats.
+        // element, and the malicious one too when the feed lists threats. A listing on a list
+        // that stopped updating says what the list once held, so it is neither: Spiderfoot's
+        // correlations read both as a current verdict.
+        if attr("threat_feed_stale").is_some_and(positive) {
+            return;
+        }
         let data = format!("{feed} [{host}]");
         if let Some(kind) = blacklisted_type(&entity.kind) {
             out.push((kind, data.clone()));
