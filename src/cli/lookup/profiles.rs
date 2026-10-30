@@ -413,8 +413,9 @@ fn username(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, R
     let keys = crate::cli::credentials::lookup_keys();
     // `selector` is the operator's ORIGINAL-case handle. `username_cli::run` case-folds it for the
     // report cohort and every case-insensitive profile source, and queries the case-sensitive
-    // Hacker News leg in this exact case. The SeekNow and breach legs match case-insensitively, so
-    // they take the canonical form — unchanged from before this selector carried original case.
+    // Hacker News and Wikipedia legs in this exact case. The SeekNow and breach legs match
+    // case-insensitively, so they take the canonical form — unchanged from before this selector
+    // carried original case.
     let canonical = huntsman_recon::username_cli::canonical_username(selector)
         .unwrap_or_else(|_| selector.to_owned());
     let (run, (seeknow, exposure)) = concurrent::pair(
