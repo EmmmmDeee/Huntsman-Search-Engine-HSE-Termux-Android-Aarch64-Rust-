@@ -79,6 +79,9 @@ const DOMAIN_ONLY: &[EntityKind] = &[EntityKind::Domain];
 const IP_ONLY: &[EntityKind] = &[EntityKind::IpAddress];
 const USERNAME_ONLY: &[EntityKind] = &[EntityKind::Username];
 const COORDINATES_ONLY: &[EntityKind] = &[EntityKind::Coordinates];
+// Australian registry and archival discovery: links only, not fetched evidence.
+const AU_BUSINESS: &[EntityKind] = &[EntityKind::Organisation, EntityKind::AbnAcn];
+const AU_HISTORY: &[EntityKind] = &[EntityKind::Person, EntityKind::Organisation];
 
 /// Small, independently curated bootstrap set. The architecture is designed to grow
 /// by adding descriptors rather than one Rust module per external search surface.
@@ -184,6 +187,40 @@ static SOURCES: &[SourceDescriptor] = &[
         access: SourceAccess::Public,
         url_template: "https://github.com/search?q={value}&type=users",
         reference_url: "https://github.com/",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    // The ABR distinguishes active records from historic/cancelled names. Both
+    // official URL forms were checked against public ABN Lookup result pages.
+    SourceDescriptor {
+        id: "au_abr_active",
+        name: "Australian Business Register (active names)",
+        accepted_kinds: AU_BUSINESS,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://abr.business.gov.au/Search/ResultsActive?SearchText={value}",
+        reference_url: "https://abr.business.gov.au/Search",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "au_abr_all",
+        name: "Australian Business Register (all and historical names)",
+        accepted_kinds: AU_BUSINESS,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://abr.business.gov.au/Search/ResultsAll?SearchText={value}",
+        reference_url: "https://abr.business.gov.au/Search",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    // Trove's public newspaper search is navigated in a browser; the URL is
+    // deliberately not presented as a programmatic retrieval API.
+    SourceDescriptor {
+        id: "au_trove_newspapers",
+        name: "Trove newspapers and gazettes",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::BrowserRequired,
+        access: SourceAccess::Public,
+        url_template: "https://trove.nla.gov.au/search/category/newspapers?keyword={value}",
+        reference_url: "https://trove.nla.gov.au/",
         evidence_role: EvidenceRole::LeadOnly,
     },
     SourceDescriptor {
@@ -338,6 +375,51 @@ mod tests {
                 .iter()
                 .any(|route| route.url == "https://github.com/search?q=ada.lovelace&type=users")
         );
+    }
+
+    #[test]
+    fn australian_business_discovery_preserves_cancelled_records() {
+        for kind in [EntityKind::Organisation, EntityKind::AbnAcn] {
+            let routes = routes_for(&kind, "Bunnings Group");
+            let active = routes
+                .iter()
+                .find(|route| route.source_id == "au_abr_active")
+                .expect("ABR active search");
+            let all = routes
+                .iter()
+                .find(|route| route.source_id == "au_abr_all")
+                .expect("ABR historic search");
+            assert_eq!(
+                active.url,
+                "https://abr.business.gov.au/Search/ResultsActive?SearchText=Bunnings%20Group"
+            );
+            assert_eq!(
+                all.url,
+                "https://abr.business.gov.au/Search/ResultsAll?SearchText=Bunnings%20Group"
+            );
+            assert_eq!(active.evidence_role, EvidenceRole::LeadOnly);
+            assert_eq!(all.evidence_role, EvidenceRole::LeadOnly);
+            assert_eq!(active.access, SourceAccess::Public);
+        }
+        assert!(!routes_for(&EntityKind::Domain, "example.org")
+            .iter()
+            .any(|route| route.source_id.starts_with("au_abr_")));
+    }
+
+    #[test]
+    fn australian_newspapers_are_browser_leads_not_evidence() {
+        for kind in [EntityKind::Person, EntityKind::Organisation] {
+            let route = routes_for(&kind, "Ada Lovelace")
+                .into_iter()
+                .find(|route| route.source_id == "au_trove_newspapers")
+                .expect("Trove newspaper browser route");
+            assert_eq!(
+                route.url,
+                "https://trove.nla.gov.au/search/category/newspapers?keyword=Ada%20Lovelace"
+            );
+            assert_eq!(route.execution, ExecutionMode::BrowserRequired);
+            assert_eq!(route.evidence_role, EvidenceRole::LeadOnly);
+        }
     }
 
     #[test]
