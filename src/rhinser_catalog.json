@@ -66,12 +66,14 @@
         {
           "id": "emailosint",
           "name": "EmailOSINT",
-          "url": "https://emailosint.com/"
+          "url": "https://emailosint.com/",
+          "query_template": "https://emailosint.com/?q={q}"
         },
         {
           "id": "emailosint_dashboard",
           "name": "EmailOSINT Dashboard Lookup",
-          "url": "https://www.emailosint.org/dashboard/lookup"
+          "url": "https://www.emailosint.org/dashboard/lookup",
+          "query_template": "https://www.emailosint.org/dashboard/lookup?email={q}"
         },
         {
           "id": "emailosint_docs",
