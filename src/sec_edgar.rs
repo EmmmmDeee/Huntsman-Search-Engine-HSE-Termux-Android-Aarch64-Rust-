@@ -80,6 +80,11 @@ fn validated_user_agent(value: Option<&str>) -> Option<&str> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+/=?^`{|}~_-".contains(&byte))
             && domain.contains('.')
+            // A DNS host with an all-numeric final label is not a plausible contact mailbox.
+            && domain
+                .rsplit('.')
+                .next()
+                .is_some_and(|tld| tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic()))
             && domain.split('.').all(|label| {
                 !label.is_empty()
                     && label.len() <= 63
@@ -933,6 +938,8 @@ mod tests {
             Some("Huntsman project-only https://github.com/repo"),
             Some("Huntsman none@domain"),
             Some("Huntsman admin@example..com"),
+            Some("Huntsman admin@example.123"),
+            Some("Huntsman admin@example.c"),
             Some("Huntsman contact@example.com\r\nX-Injected: yes"),
             Some("Huntsman contact@example.com\n"),
         ] {
