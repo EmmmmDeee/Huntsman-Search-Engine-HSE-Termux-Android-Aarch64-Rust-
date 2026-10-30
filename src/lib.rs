@@ -216,6 +216,7 @@ pub mod scan_service;
 pub mod scan_store;
 pub mod scan_uncertainty;
 pub mod search;
+pub mod sec_edgar;
 pub mod securitytrails;
 pub mod seeknow;
 pub mod seeknow_cli;
