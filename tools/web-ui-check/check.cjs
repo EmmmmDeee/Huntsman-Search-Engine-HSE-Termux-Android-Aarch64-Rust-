@@ -93,7 +93,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
 (async () => {
   const base = await serve('127.0.0.1:0');
   const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || process.env.CHROME_BIN || undefined });
-  const api = async (page, p) => (await page.request.get(base + p, { headers: LH })).json();
+  // The saved-scan server may deliberately return 503 when its heavy-worker budget is full.\n  // Never treat that error envelope as scan evidence.\n  const api = async (page, p) => {\n    const response = await page.request.get(base + p, { headers: LH });\n    if (!response.ok()) throw new Error(`API ${p} returned HTTP ${response.status()}: ${(await response.text()).slice(0, 300)}`);\n    return response.json();\n  };
   // Runs a scan through New Scan, following what it finds `depth` hops, and waits for it to
   // finish; answers its id and how long it took.
   async function newScan(page, name, depth) {
@@ -490,7 +490,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       metrics[`${scheme}ScanMs`] = run.ms;
       check(`${scheme}: the scan finishes`, run.status === 'FINISHED', run);
       const id = run.id, root = '/api/scans/' + encodeURIComponent(id);
-      const [row, summary, elements, correlations, graph, log] = await Promise.all(['', '/summary', '/elements', '/correlations', '/graph', '/log'].map(p => api(page, root + p)));
+      // Read each authoritative endpoint in sequence. The production server admits at most\n      // two concurrent heavy saved-scan workers; six parallel test probes would exceed that\n      // intentional bound and compare HTTP 503 error envelopes as if they were evidence.\n      const records = [];\n      for (const suffix of ['', '/summary', '/elements', '/correlations', '/graph', '/log']) {\n        records.push(await api(page, root + suffix));\n      }\n      const [row, summary, elements, correlations, graph, log] = records;
       metrics[`${scheme}Scan`] = { elements: elements.length, types: summary.length, correlations: correlations.length, nodes: graph.nodes.length, log: log.length };
       check(`${scheme}: the scan found something`, elements.length > 0, metrics[`${scheme}Scan`]);
 
