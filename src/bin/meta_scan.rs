@@ -197,14 +197,32 @@ fn checked_username(raw: &str) -> Result<String, &'static str> {
 fn status_failure(source: &'static str, status: u16) -> Option<EndpointResult> {
     let (state, message) = match status {
         200..=299 => return None,
-        401 => ("authentication_rejected", "RapidAPI rejected the configured key"),
-        402 | 403 => ("entitlement_denied", "Subscription or endpoint access is unavailable"),
-        404 => ("not_found", "Provider returned 404; this is not proof the Facebook page is absent"),
-        429 => ("rate_limited", "Provider rate limit reached; retry after the provider allows it"),
+        401 => (
+            "authentication_rejected",
+            "RapidAPI rejected the configured key",
+        ),
+        402 | 403 => (
+            "entitlement_denied",
+            "Subscription or endpoint access is unavailable",
+        ),
+        404 => (
+            "not_found",
+            "Provider returned 404; this is not proof the Facebook page is absent",
+        ),
+        429 => (
+            "rate_limited",
+            "Provider rate limit reached; retry after the provider allows it",
+        ),
         500..=599 => ("upstream_error", "RapidAPI upstream service error"),
         _ => ("http_error", "RapidAPI returned an unexpected HTTP status"),
     };
-    Some(EndpointResult::new(source, state, Some(status), None, Some(message)))
+    Some(EndpointResult::new(
+        source,
+        state,
+        Some(status),
+        None,
+        Some(message),
+    ))
 }
 
 fn classify_provider_reply(
@@ -217,26 +235,64 @@ fn classify_provider_reply(
         return failure;
     }
     if response.truncated {
-        return EndpointResult::new(source, "truncated", status, None, Some("Response exceeded 1 MiB limit"));
+        return EndpointResult::new(
+            source,
+            "truncated",
+            status,
+            None,
+            Some("Response exceeded 1 MiB limit"),
+        );
     }
     if outcome != SourceOutcomeKind::Inconclusive {
-        return EndpointResult::new(source, "unusable_response", status, None, Some("Response failed Huntsman content validation"));
+        return EndpointResult::new(
+            source,
+            "unusable_response",
+            status,
+            None,
+            Some("Response failed Huntsman content validation"),
+        );
     }
     let Ok(data) = serde_json::from_slice::<Value>(&response.body) else {
-        return EndpointResult::new(source, "invalid_json", status, None, Some("Response was not valid JSON"));
+        return EndpointResult::new(
+            source,
+            "invalid_json",
+            status,
+            None,
+            Some("Response was not valid JSON"),
+        );
     };
     if data.is_null()
         || data.as_object().is_some_and(serde_json::Map::is_empty)
         || data.as_array().is_some_and(Vec::is_empty)
     {
-        return EndpointResult::new(source, "empty", status, None, Some("Provider returned no records"));
+        return EndpointResult::new(
+            source,
+            "empty",
+            status,
+            None,
+            Some("Provider returned no records"),
+        );
     }
-    if data.get("error").is_some_and(|e| !e.is_null() && e != &Value::Bool(false))
+    if data
+        .get("error")
+        .is_some_and(|e| !e.is_null() && e != &Value::Bool(false))
         || data.get("success") == Some(&Value::Bool(false))
     {
-        return EndpointResult::new(source, "provider_error", status, None, Some("Provider reported an error in its JSON response"));
+        return EndpointResult::new(
+            source,
+            "provider_error",
+            status,
+            None,
+            Some("Provider reported an error in its JSON response"),
+        );
     }
-    EndpointResult::new(source, "observed", status, Some(data), Some("Unverified third-party response; corroborate before attribution"))
+    EndpointResult::new(
+        source,
+        "observed",
+        status,
+        Some(data),
+        Some("Unverified third-party response; corroborate before attribution"),
+    )
 }
 
 fn provider_result<T: Transport + ?Sized>(
@@ -254,14 +310,26 @@ fn provider_result<T: Transport + ?Sized>(
     let Ok(authority) =
         AuthenticationAuthority::configured_slot("rapidapi-facebook-pages-scraper3", KEY_SLOT, now)
     else {
-        return EndpointResult::new(source, "refused", None, None, Some("Credential authority was refused"));
+        return EndpointResult::new(
+            source,
+            "refused",
+            None,
+            None,
+            Some("Credential authority was refused"),
+        );
     };
     let Ok(credential) = Credential::new(
         authority,
         secret.clone(),
         AuthStyle::Header("x-rapidapi-key".into()),
     ) else {
-        return EndpointResult::new(source, "refused", None, None, Some("Credential was refused"));
+        return EndpointResult::new(
+            source,
+            "refused",
+            None,
+            None,
+            Some("Credential was refused"),
+        );
     };
     let credential = credential.only_for_origin(API_ORIGIN);
     // The key is never placed in the URL, recorded in the result, or sent on redirects.
@@ -279,10 +347,22 @@ fn provider_result<T: Transport + ?Sized>(
             source,
             now,
         ) else {
-            return EndpointResult::new(source, "refused", None, None, Some("Request refused by outbound policy"));
+            return EndpointResult::new(
+                source,
+                "refused",
+                None,
+                None,
+                Some("Request refused by outbound policy"),
+            );
         };
         let Some(response) = fetched.response else {
-            return EndpointResult::new(source, "network_error", None, None, Some("No usable HTTP response"));
+            return EndpointResult::new(
+                source,
+                "network_error",
+                None,
+                None,
+                Some("No usable HTTP response"),
+            );
         };
         if matches!(response.status, 500 | 502 | 503 | 504) && attempt < 2 {
             thread::sleep(Duration::from_millis(600 * (1_u64 << attempt)));
@@ -290,7 +370,13 @@ fn provider_result<T: Transport + ?Sized>(
         }
         return classify_provider_reply(source, &response, fetched.outcome.kind);
     }
-    EndpointResult::new(source, "upstream_error", None, None, Some("Retries exhausted"))
+    EndpointResult::new(
+        source,
+        "upstream_error",
+        None,
+        None,
+        Some("Retries exhausted"),
+    )
 }
 
 fn scan<T: Transport + ?Sized>(
