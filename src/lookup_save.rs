@@ -791,4 +791,26 @@ mod tests {
             ("new_breach_source", "src/exposure_cli.rs")
         );
     }
+
+    #[test]
+    fn place_legs_keep_their_own_provenance_in_every_ledger_claim() {
+        for (source, component) in [
+            (crate::nominatim::SOURCE, "src/nominatim.rs"),
+            (crate::stac::SOURCE, "src/stac.rs"),
+            (crate::opensky::SOURCE, "src/opensky.rs"),
+        ] {
+            let entity = entity_with([scanned(source, "observed place leg")]);
+            let outcome = SourceExecutionOutcome::success(source, 1, 1);
+            let entries = chain(&[entity], &[outcome], PLACE_POLICY).unwrap();
+            assert_eq!(entries.len(), 3, "outcome, entity, evidence for {source}");
+            for entry in entries {
+                assert_eq!(entry.claim.source, source);
+                assert_eq!(entry.claim.component, component, "{source}");
+            }
+        }
+        assert_eq!(
+            (PLACE_POLICY.outcome_provenance)("unrecognised_geocoder"),
+            ("unrecognised_geocoder", "src/nominatim_cli.rs")
+        );
+    }
 }
