@@ -79,6 +79,10 @@ const HANDLER_STACK_BYTES: usize = 256 * 1024;
 /// Lookups running at once. Each one holds sockets to several providers for up to two minutes,
 /// so a phone gets a small, fixed number; one past the cap is answered `503`.
 const MAX_LOOKUPS: usize = 2;
+/// Saved scan result, analysis and export requests build potentially large in-memory responses.
+/// Bound their concurrent HTTP handlers independently of the lightweight status, start and stop
+/// routes, so a phone can still control an active scan while large reports are being prepared.
+const MAX_HEAVY_SCAN_REQUESTS: usize = 2;
 /// Only one device-radio request at a time; Android's cached scan may take 15 seconds.
 const MAX_RADAR_REQUESTS: usize = 1;
 const RADAR_WAIT: Duration = Duration::from_secs(18);

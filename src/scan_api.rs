@@ -35,7 +35,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// A saved multi-export can materialize several scan records. Admit only one
 /// process-wide to prevent concurrent exports multiplying peak memory on phones.
@@ -241,6 +241,9 @@ pub struct ScanApi {
     slots: Option<SlotCheck>,
     /// Settings the binary adds to the page's Global Settings, after the store's own.
     globals: Vec<Value>,
+    /// Admission slots for memory-intensive embedded-server scan responses. Shared across
+    /// cloned HTTP routes and released when response construction has completed.
+    web_request_slots: Arc<AtomicUsize>,
 }
 
 impl ScanApi {
@@ -250,6 +253,7 @@ impl ScanApi {
             service,
             slots,
             globals: Vec::new(),
+            web_request_slots: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -269,6 +273,12 @@ impl ScanApi {
     #[must_use]
     pub fn service(&self) -> &Arc<ScanService> {
         &self.service
+    }
+
+    /// The shared admission counter for expensive embedded HTTP scan responses.
+    /// The HTTP boundary owns the policy and the RAII permit, not this scan API.
+    pub(crate) fn web_request_slots(&self) -> &Arc<AtomicUsize> {
+        &self.web_request_slots
     }
 
     /// Whether `path` is one [`Self::handle`] answers.
