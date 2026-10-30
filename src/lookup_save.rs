@@ -196,6 +196,8 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
         "certspotter" => ("certspotter", "src/certspotter.rs"),
         "dns" => ("dns", "src/dns.rs"),
+        crate::wayback_cdx::SOURCE => (source, "src/wayback_cdx.rs"),
+        crate::common_crawl::SOURCE => (source, "src/common_crawl.rs"),
         "virustotal" => ("virustotal", "src/virustotal.rs"),
         "hunter" => ("hunter", "src/hunter.rs"),
         other => indicator_provenance(other).unwrap_or((source, "src/domain_cli.rs")),
@@ -767,6 +769,27 @@ mod tests {
         assert_eq!(
             (PEOPLE_POLICY.outcome_provenance)("asic_persons.banned"),
             ("asic_persons", "src/asic_persons.rs")
+        );
+    }
+
+    #[test]
+    fn domain_archive_sources_keep_their_collector_component_in_saved_claims() {
+        for (source, component) in [
+            (crate::wayback_cdx::SOURCE, "src/wayback_cdx.rs"),
+            (crate::common_crawl::SOURCE, "src/common_crawl.rs"),
+        ] {
+            let entity = entity_with([scanned(source, "archived URL observation")]);
+            let outcome = SourceExecutionOutcome::success(source, 1, 1);
+            let entries = chain(&[entity], &[outcome], DOMAIN_POLICY).unwrap();
+            assert_eq!(entries.len(), 3, "outcome, entity, evidence for {source}");
+            for entry in entries {
+                assert_eq!(entry.claim.source, source);
+                assert_eq!(entry.claim.component, component, "{source}");
+            }
+        }
+        assert_eq!(
+            (DOMAIN_POLICY.outcome_provenance)("unrecognised_archive"),
+            ("unrecognised_archive", "src/domain_cli.rs")
         );
     }
 
