@@ -215,7 +215,11 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     // not an identity match. Its published handles/domains remain visible leads but are never
     // dispatched, even when an operator lowers the confidence floor; that setting must not
     // bypass attribution.
-    if entity.has_tag(crate::tags::NAME_SEARCH_LEAD) {
+    // Historical saved scans may still contain the former Wikidata-specific tag.
+    // Preserve the attribution gate for those records without emitting the old tag anew.
+    if entity.has_tag(crate::tags::NAME_SEARCH_LEAD)
+        || entity.has_tag("wikidata-name-lead")
+    {
         return Vec::new();
     }
     if entity.confidence < policy.expand_confidence_floor {
@@ -1419,6 +1423,34 @@ mod tests {
                 .is_empty(),
                 "a name-search-lead pivot must never be dispatched (floor {floor})"
             );
+        }
+    }
+
+    #[test]
+    fn historical_wikidata_name_leads_remain_non_dispatchable() {
+        // A scan persisted before the tag migration can still carry the old marker.
+        // A zero expansion floor must never promote its unverified third-party pivots.
+        for kind in [EntityKind::Domain, EntityKind::Username] {
+            let value = if kind == EntityKind::Domain {
+                "namesake.example"
+            } else {
+                "namesake_handle"
+            };
+            let mut lead = ent(kind, value, 0.99);
+            lead.tag("wikidata-name-lead");
+            for floor in [crate::gap::EXPAND_FLOOR, 0.0] {
+                assert!(
+                    expansions(
+                        &lead,
+                        &RecursionPolicy {
+                            expand_confidence_floor: floor,
+                            ..RecursionPolicy::default()
+                        }
+                    )
+                    .is_empty(),
+                    "legacy Wikidata name-only lead must not dispatch at floor {floor}"
+                );
+            }
         }
     }
 
