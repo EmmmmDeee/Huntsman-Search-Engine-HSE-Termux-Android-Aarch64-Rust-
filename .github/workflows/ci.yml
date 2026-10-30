@@ -82,6 +82,12 @@ jobs:
 
   test:
     runs-on: ubuntu-24.04
+    # Each matrix leg has its own ephemeral runner. Preserve full tests and lints,
+    # but avoid the debug symbols and incremental artifacts that exhausted disk on main.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     strategy:
       # Keep the MSRV and stable verdicts independent: with fail-fast, a stable
       # failure cancels the 1.87 leg before it reports.
@@ -98,12 +104,19 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
+      - name: Record disk before Rust test acceptance
+        run: df -h .
       - name: Run deterministic repair gate (1.99)
         if: matrix.toolchain == '1.99'
         run: cargo run --locked -p xtask -- gate full
       - name: Run deterministic repair gate (MSRV)
         if: matrix.toolchain == '1.87'
         run: cargo run --locked -p xtask -- gate msrv
+      - name: Record remaining disk and test build footprint
+        if: always()
+        run: |
+          df -h .
+          du -sh target 2>/dev/null || true
       - name: Measure sequential versus graph scheduling (offline)
         if: matrix.toolchain == '1.99'
         run: cargo run --locked --example graph_exec_bench
