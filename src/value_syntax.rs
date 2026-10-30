@@ -194,9 +194,10 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
 /// - A number with digits after an extension marker (`x12`, `ext 22`, `;ext=12`, `#12`) is
 ///   refused: dropping the marker would join the extension onto the number.
 /// - A `+61` number is Australian or none, keeping no trunk zero (`+61 (0)4…` is `+614…`).
-/// - A `+1` number is the North American plan's ten digits after the `1`; any other `+` number
-///   holds 10 to 15 digits, its country code not starting with `0`, and one `+` only. The country
-///   of a bare non-Australian national number is never guessed.
+/// - A `+1` number written after an international prefix has the North American plan's ten
+///   digits after the `1`. Any `+` number holds 10 to 15 digits, its country code not starting
+///   with `0`, and one `+` only. The country of a bare non-Australian national number is never
+///   guessed.
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
     let number =
@@ -215,16 +216,19 @@ pub fn canonical_phone(raw: &str) -> Option<String> {
         .iter()
         .find_map(|prefix| dialled.strip_prefix(prefix))
     {
-        format!("+{international}")
+        let candidate = format!("+{international}");
+        // A run of digits that merely starts `00` (a zero-padded identifier) is no North
+        // American number unless it has that plan's ten digits after the `1`. An explicit `+1`
+        // number is left to the plan's own check, which says what it breaks.
+        if candidate.starts_with("+1") && candidate.len() != NANP_E164_LEN {
+            return None;
+        }
+        candidate
     } else {
         return normalise_au_phone(number);
     };
     if candidate.starts_with("+61") {
         return normalise_au_phone(&candidate);
-    }
-    // The North American plan's numbers are all ten digits after the `1`.
-    if candidate.starts_with("+1") && candidate.len() != NANP_E164_LEN {
-        return None;
     }
     phone_e164_error(&candidate).is_none().then_some(candidate)
 }
@@ -769,6 +773,12 @@ mod au_phone_key_contract {
         // Two numbers run together, and a zero-padded identifier, are no number.
         assert_eq!(canonical_phone("+44 +1 415 555 2671"), None);
         assert_eq!(canonical_phone("001234567890"), None);
+        // An explicit `+1` number of the wrong length is still read, so the `phone` command's
+        // own plan check can say what it breaks.
+        assert_eq!(
+            canonical_phone("+1202555010").as_deref(),
+            Some("+1202555010")
+        );
     }
 
     #[test]
