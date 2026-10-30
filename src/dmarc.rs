@@ -2,11 +2,15 @@
 
 use crate::value_syntax::{self, record_tag};
 
-/// True if `txt` starts with `v=DMARC1` (ASCII-case-insensitive).
+/// True if the first TXT tag has name `v` and the entire value `DMARC1`.
+///
+/// RFC 7489 requires an exact version, not a prefix such as `DMARC10`. Reusing
+/// `record_tag` also respects the permitted whitespace around the equals sign.
 #[must_use]
 pub fn is_dmarc(txt: &str) -> bool {
-    let bytes = txt.as_bytes();
-    bytes.len() >= 8 && bytes[..8].eq_ignore_ascii_case(b"v=DMARC1")
+    let version_tag = txt.split(';').next().unwrap_or(txt);
+    record_tag(version_tag)
+        .is_some_and(|(name, value)| name == "v" && value.eq_ignore_ascii_case("DMARC1"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +288,34 @@ mod tests {
             record.pct, 90,
             "first invalid pct is ignored; first valid duplicate wins"
         );
+    }
+
+    #[test]
+    fn unsupported_version_suffixes_are_not_mail_policies() {
+        // RFC 7489 section 6.3: the v tag must be precisely DMARC1.
+        // A DNS TXT record advertising another version is not an enforcement verdict.
+        for raw in [
+            "v=DMARC10; p=reject",
+            "v=DMARC1beta; p=reject",
+            "v=DMARC1 p=reject",
+            "v=DMARC1\0; p=reject",
+            "v=DMARC1x; p=quarantine",
+        ] {
+            assert!(!is_dmarc(raw), "version gate accepted {raw:?}");
+            assert!(parse(raw).is_none(), "parser accepted {raw:?}");
+        }
+        // Valid separators and case-insensitive tag letters still work.
+        for raw in [
+            "v=DMARC1",
+            "V=dmarc1",
+            "v=DMARC1; p=reject",
+            "v=DMARC1 \t; p=quarantine",
+            "v = DMARC1; p=reject",
+            "v= DMARC1 ; p=none",
+        ] {
+            assert!(is_dmarc(raw), "version gate refused {raw:?}");
+            assert!(parse(raw).is_some(), "parser refused {raw:?}");
+        }
     }
 
     #[test]
