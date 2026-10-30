@@ -67,12 +67,13 @@ fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
             .iter()
             .any(|kind| extension.eq_ignore_ascii_case(kind))
     }) {
-        let report = huntsman_recon::apk_intel::container::run(bytes, label, now).map_err(
-            |error| LookupError {
-                status: 422,
-                message: error.to_string(),
-            },
-        )?;
+        let report =
+            huntsman_recon::apk_intel::container::run(bytes, label, now).map_err(|error| {
+                LookupError {
+                    status: 422,
+                    message: error.to_string(),
+                }
+            })?;
         let text = huntsman_recon::lookup_report::render(&report.entities, &report.outcomes)
             .map_err(|message| LookupError {
                 status: 500,
