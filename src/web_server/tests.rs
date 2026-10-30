@@ -2118,7 +2118,11 @@ fn saved_scan_heavy_admission_keeps_control_routes_responsive() {
         &format!("GET /api/scans/{id} HTTP/1.1\r\n{HEADER}\r\n"),
     );
     assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-    let listing = scans_request(&routes, None, &format!("GET /api/scans HTTP/1.1\r\n{HEADER}\r\n"));
+    let listing = scans_request(
+        &routes,
+        None,
+        &format!("GET /api/scans HTTP/1.1\r\n{HEADER}\r\n"),
+    );
     assert!(listing.starts_with("HTTP/1.1 200"), "{listing}");
     let stop = scans_request(
         &routes,
