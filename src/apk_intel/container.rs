@@ -677,6 +677,166 @@ mod tests {
         );
     }
 
+
+    /// Build a structurally valid APK with an actual P-256 signature over its
+    /// v3/v3.1 signed-data and a matching AOSP chunked digest. The synthetic
+    /// certificate is not CA-trusted and installability is not asserted.
+    fn length_prefixed(items: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for item in items {
+            out.extend_from_slice(
+                &u32::try_from(item.len()).expect("fixture length").to_le_bytes(),
+            );
+            out.extend_from_slice(item);
+        }
+        out
+    }
+
+    fn signed_sdk_apk(
+        keypair: &ring::signature::EcdsaKeyPair,
+        rng: &ring::rand::SystemRandom,
+        scheme_id: u32,
+        min_sdk: u32,
+        max_sdk: u32,
+    ) -> Vec<u8> {
+        use ring::signature::KeyPair as _;
+
+        let original = apk();
+        let eocd_at = original.len() - 22;
+        let directory_start = usize::try_from(
+            super::le32(&original, eocd_at + 16).expect("central directory"),
+        )
+        .expect("directory fits");
+        let digest = super::super::content_digest::chunked_sha256(
+            &original,
+            directory_start,
+            directory_start,
+            eocd_at,
+        )
+        .expect("AOSP digest");
+        let cert = super::super::signer::tests::p256_certificate(
+            "Signed APK set fixture",
+            keypair.public_key().as_ref(),
+        );
+        let spki = super::super::signer::tests::spki(&cert);
+        let mut digest_record = 0x0201_u32.to_le_bytes().to_vec();
+        digest_record.extend_from_slice(&length_prefixed(&[&digest]));
+        let digests = length_prefixed(&[&digest_record]);
+        let certs = length_prefixed(&[&cert]);
+        let mut signed_data = length_prefixed(&[&digests, &certs]);
+        signed_data.extend_from_slice(&min_sdk.to_le_bytes());
+        signed_data.extend_from_slice(&max_sdk.to_le_bytes());
+        signed_data.extend_from_slice(&length_prefixed(&[&[]]));
+        let signature = keypair.sign(rng, &signed_data).expect("sign fixture");
+        let mut signature_record = 0x0201_u32.to_le_bytes().to_vec();
+        signature_record.extend_from_slice(&length_prefixed(&[signature.as_ref()]));
+        let signatures = length_prefixed(&[&signature_record]);
+        let mut signer = length_prefixed(&[&signed_data]);
+        signer.extend_from_slice(&min_sdk.to_le_bytes());
+        signer.extend_from_slice(&max_sdk.to_le_bytes());
+        signer.extend_from_slice(&length_prefixed(&[&signatures]));
+        signer.extend_from_slice(&length_prefixed(&[spki]));
+        let signers = length_prefixed(&[&signer]);
+        let value = length_prefixed(&[&signers]);
+
+        let pair_size = u64::try_from(value.len() + 4).expect("pair length");
+        let block_size = pair_size + 8 + 24;
+        let mut block = Vec::new();
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(&pair_size.to_le_bytes());
+        block.extend_from_slice(&scheme_id.to_le_bytes());
+        block.extend_from_slice(&value);
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(b"APK Sig Block 42");
+
+        let mut result = original[..directory_start].to_vec();
+        result.extend_from_slice(&block);
+        result.extend_from_slice(&original[directory_start..]);
+        let new_directory = u32::try_from(directory_start + block.len())
+            .expect("signed directory fits");
+        let new_eocd = result.len() - 22;
+        result[new_eocd + 16..new_eocd + 20]
+            .copy_from_slice(&new_directory.to_le_bytes());
+        result
+    }
+
+    #[test]
+    fn real_ecdsa_signed_apk_members_match_conflict_and_fail_closed_on_tampering() {
+        let rng = ring::rand::SystemRandom::new();
+        let make_key = || {
+            let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                &rng,
+            )
+            .expect("generate fixture key");
+            ring::signature::EcdsaKeyPair::from_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                pkcs8.as_ref(),
+                &rng,
+            )
+            .expect("load fixture key")
+        };
+        let first_key = make_key();
+        let other_key = make_key();
+
+        for (scheme_id, scheme, min_sdk, max_sdk) in [
+            (0xf053_68c0, "v3", 28, 32),
+            (0x1b93_ad61, "v3.1", 33, u32::MAX),
+        ] {
+            let first = signed_sdk_apk(
+                &first_key, &rng, scheme_id, min_sdk, max_sdk,
+            );
+            let other = signed_sdk_apk(
+                &other_key, &rng, scheme_id, min_sdk, max_sdk,
+            );
+            let matching = zip(&[
+                ("base.apk", &first, 0),
+                ("split.apk", &first, 0),
+            ]);
+            let matched = run(&matching, "signed.apks", 42).expect("signed APK set");
+            assert_eq!(matched.signer_continuity, "authenticated_sdk_scope_match");
+            assert_eq!(matched.apk_members[0].authenticated_sdk_signers.len(), 1);
+            assert_eq!(matched.apk_members[0].authenticated_sdk_signers[0].scheme, scheme);
+            assert_eq!(
+                matched.apk_members[0].authenticated_sdk_signers[0].min_sdk,
+                min_sdk
+            );
+            assert_eq!(
+                matched.apk_members[0].authenticated_sdk_signers[0].max_sdk,
+                max_sdk
+            );
+
+            let conflicting = zip(&[
+                ("base.apk", &first, 0),
+                ("split.apk", &other, 0),
+            ]);
+            let conflicted = run(&conflicting, "different.apks", 42)
+                .expect("different authenticated signers");
+            assert_eq!(
+                conflicted.signer_continuity,
+                "authenticated_sdk_scope_difference"
+            );
+
+            // Alter ZIP central-directory metadata without invalidating ZIP
+            // structure. The signed content digest must then fail authentication.
+            let mut tampered = first.clone();
+            let eocd = tampered.len() - 22;
+            let directory = usize::try_from(
+                super::le32(&tampered, eocd + 16).expect("directory"),
+            )
+            .expect("directory fits");
+            tampered[directory + 38] ^= 1;
+            let altered = zip(&[
+                ("base.apk", &first, 0),
+                ("split.apk", &tampered, 0),
+            ]);
+            let rejected = run(&altered, "tampered.apks", 42)
+                .expect("structurally valid tampered APK set");
+            assert_eq!(rejected.signer_continuity, "unverified");
+            assert!(rejected.apk_members[1].authenticated_sdk_signers.is_empty());
+        }
+    }
+
     #[test]
     fn rejects_missing_nested_apks_and_duplicate_names() {
         assert!(run(&zip(&[("toc.pb", b"metadata", 0)]), "x.apks", 1).is_err());
