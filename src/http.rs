@@ -55,7 +55,7 @@ pub fn is_sensitive_header(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(
         n.as_str(),
-        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+        "authorization" | "proxy-authorization" | "cookie" | "set-cookie" | "user-agent"
     ) || ["key", "token", "secret", "password", "auth"]
         .iter()
         .any(|needle| n.contains(needle))
