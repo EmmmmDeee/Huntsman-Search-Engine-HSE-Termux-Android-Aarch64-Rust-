@@ -210,10 +210,15 @@ fn names_a_mailbox_holder(email: &str) -> bool {
 
 /// The new targets an entity contributes to the next generation.
 fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
-    // A top Wikidata hit from a people-name search is not an identity match.
-    // Its published handles/domains remain visible leads, even when an operator
-    // lowers the confidence floor; that setting must not bypass attribution.
-    if entity.has_tag(crate::wikidata::NAME_SEARCH_LEAD_TAG) {
+    // A pivot that matched only by a name search — a Wikidata knowledge-base hit or an ACNC
+    // charity-register hit resolved from a name alone — is a lead to review, not an identity
+    // match. Its published handles/domains remain visible leads but are never dispatched, even
+    // when an operator lowers the confidence floor; that setting must not bypass attribution.
+    // (The Wikidata leg keeps its own marker until it migrates onto the shared NAME_SEARCH_LEAD
+    // tag the ACNC leg already uses.)
+    if entity.has_tag(crate::tags::NAME_SEARCH_LEAD)
+        || entity.has_tag(crate::wikidata::NAME_SEARCH_LEAD_TAG)
+    {
         return Vec::new();
     }
     if entity.confidence < policy.expand_confidence_floor {
@@ -1396,6 +1401,28 @@ mod tests {
                 selector: "verified.example".to_owned(),
             }]
         );
+    }
+
+    #[test]
+    fn a_name_search_lead_pivot_is_never_dispatched_whatever_the_floor() {
+        // The shared name-search-lead tag (the ACNC charity leg uses it, and it is the migration
+        // target for the Wikidata leg's own marker) blocks dispatch even when the operator lowers
+        // the floor to zero — a name-only match must not seed a potentially unrelated third party.
+        let mut domain = ent(EntityKind::Domain, "charity.example", 0.55);
+        domain.tag(crate::tags::NAME_SEARCH_LEAD);
+        for floor in [crate::gap::EXPAND_FLOOR, 0.0] {
+            assert!(
+                expansions(
+                    &domain,
+                    &RecursionPolicy {
+                        expand_confidence_floor: floor,
+                        ..RecursionPolicy::default()
+                    }
+                )
+                .is_empty(),
+                "a name-search-lead pivot must never be dispatched (floor {floor})"
+            );
+        }
     }
 
     #[test]

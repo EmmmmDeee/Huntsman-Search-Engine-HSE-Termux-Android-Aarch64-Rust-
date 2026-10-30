@@ -1,6 +1,7 @@
 //! Collection front-end for `huntsman-recon people`.
 //!
-//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`] and [`crate::wikidata`] over
+//! Lookup runs [`crate::asic_persons`], [`crate::asic_director`], [`crate::wikidata`] and
+//! [`crate::acnc`] over
 //! one injected [`crate::http::Transport`]. One source's [`Error::Invalid`] or `BotWaf` does not
 //! abort the others. All entities from all sources are merged via [`crate::entity::merge_by_uid`],
 //! which deduplicates records with the same UID and calls [`crate::entity::Entity::absorb`]
@@ -11,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use crate::acnc;
 use crate::asic_director;
 use crate::asic_persons;
 use crate::canonical::canonical_name;
@@ -26,14 +28,15 @@ use crate::wikidata;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on the keyless ASIC people and director registers and Wikidata. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers, Wikidata, and the ACNC charity register. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
   2. ASIC director register (company director records)
   3. Wikidata (top public item, QID-scoped candidate, never name-only identity corroboration)
+  4. ACNC charity register (registered charities and not-for-profits matched by name)
 
-Results from all sources are merged by entity UID: duplicate records from different sources are combined into a single entity whose observation set includes all evidence. This consolidation detects when one person has multiple records across registers and surfaces the corroborated attributes.";
+Results are merged only by canonical entity UID. Name-matched Wikidata items and ACNC organisations are source-scoped candidates, not automatic cross-register identity corroboration; precise identifiers retain their normal correlation keys.";
 
 /// Merged entities and outcomes from every people source that ran.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -128,6 +131,22 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
             &mut failed,
         );
     }
+    if transport.runs_module(acnc::SRC) {
+        // The ACNC charity register: a `people NAME` that names a charity or not-for-profit folds
+        // in the registered organisation, its ABN (an AbnAcn correlation key; the ASIC and GLEIF
+        // legs key on the 9-digit ACN, so an 11-digit ABN does not auto-join those), its official
+        // website (a lead into the domain-recon cluster) and its registered address. A single
+        // outcome folds in like the other register legs.
+        collect(
+            acnc::SRC,
+            acnc::lookup(transport, &name, &scan_id, now_unix)
+                .map(|found| (scope_acnc_charities(found.entities), vec![found.outcome])),
+            now_unix,
+            &mut report,
+            &mut network,
+            &mut failed,
+        );
+    }
 
     // Entities with identical UIDs from different sources are merged: duplicate records
     // are combined into one entity whose observation set includes evidence from all sources.
@@ -147,6 +166,46 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         Ok(text) => PeopleRun::Printed { text, report },
         Err(msg) => PeopleRun::Failed(msg),
     }
+}
+
+/// A name-matched ACNC charity is not proven to be the same organisation as an ASIC row
+/// with an identical legal name. Scope only its Organisation identity within the composed
+/// people lookup, using its checksum-valid ABN when available. This also keeps different
+/// registered charities with the same legal name distinct. Preserve the source label as
+/// evidence; precise ABN, website and address entities retain their normal canonical keys.
+fn scope_acnc_charities(mut entities: Vec<Entity>) -> Vec<Entity> {
+    for entity in &mut entities {
+        if entity.kind != crate::entity::EntityKind::Organisation {
+            continue;
+        }
+        let label = entity.raw_value.clone();
+        let abn = entity
+            .evidence
+            .iter()
+            .find_map(|evidence| evidence.attributes.get("ABN"))
+            .filter(|abn| crate::au_id::is_valid_abn(abn));
+        let suffix = abn.map_or_else(
+            || "name-only candidate".to_owned(),
+            |abn| format!("ABN {abn}"),
+        );
+        let scoped = Entity::new(
+            entity.kind.clone(),
+            format!("{label} [ACNC {suffix}]"),
+            entity.confidence,
+            entity.scan_id.clone(),
+        );
+        entity.uid = scoped.uid;
+        entity.value = scoped.value;
+        entity.raw_value = scoped.raw_value;
+        entity.tag("acnc-organisation-scoped");
+        for evidence in &mut entity.evidence {
+            evidence
+                .attributes
+                .entry("source_label".into())
+                .or_insert_with(|| label.clone());
+        }
+    }
+    entities
 }
 
 /// A shared display name is not a verified cross-register identity. Wikidata items have
@@ -260,6 +319,7 @@ pub fn is_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
     use crate::test_support::{html_ok, json_ok};
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -342,6 +402,50 @@ mod tests {
     }
 
     #[test]
+    fn acnc_name_matches_do_not_merge_unrelated_organisations() {
+        // A legal-name match alone cannot corroborate an ASIC organisation. Two charities
+        // sharing a name but bearing distinct valid ABNs must also remain distinct.
+        let candidate = |source: &str, abn: Option<&str>| {
+            let mut entity =
+                Entity::new(EntityKind::Organisation, "The Smith Family", 0.60, "scan");
+            let mut evidence = Evidence::new(
+                EvidenceProvenance::for_scan(source, "scan"),
+                "name match only",
+            );
+            if let Some(abn) = abn {
+                evidence = evidence.with_attr("ABN", abn);
+            }
+            entity.add_evidence(evidence);
+            entity
+        };
+        let asic = candidate("asic_persons", None);
+        let acnc = scope_acnc_charities(vec![
+            candidate("acnc", Some("28000030179")),
+            candidate("acnc", Some("28000030228")),
+            candidate("acnc", None),
+        ]);
+        assert_eq!(acnc.len(), 3);
+        assert_ne!(acnc[0].uid, acnc[1].uid);
+        assert_ne!(acnc[0].uid, acnc[2].uid);
+        assert_eq!(
+            acnc[0].evidence[0]
+                .attributes
+                .get("source_label")
+                .map(String::as_str),
+            Some("The Smith Family"),
+        );
+        let mut combined = vec![asic];
+        combined.extend(acnc);
+        merge_by_uid(&mut combined);
+        assert_eq!(
+            combined.len(),
+            4,
+            "a name-only ACNC candidate must not inflate ASIC corroboration",
+        );
+        assert!(combined.iter().all(|entity| entity.source_count() == 1));
+    }
+
+    #[test]
     fn a_name_needs_two_alphabetic_tokens_of_at_least_two_characters() {
         assert!(is_name("Émile Zola"));
         // One accented letter is one character, so it is not a token of a name, though it is
@@ -350,6 +454,7 @@ mod tests {
         assert!(!is_name("Ada"));
     }
 
+    use crate::acnc::CHARITY_RES;
     use crate::asic_persons::{ADVISER_RES, BANNED_RES, CREDIT_RES};
     use crate::http::{Request, Response, TransportFailure};
     use crate::relation::{self, RelationKind};
@@ -440,17 +545,18 @@ mod tests {
     }
 
     /// Every source leg a two-token people scan runs: `asic_persons` (its banned, adviser and
-    /// credit datasets), `asic_director`, and `wikidata`. Each leg makes one request, folds in one
-    /// outcome and persists one ledger entry, so the three counts coincide — every leg here is a
-    /// single-request `valid_zero`.
-    const PEOPLE_SOURCE_REQUESTS: usize = 5;
+    /// credit datasets), `asic_director`, `wikidata`, and the `acnc` charity register. Each leg
+    /// makes one request, folds in one outcome and persists one ledger entry, so the three counts
+    /// coincide — every leg here is a single-request `valid_zero`.
+    const PEOPLE_SOURCE_REQUESTS: usize = 6;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
         HashMap::from([
             (BANNED_RES.into(), Ok(empty.clone())),
             (ADVISER_RES.into(), Ok(empty.clone())),
-            (CREDIT_RES.into(), Ok(empty)),
+            (CREDIT_RES.into(), Ok(empty.clone())),
+            (CHARITY_RES.into(), Ok(empty)),
         ])
     }
 

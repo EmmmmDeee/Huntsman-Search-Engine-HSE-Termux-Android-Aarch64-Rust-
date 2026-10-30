@@ -1,4 +1,4 @@
-//! Read-only accounting of the six concrete people-lookup legs.
+//! Read-only accounting of the seven concrete people-lookup legs.
 //!
 //! Catalogue coverage is not global discovery completeness or proof of target absence.
 //! Selection is reconstructed with the same module and use-case rules as scan execution.
@@ -13,12 +13,13 @@ use crate::source_outcome::SourceOutcomeKind;
 /// Concrete provider executions that a people lookup can record, and the module
 /// selection that gates each one, in execution order. ASIC people uses one parent
 /// selector for three legs; `wikidata` runs beside the registers as a candidate lead.
-const PEOPLE_LEGS: [(&str, &str); 6] = [
+const PEOPLE_LEGS: [(&str, &str); 7] = [
     ("asic_persons.banned", crate::asic_persons::SRC),
     ("asic_persons.advisers", crate::asic_persons::SRC),
     ("asic_persons.credit", crate::asic_persons::SRC),
     (crate::asic_director::SRC, crate::asic_director::SRC),
     (crate::wikidata::SOURCE, crate::wikidata::SOURCE),
+    (crate::acnc::SRC, crate::acnc::SRC),
     (
         crate::seeknow_collector::COLLECTOR_ID,
         crate::seeknow_collector::COLLECTOR_ID,
@@ -185,19 +186,20 @@ mod tests {
     }
 
     #[test]
-    fn exported_six_leg_scan_has_partial_catalogue_coverage_even_at_fixed_point() {
+    fn exported_seven_leg_scan_has_partial_catalogue_coverage_even_at_fixed_point() {
         let observations = results(vec![
             SourceExecutionOutcome::valid_zero("asic_persons.banned", 1),
             SourceExecutionOutcome::valid_zero("asic_persons.advisers", 1),
             SourceExecutionOutcome::valid_zero("asic_persons.credit", 1),
             SourceExecutionOutcome::valid_zero("asic_director", 1),
             SourceExecutionOutcome::valid_zero("wikidata", 1),
+            SourceExecutionOutcome::valid_zero("acnc", 1),
             SourceExecutionOutcome::not_configured("seeknow", 1),
         ]);
         let coverage = derive(&record(), Some(&observations)).unwrap();
-        assert_eq!(coverage.catalogued_sources, 6);
-        assert_eq!(coverage.selected_sources, 6);
-        assert_eq!(coverage.accepted_sources, 5);
+        assert_eq!(coverage.catalogued_sources, 7);
+        assert_eq!(coverage.selected_sources, 7);
+        assert_eq!(coverage.accepted_sources, 6);
         assert_eq!(coverage.not_configured_sources, 1);
         assert_eq!(coverage.not_observed_sources, 0);
         assert!(!coverage.complete_within_catalogue);
@@ -209,7 +211,7 @@ mod tests {
         let observations = results(vec![SourceExecutionOutcome::valid_zero("asic_director", 1)]);
         let coverage = derive(&record(), Some(&observations)).unwrap();
         assert_eq!(coverage.accepted_sources, 1);
-        assert_eq!(coverage.not_observed_sources, 5);
+        assert_eq!(coverage.not_observed_sources, 6);
         assert!(!coverage.complete_within_catalogue);
         assert_eq!(coverage.sources[0].status, PeopleSourceStatus::NotObserved);
     }
@@ -222,7 +224,7 @@ mod tests {
         let coverage = derive(&chosen, Some(&observations)).unwrap();
         assert_eq!(coverage.selected_sources, 1);
         assert_eq!(coverage.accepted_sources, 1);
-        assert_eq!(coverage.excluded_sources.len(), 5);
+        assert_eq!(coverage.excluded_sources.len(), 6);
         assert!(coverage.complete_within_catalogue);
         assert_eq!(coverage.discovery_completeness, "unverified");
     }
