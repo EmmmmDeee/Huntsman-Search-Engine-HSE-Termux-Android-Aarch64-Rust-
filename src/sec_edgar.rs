@@ -46,8 +46,7 @@ const DATASET: &str = "SEC EDGAR";
 
 /// Plain operator identity and real, operator-authorised contact email. The value is sent to SEC
 /// only; neither errors nor logs include its contents. This is not an API key or login.
-const USER_AGENT_CONFIGURATION_MESSAGE: &str =
-    "SEC EDGAR requires HUNTSMAN_SEC_USER_AGENT with an operator-authorised contact email; no request sent";
+const USER_AGENT_CONFIGURATION_MESSAGE: &str = "SEC EDGAR requires HUNTSMAN_SEC_USER_AGENT with an operator-authorised contact email; no request sent";
 
 /// Validate the externally supplied HTTP User-Agent without retaining or logging invalid input.
 /// A syntactically plausible contact address does not establish authorisation: the operator must
@@ -56,7 +55,9 @@ fn validated_user_agent(value: Option<&str>) -> Option<&str> {
     let raw = value?;
     // Reject controls before trimming: a trailing CR/LF must not become a valid header.
     if !raw.is_ascii()
-        || !raw.bytes().all(|byte| byte == b' ' || (33..=126).contains(&byte))
+        || !raw
+            .bytes()
+            .all(|byte| byte == b' ' || (33..=126).contains(&byte))
     {
         return None;
     }
@@ -75,14 +76,18 @@ fn validated_user_agent(value: Option<&str>) -> Option<&str> {
             return false;
         };
         !local.is_empty()
-            && local.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+/=?^`{|}~_-".contains(&byte))
+            && local
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+/=?^`{|}~_-".contains(&byte))
             && domain.contains('.')
             && domain.split('.').all(|label| {
                 !label.is_empty()
                     && label.len() <= 63
                     && !label.starts_with('-')
                     && !label.ends_with('-')
-                    && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
             })
     })?;
     Some(value)
@@ -938,7 +943,11 @@ mod tests {
             assert_eq!(report.outcome.kind, SourceOutcomeKind::NotConfigured);
             assert_eq!(report.outcome.http_status, None);
             assert!(
-                !report.outcome.detail.unwrap_or_default().contains("example.com"),
+                !report
+                    .outcome
+                    .detail
+                    .unwrap_or_default()
+                    .contains("example.com"),
                 "operator contact must never appear in diagnostic output"
             );
             assert!(transport.seen.borrow().is_empty(), "no request was allowed");
