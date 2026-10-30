@@ -44,6 +44,9 @@ pub const SERVE_BIND_ENV: &str = "HSE_BIND";
 pub const CA_BUNDLE_ENV: &str = "HUNTSMAN_CA_BUNDLE";
 /// Optional operator-managed Nominatim-compatible HTTPS origin, without URL path.
 pub const NOMINATIM_BASE_URL_ENV: &str = "HUNTSMAN_NOMINATIM_BASE_URL";
+/// SEC EDGAR's operator-declared User-Agent including an authorised contact email, not a key.
+/// It is transmitted only to the SEC endpoints and is never printed in diagnostics.
+pub const SEC_USER_AGENT_ENV: &str = "HUNTSMAN_SEC_USER_AGENT";
 /// Optional operator-managed Wikibase-compatible HTTPS origin, without URL path.
 pub const WIKIDATA_BASE_URL_ENV: &str = "HUNTSMAN_WIKIDATA_BASE_URL";
 /// The selectors `serve` collects and re-normalises for as long as it runs: `;`- or
@@ -131,6 +134,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     SERVE_BIND_ENV,
     CA_BUNDLE_ENV,
     NOMINATIM_BASE_URL_ENV,
+    SEC_USER_AGENT_ENV,
     WIKIDATA_BASE_URL_ENV,
     CONTINUOUS_TARGETS_ENV,
     CONTINUOUS_INTERVAL_ENV,

@@ -820,7 +820,7 @@ fn without_query_param(url: &str, name: &str) -> String {
 fn without_credentials(request: &Request) -> Request {
     let mut r = request.clone();
     r.headers
-        .retain(|(k, _)| !crate::http::is_sensitive_header(k));
+        .retain(|(k, v)| !crate::http::is_sensitive_header_value(k, v));
     r
 }
 
@@ -921,6 +921,23 @@ mod tests {
             "t",
             100,
         )
+    }
+
+    #[test]
+    fn origin_change_drops_contact_user_agent_but_keeps_generic_agent() {
+        let contact = Request::get("https://source.example/")
+            .header("User-Agent", "Huntsman contact@research.example")
+            .header("Accept", "application/json");
+        let stripped = without_credentials(&contact);
+        assert!(stripped.header_value("User-Agent").is_none());
+        assert_eq!(stripped.header_value("Accept"), Some("application/json"));
+
+        let generic = Request::get("https://source.example/")
+            .header("User-Agent", crate::http::DEFAULT_USER_AGENT);
+        assert_eq!(
+            without_credentials(&generic).header_value("User-Agent"),
+            Some(crate::http::DEFAULT_USER_AGENT)
+        );
     }
 
     #[test]

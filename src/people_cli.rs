@@ -610,12 +610,10 @@ mod tests {
         }
     }
 
-    /// Every source leg a two-token people scan runs: `asic_persons` (its banned, adviser and
-    /// credit datasets), `asic_director`, `wikidata`, the `acnc` charity register, and `sec_edgar`
-    /// (its full-text search, which on an empty result makes no submissions follow-up). Each leg
-    /// makes one request, folds in one outcome and persists one ledger entry, so the three counts
-    /// coincide — every leg here is a single-request `valid_zero`.
-    const PEOPLE_SOURCE_REQUESTS: usize = 7;
+    /// All seven people-source outcomes persist even if SEC EDGAR is not configured.
+    /// An absent SEC operator contact suppresses its HTTP request but not its ledger row.
+    const PEOPLE_SOURCE_OUTCOMES: usize = 7;
+    const PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT: usize = 6;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
@@ -695,7 +693,10 @@ mod tests {
                     "person evidence must count as the banned dataset family: {text}"
                 );
                 assert!(!report.entities.is_empty(), "{report:?}");
-                assert_eq!(fake.seen.borrow().len(), PEOPLE_SOURCE_REQUESTS);
+                assert_eq!(
+                    fake.seen.borrow().len(),
+                    PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -804,11 +805,22 @@ mod tests {
                 assert!(!text.contains("lineage="), "{text}");
                 let entities = &report.entities;
                 assert!(entities.is_empty(), "{entities:?}");
-                assert_eq!(report.outcomes.len(), PEOPLE_SOURCE_REQUESTS);
+                assert_eq!(report.outcomes.len(), PEOPLE_SOURCE_OUTCOMES);
+                assert!(
+                    report
+                        .outcomes
+                        .iter()
+                        .any(|outcome| outcome.module == sec_edgar::SOURCE
+                            && outcome.kind == SourceOutcomeKind::NotConfigured),
+                    "SEC must report a configuration gap without issuing an HTTP request"
+                );
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(fake.seen.borrow().len(), PEOPLE_SOURCE_REQUESTS);
+        assert_eq!(
+            fake.seen.borrow().len(),
+            PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT
+        );
     }
 
     #[test]
@@ -828,7 +840,7 @@ mod tests {
                     crate::lookup_save::PEOPLE_POLICY,
                 )
                 .unwrap();
-                assert_eq!(entries.len(), PEOPLE_SOURCE_REQUESTS);
+                assert_eq!(entries.len(), PEOPLE_SOURCE_OUTCOMES);
                 let loaded = crate::ledger::load_chain(&path).unwrap();
                 assert_eq!(loaded, entries);
                 let admitted = crate::ledger::admitted(&loaded);
