@@ -49,6 +49,7 @@ pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
     "geo_domain_classifier",
     "geo_normalize",
     "name_intel",
+    "oui",
     "payid",
     "phone_au",
     "phone_geo",

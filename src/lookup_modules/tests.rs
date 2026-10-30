@@ -19,6 +19,22 @@ use crate::{
 
 const NOW: u64 = 1_760_000_000;
 
+/// What a lookup runs offline over its own target reads the value itself (an e-mail's parts, a
+/// handle's variants, a number's plan, an address's manufacturer) and observes no one, so none of
+/// it corroborates what it describes.
+#[test]
+fn every_offline_module_is_enrichment_only() {
+    for kind in ScanKind::ALL {
+        for module in offline_runs(kind) {
+            assert!(
+                crate::entity::is_enrichment_source(module),
+                "{module}, which {} runs offline, counts as a source",
+                kind.command()
+            );
+        }
+    }
+}
+
 /// A `RIPEstat` answer every data call reads as knowing nothing.
 const RIPESTAT: &[u8] =
     br#"{"status":"ok","data":{"announced":false,"prefixes":[],"neighbours":[],"resources":[]}}"#;
