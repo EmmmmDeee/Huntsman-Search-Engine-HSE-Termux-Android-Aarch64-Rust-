@@ -1,0 +1,30 @@
+name: Android agent mapper verification
+
+on:
+  pull_request:
+    paths:
+      - 'tools/agent_repo_map.rs'
+      - '.github/workflows/agent-repo-map.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone mapper
+        run: rustc --edition=2024 -D warnings tools/agent_repo_map.rs -o /tmp/agent-repo-map
+      - name: Compile and run mapper tests
+        run: |
+          rustc --edition=2024 -D warnings --test tools/agent_repo_map.rs -o /tmp/agent-repo-map-tests
+          /tmp/agent-repo-map-tests
+      - name: Smoke test repository indexing
+        run: |
+          /tmp/agent-repo-map . entity provenance correlation > /tmp/agent-repo-map-output
+          grep -q 'Repository symbol map' /tmp/agent-repo-map-output
+          grep -q 'Rust files inspected:' /tmp/agent-repo-map-output
+          grep -q '^## ' /tmp/agent-repo-map-output

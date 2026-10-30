@@ -89,6 +89,8 @@ on:
       - "tests/lifecycle_sync.rs"
       - "tests/root_installer.rs"
       - "xtask/**"
+      # Standalone Rust repository mapper is part of the Android agent acceptance surface.
+      - "tools/agent_repo_map.rs"
       - ".cargo/**"
 
 permissions:
