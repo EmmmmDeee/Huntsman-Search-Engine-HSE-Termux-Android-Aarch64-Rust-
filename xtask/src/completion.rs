@@ -41,6 +41,36 @@ struct Tree {
     label: Option<String>,
 }
 
+/// The Git index and on-disk task ledger are different sources from committed HEAD.
+#[derive(Debug, PartialEq, Eq)]
+struct InventoryProvenance {
+    index_differs_from_head: bool,
+    tracked_worktree_edits: bool,
+    untracked_paths_excluded: bool,
+}
+
+/// Never present a mutable checkout inventory as an immutable commit snapshot.
+fn inventory_provenance(root: &Path) -> Result<InventoryProvenance> {
+    if !git_stdout(root, &["ls-files", "-u", "-z"])?.is_empty() {
+        return Err(Error::Refused(
+            "unmerged Git index entries prevent a reliable completion inventory".to_owned(),
+        ));
+    }
+    Ok(InventoryProvenance {
+        index_differs_from_head: !git_stdout(
+            root,
+            &["diff", "--cached", "--name-only", "-z", "HEAD"],
+        )?
+        .is_empty(),
+        tracked_worktree_edits: !git_stdout(root, &["diff", "--name-only", "-z"])?.is_empty(),
+        untracked_paths_excluded: !git_stdout(
+            root,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+        )?
+        .is_empty(),
+    })
+}
+
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     let mode = match args {
@@ -103,6 +133,7 @@ fn write_report(root: &Path, report: &str) -> Result<()> {
 }
 
 fn generate(root: &Path) -> Result<String> {
+    let provenance = inventory_provenance(root)?;
     let raw = git_stdout(root, &["ls-files", "-z", "--cached"])?;
     let mut files = BTreeSet::new();
     for bytes in raw.split(|byte| *byte == 0).filter(|item| !item.is_empty()) {
@@ -141,10 +172,20 @@ fn generate(root: &Path) -> Result<String> {
         .push_str("GENERATED EVIDENCE INVENTORY — NOT A CLAIM OF IMPLEMENTATION COMPLETENESS.\n\n");
     let _ = writeln!(
         report,
-        "Source: local Git index at HEAD {}, generated from {} and tracked paths.",
+        "Reference HEAD: {}. Inventory source: current Git index. Task ledger source: working-tree {}.",
         sha.trim(),
         TASKS
     );
+    let _ = writeln!(
+        report,
+        "Index differs from HEAD: {}. Tracked worktree edits: {}. Untracked paths excluded: {}.",
+        provenance.index_differs_from_head,
+        provenance.tracked_worktree_edits,
+        provenance.untracked_paths_excluded
+    );
+    if provenance.index_differs_from_head || provenance.tracked_worktree_edits {
+        report.push_str("WARNING: This report is NOT an immutable HEAD snapshot. Verify staged/index and on-disk task changes before using it as implementation evidence.\n");
+    }
     let _ = writeln!(
         report,
         "Tracked files: {}. Registered implementation tasks: {}.\n",
@@ -161,7 +202,8 @@ fn generate(root: &Path) -> Result<String> {
          5. Before modifying a path, verify the currently checked-out revision; preserve its public contracts and all unrelated files.\n\
          6. Execute tasks only after their dependencies and preconditions; validate with the existing xtask gate and Android/Web UI acceptance.\n\
          7. Amend docs/completion/tasks.json with observed evidence, status and acceptance tests, then regenerate this register.\n\
-         8. Prefer incremental, reversible changes. Do not invent tests, API keys, provider outcomes, performance figures or a successful merge.\n\n",
+         8. Prefer incremental, reversible changes. Do not invent tests, API keys, provider outcomes, performance figures or a successful merge.\n\
+         9. HEAD labels the reference revision, not the Git-index snapshot or working-tree task contents. Review the divergence flags above before relying on provenance.\n\n",
     );
     report.push_str("## Complete hierarchical Git-index inventory\n\n");
     report.push_str(&fence);
@@ -471,6 +513,64 @@ fn escape_md(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_provenance_distinguishes_head_index_and_worktree() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-provenance-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("fixture directory");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git fixture process");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        fs::write(root.join("tracked.txt"), "original").expect("tracked fixture");
+        git(&["add", "tracked.txt"]);
+        git(&[
+            "-c",
+            "user.name=Huntsman Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "baseline",
+        ]);
+        assert_eq!(
+            inventory_provenance(&root).unwrap(),
+            InventoryProvenance {
+                index_differs_from_head: false,
+                tracked_worktree_edits: false,
+                untracked_paths_excluded: false,
+            }
+        );
+        fs::write(root.join("tracked.txt"), "unstaged").expect("unstaged fixture");
+        assert!(inventory_provenance(&root).unwrap().tracked_worktree_edits);
+        git(&["add", "tracked.txt"]);
+        let after_stage = inventory_provenance(&root).unwrap();
+        assert!(after_stage.index_differs_from_head);
+        assert!(!after_stage.tracked_worktree_edits);
+        fs::write(root.join("candidate.txt"), "untracked").expect("untracked fixture");
+        assert!(
+            inventory_provenance(&root)
+                .unwrap()
+                .untracked_paths_excluded
+        );
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
 
     #[test]
     fn dependencies_override_simple_priority() {

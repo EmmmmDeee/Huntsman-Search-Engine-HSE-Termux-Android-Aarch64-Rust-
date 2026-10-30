@@ -42,6 +42,12 @@ fn generated_tree_contains_every_tracked_path_and_is_repeatable() {
             "tracked path is absent from adaptive tree: {path}"
         );
     }
+    assert!(document.contains("Reference HEAD:"));
+    assert!(document.contains("Inventory source: current Git index"));
+    assert!(document.contains("Task ledger source: working-tree"));
+    assert!(document.contains("Index differs from HEAD:"));
+    assert!(document.contains("Tracked worktree edits:"));
+    assert!(document.contains("Untracked paths excluded:"));
     assert!(document.contains("## Dependency-ordered outstanding implementation queue"));
     assert!(document.contains("## Historically verified implementation receipts"));
     assert!(document.contains("docs/completion/handset-evidence.md"));
