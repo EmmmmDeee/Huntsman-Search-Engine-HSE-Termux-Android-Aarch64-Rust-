@@ -24,6 +24,7 @@
 //! associations without asserting facility ownership or physical device location. Public points
 //! of contact (`poc`) remain a separate, deliberately unimplemented follow-up.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use serde::Deserialize;
@@ -132,6 +133,8 @@ struct NetIxLan {
 #[derive(Debug, Deserialize)]
 struct NetFac {
     #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
     net_id: Option<u64>,
     #[serde(default)]
     fac_id: Option<u64>,
@@ -143,6 +146,12 @@ struct NetFac {
     city: Option<String>,
     #[serde(default)]
     country: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    created: Option<String>,
+    #[serde(default)]
+    updated: Option<String>,
 }
 
 /// The `/api/net?asn=N` URL. `asn` is a `u32`, so the query needs no escaping. **Pure.**
@@ -231,7 +240,14 @@ pub fn lookup<T: Transport + ?Sized>(
                 MAX_FACILITY_ROWS
             );
         } else if let Some(net_id) = net.id {
-            match facility_entities(transport, net_id, asn, scan_id, now_unix) {
+            match facility_entities(
+                transport,
+                net_id,
+                asn,
+                net.fac_count.unwrap_or(0) as usize,
+                scan_id,
+                now_unix,
+            ) {
                 Ok((facilities, records)) => {
                     let _ = write!(detail, "; netfac: {records} facility presence record(s)");
                     entities.extend(facilities);
@@ -475,6 +491,7 @@ fn facility_entities<T: Transport + ?Sized>(
     transport: &T,
     net_id: u64,
     expected_asn: u32,
+    expected_count: usize,
     scan_id: &str,
     now_unix: u64,
 ) -> Result<(Vec<Entity>, usize), String> {
@@ -498,15 +515,26 @@ fn facility_entities<T: Transport + ?Sized>(
     if records.len() > MAX_FACILITY_ROWS {
         return Err("netfac response exceeded bounded record limit".to_owned());
     }
+    if records.len() != expected_count {
+        return Err("netfac response count differs from network facility count".to_owned());
+    }
     if records.iter().any(|record| {
         record.net_id != Some(net_id)
             || !record.fac_id.is_some_and(|id| id > 0)
             || record.local_asn.is_some_and(|asn| asn != expected_asn)
+            || record.status.as_deref().is_some_and(|status| status != "ok")
     }) {
         return Err(
             "netfac schema drift: foreign network, invalid facility, or foreign local ASN"
                 .to_owned(),
         );
+    }
+    let mut seen = HashSet::new();
+    if records
+        .iter()
+        .any(|record| !seen.insert(record.fac_id.expect("validated facility ID")))
+    {
+        return Err("netfac schema drift: duplicate facility ID".to_owned());
     }
     let count = records.len();
     let mut entities = Vec::with_capacity(count);
@@ -526,7 +554,13 @@ fn facility_entities<T: Transport + ?Sized>(
             ("facility_name", name),
             ("city", trimmed(record.city.as_deref())),
             ("country", trimmed(record.country.as_deref())),
+            ("status", trimmed(record.status.as_deref())),
+            ("created", trimmed(record.created.as_deref())),
+            ("updated", trimmed(record.updated.as_deref())),
         ]);
+        if let Some(record_id) = record.id {
+            evidence = evidence.with_attr("presence_record_id", record_id.to_string());
+        }
         if let Some(local_asn) = record.local_asn {
             evidence = evidence.with_attr("local_asn", local_asn.to_string());
         }
@@ -882,6 +916,7 @@ mod tests {
             r#"{"data":[{"net_id":5104,"fac_id":0}]}"#,
             r#"{"data":[{"net_id":5104,"fac_id":44,"local_asn":9999}]}"#,
             r#"{"data":[{"net_id":5104,"fac_id":44},{"net_id":999,"fac_id":45}]}"#,
+            r#"{"data":[{"net_id":5104,"fac_id":44,"status":"deleted"}]}"#,
             r#"{"meta":{}}"#,
         ] {
             let report = report_of(vec![Ok(json_ok(net)), Ok(json_ok(body))]);
@@ -900,6 +935,20 @@ mod tests {
                     .unwrap_or_default()
                     .contains("netfac unavailable")
             );
+        }
+    }
+
+    #[test]
+    fn netfac_requires_complete_nonduplicated_facility_presence() {
+        let net = r#"{"data":[{"id":5104,"asn":3333,"fac_count":2}]}"#;
+        for body in [
+            r#"{"data":[{"net_id":5104,"fac_id":44}]}"#,
+            r#"{"data":[{"net_id":5104,"fac_id":44},{"net_id":5104,"fac_id":44}]}"#,
+        ] {
+            let report = report_of(vec![Ok(json_ok(net)), Ok(json_ok(body))]);
+            assert!(has(&report, &EntityKind::Asn, "AS3333"));
+            assert!(!report.entities.iter().any(|e| e.raw_value.starts_with("peeringdb:facility:")));
+            assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac unavailable"));
         }
     }
 
