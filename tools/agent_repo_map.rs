@@ -8,6 +8,7 @@ use std::{env, fs, io::{self, Read}, path::{Path, PathBuf}};
 const MAX_FILE_BYTES: u64 = 1_000_000;
 const MAX_FILES: usize = 20_000;
 const MAX_SYMBOLS: usize = 2_000;
+const MAX_RESULTS: usize = 60;
 const MAX_DIRS: usize = 20_000;
 const MAX_DIR_ENTRIES: usize = 20_000;
 const MAX_DEPTH: usize = 64;
@@ -61,6 +62,14 @@ fn score(path: &str, lines: &[(usize, String)], terms: &[String]) -> usize {
     let body = lines.iter().map(|(_, s)| s.to_ascii_lowercase()).collect::<Vec<_>>().join(" ");
     terms.iter().map(|t| if p.contains(t) { 12 } else if body.contains(t) { 3 } else { 0 }).sum()
 }
+// Keep only the results that can be emitted: retaining every matched file could
+// otherwise accumulate millions of source symbols on a memory-limited phone.
+fn keep_best(matches: &mut Vec<(usize, String, Vec<(usize, String)>)>, rank: usize,
+             path: String, symbols: Vec<(usize, String)>) {
+    matches.push((rank, path, symbols));
+    matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    matches.truncate(MAX_RESULTS);
+}
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     let root = Path::new(args.get(1).map(String::as_str).unwrap_or(".")).canonicalize()?;
@@ -84,11 +93,10 @@ fn main() -> io::Result<()> {
             .collect();
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
         let rank = score(&relative, &symbols, &terms);
-        if rank > 0 { matches.push((rank, relative, symbols)); }
+        if rank > 0 { keep_best(&mut matches, rank, relative, symbols); }
     }
-    matches.sort_by(|a,b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n", paths.len(), terms.join(" "));
-    for (rank, path, symbols) in matches.iter().take(60) {
+    for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
     }
@@ -119,6 +127,19 @@ mod tests {
         visited = MAX_DIRS;
         assert_eq!(collect(Path::new("."), &mut paths, &mut visited, 0)
             .unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+    #[test] fn results_are_bounded_and_deterministic() {
+        let mut matches = Vec::new();
+        for i in (0..MAX_RESULTS + 200).rev() {
+            keep_best(&mut matches, 1, format!("src/{i:04}.rs"),
+                      vec![(1, "fn demo() {}".to_string())]);
+            assert!(matches.len() <= MAX_RESULTS);
+        }
+        assert_eq!(matches.len(), MAX_RESULTS);
+        assert_eq!(matches.first().unwrap().1, "src/0000.rs");
+        assert_eq!(matches.last().unwrap().1, format!("src/{:04}.rs", MAX_RESULTS - 1));
+        keep_best(&mut matches, 10, "src/high.rs".to_string(), Vec::new());
+        assert_eq!(matches.first().unwrap().1, "src/high.rs");
     }
     #[test] fn exclusions() {
         assert!(!allowed_dir(".git"));
