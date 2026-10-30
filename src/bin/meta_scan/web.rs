@@ -755,6 +755,33 @@ mod tests {
     }
 
     #[test]
+    fn native_rust_http_server_renders_page_on_real_loopback_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = Arc::new(WebState {
+            csrf: "test_token".into(),
+            saved: Mutex::new(Saved::default()),
+        });
+        let handle = thread::spawn(move || {
+            let (client, _) = listener.accept().unwrap();
+            serve_client(client, &state, address.port(), Duration::from_secs(3));
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let request = format!(
+            "GET / HTTP/1.1\\r\\nHost: 127.0.0.1:{}\\r\\nConnection: close\\r\\n\\r\\n",
+            address.port()
+        );
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        handle.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\\r\\n"));
+        assert!(response.contains("name=\\\"csrf\\\" value=\\\"test_token\\\""));
+        assert!(response.contains("action=\\\"/scan\\\""));
+        assert!(!response.contains("<script"));
+    }
+
+    #[test]
     fn token_is_random_and_fixed_length() {
         let first = secret_token().unwrap();
         let second = secret_token().unwrap();
