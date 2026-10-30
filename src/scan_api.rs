@@ -118,19 +118,27 @@ impl ApiResponse {
 const JSON: &str = "application/json; charset=utf-8";
 
 /// Count recorded provider invocations, not distinct providers or possible sources.
-/// A skipped keyed source is not an attempted request or a confirmed empty result.
-/// These totals describe execution coverage, never discovery completeness.
+/// A skipped keyed source and a request Huntsman's guard refused before sending are not
+/// attempted requests, and neither is a confirmed empty result. These totals describe execution
+/// coverage, never discovery completeness.
 fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
     let mut success = 0_usize;
     let mut valid_zero = 0_usize;
     let mut not_configured = 0_usize;
+    let mut refused_before_sending = 0_usize;
     let mut unresolved = 0_usize;
     for outcome in outcomes {
-        match outcome.kind {
-            SourceOutcomeKind::Success => success += 1,
-            SourceOutcomeKind::ValidZero => valid_zero += 1,
-            SourceOutcomeKind::NotConfigured => not_configured += 1,
-            _ => unresolved += 1,
+        let kind = outcome.kind;
+        if kind == SourceOutcomeKind::Success {
+            success += 1;
+        } else if kind == SourceOutcomeKind::ValidZero {
+            valid_zero += 1;
+        } else if kind.is_not_configured() {
+            not_configured += 1;
+        } else if kind.is_refused_before_sending() {
+            refused_before_sending += 1;
+        } else {
+            unresolved += 1;
         }
     }
     json!({
@@ -141,9 +149,11 @@ fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
         "success": success,
         "valid_zero": valid_zero,
         "not_configured": not_configured,
+        "refused_before_sending": refused_before_sending,
         "unresolved": unresolved,
         "all_recorded_sources_accepted": !outcomes.is_empty()
             && not_configured == 0
+            && refused_before_sending == 0
             && unresolved == 0,
     })
 }
@@ -2414,17 +2424,26 @@ mod tests {
                 Some(502),
                 "temporary outage",
             ),
+            SourceExecutionOutcome::failed(
+                "crt_sh",
+                1,
+                SourceOutcomeKind::RefusedBeforeSending,
+                None,
+                "egress-policy refused the destination",
+            ),
         ];
+        // A request refused before it was sent was never attempted, and is not unresolved.
         assert_eq!(
             source_execution_summary(&outcomes),
             json!({
                 "unit": "source_execution",
-                "total": 4,
+                "total": 5,
                 "attempted": 3,
                 "accepted": 2,
                 "success": 1,
                 "valid_zero": 1,
                 "not_configured": 1,
+                "refused_before_sending": 1,
                 "unresolved": 1,
                 "all_recorded_sources_accepted": false,
             })
