@@ -298,7 +298,10 @@ fn render_page(state: &WebState, message: Option<&str>) -> String {
     out.push_str("<label for=\"mode\">Collection mode</label><select name=\"mode\" id=\"mode\">");
     for (mode, label) in [
         ("indexed", "Keyless public URL discovery (no API charges)"),
-        ("provider", "RapidAPI profile and business enrichment (may be paid)"),
+        (
+            "provider",
+            "RapidAPI profile and business enrichment (may be paid)",
+        ),
     ] {
         let selected = if (mode == "provider") == saved.provider {
             " selected"
@@ -341,7 +344,9 @@ fn render_page(state: &WebState, message: Option<&str>) -> String {
             html_escape(&state.csrf)
         );
         out.push_str("<button name=\"format\" value=\"json\" type=\"submit\">Export JSON</button>");
-        out.push_str("<button name=\"format\" value=\"txt\" type=\"submit\">Export TXT</button></form>");
+        out.push_str(
+            "<button name=\"format\" value=\"txt\" type=\"submit\">Export TXT</button></form>",
+        );
         for report in &saved.reports {
             render_report(&mut out, report);
         }
@@ -355,7 +360,13 @@ fn html_response(stream: &mut TcpStream, status: &str, page: &str) {
     let _ = http_reply(stream, status, "text/html; charset=utf-8", page.as_bytes());
 }
 
-fn handle_form_scan(stream: &mut TcpStream, state: &WebState, req: &HttpRequest, port: u16, timeout: Duration) {
+fn handle_form_scan(
+    stream: &mut TcpStream,
+    state: &WebState,
+    req: &HttpRequest,
+    port: u16,
+    timeout: Duration,
+) {
     let form = match checked_form(req, state, port) {
         Ok(form) => form,
         Err(reason) => {
@@ -365,7 +376,11 @@ fn handle_form_scan(stream: &mut TcpStream, state: &WebState, req: &HttpRequest,
     };
     let mode = form.get("mode").map(String::as_str).unwrap_or("indexed");
     if !matches!(mode, "indexed" | "provider") {
-        html_response(stream, "400 Bad Request", &render_page(state, Some("Unknown scan mode")));
+        html_response(
+            stream,
+            "400 Bad Request",
+            &render_page(state, Some("Unknown scan mode")),
+        );
         return;
     }
     let raw = form.get("handles").map_or("", String::as_str);
@@ -380,7 +395,14 @@ fn handle_form_scan(stream: &mut TcpStream, state: &WebState, req: &HttpRequest,
     let business = form.get("business").is_some_and(|v| v == "yes");
     let key = provider.then(configured_secret).flatten();
     if provider && key.is_none() {
-        html_response(stream, "400 Bad Request", &render_page(state, Some("RapidAPI provider key not configured; select free indexed discovery instead")));
+        html_response(
+            stream,
+            "400 Bad Request",
+            &render_page(
+                state,
+                Some("RapidAPI provider key not configured; select free indexed discovery instead"),
+            ),
+        );
         return;
     }
     let transport = transport(timeout);
@@ -389,7 +411,14 @@ fn handle_form_scan(stream: &mut TcpStream, state: &WebState, req: &HttpRequest,
     let mut limit_reached = false;
     for handle in handles {
         let result = if provider {
-            scan(&transport, key.as_ref(), &handle, business, unix_now(), timeout)
+            scan(
+                &transport,
+                key.as_ref(),
+                &handle,
+                business,
+                unix_now(),
+                timeout,
+            )
         } else {
             scan_indexed(&transport, &handle, unix_now())
         };
@@ -442,19 +471,33 @@ fn handle_export(stream: &mut TcpStream, state: &WebState, req: &HttpRequest, po
     };
     let kind = form.get("format").map(String::as_str).unwrap_or("");
     if !matches!(kind, "json" | "txt") {
-        html_response(stream, "400 Bad Request", &render_page(state, Some("Export format must be JSON or TXT")));
+        html_response(
+            stream,
+            "400 Bad Request",
+            &render_page(state, Some("Export format must be JSON or TXT")),
+        );
         return;
     }
     let saved = state.saved.lock().unwrap_or_else(PoisonError::into_inner);
     if saved.reports.is_empty() {
         drop(saved);
-        html_response(stream, "400 Bad Request", &render_page(state, Some("No report to export")));
+        html_response(
+            stream,
+            "400 Bad Request",
+            &render_page(state, Some("No report to export")),
+        );
         return;
     }
     let payload = if kind == "json" {
         serde_json::to_vec_pretty(&saved.reports).unwrap_or_default()
     } else {
-        saved.reports.iter().map(Report::as_text).collect::<Vec<_>>().join("\n---\n").into_bytes()
+        saved
+            .reports
+            .iter()
+            .map(Report::as_text)
+            .collect::<Vec<_>>()
+            .join("\n---\n")
+            .into_bytes()
     };
     drop(saved);
     let _ = download_reply(stream, kind, &payload);
@@ -462,39 +505,81 @@ fn handle_export(stream: &mut TcpStream, state: &WebState, req: &HttpRequest, po
 
 fn handle_compat_json(stream: &mut TcpStream, req: &HttpRequest, port: u16, timeout: Duration) {
     if req.header("X-Meta-Scan") != Some("1")
-        || req.header("Content-Type").is_none_or(|value| !value.to_ascii_lowercase().starts_with("application/json"))
-        || req.header("Origin").is_some_and(|origin| origin != format!("http://127.0.0.1:{port}") && origin != format!("http://localhost:{port}"))
+        || req
+            .header("Content-Type")
+            .is_none_or(|value| !value.to_ascii_lowercase().starts_with("application/json"))
+        || req.header("Origin").is_some_and(|origin| {
+            origin != format!("http://127.0.0.1:{port}")
+                && origin != format!("http://localhost:{port}")
+        })
     {
-        let _ = json_reply(stream, "403 Forbidden", &serde_json::json!({"error":"same-origin JSON request and X-Meta-Scan header required"}));
+        let _ = json_reply(
+            stream,
+            "403 Forbidden",
+            &serde_json::json!({"error":"same-origin JSON request and X-Meta-Scan header required"}),
+        );
         return;
     }
     let Ok(body) = serde_json::from_slice::<serde_json::Value>(&req.body) else {
-        let _ = json_reply(stream, "400 Bad Request", &serde_json::json!({"error":"invalid JSON body"}));
+        let _ = json_reply(
+            stream,
+            "400 Bad Request",
+            &serde_json::json!({"error":"invalid JSON body"}),
+        );
         return;
     };
     let Some(username) = body.get("username").and_then(serde_json::Value::as_str) else {
-        let _ = json_reply(stream, "400 Bad Request", &serde_json::json!({"error":"username required"}));
+        let _ = json_reply(
+            stream,
+            "400 Bad Request",
+            &serde_json::json!({"error":"username required"}),
+        );
         return;
     };
-    let mode = body.get("mode").and_then(serde_json::Value::as_str).unwrap_or("indexed");
+    let mode = body
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("indexed");
     if !matches!(mode, "indexed" | "provider") {
-        let _ = json_reply(stream, "400 Bad Request", &serde_json::json!({"error":"unknown collection mode"}));
+        let _ = json_reply(
+            stream,
+            "400 Bad Request",
+            &serde_json::json!({"error":"unknown collection mode"}),
+        );
         return;
     }
-    let business = body.get("include_business").and_then(serde_json::Value::as_bool).unwrap_or(true);
+    let business = body
+        .get("include_business")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
     let key = (mode == "provider").then(configured_secret).flatten();
     let transport = transport(timeout);
     let result = if mode == "provider" {
-        scan(&transport, key.as_ref(), username, business, unix_now(), timeout)
+        scan(
+            &transport,
+            key.as_ref(),
+            username,
+            business,
+            unix_now(),
+            timeout,
+        )
     } else {
         scan_indexed(&transport, username, unix_now())
     };
     match result {
         Ok(report) => {
-            let _ = json_reply(stream, "200 OK", &serde_json::to_value(report).unwrap_or_default());
+            let _ = json_reply(
+                stream,
+                "200 OK",
+                &serde_json::to_value(report).unwrap_or_default(),
+            );
         }
         Err(error) => {
-            let _ = json_reply(stream, "400 Bad Request", &serde_json::json!({"error":error}));
+            let _ = json_reply(
+                stream,
+                "400 Bad Request",
+                &serde_json::json!({"error":error}),
+            );
         }
     }
 }
@@ -503,43 +588,66 @@ fn serve_client(mut stream: TcpStream, state: &WebState, port: u16, timeout: Dur
     let req = match read_request(&mut stream) {
         Ok(req) => req,
         Err(error) => {
-            let _ = json_reply(&mut stream, "400 Bad Request", &serde_json::json!({"error":error}));
+            let _ = json_reply(
+                &mut stream,
+                "400 Bad Request",
+                &serde_json::json!({"error":error}),
+            );
             return;
         }
     };
     if !allowed_host(req.header("Host"), port) {
-        let _ = json_reply(&mut stream, "403 Forbidden", &serde_json::json!({"error":"loopback Host header required"}));
+        let _ = json_reply(
+            &mut stream,
+            "403 Forbidden",
+            &serde_json::json!({"error":"loopback Host header required"}),
+        );
         return;
     }
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/") => html_response(&mut stream, "200 OK", &render_page(state, None)),
         ("GET", "/api/status") => {
-            let _ = json_reply(&mut stream, "200 OK", &serde_json::json!({
-                "name":"Huntsman MetaScan", "provider":API_HOST,
-                "api_key_configured":configured_secret().is_some(), "binding":"loopback",
-                "interface":"native_rust_server_rendered_no_javascript"
-            }));
+            let _ = json_reply(
+                &mut stream,
+                "200 OK",
+                &serde_json::json!({
+                    "name":"Huntsman MetaScan", "provider":API_HOST,
+                    "api_key_configured":configured_secret().is_some(), "binding":"loopback",
+                    "interface":"native_rust_server_rendered_no_javascript"
+                }),
+            );
         }
         ("POST", "/scan") => handle_form_scan(&mut stream, state, &req, port, timeout),
         ("POST", "/export") => handle_export(&mut stream, state, &req, port),
         ("POST", "/api/scan") => handle_compat_json(&mut stream, &req, port, timeout),
         _ => {
-            let _ = json_reply(&mut stream, "404 Not Found", &serde_json::json!({"error":"route not found"}));
+            let _ = json_reply(
+                &mut stream,
+                "404 Not Found",
+                &serde_json::json!({"error":"route not found"}),
+            );
         }
     }
 }
 
 pub(super) fn serve(bind: &str, timeout: Duration) -> Result<(), String> {
-    let address: SocketAddr = bind.parse().map_err(|_| "bind must be a numeric loopback address:port".to_owned())?;
+    let address: SocketAddr = bind
+        .parse()
+        .map_err(|_| "bind must be a numeric loopback address:port".to_owned())?;
     if !address.ip().is_loopback() || address.port() < 1024 {
         return Err("Web UI must bind to loopback and an unprivileged port (>=1024)".to_owned());
     }
-    let listener = TcpListener::bind(address).map_err(|err| format!("cannot listen on {bind}: {err}"))?;
-    let csrf = secret_token().map_err(|_| "cannot load OS randomness for local form session".to_owned())?;
-    let state = Arc::new(WebState { csrf, saved: Mutex::new(Saved {
-        business: true,
-        ..Saved::default()
-    }) });
+    let listener =
+        TcpListener::bind(address).map_err(|err| format!("cannot listen on {bind}: {err}"))?;
+    let csrf = secret_token()
+        .map_err(|_| "cannot load OS randomness for local form session".to_owned())?;
+    let state = Arc::new(WebState {
+        csrf,
+        saved: Mutex::new(Saved {
+            business: true,
+            ..Saved::default()
+        }),
+    });
     println!("MetaScan pure Rust Web UI: http://{bind}/");
     let active = Arc::new(AtomicUsize::new(0));
     for connection in listener.incoming() {
@@ -547,12 +655,17 @@ pub(super) fn serve(bind: &str, timeout: Duration) -> Result<(), String> {
         let previous = active.fetch_add(1, Ordering::AcqRel);
         if previous >= WEB_MAX_CLIENTS {
             active.fetch_sub(1, Ordering::AcqRel);
-            let _ = json_reply(&mut client, "503 Service Unavailable", &serde_json::json!({"error":"connection capacity reached"}));
+            let _ = json_reply(
+                &mut client,
+                "503 Service Unavailable",
+                &serde_json::json!({"error":"connection capacity reached"}),
+            );
             continue;
         }
         let worker_state = Arc::clone(&state);
         let counter = Arc::clone(&active);
-        let launched = thread::Builder::new().name("meta-scan-web".into())
+        let launched = thread::Builder::new()
+            .name("meta-scan-web".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(move || {
                 struct Release(Arc<AtomicUsize>);
@@ -578,7 +691,10 @@ mod tests {
     #[test]
     fn form_decoding_rejects_duplicate_fields_and_bad_percent_encoding() {
         let valid = decode_form(b"handles=NASA%0AHackUnderway&mode=indexed").unwrap();
-        assert_eq!(valid.get("handles").map(String::as_str), Some("NASA\nHackUnderway"));
+        assert_eq!(
+            valid.get("handles").map(String::as_str),
+            Some("NASA\nHackUnderway")
+        );
         assert!(decode_form(b"mode=indexed&mode=provider").is_err());
         assert!(decode_form(b"handles=%GG").is_err());
         assert!(decode_form(b"handles=%").is_err());
@@ -586,8 +702,14 @@ mod tests {
 
     #[test]
     fn username_batch_deduplicates_case_insensitively_and_bounds_size() {
-        assert_eq!(checked_handles("NASA\nnasa\nHackUnderway").unwrap().len(), 2);
-        let too_many = (0..21).map(|i| format!("account{i}")).collect::<Vec<_>>().join("\n");
+        assert_eq!(
+            checked_handles("NASA\nnasa\nHackUnderway").unwrap().len(),
+            2
+        );
+        let too_many = (0..21)
+            .map(|i| format!("account{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(checked_handles(&too_many).is_err());
         assert!(checked_handles("valid\ninvalid/path").is_err());
     }
@@ -595,7 +717,10 @@ mod tests {
     #[test]
     fn renderer_escapes_hostile_provider_text() {
         let malicious = "<script>alert('x') & \"unsafe\"</script>";
-        assert_eq!(html_escape(malicious), "&lt;script&gt;alert(&#39;x&#39;) &amp; &quot;unsafe&quot;&lt;/script&gt;");
+        assert_eq!(
+            html_escape(malicious),
+            "&lt;script&gt;alert(&#39;x&#39;) &amp; &quot;unsafe&quot;&lt;/script&gt;"
+        );
     }
 
     #[test]
