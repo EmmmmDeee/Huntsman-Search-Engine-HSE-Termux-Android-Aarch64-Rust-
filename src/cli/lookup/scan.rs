@@ -10,6 +10,7 @@ use crate::cli::{MAX_PLAIN_FILE_BYTES, fail, terminal_json_pretty};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::lookup_modules::BreachPasses;
 use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::scan_route::{
@@ -275,12 +276,23 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
 /// Live collector for `scan --recurse`: each target runs the real per-kind lookup through
 /// `profiles::collect`, so the recursion fetches exactly what a single `scan` of that selector
 /// would. A refused lookup becomes a recorded source outcome rather than a dropped dispatch, so
-/// no source is silent and nothing is redacted on the way through.
-struct LiveCollector;
+/// no source is silent and nothing is redacted on the way through. The breach pass of an address
+/// whose e-mail lookup already ran the keyed breach legs is skipped, as a saved scan skips it, so
+/// no paid source is asked twice.
+#[derive(Default)]
+struct LiveCollector {
+    breach: BreachPasses,
+}
 
 impl SelectorCollector for LiveCollector {
     fn collect(&mut self, target: &Target) -> Step {
-        match collect(target.kind, &target.selector, &Selection::all()) {
+        if self.breach.covered(target.kind, &target.selector) {
+            return Step {
+                entities: Vec::new(),
+                outcomes: Vec::new(),
+            };
+        }
+        let step = match collect(target.kind, &target.selector, &Selection::all()) {
             Ok(collected) => Step {
                 entities: collected.entities,
                 outcomes: collected.outcomes,
@@ -302,7 +314,10 @@ impl SelectorCollector for LiveCollector {
                     outcomes: vec![outcome],
                 }
             }
-        }
+        };
+        self.breach
+            .record(target.kind, &target.selector, &step.outcomes);
+        step
     }
 }
 
@@ -389,7 +404,7 @@ fn recurse_scan(args: &[String]) -> ExitCode {
         }
         policy.expand_confidence_floor = floor;
     }
-    let mut collector = LiveCollector;
+    let mut collector = LiveCollector::default();
     let report = recursion::run(&seeds, &policy, &mut collector);
     // Analyse everything the crawl reached with the shared spine once, and hand the result to
     // whichever renderer runs: the text and JSON outputs show the same analysis, never a different
@@ -690,12 +705,38 @@ fn print_recursion_analysis(
 
 #[cfg(test)]
 mod tests {
-    use super::{per_seed_save_path, recursion_analysis, recursion_json};
+    use super::{LiveCollector, per_seed_save_path, recursion_analysis, recursion_json};
     use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use huntsman_recon::gap::{EXPAND_FLOOR, Isolation};
+    use huntsman_recon::recursion::SelectorCollector as _;
     use huntsman_recon::recursion::{PivotEdge, RecursionReport, Target};
     use huntsman_recon::scan_route::{ScanKind, canonical_selector};
+    use huntsman_recon::source_outcome::SourceExecutionOutcome;
     use huntsman_recon::termination::TerminationReason;
+
+    /// `scan --recurse` runs an address's breach pass only when its e-mail lookup did not already
+    /// run the keyed breach legs, as a saved scan does: the pass is skipped without a lookup.
+    #[test]
+    fn a_crawl_skips_the_breach_pass_its_email_lookup_already_ran() {
+        let mut collector = LiveCollector::default();
+        collector.breach.record(
+            ScanKind::Email,
+            "ada@example.org",
+            &[SourceExecutionOutcome::valid_zero(
+                huntsman_recon::exposure_cli::SOURCE,
+                1,
+            )],
+        );
+        let step = collector.collect(&Target {
+            kind: ScanKind::Exposure,
+            selector: "ada@example.org".to_owned(),
+        });
+        assert!(
+            step.entities.is_empty() && step.outcomes.is_empty(),
+            "{:?}",
+            step.outcomes
+        );
+    }
 
     /// A report carrying only the entities a crawl would have reached, for driving the correlation
     /// wiring offline with no collector and no network.

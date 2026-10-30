@@ -208,11 +208,6 @@ pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> 
     })
 }
 
-/// The breach sources the `exposure` lookup runs. An email scan runs `exposure` after `email`
-/// unless the `email` lookup already ran one of them, so a keyed breach source is never skipped
-/// and never asked twice.
-const EXPOSURE_SOURCES: [&str; 4] = ["hibp", "stolen_tax", "oathnet", "dehashed"];
-
 fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> {
     let usecase = if options.usecase.trim().is_empty() {
         "all".to_owned()
@@ -333,7 +328,7 @@ struct ScanCollector<'a> {
     text: String,
     ran: usize,
     errors: usize,
-    breach_checked: BTreeSet<String>,
+    breach: lookup_modules::BreachPasses,
     /// How many entities and source outcomes the last checkpoint saved, so a wave that added
     /// nothing writes nothing.
     checkpointed: (usize, usize),
@@ -415,7 +410,7 @@ impl<'a> ScanCollector<'a> {
             text: String::new(),
             ran: 0,
             errors: 0,
-            breach_checked: BTreeSet::new(),
+            breach: lookup_modules::BreachPasses::default(),
             checkpointed: (0, 0),
         }
     }
@@ -425,16 +420,8 @@ impl ScanCollector<'_> {
     /// Reduce a completed lookup identically for sequential and graph dispatch.
     /// This does not modify source error counts, which depend on how the lookup ran.
     fn finish_lookup(&mut self, target: &CrawlTarget, found: LookupOutput) -> Step {
-        if target.kind == ScanKind::Email
-            && found
-                .outcomes
-                .iter()
-                .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
-        {
-            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
-                self.breach_checked.insert(selector);
-            }
-        }
+        self.breach
+            .record(target.kind, &target.selector, &found.outcomes);
         if !found.text.is_empty() {
             if !self.text.is_empty() {
                 self.text.push('\n');
@@ -535,7 +522,7 @@ impl SelectorCollector for ScanCollector<'_> {
             entities: Vec::new(),
             outcomes: Vec::new(),
         };
-        if target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector) {
+        if self.breach.covered(target.kind, &target.selector) {
             return skip;
         }
         if !lookup_modules::asks_any(target.kind, self.chosen) {
@@ -615,7 +602,7 @@ impl SelectorCollector for ScanCollector<'_> {
 
     fn may_batch(&self, selected: &[CrawlTarget], next: &CrawlTarget) -> bool {
         let needs_sequential = |target: &CrawlTarget| {
-            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+            self.breach.covered(target.kind, &target.selector)
                 || !lookup_modules::asks_any(target.kind, self.chosen)
         };
         if needs_sequential(next) || selected.iter().any(needs_sequential) {
@@ -641,7 +628,7 @@ impl SelectorCollector for ScanCollector<'_> {
                 })
         });
         let has_stateful_or_skipped_target = targets.iter().any(|target| {
-            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+            self.breach.covered(target.kind, &target.selector)
                 || !lookup_modules::asks_any(target.kind, self.chosen)
         });
         if targets.len() < 2 || has_email_exposure_pair || has_stateful_or_skipped_target {
@@ -2758,8 +2745,12 @@ mod tests {
                 let seen = Arc::clone(&calls);
                 move |kind: ScanKind, _selector: &str, _: &Selection| {
                     seen.lock().unwrap().push(kind.command());
+                    // The row the HIBP leg writes, `hibp_account`, is the `hibp` module's.
                     Ok(LookupOutput {
-                        outcomes: vec![SourceExecutionOutcome::valid_zero("hibp", 1)],
+                        outcomes: vec![SourceExecutionOutcome::valid_zero(
+                            crate::exposure_cli::SOURCE,
+                            1,
+                        )],
                         ..LookupOutput::default()
                     })
                 }
