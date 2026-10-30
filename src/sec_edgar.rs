@@ -14,10 +14,9 @@
 //! former names and category ride as evidence. Every published field is kept verbatim; nothing is
 //! redacted.
 //!
-//! EDGAR needs no key or login; its only fair-access requirement is a declared, contactable
-//! User-Agent (a missing or generic one is refused with 403) and a bounded request rate. This client
-//! sends an honest tool-identifying User-Agent naming the project -- never a browser impersonation
-//! and never a person's private contact.
+//! EDGAR needs no API key. Automated traffic must declare a genuine contactable operator
+//! User-Agent and respect the provider's access limits. Without an operator-authorised
+//! contact, this leg reports NotConfigured and sends no request; the header is never logged.
 //!
 //! Evidence integrity is fail-closed, mirroring `gleif` and `acnc`: a challenge page, a truncated
 //! body or an unreadable/contract-breaking envelope is schema drift, never evidence; only a filer
@@ -45,14 +44,45 @@ const EFTS_BASE: &str = "https://efts.sec.gov/LATEST/search-index";
 const SUBMISSIONS_BASE: &str = "https://data.sec.gov/submissions";
 const DATASET: &str = "SEC EDGAR";
 
-/// The honest, contactable User-Agent EDGAR's fair-access policy requires: the tool and a project
-/// URL where the operator can be reached, never a browser impersonation and never a person's private
-/// email. EDGAR refuses a missing or generic User-Agent with 403, so this is sent on every request.
-pub const SEC_USER_AGENT: &str = concat!(
-    "huntsman-recon/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)"
-);
+/// Plain operator identity and real, operator-authorised contact email. The value is sent to SEC
+/// only; neither errors nor logs include its contents. This is not an API key or login.
+const USER_AGENT_CONFIGURATION_MESSAGE: &str =
+    "SEC EDGAR requires HUNTSMAN_SEC_USER_AGENT with an operator-authorised contact email; no request sent";
+
+/// Validate the externally supplied HTTP User-Agent without retaining or logging invalid input.
+/// A syntactically plausible contact address does not establish authorisation: the operator must
+/// supply an address they actually control. The contact is not embedded in project source.
+fn validated_user_agent(value: Option<&str>) -> Option<&str> {
+    let value = value?.trim();
+    if !(12..=200).contains(&value.len())
+        || !value.is_ascii()
+        || !value.bytes().all(|byte| byte == b' ' || (33..=126).contains(&byte))
+    {
+        return None;
+    }
+    let mut words = value.split_ascii_whitespace();
+    let identifier = words.next()?;
+    if !identifier.bytes().any(|byte| byte.is_ascii_alphabetic()) {
+        return None;
+    }
+    words.find(|word| {
+        let email = word.trim_matches(|c: char| matches!(c, '(' | ')' | '<' | '>' | ',' | ';'));
+        let Some((local, domain)) = email.split_once('@') else {
+            return false;
+        };
+        !local.is_empty()
+            && local.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+/=?^`{|}~_-".contains(&byte))
+            && domain.contains('.')
+            && domain.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+    })?;
+    Some(value)
+}
 
 /// Insider forms the full-text search is scoped to: initial ownership (3), changes (4) and annual
 /// statements (5) -- where a person appears as an officer, director or 10% owner.
@@ -176,10 +206,10 @@ struct MatchedFiler {
     display_name: String,
 }
 
-fn request(url: String) -> Request {
+fn request(url: String, user_agent: &str) -> Request {
     Request::get(url)
         .header("accept", "application/json")
-        .header("user-agent", SEC_USER_AGENT)
+        .header("user-agent", user_agent)
 }
 
 fn options() -> FetchOptions {
@@ -218,13 +248,43 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
+    let user_agent = crate::environment::variable(crate::environment::SEC_USER_AGENT_ENV);
+    lookup_with_config(transport, name, scan_id, now_unix, user_agent.as_deref())
+}
+
+/// Configuration is passed explicitly for deterministic, parallel-safe regression tests.
+fn lookup_with_config<T: Transport + ?Sized>(
+    transport: &T,
+    name: &str,
+    scan_id: &str,
+    now_unix: u64,
+    configured_agent: Option<&str>,
+) -> Result<Report, Error> {
     if name_tokens(name).len() < 2 {
         return Ok(miss(SourceExecutionOutcome::valid_zero(SOURCE, now_unix)));
     }
+    let Some(user_agent) = validated_user_agent(configured_agent) else {
+        return Ok(miss(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::NotConfigured,
+            None,
+            USER_AGENT_CONFIGURATION_MESSAGE,
+        )));
+    };
+    lookup_with_agent(transport, name, scan_id, now_unix, user_agent)
+}
 
+fn lookup_with_agent<T: Transport + ?Sized>(
+    transport: &T,
+    name: &str,
+    scan_id: &str,
+    now_unix: u64,
+    user_agent: &str,
+) -> Result<Report, Error> {
     let searched = fetch(
         transport,
-        request(search_url(name)),
+        request(search_url(name), user_agent),
         None,
         &options(),
         SOURCE,
@@ -249,7 +309,7 @@ pub fn lookup<T: Transport + ?Sized>(
     for filer in filers.iter().take(MAX_FILERS) {
         let fetched = match fetch(
             transport,
-            request(submissions_url(&filer.cik)),
+            request(submissions_url(&filer.cik), user_agent),
             None,
             &options(),
             SOURCE,
@@ -599,6 +659,19 @@ mod tests {
     use super::*;
     use crate::test_support::{ScriptedTransport, json_ok};
 
+    const TEST_USER_AGENT: &str = "HuntsmanTestResearch contact@research.example";
+
+    // All existing provider fixtures use a declared test operator, never process-wide
+    // environment mutation. Runtime configuration remains separately testable.
+    fn lookup<T: Transport + ?Sized>(
+        transport: &T,
+        name: &str,
+        scan_id: &str,
+        now_unix: u64,
+    ) -> Result<Report, Error> {
+        lookup_with_config(transport, name, scan_id, now_unix, Some(TEST_USER_AGENT))
+    }
+
     // A realistic EFTS search envelope for "elon musk" over insider forms: the person is co-filed
     // with the issuer, so a hit lists both, index-aligned.
     const SEARCH: &str = r#"{"hits":{"total":{"value":2,"relation":"eq"},"hits":[
@@ -844,15 +917,46 @@ mod tests {
     }
 
     #[test]
-    fn the_sec_user_agent_names_the_tool_and_a_project_contact_not_a_person() {
-        // EDGAR 403s a missing/generic UA; the client must declare a contactable tool UA, and must
-        // never leak a person's private contact.
-        assert!(SEC_USER_AGENT.starts_with("huntsman-recon/"));
-        assert!(SEC_USER_AGENT.contains("github.com"));
-        assert!(
-            !SEC_USER_AGENT.contains('@'),
-            "the User-Agent must not carry a personal email"
-        );
+    fn missing_or_invalid_contact_is_not_configured_without_network() {
+        for agent in [
+            None,
+            Some(""),
+            Some("Huntsman project-only https://github.com/repo"),
+            Some("Huntsman none@domain"),
+            Some("Huntsman admin@example..com"),
+            Some("Huntsman contact@example.com\\r\\nX-Injected: yes"),
+            Some("Huntsman contact@example.com\\n"),
+        ] {
+            let transport = ScriptedTransport::new(vec![]);
+            let report = lookup_with_config(&transport, "elon musk", "scan-edgar", 1, agent)
+                .expect("configuration is a source outcome");
+            assert!(report.entities.is_empty());
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::NotConfigured);
+            assert_eq!(report.outcome.http_status, None);
+            assert!(
+                !report.outcome.detail.unwrap_or_default().contains("example.com"),
+                "operator contact must never appear in diagnostic output"
+            );
+            assert!(transport.seen.borrow().is_empty(), "no request was allowed");
+        }
+    }
+
+    #[test]
+    fn configured_contact_is_sent_to_both_sec_endpoints_without_logging() {
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(SEARCH)), Ok(json_ok(PERSON))]);
+        let report = lookup(&transport, "elon musk", "scan-edgar", 1).expect("runs");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        let seen = transport.seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].url.starts_with(EFTS_BASE));
+        assert!(seen[1].url.starts_with(SUBMISSIONS_BASE));
+        for request in seen.iter() {
+            assert_eq!(request.header_value("user-agent"), Some(TEST_USER_AGENT));
+            assert!(
+                !format!("{request:?}").contains("contact@research.example"),
+                "request debug must redact the operator's email"
+            );
+        }
     }
 
     #[test]
