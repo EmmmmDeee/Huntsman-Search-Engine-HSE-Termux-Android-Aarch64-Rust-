@@ -1,0 +1,1 @@
+DMARC and SMTP TLS reporting now recognise `mailto:` report destinations regardless of URI scheme case, without changing the observed mailbox spelling or misclassifying non-mailto destinations.
