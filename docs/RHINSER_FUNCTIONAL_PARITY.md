@@ -21,6 +21,11 @@ This document records **observed APK structures and functional equivalents**, no
 | Prank scanner | `RHINSE-SCAN-DETECT/assets/index.html` | None | Not implemented: source JavaScript generates random 'detection' scores; entertainment, not a sensor |
 | Standalone EMV utility | `Rhinser.apk` package `com.emv.nfcreader` | Offline read-only APDU classification | Partial: no NFC brute force, payment-card track-writing, or card credential emulation |
 
+## Local HTTP interface
+
+- `GET /api/rhinser/catalog` returns exactly the same typed, unverified, bounded directory as `osint catalog --json`.
+- Requests inherit the Huntsman server's host, bearer-token and no-cache protections; it is read-only and never fetches remote sites.
+
 ## Operational commands
 
 ```sh
