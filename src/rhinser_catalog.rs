@@ -221,7 +221,7 @@ mod tests {
             !CATALOG_JSON
                 .as_bytes()
                 .windows(32)
-                .any(|window| { window.iter().all(|byte| byte.is_ascii_hexdigit()) })
+                .any(|window| { window.iter().all(u8::is_ascii_hexdigit) })
         );
     }
 
