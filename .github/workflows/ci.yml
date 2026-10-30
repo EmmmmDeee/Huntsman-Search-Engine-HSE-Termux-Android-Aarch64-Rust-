@@ -209,6 +209,38 @@ jobs:
             sha256sum huntsman-recon-aarch64-linux-android > huntsman-recon-aarch64-linux-android.sha256
             sha256sum -c huntsman-recon-aarch64-linux-android.sha256
           )
+      - name: Verify MetaScan Android aarch64 ELF and stage standalone binary
+        run: |
+          set -euo pipefail
+          BIN="target/aarch64-linux-android/release/meta_scan"
+          TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          HEADER="$RUNNER_TEMP/meta-scan-elf-header.txt"
+          PROGRAM="$RUNNER_TEMP/meta-scan-elf-program.txt"
+          test -x "$BIN"
+          "$TOOLCHAIN/llvm-readelf" -h "$BIN" > "$HEADER"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$HEADER"
+          "$TOOLCHAIN/llvm-readelf" -l "$BIN" > "$PROGRAM"
+          grep -F '/system/bin/linker64' "$PROGRAM"
+          grep -q '^ *LOAD' "$PROGRAM"
+          for align in $(awk '$1 == "LOAD" { print $NF }' "$PROGRAM"); do
+            [ $((align)) -ge 16384 ] || { echo "::error::MetaScan LOAD alignment $align violates 16 KiB device requirement"; exit 1; }
+          done
+          mkdir -p dist
+          cp "$BIN" dist/meta-scan-aarch64-linux-android
+          (
+            cd dist
+            sha256sum meta-scan-aarch64-linux-android > meta-scan-aarch64-linux-android.sha256
+            sha256sum -c meta-scan-aarch64-linux-android.sha256
+          )
+      - name: Upload MetaScan Termux handset-test artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: meta-scan-aarch64-linux-android
+          path: |
+            dist/meta-scan-aarch64-linux-android
+            dist/meta-scan-aarch64-linux-android.sha256
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload main-branch handset-test artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
