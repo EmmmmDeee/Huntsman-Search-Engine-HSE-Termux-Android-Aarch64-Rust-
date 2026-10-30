@@ -98,14 +98,13 @@ pub struct Report {
     pub outcome: SourceExecutionOutcome,
 }
 
-/// The 32 bytes a canonical base58 address spells, or `None`: a character outside the alphabet,
-/// a value wider than 32 bytes, or leading `1`s that are not exactly its leading zero bytes, so
-/// each address has one accepted spelling. **Pure.**
-fn decode_address(text: &str) -> Option<[u8; 32]> {
-    if text.is_empty() || text.len() > 44 {
+/// Decode one canonical fixed-width base58 value. Reject overflow, invalid characters and
+/// leading-zero aliases, so a short string cannot masquerade as a transaction signature. **Pure.**
+fn decode_base58<const N: usize>(text: &str, max_chars: usize) -> Option<[u8; N]> {
+    if text.is_empty() || text.len() > max_chars {
         return None;
     }
-    let mut bytes = [0_u8; 32];
+    let mut bytes = [0_u8; N];
     for symbol in text.bytes() {
         let mut carry = u32::try_from(BASE58.iter().position(|&digit| digit == symbol)?).ok()?;
         for byte in bytes.iter_mut().rev() {
@@ -120,6 +119,11 @@ fn decode_address(text: &str) -> Option<[u8; 32]> {
     let ones = text.bytes().take_while(|&symbol| symbol == b'1').count();
     let zeros = bytes.iter().take_while(|&&byte| byte == 0).count();
     (ones == zeros).then_some(bytes)
+}
+
+/// The 32 bytes a canonical base58 address spells, or `None` for an invalid spelling. **Pure.**
+fn decode_address(text: &str) -> Option<[u8; 32]> {
+    decode_base58::<32>(text, 44)
 }
 
 /// The canonical base58 spelling of a 32-byte address. **Pure.**
@@ -550,11 +554,10 @@ fn parse_history<'a>(
 /// signature, slot, block time (null when unknown), error (null on success) and memo (null when
 /// none). **Pure.**
 fn parse_signature(row: &Value) -> Option<Signature<'_>> {
-    let id = row.get("signature")?.as_str().filter(|text| {
-        !text.is_empty()
-            && text.len() <= MAX_SIGNATURE_CHARS
-            && text.bytes().all(|byte| BASE58.contains(&byte))
-    })?;
+    let id = row
+        .get("signature")?
+        .as_str()
+        .filter(|text| decode_base58::<64>(text, MAX_SIGNATURE_CHARS).is_some())?;
     let block_time = match row.get("blockTime")? {
         Value::Null => None,
         time => Some(time.as_i64()?),
