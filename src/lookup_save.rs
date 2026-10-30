@@ -48,12 +48,25 @@ fn username_provenance(source: &str) -> (&str, &'static str) {
     if let Some(leg) = seeknow_provenance(source) {
         return leg;
     }
-    match source {
-        "github_user" => ("github_user", "src/github_user.rs"),
-        "bluesky_user" => ("bluesky_user", "src/bluesky_user.rs"),
-        "mastodon_user" => ("mastodon_user", "src/mastodon_user.rs"),
-        _ => (source, "src/username_cli.rs"),
-    }
+    // Keep the observed source label; the component is the Rust collector that made it,
+    // not the shared lookup front-end that assembled the result.
+    let component = match source {
+        crate::github_user::SRC => "src/github_user.rs",
+        crate::github_repos::SRC => "src/github_repos.rs",
+        crate::gitlab_user::SRC => "src/gitlab_user.rs",
+        crate::bluesky_user::SRC => "src/bluesky_user.rs",
+        crate::keybase::SRC => "src/keybase.rs",
+        crate::wikipedia::SRC => "src/wikipedia.rs",
+        crate::mastodon_user::SRC => "src/mastodon_user.rs",
+        crate::tiktok_public_contact::SRC => "src/tiktok_public_contact.rs",
+        crate::npm_author::SRC => "src/npm_author.rs",
+        crate::crates_io::SRC => "src/crates_io.rs",
+        crate::hacker_news::SRC => "src/hacker_news.rs",
+        crate::lobsters::SRC => "src/lobsters.rs",
+        crate::docker_hub_user::SRC => "src/docker_hub_user.rs",
+        _ => "src/username_cli.rs",
+    };
+    (source, component)
 }
 
 fn phone_provenance(source: &str) -> (&str, &'static str) {
