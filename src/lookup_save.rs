@@ -755,6 +755,27 @@ mod tests {
     }
 
     #[test]
+    fn domain_archive_sources_keep_their_collector_component_in_saved_claims() {
+        for (source, component) in [
+            (crate::wayback_cdx::SOURCE, "src/wayback_cdx.rs"),
+            (crate::common_crawl::SOURCE, "src/common_crawl.rs"),
+        ] {
+            let entity = entity_with([scanned(source, "archived URL observation")]);
+            let outcome = SourceExecutionOutcome::success(source, 1, 1);
+            let entries = chain(&[entity], &[outcome], DOMAIN_POLICY).unwrap();
+            assert_eq!(entries.len(), 3, "outcome, entity, evidence for {source}");
+            for entry in entries {
+                assert_eq!(entry.claim.source, source);
+                assert_eq!(entry.claim.component, component, "{source}");
+            }
+        }
+        assert_eq!(
+            (DOMAIN_POLICY.outcome_provenance)("unrecognised_archive"),
+            ("unrecognised_archive", "src/domain_cli.rs")
+        );
+    }
+
+    #[test]
     fn dehashed_exposure_ledgers_keep_the_dehashed_component() {
         // The DeHashed exposure leg runs both directly and folded beside email/username lookups.
         // Its source label must retain its own executing component in every saved ledger claim.
