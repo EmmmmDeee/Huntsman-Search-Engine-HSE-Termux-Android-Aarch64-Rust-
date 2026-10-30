@@ -503,7 +503,10 @@ fn facility_entities<T: Transport + ?Sized>(
             || !record.fac_id.is_some_and(|id| id > 0)
             || record.local_asn.is_some_and(|asn| asn != expected_asn)
     }) {
-        return Err("netfac schema drift: foreign network, invalid facility, or foreign local ASN".to_owned());
+        return Err(
+            "netfac schema drift: foreign network, invalid facility, or foreign local ASN"
+                .to_owned(),
+        );
     }
     let count = records.len();
     let mut entities = Vec::with_capacity(count);
@@ -827,7 +830,8 @@ mod tests {
 
     #[test]
     fn network_facility_presence_is_attributed_without_location_or_ownership_claims() {
-        let net = r#"{"data":[{"id":5104,"asn":3333,"name":"RIPE NCC","ix_count":0,"fac_count":2}]}"#;
+        let net =
+            r#"{"data":[{"id":5104,"asn":3333,"name":"RIPE NCC","ix_count":0,"fac_count":2}]}"#;
         let facilities = r#"{"data":[
             {"net_id":5104,"fac_id":44,"local_asn":3333,"name":"Facility Alpha","city":"Amsterdam","country":"NL"},
             {"net_id":5104,"fac_id":45,"name":"Facility Beta","city":"Frankfurt","country":"DE"}
@@ -836,14 +840,36 @@ mod tests {
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert!(has(&report, &EntityKind::Other, "peeringdb:facility:44"));
         assert!(has(&report, &EntityKind::Other, "peeringdb:facility:45"));
-        assert!(!report.entities.iter().any(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)));
-        let facility = report.entities.iter().find(|e| e.raw_value == "peeringdb:facility:44").expect("facility");
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates))
+        );
+        let facility = report
+            .entities
+            .iter()
+            .find(|e| e.raw_value == "peeringdb:facility:44")
+            .expect("facility");
         assert!(facility.confidence < 0.9);
         let evidence = facility.evidence.first().expect("facility evidence");
-        assert_eq!(evidence.attributes.get("city").map(String::as_str), Some("Amsterdam"));
-        assert_eq!(evidence.attributes.get("local_asn").map(String::as_str), Some("3333"));
+        assert_eq!(
+            evidence.attributes.get("city").map(String::as_str),
+            Some("Amsterdam")
+        );
+        assert_eq!(
+            evidence.attributes.get("local_asn").map(String::as_str),
+            Some("3333")
+        );
         assert!(evidence.summary.contains("not facility ownership"));
-        assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("2 facility presence"));
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("2 facility presence")
+        );
     }
 
     #[test]
@@ -860,8 +886,20 @@ mod tests {
         ] {
             let report = report_of(vec![Ok(json_ok(net)), Ok(json_ok(body))]);
             assert!(has(&report, &EntityKind::Asn, "AS3333"));
-            assert!(!report.entities.iter().any(|e| e.raw_value.starts_with("peeringdb:facility:")));
-            assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac unavailable"));
+            assert!(
+                !report
+                    .entities
+                    .iter()
+                    .any(|e| e.raw_value.starts_with("peeringdb:facility:"))
+            );
+            assert!(
+                report
+                    .outcome
+                    .detail
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("netfac unavailable")
+            );
         }
     }
 
@@ -871,11 +909,25 @@ mod tests {
         let transport = ScriptedTransport::new(vec![Ok(json_ok(too_many))]);
         let report = lookup(&transport, 3333, "scan-peeringdb", 1).expect("runs");
         assert_eq!(transport.seen.borrow().len(), 1);
-        assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac skipped"));
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("netfac skipped")
+        );
         let net = r#"{"data":[{"id":5104,"asn":3333,"fac_count":1}]}"#;
         let report = report_of(vec![Ok(json_ok(net))]);
         assert!(has(&report, &EntityKind::Asn, "AS3333"));
-        assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac unavailable"));
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("netfac unavailable")
+        );
     }
 
     #[test]
@@ -885,6 +937,9 @@ mod tests {
             netixlan_url(5104),
             "https://www.peeringdb.com/api/netixlan?net_id=5104"
         );
-        assert_eq!(netfac_url(5104), "https://www.peeringdb.com/api/netfac?net_id=5104");
+        assert_eq!(
+            netfac_url(5104),
+            "https://www.peeringdb.com/api/netfac?net_id=5104"
+        );
     }
 }
