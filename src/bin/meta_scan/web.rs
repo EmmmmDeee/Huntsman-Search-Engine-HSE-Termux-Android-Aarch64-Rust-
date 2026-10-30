@@ -724,6 +724,41 @@ mod tests {
     }
 
     #[test]
+    fn rust_rendering_uses_native_forms_with_no_browser_application_scripts() {
+        let state = WebState {
+            csrf: "test_token".to_owned(),
+            saved: Mutex::new(Saved::default()),
+        };
+        let page = render_page(&state, None);
+        assert!(page.contains("action=\"/scan\""));
+        assert!(!page.contains("action=\"/export\""));
+        assert!(page.contains("name=\"csrf\" value=\"test_token\""));
+        assert!(!page.contains("<script"));
+        assert!(!page.contains("javascript:"));
+    }
+
+    #[test]
+    fn form_submissions_require_matching_per_process_token() {
+        let state = WebState {
+            csrf: "good_token".to_owned(),
+            saved: Mutex::new(Saved::default()),
+        };
+        let request = HttpRequest {
+            method: "POST".to_owned(),
+            path: "/scan".to_owned(),
+            headers: vec![(
+                "Content-Type".to_owned(),
+                "application/x-www-form-urlencoded".to_owned(),
+            )],
+            body: b"csrf=bad_token&handles=nasa&mode=indexed".to_vec(),
+        };
+        assert!(checked_form(&request, &state, 8787).is_err());
+        let mut correct = request;
+        correct.body = b"csrf=good_token&handles=nasa&mode=indexed".to_vec();
+        assert!(checked_form(&correct, &state, 8787).is_ok());
+    }
+
+    #[test]
     fn token_is_random_and_fixed_length() {
         let first = secret_token().unwrap();
         let second = secret_token().unwrap();
