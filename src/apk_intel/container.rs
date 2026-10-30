@@ -677,7 +677,6 @@ mod tests {
         );
     }
 
-
     /// Build a structurally valid APK with an actual P-256 signature over its
     /// v3/v3.1 signed-data and a matching AOSP chunked digest. The synthetic
     /// certificate is not CA-trusted and installability is not asserted.
@@ -685,7 +684,9 @@ mod tests {
         let mut out = Vec::new();
         for item in items {
             out.extend_from_slice(
-                &u32::try_from(item.len()).expect("fixture length").to_le_bytes(),
+                &u32::try_from(item.len())
+                    .expect("fixture length")
+                    .to_le_bytes(),
             );
             out.extend_from_slice(item);
         }
@@ -703,10 +704,9 @@ mod tests {
 
         let original = apk();
         let eocd_at = original.len() - 22;
-        let directory_start = usize::try_from(
-            super::le32(&original, eocd_at + 16).expect("central directory"),
-        )
-        .expect("directory fits");
+        let directory_start =
+            usize::try_from(super::le32(&original, eocd_at + 16).expect("central directory"))
+                .expect("directory fits");
         let digest = super::super::content_digest::chunked_sha256(
             &original,
             directory_start,
@@ -752,11 +752,10 @@ mod tests {
         let mut result = original[..directory_start].to_vec();
         result.extend_from_slice(&block);
         result.extend_from_slice(&original[directory_start..]);
-        let new_directory = u32::try_from(directory_start + block.len())
-            .expect("signed directory fits");
+        let new_directory =
+            u32::try_from(directory_start + block.len()).expect("signed directory fits");
         let new_eocd = result.len() - 22;
-        result[new_eocd + 16..new_eocd + 20]
-            .copy_from_slice(&new_directory.to_le_bytes());
+        result[new_eocd + 16..new_eocd + 20].copy_from_slice(&new_directory.to_le_bytes());
         result
     }
 
@@ -783,20 +782,16 @@ mod tests {
             (0xf053_68c0, "v3", 28, 32),
             (0x1b93_ad61, "v3.1", 33, u32::MAX),
         ] {
-            let first = signed_sdk_apk(
-                &first_key, &rng, scheme_id, min_sdk, max_sdk,
-            );
-            let other = signed_sdk_apk(
-                &other_key, &rng, scheme_id, min_sdk, max_sdk,
-            );
-            let matching = zip(&[
-                ("base.apk", &first, 0),
-                ("split.apk", &first, 0),
-            ]);
+            let first = signed_sdk_apk(&first_key, &rng, scheme_id, min_sdk, max_sdk);
+            let other = signed_sdk_apk(&other_key, &rng, scheme_id, min_sdk, max_sdk);
+            let matching = zip(&[("base.apk", &first, 0), ("split.apk", &first, 0)]);
             let matched = run(&matching, "signed.apks", 42).expect("signed APK set");
             assert_eq!(matched.signer_continuity, "authenticated_sdk_scope_match");
             assert_eq!(matched.apk_members[0].authenticated_sdk_signers.len(), 1);
-            assert_eq!(matched.apk_members[0].authenticated_sdk_signers[0].scheme, scheme);
+            assert_eq!(
+                matched.apk_members[0].authenticated_sdk_signers[0].scheme,
+                scheme
+            );
             assert_eq!(
                 matched.apk_members[0].authenticated_sdk_signers[0].min_sdk,
                 min_sdk
@@ -806,12 +801,9 @@ mod tests {
                 max_sdk
             );
 
-            let conflicting = zip(&[
-                ("base.apk", &first, 0),
-                ("split.apk", &other, 0),
-            ]);
-            let conflicted = run(&conflicting, "different.apks", 42)
-                .expect("different authenticated signers");
+            let conflicting = zip(&[("base.apk", &first, 0), ("split.apk", &other, 0)]);
+            let conflicted =
+                run(&conflicting, "different.apks", 42).expect("different authenticated signers");
             assert_eq!(
                 conflicted.signer_continuity,
                 "authenticated_sdk_scope_difference"
@@ -821,17 +813,12 @@ mod tests {
             // structure. The signed content digest must then fail authentication.
             let mut tampered = first.clone();
             let eocd = tampered.len() - 22;
-            let directory = usize::try_from(
-                super::le32(&tampered, eocd + 16).expect("directory"),
-            )
-            .expect("directory fits");
+            let directory = usize::try_from(super::le32(&tampered, eocd + 16).expect("directory"))
+                .expect("directory fits");
             tampered[directory + 38] ^= 1;
-            let altered = zip(&[
-                ("base.apk", &first, 0),
-                ("split.apk", &tampered, 0),
-            ]);
-            let rejected = run(&altered, "tampered.apks", 42)
-                .expect("structurally valid tampered APK set");
+            let altered = zip(&[("base.apk", &first, 0), ("split.apk", &tampered, 0)]);
+            let rejected =
+                run(&altered, "tampered.apks", 42).expect("structurally valid tampered APK set");
             assert_eq!(rejected.signer_continuity, "unverified");
             assert!(rejected.apk_members[1].authenticated_sdk_signers.is_empty());
         }
