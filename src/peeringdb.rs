@@ -303,6 +303,17 @@ fn interpret_net(
             "PeeringDB net response lacked the required data array",
         ));
     };
+    // The ASN query is expected to select one network. Never silently take the
+    // first row of an ambiguous response: a later row may contradict attribution.
+    if data.len() > 1 {
+        return Err(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "PeeringDB net response contained multiple records for one ASN",
+        ));
+    }
     let Some(net) = data.into_iter().next() else {
         return Err(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status)
@@ -790,6 +801,25 @@ mod tests {
         let report = report_of(vec![Ok(json_ok(other))]);
         assert!(report.entities.is_empty(), "{:#?}", report.entities);
         assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn a_multi_record_net_response_is_schema_drift_not_attribution() {
+        // PeeringDB's ASN-filtered primary response must identify exactly one network.
+        // Previously a valid first record hid contradictory or duplicate later rows.
+        for body in [
+            r#"{"data":[{"id":5104,"asn":3333,"name":"RIPE NCC"},{"id":9,"asn":9999,"name":"Foreign"}]}"#,
+            r#"{"data":[{"id":9,"asn":9999,"name":"Foreign"},{"id":5104,"asn":3333,"name":"RIPE NCC"}]}"#,
+            r#"{"data":[{"id":5104,"asn":3333,"name":"RIPE NCC"},{"id":99,"asn":3333,"name":"Conflicting duplicate"}]}"#,
+        ] {
+            let report = report_of(vec![Ok(json_ok(body))]);
+            assert!(
+                report.entities.is_empty(),
+                "an ambiguous primary envelope must not mint entities: {:#?}",
+                report.entities
+            );
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
+        }
     }
 
     #[test]
