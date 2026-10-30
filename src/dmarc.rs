@@ -2,11 +2,17 @@
 
 use crate::value_syntax::{self, record_tag};
 
-/// True if `txt` starts with `v=DMARC1` (ASCII-case-insensitive).
+/// True if the first tag is exactly `v=DMARC1` (ASCII-case-insensitive).
+///
+/// An unsupported version such as `v=DMARC10` must not be read as a DMARC1 policy.
+/// Only whitespace, a tag separator, or the end of the record may follow the version.
 #[must_use]
 pub fn is_dmarc(txt: &str) -> bool {
-    let bytes = txt.as_bytes();
-    bytes.len() >= 8 && bytes[..8].eq_ignore_ascii_case(b"v=DMARC1")
+    txt.get(..8)
+        .is_some_and(|version| version.eq_ignore_ascii_case("v=DMARC1"))
+        && txt
+            .get(8..)
+            .is_some_and(|tail| matches!(tail.trim_start().chars().next(), None | Some(';')))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
