@@ -20,9 +20,9 @@
 //! ASN and, when supplied, the selected network ID before any IP pivots are emitted. A peering
 //! address is minted only when it canonicalises as an IP, so malformed addresses are not pivots.
 //!
-//! The network's facilities (`netfac`) and public points of contact (`poc`) are a planned
-//! compounding follow-up over the same `net.id`; this module establishes the keyless source and its
-//! two highest-value legs.
+//! Network facility-presence (`netfac`) records add bounded, operator-published facility
+//! associations without asserting facility ownership or physical device location. Public points
+//! of contact (`poc`) remain a separate, deliberately unimplemented follow-up.
 
 use std::fmt::Write as _;
 
@@ -44,6 +44,10 @@ const DATASET: &str = "PeeringDB";
 const NET_CONF: f64 = 0.65;
 /// A peering address the operator published at a public exchange.
 const PEER_IP_CONF: f64 = 0.80;
+/// A self-published network/facility association, not proof of ownership or device location.
+const FACILITY_CONF: f64 = 0.55;
+/// Bound secondary response processing and avoid silently accepting incomplete large listings.
+const MAX_FACILITY_ROWS: usize = 100;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
@@ -123,6 +127,24 @@ struct NetIxLan {
     operational: Option<bool>,
 }
 
+/// A network's presence at a public facility. The network ID is mandatory for attribution;
+/// the facility ID is the stable identity key. The optional local ASN is a consistency check.
+#[derive(Debug, Deserialize)]
+struct NetFac {
+    #[serde(default)]
+    net_id: Option<u64>,
+    #[serde(default)]
+    fac_id: Option<u64>,
+    #[serde(default)]
+    local_asn: Option<u32>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+}
+
 /// The `/api/net?asn=N` URL. `asn` is a `u32`, so the query needs no escaping. **Pure.**
 #[must_use]
 pub fn net_url(asn: u32) -> String {
@@ -134,6 +156,12 @@ pub fn net_url(asn: u32) -> String {
 #[must_use]
 pub fn netixlan_url(net_id: u64) -> String {
     format!("{PUBLIC_BASE}/netixlan?net_id={net_id}")
+}
+
+/// The filtered network/facility association endpoint. No unbounded registry-wide query.
+#[must_use]
+pub fn netfac_url(net_id: u64) -> String {
+    format!("{PUBLIC_BASE}/netfac?net_id={net_id}")
 }
 
 fn request(url: String) -> Request {
@@ -192,6 +220,28 @@ pub fn lookup<T: Transport + ?Sized>(
                     let _ = write!(detail, "; netixlan unavailable: {reason}");
                 }
             }
+        }
+    }
+
+    if net.fac_count.unwrap_or(0) > 0 {
+        if net.fac_count.unwrap_or(0) > MAX_FACILITY_ROWS as u64 {
+            let _ = write!(
+                detail,
+                "; netfac skipped: facility count exceeds bounded {}-record limit",
+                MAX_FACILITY_ROWS
+            );
+        } else if let Some(net_id) = net.id {
+            match facility_entities(transport, net_id, asn, scan_id, now_unix) {
+                Ok((facilities, records)) => {
+                    let _ = write!(detail, "; netfac: {records} facility presence record(s)");
+                    entities.extend(facilities);
+                }
+                Err(reason) => {
+                    let _ = write!(detail, "; netfac unavailable: {reason}");
+                }
+            }
+        } else {
+            let _ = write!(detail, "; netfac unavailable: network ID missing");
         }
     }
 
@@ -416,6 +466,81 @@ fn add_peering_ips(record: &NetIxLan, scan_id: &str, entities: &mut Vec<Entity>)
         entity.add_evidence(evidence);
         entities.push(entity);
     }
+}
+
+/// Fetch a bounded network/facility presence list. Reject the entire secondary leg if any
+/// record contradicts the requested network or ASN, or if the response exceeds the cap.
+/// A failed secondary request never discards the independently observed AS profile.
+fn facility_entities<T: Transport + ?Sized>(
+    transport: &T,
+    net_id: u64,
+    expected_asn: u32,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<(Vec<Entity>, usize), String> {
+    let fetched = fetch(
+        transport,
+        request(netfac_url(net_id)),
+        None,
+        &options(),
+        SOURCE,
+        now_unix,
+    )
+    .map_err(|error| error.to_string())?;
+    let response = whole_response(&fetched, "PeeringDB netfac")
+        .map_err(|_| "no usable response".to_owned())?;
+    answer(&fetched, "PeeringDB netfac").map_err(|_| "not an answer".to_owned())?;
+    let envelope: Envelope<NetFac> = decode_json(response, SOURCE, now_unix, "PeeringDB netfac")
+        .map_err(|_| "unreadable netfac body".to_owned())?;
+    let records = envelope
+        .data
+        .ok_or_else(|| "netfac schema drift: missing data array".to_owned())?;
+    if records.len() > MAX_FACILITY_ROWS {
+        return Err("netfac response exceeded bounded record limit".to_owned());
+    }
+    if records.iter().any(|record| {
+        record.net_id != Some(net_id)
+            || !record.fac_id.is_some_and(|id| id > 0)
+            || record.local_asn.is_some_and(|asn| asn != expected_asn)
+    }) {
+        return Err("netfac schema drift: foreign network, invalid facility, or foreign local ASN".to_owned());
+    }
+    let count = records.len();
+    let mut entities = Vec::with_capacity(count);
+    for record in &records {
+        let fac_id = record.fac_id.expect("validated facility ID");
+        let name = trimmed(record.name.as_deref());
+        let mut evidence = Evidence::new(
+            EvidenceProvenance::for_scan(SOURCE, scan_id),
+            "PeeringDB self-published network/facility presence; not facility ownership or device geolocation",
+        )
+        .with_attr("dataset", DATASET)
+        .with_attr("asn", format!("AS{expected_asn}"))
+        .with_attr("network_id", net_id.to_string())
+        .with_attr("facility_id", fac_id.to_string())
+        .with_attr("attribution", "network presence only; no facility ownership or device location")
+        .with_optional_attrs([
+            ("facility_name", name),
+            ("city", trimmed(record.city.as_deref())),
+            ("country", trimmed(record.country.as_deref())),
+        ]);
+        if let Some(local_asn) = record.local_asn {
+            evidence = evidence.with_attr("local_asn", local_asn.to_string());
+        }
+        // Other is a non-dispatchable stable registry key, not an Address/Coordinates pivot.
+        let mut entity = Entity::new(
+            EntityKind::Other,
+            format!("peeringdb:facility:{fac_id}"),
+            FACILITY_CONF,
+            scan_id,
+        );
+        entity.tag(SOURCE);
+        entity.tag("peeringdb");
+        entity.tag("peeringdb-facility-presence");
+        entity.add_evidence(evidence);
+        entities.push(entity);
+    }
+    Ok((entities, count))
 }
 
 /// `value` trimmed, when it is present and not blank. **Pure.**
@@ -701,11 +826,65 @@ mod tests {
     }
 
     #[test]
+    fn network_facility_presence_is_attributed_without_location_or_ownership_claims() {
+        let net = r#"{"data":[{"id":5104,"asn":3333,"name":"RIPE NCC","ix_count":0,"fac_count":2}]}"#;
+        let facilities = r#"{"data":[
+            {"net_id":5104,"fac_id":44,"local_asn":3333,"name":"Facility Alpha","city":"Amsterdam","country":"NL"},
+            {"net_id":5104,"fac_id":45,"name":"Facility Beta","city":"Frankfurt","country":"DE"}
+        ]}"#;
+        let report = report_of(vec![Ok(json_ok(net)), Ok(json_ok(facilities))]);
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert!(has(&report, &EntityKind::Other, "peeringdb:facility:44"));
+        assert!(has(&report, &EntityKind::Other, "peeringdb:facility:45"));
+        assert!(!report.entities.iter().any(|e| matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)));
+        let facility = report.entities.iter().find(|e| e.raw_value == "peeringdb:facility:44").expect("facility");
+        assert!(facility.confidence < 0.9);
+        let evidence = facility.evidence.first().expect("facility evidence");
+        assert_eq!(evidence.attributes.get("city").map(String::as_str), Some("Amsterdam"));
+        assert_eq!(evidence.attributes.get("local_asn").map(String::as_str), Some("3333"));
+        assert!(evidence.summary.contains("not facility ownership"));
+        assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("2 facility presence"));
+    }
+
+    #[test]
+    fn netfac_rejects_misattribution_and_malformed_envelopes_atomically() {
+        let net = r#"{"data":[{"id":5104,"asn":3333,"fac_count":1}]}"#;
+        for body in [
+            r#"{"data":[{"net_id":999,"fac_id":44,"name":"Foreign"}]}"#,
+            r#"{"data":[{"fac_id":44,"name":"Missing network"}]}"#,
+            r#"{"data":[{"net_id":5104,"name":"Missing facility"}]}"#,
+            r#"{"data":[{"net_id":5104,"fac_id":0}]}"#,
+            r#"{"data":[{"net_id":5104,"fac_id":44,"local_asn":9999}]}"#,
+            r#"{"data":[{"net_id":5104,"fac_id":44},{"net_id":999,"fac_id":45}]}"#,
+            r#"{"meta":{}}"#,
+        ] {
+            let report = report_of(vec![Ok(json_ok(net)), Ok(json_ok(body))]);
+            assert!(has(&report, &EntityKind::Asn, "AS3333"));
+            assert!(!report.entities.iter().any(|e| e.raw_value.starts_with("peeringdb:facility:")));
+            assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac unavailable"));
+        }
+    }
+
+    #[test]
+    fn netfac_is_bounded_and_secondary_failure_preserves_profile() {
+        let too_many = r#"{"data":[{"id":5104,"asn":3333,"fac_count":101}]}"#;
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(too_many))]);
+        let report = lookup(&transport, 3333, "scan-peeringdb", 1).expect("runs");
+        assert_eq!(transport.seen.borrow().len(), 1);
+        assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac skipped"));
+        let net = r#"{"data":[{"id":5104,"asn":3333,"fac_count":1}]}"#;
+        let report = report_of(vec![Ok(json_ok(net))]);
+        assert!(has(&report, &EntityKind::Asn, "AS3333"));
+        assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac unavailable"));
+    }
+
+    #[test]
     fn the_urls_filter_by_asn_and_net_id() {
         assert_eq!(net_url(3333), "https://www.peeringdb.com/api/net?asn=3333");
         assert_eq!(
             netixlan_url(5104),
             "https://www.peeringdb.com/api/netixlan?net_id=5104"
         );
+        assert_eq!(netfac_url(5104), "https://www.peeringdb.com/api/netfac?net_id=5104");
     }
 }
