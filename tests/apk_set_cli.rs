@@ -48,7 +48,10 @@ fn zip(parts: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 fn path(suffix: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("huntsman-apk-set-{}-{suffix}.apks", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "huntsman-apk-set-{}-{suffix}.apks",
+        std::process::id()
+    ))
 }
 
 fn invoke(file: &PathBuf) -> std::process::Output {
@@ -81,7 +84,10 @@ fn apk_set_cli_preserves_hashes_and_explicit_uncertainty() {
         report["apk_members"][0]["sha256"],
         huntsman_recon::sha256::hex32(&huntsman_recon::sha256::sha256(&inner))
     );
-    assert_eq!(report["apk_members"][0]["role_hint_unverified"], "base_filename_hint");
+    assert_eq!(
+        report["apk_members"][0]["role_hint_unverified"],
+        "base_filename_hint"
+    );
     assert_eq!(report["entities"].as_array().map(Vec::len), Some(2));
 }
 
