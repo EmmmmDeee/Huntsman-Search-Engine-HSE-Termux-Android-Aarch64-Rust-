@@ -5,8 +5,7 @@
 
 use super::{
     API_HOST, CollectionMode, HttpRequest, Report, WEB_MAX_CLIENTS, allowed_host, checked_username,
-    configured_secret, http_reply, json_reply, read_request, scan_mode, transport,
-    unix_now,
+    configured_secret, http_reply, json_reply, read_request, scan_mode, transport, unix_now,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -542,7 +541,8 @@ fn handle_compat_json(stream: &mut TcpStream, req: &HttpRequest, port: u16, time
         .unwrap_or("indexed");
     let Some(mode) = CollectionMode::from_name(mode) else {
         let _ = json_reply(
-            stream, "400 Bad Request",
+            stream,
+            "400 Bad Request",
             &serde_json::json!({"error":"unknown collection mode"}),
         );
         return;
