@@ -1,8 +1,8 @@
 # Native MetaScan for unrooted Termux (Android aarch64)
 
-This is a **Rust port of the four implemented** [HackUnderway MetaScan](https://github.com/HackUnderway/meta_scan) Facebook Pages Scraper 3 operations. It is a standalone Huntsman binary with a mobile Web UI, not a replacement for the existing `huntsman-recon` UI.
+This is a **Rust port of the four implemented** [HackUnderway MetaScan](https://github.com/HackUnderway/meta_scan) Facebook Pages Scraper 3 operations **plus a keyless discovery mode** using Huntsman's existing guarded web-index search. It is a standalone Huntsman binary with a mobile Web UI, not a replacement for the existing `huntsman-recon` UI.
 
-**Status of collection:** dependent on the independently provided RapidAPI service and the operator's subscription. No username-independent public Facebook scraping is implemented or claimed. A missing key, failed subscription, rate limit or blocked endpoint is recorded as unavailable, **never as a false negative**.
+**Modes:** Keyless indexed URL discovery is the default and does not require a subscription, an API key or paid quota; it produces **URL leads only**, never Facebook profile metadata or identity verification. The four richer profile/business collection operations run **only if the operator explicitly selects `--provider` or checks the Web UI's provider-enrichment checkbox**. Those routes still depend on an independent RapidAPI subscription. Missing records, restricted access, rate limits and blocked indexes are **not** interpreted as proof that an account is absent.
 
 ## Run on Android Termux (no root)
 
@@ -40,16 +40,19 @@ Do not paste credentials into the browser; they are sent only to the fixed Rapid
 ## CLI commands
 
 ```sh
-# Original single-user operation (all four endpoints)
+# Free keyless public-index discovery (default; URL leads only)
 target/release/meta_scan -u nasa --show-raw
 
-# Profile only (do not call business endpoints)
-target/release/meta_scan -u nasa --no-business
+# Explicit paid-provider opt-in (four original endpoints)
+target/release/meta_scan -u nasa --provider --show-raw
+
+# Provider profile only (do not call the three business endpoints)
+target/release/meta_scan -u nasa --provider --no-business
 
 # Structured JSON and readable TXT, saved to private local files
 target/release/meta_scan -u nasa --out-json ./reports --out-txt ./reports
 
-# Up to 200 usernames, one per line (# comments ignored)
+# Up to 200 usernames, one per line (# comments ignored); keyless by default
 target/release/meta_scan --batch handles.txt --out-json ./reports
 
 # Mobile Web UI on a different unprivileged loopback port
@@ -59,7 +62,7 @@ target/release/meta_scan --serve --bind 127.0.0.1:8788
 target/release/meta_scan -u nasa --connect-timeout 10 --read-timeout 20
 ```
 
-The browser UI supports up to 20 handles per run with sequential, bounded calls and browser-side JSON/TXT downloads. It provides independent results for profile, business home, About and transparency.
+The browser UI supports up to 20 handles per run with sequential, bounded calls and browser-side JSON/TXT downloads. **Its default is keyless indexed URL discovery**, showing indexed leads and independent search-engine outcomes. When provider enrichment is explicitly checked, it provides separate results for profile, business home, About and transparency. The API key stays server-side.
 
 ## Mapping from MetaScan Python
 
@@ -70,12 +73,14 @@ The browser UI supports up to 20 handles per run with sequential, bounded calls 
 | `get-business-about-details-page` | Yes |
 | `get-business-about-profile-transparency-page-details` | Yes |
 | `urlSupplier` and profile `url` query parameters | Yes |
-| `--no-business` | Yes |
+| `--no-business` | Yes, with `--provider` |
 | `--show-raw` | Yes |
 | JSON export | CLI and Web UI |
 | TXT export | CLI and Web UI |
 | Configurable timeouts | Yes (combined bounded request timeout) |
 | HTTP 5xx retry with backoff | Yes, max 3 attempts; 429 is reported without blind paid retries |
+| Keyless indexed URL discovery (new) | Yes; three guarded search indexes, direct-page links only |
+| Explicit paid-provider opt-in (new) | `--provider` in CLI or checkbox in Web UI |
 | Single handle | Yes |
 | Batch by file | Added, up to 200 names |
 | Web UI | Added, mobile-first and localhost-only |
@@ -88,6 +93,8 @@ The browser UI supports up to 20 handles per run with sequential, bounded calls 
 - Handle validation prevents arbitrary URLs, query-string injection and open proxying. No login or Facebook cookie collection.
 - The Web UI caps headers at 8 KiB, JSON bodies at 4 KiB and simultaneous client sockets at 8. It rejects non-loopback bindings, mismatched Host headers and cross-origin state-changing browser requests.
 - Each HTTP collection request is bounded; the Web UI deliberately executes a small number of handles sequentially to avoid exhausting a low-memory Android device.
+- Keyless mode queries up to three public search indexes per handle and keeps at most 20 exact, HTTPS, direct-page URL leads from genuine `facebook.com`, `www.facebook.com` or `m.facebook.com` hosts. It excludes posts, lookalike domains and off-platform links, and treats all returned URLs as unverified leads. Search engines may rate-limit or suppress results; zero leads is inconclusive.
+- Provider mode is never triggered automatically by a key being present; enabling it may consume paid quota and should be budgeted before scanning large batches.
 - Stored JSON/TXT reports have `0600` permissions on Unix/Termux. Reports include raw third-party data, so treat them as private.
 - The source returns unverified provider observations; **a successful API response is not proof of ownership or real-world identity**. Field omissions, 404, 403, 429, challenges and malformed JSON must not be treated as absence.
 - A device-level Android aarch64 smoke test and a live provider subscription test are separate acceptance gates. x86_64 GitHub CI success alone is not proof of Termux runtime success.
