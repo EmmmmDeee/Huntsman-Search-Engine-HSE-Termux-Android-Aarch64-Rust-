@@ -631,8 +631,49 @@ mod tests {
             signer_continuity(&[a.clone(), different]),
             "authenticated_sdk_scope_difference"
         );
-        assert_eq!(signer_continuity(&[a.clone(), different_scope]), "unverified");
+        assert_eq!(
+            signer_continuity(&[a.clone(), different_scope]),
+            "unverified"
+        );
         assert_eq!(signer_continuity(&[a, missing]), "unverified");
+    }
+
+    #[test]
+    fn forged_v3_scheme_id_cannot_authenticate_nested_signers() {
+        let inner = apk();
+        let old_directory = usize::try_from(
+            super::le32(&inner, inner.len() - 22 + 16).expect("directory offset"),
+        )
+        .expect("directory fits");
+        let fake_signer = b"not signed data";
+        let mut block = Vec::new();
+        let pair_size = u64::try_from(fake_signer.len() + 4).expect("pair size");
+        let block_size = pair_size + 8 + 24;
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(&pair_size.to_le_bytes());
+        block.extend_from_slice(&0xf053_68c0_u32.to_le_bytes());
+        block.extend_from_slice(fake_signer);
+        block.extend_from_slice(&block_size.to_le_bytes());
+        block.extend_from_slice(b"APK Sig Block 42");
+        let mut tampered = inner[..old_directory].to_vec();
+        tampered.extend_from_slice(&block);
+        tampered.extend_from_slice(&inner[old_directory..]);
+        let end = tampered.len() - 22;
+        let new_directory = u32::try_from(old_directory + block.len()).expect("new directory");
+        tampered[end + 16..end + 20].copy_from_slice(&new_directory.to_le_bytes());
+
+        let outer = zip(&[
+            ("base.apk", tampered.as_slice(), 0),
+            ("split.apk", tampered.as_slice(), 0),
+        ]);
+        let report = run(&outer, "forged.apks", 42).expect("structurally valid APK set");
+        assert_eq!(report.signer_continuity, "unverified");
+        assert!(
+            report
+                .apk_members
+                .iter()
+                .all(|member| member.authenticated_sdk_signers.is_empty())
+        );
     }
 
     #[test]
