@@ -87,6 +87,36 @@ fn consistency<'a>(values: impl Iterator<Item = Option<&'a str>>, count: usize) 
     }
 }
 
+fn validate_nested_structure(data: &[u8]) -> Result<(), Error> {
+    let (count, dir_start, dir_end) = directory_bounds(data)?;
+    let mut pos = dir_start;
+    let mut seen = BTreeSet::new();
+    for _ in 0..count {
+        let at = pos;
+        let entry = member(data, at, dir_start, dir_end)?;
+        pos = entry.next;
+        if suspicious(entry.name)
+            || entry.name.starts_with("./")
+            || entry.name.split('/').any(str::is_empty)
+            || !seen.insert(entry.name.to_ascii_lowercase())
+        {
+            return Err(Error::invalid_value("unsafe or duplicate nested APK path"));
+        }
+        let local_at = le32(data, at + 42)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| Error::invalid_value("invalid nested local ZIP offset"))?;
+        if le16(data, local_at + 6) != Some(entry.flags)
+            || le16(data, local_at + 8) != Some(entry.method)
+        {
+            return Err(Error::invalid_value("nested APK central/local ZIP disagreement"));
+        }
+    }
+    if pos != dir_end {
+        return Err(Error::invalid_value("nested APK directory count/size disagree"));
+    }
+    Ok(())
+}
+
 /// Inspect a bounded multi-APK ZIP without extracting to disk.
 ///
 /// # Errors
@@ -149,6 +179,13 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         if members.len() >= MAX_NESTED_APKS {
             return Err(Error::invalid_value("APK set exceeds 32 nested APKs"));
         }
+        if entry.flags & (1 | (1 << 6) | (1 << 13)) != 0 {
+            return Err(Error::invalid_value("encrypted or masked nested APK member"));
+        }
+        let unix_mode = le32(data, at + 38).unwrap_or_default() >> 16;
+        if unix_mode & 0o170000 == 0o120000 {
+            return Err(Error::invalid_value("nested APK member is a ZIP symlink"));
+        }
         if entry.method != 0 && entry.method != 8 {
             return Err(Error::invalid_value(
                 "unsupported nested APK compression method",
@@ -164,6 +201,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
                 "unexpected nested APK compression quirk",
             ));
         }
+        validate_nested_structure(&bytes)?;
         let (inventory, archive) = super::walk(&bytes)?;
         let (package, version, manifest_error) = match archive.manifest {
             Some(manifest_member) => {
@@ -407,6 +445,42 @@ mod tests {
         assert!(run(&zip(&[("base.apk", b"not an apk", 0)]), "x.apks", 1).is_err());
         let inner = apk();
         assert!(run(&zip(&[("base.apk", &inner, 99)]), "x.apks", 1).is_err());
+    }
+
+    #[test]
+    fn rejects_encrypted_flags_and_zip_symlink_members() {
+        let inner = apk();
+        let mut encrypted = zip(&[("base.apk", &inner, 0)]);
+        // Both local and central flags agree, but strong-encryption flag is not admissible.
+        encrypted[6..8].copy_from_slice(&0x0040_u16.to_le_bytes());
+        let directory = usize::try_from(
+            super::le32(&encrypted, encrypted.len() - 22 + 16).expect("directory"),
+        )
+        .expect("directory offset");
+        encrypted[directory + 8..directory + 10].copy_from_slice(&0x0040_u16.to_le_bytes());
+        assert!(run(&encrypted, "x.apks", 1).is_err());
+
+        let mut symlink = zip(&[("base.apk", &inner, 0)]);
+        let directory = usize::try_from(
+            super::le32(&symlink, symlink.len() - 22 + 16).expect("directory"),
+        )
+        .expect("directory offset");
+        let attributes = (0o120777_u32 << 16).to_le_bytes();
+        symlink[directory + 38..directory + 42].copy_from_slice(&attributes);
+        assert!(run(&symlink, "x.apks", 1).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_nested_manifest_and_local_method_drift() {
+        let duplicate = zip(&[
+            ("AndroidManifest.xml", b"first", 0),
+            ("AndroidManifest.xml", b"second", 0),
+        ]);
+        assert!(run(&zip(&[("base.apk", &duplicate, 0)]), "x.apks", 1).is_err());
+
+        let mut inner = apk();
+        inner[8..10].copy_from_slice(&8_u16.to_le_bytes());
+        assert!(run(&zip(&[("base.apk", &inner, 0)]), "x.apks", 1).is_err());
     }
 
     #[test]
