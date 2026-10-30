@@ -1281,17 +1281,21 @@ mod tests {
     #[test]
     fn contact_user_agent_is_redacted_without_removing_ordinary_user_agent() {
         let contact = "Huntsman contact@research.example";
-        let request = Request::get("https://efts.sec.gov/LATEST/search-index")
-            .header("User-Agent", contact);
+        let request =
+            Request::get("https://efts.sec.gov/LATEST/search-index").header("User-Agent", contact);
         assert_eq!(request.header_value("user-agent"), Some(contact));
         let shown = format!("{request:?}");
-        assert!(!shown.contains(contact), "operator identity must not be logged");
+        assert!(
+            !shown.contains(contact),
+            "operator identity must not be logged"
+        );
         assert!(shown.contains(REDACTED));
         assert!(!is_sensitive_header("user-agent"));
         assert!(is_sensitive_header_value("User-Agent", contact));
         assert!(!is_sensitive_header_value("User-Agent", DEFAULT_USER_AGENT));
 
-        let ordinary = Request::get("https://example.test").header("User-Agent", DEFAULT_USER_AGENT);
+        let ordinary =
+            Request::get("https://example.test").header("User-Agent", DEFAULT_USER_AGENT);
         assert!(format!("{ordinary:?}").contains(DEFAULT_USER_AGENT));
     }
 
