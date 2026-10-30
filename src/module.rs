@@ -928,7 +928,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "abuse.ch Feodo Tracker botnet C2 addresses and URLhaus recent malware URLs, downloaded and kept on the device",
+        description: "abuse.ch Feodo Tracker botnet C2 addresses, downloaded and kept on the device",
     },
     ReachableModule {
         name: "alienvaultiprep",
@@ -974,15 +974,6 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
         description: "CleanTalk's list of HTTP spammers from the last seven days, downloaded and kept on the device",
-    },
-    ReachableModule {
-        name: "coinblocker",
-        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
-        access: "keyless",
-        network: true,
-        category: ModuleCategory::Threat,
-        attack_techniques: &["T1596.005"],
-        description: "CoinBlocker cryptomining host list, downloaded and kept on the device",
     },
     ReachableModule {
         name: "cybercrimetracker",
@@ -1548,11 +1539,15 @@ pub fn use_case_selection(usecase: &str, chosen: &Selection) -> Selection {
 /// The selection a scan's chosen `names` make. Each name is a module [`reachable_modules`] lists,
 /// a label a Sources table shows for one (`hibp_account`, `wigle_bluetooth`, see [`module_of`]),
 /// or a Spiderfoot module (`sfp_spamhaus`, `sfp_dnsresolve`) standing for every module that does
-/// its work, in any case. No name chooses every module.
+/// its work, in any case. No name chooses every module. A retired module's name, which a scan
+/// saved before its source was retired may hold, chooses nothing.
 ///
 /// # Errors
 /// Every name that is none of those, in the order given.
 pub fn selection(names: &[String]) -> Result<Selection, String> {
+    /// Modules retired with the source they read (`CoinBlocker`'s list is no longer public): a
+    /// saved scan or a Spiderfoot module list that names one still runs, without it.
+    const RETIRED: [&str; 1] = ["coinblocker"];
     let names: Vec<String> = names
         .iter()
         .map(|name| name.trim().to_ascii_lowercase())
@@ -1572,7 +1567,10 @@ pub fn selection(names: &[String]) -> Result<Selection, String> {
                 *module == wanted || spiderfoot_names(module).iter().any(|sf| sf == name)
             })
             .collect();
-        if modules.is_empty() {
+        let retired = RETIRED.iter().any(|module| {
+            *module == wanted || spiderfoot_names(module).iter().any(|sf| sf == name)
+        });
+        if modules.is_empty() && !retired {
             unknown.push(name.as_str());
         }
         chosen.extend(modules);
