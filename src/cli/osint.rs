@@ -16,9 +16,10 @@ use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
+use huntsman_recon::rhinser_catalog::Catalog;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-pub(super) const OSINT_HELP: &str = "osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+pub(super) const OSINT_HELP: &str = "osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID] | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
@@ -28,6 +29,48 @@ pub(super) const OSINT_HELP: &str = "osint case FILE | osint area-risk FILE LAT,
   plan: offline graph and source planning using the existing Huntsman engine.\n\
   lookup: existing Huntsman typed provider lookup with public and operator-configured enrichment.\n\
   Network reports are JSON; local search and graph planning retain established CLI output. No wallet signing.";
+
+/// Offline directory browser for all 83 reconstructed Rhinser Australian sources.
+fn catalog_cmd(args: &[String]) -> ExitCode {
+    let catalog = match Catalog::load() {
+        Ok(catalog) => catalog,
+        Err(error) => return fail(EX_DATAERR, &format!("catalogue invalid: {error}")),
+    };
+    match args {
+        [] => {
+            println!(
+                "categories={} tools={} status=lead_only_unverified",
+                catalog.categories.len(),
+                catalog.tool_count()
+            );
+            for category in &catalog.categories {
+                println!("category={} count={} name={}", category.id, category.tools.len(), category.name);
+            }
+            ExitCode::SUCCESS
+        }
+        [flag] if flag == "--json" => emit(&catalog, true),
+        [flag, id] if flag == "--category" => match catalog.category(id) {
+            Some(category) => emit(category, true),
+            None => fail(EX_DATAERR, "unknown catalogue category"),
+        },
+        [flag, query] if flag == "--find" => emit(&catalog.find(query), true),
+        [flag, id] if flag == "--tool" => match catalog.tool(id) {
+            Some(tool) => emit(&tool, true),
+            None => fail(EX_DATAERR, "unknown catalogue tool"),
+        },
+        [flag, id] if flag == "--url" => match catalog.tool(id) {
+            Some(tool) => {
+                println!("{}", tool.tool.url);
+                ExitCode::SUCCESS
+            }
+            None => fail(EX_DATAERR, "unknown catalogue tool"),
+        },
+        _ => fail(
+            EX_USAGE,
+            "usage: osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID]",
+        ),
+    }
+}
 
 fn optional_credential(
     keys: &Keys,
@@ -78,6 +121,7 @@ fn fail_error(error: &Error) -> ExitCode {
 pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     let now = clock::unix_now();
     match args {
+        [mode, rest @ ..] if mode == "catalog" => catalog_cmd(rest),
         [mode, path] if mode == "case" => {
             match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
                 Ok(data) => match osint_casework::review_json(&data) {
