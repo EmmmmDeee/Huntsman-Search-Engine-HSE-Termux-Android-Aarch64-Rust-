@@ -68,6 +68,7 @@ pub mod dns;
 pub mod dns_filter;
 pub mod dns_wire;
 pub mod dnsbl;
+pub mod docker_hub_user;
 pub mod docmeta;
 pub mod doctor;
 pub mod docx;
