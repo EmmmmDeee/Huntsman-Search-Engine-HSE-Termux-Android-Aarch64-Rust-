@@ -126,10 +126,64 @@ fn validate_nested_structure(data: &[u8]) -> Result<(), Error> {
 /// # Errors
 /// Refuses invalid ZIP structures, duplicate/unsafe paths, unsupported compression, encrypted
 /// APK members, CRC failures, invalid embedded APKs and decompression budget overruns.
-pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
-    if data.len() > 64 * 1024 * 1024 {
-        return Err(Error::invalid_value("APK set exceeds 64 MiB input limit"));
+fn nested_manifest(
+    data: &[u8],
+    archive: &super::Archive<'_>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let Some(manifest_member) = archive.manifest else {
+        return (None, None, Some("missing nested AndroidManifest.xml".to_owned()));
+    };
+    let mut budget = MAX_APK_MANIFEST_BYTES;
+    match read_member(data, &manifest_member, MAX_APK_MANIFEST_BYTES, &mut budget) {
+        Ok((bytes, _)) => match super::axml::manifest(&bytes) {
+            Ok(parsed) => (parsed.package, parsed.version_code, None),
+            Err(error) => (None, None, Some(error)),
+        },
+        Err(error) => (None, None, Some(error)),
     }
+}
+
+fn inspect_nested(
+    data: &[u8],
+    entry: &super::Member<'_>,
+    central_at: usize,
+    budget: &mut usize,
+) -> Result<NestedApk, Error> {
+    if entry.flags & (1 | (1 << 6) | (1 << 13)) != 0 {
+        return Err(Error::invalid_value("encrypted or masked nested APK member"));
+    }
+    let unix_mode = le32(data, central_at + 38).unwrap_or_default() >> 16;
+    if unix_mode & 0o170_000 == 0o120_000 {
+        return Err(Error::invalid_value("nested APK member is a ZIP symlink"));
+    }
+    if entry.method != 0 && entry.method != 8 {
+        return Err(Error::invalid_value("unsupported nested APK compression method"));
+    }
+    if entry.size > MAX_NESTED_BYTES {
+        return Err(Error::invalid_value("nested APK exceeds 64 MiB limit"));
+    }
+    let (bytes, quirk) = read_member(data, entry, MAX_NESTED_BYTES, budget)
+        .map_err(Error::invalid_value)?;
+    if quirk.is_some() {
+        return Err(Error::invalid_value("unexpected nested APK compression quirk"));
+    }
+    validate_nested_structure(&bytes)?;
+    let (inventory, archive) = super::walk(&bytes)?;
+    let (package, version, manifest_error) = nested_manifest(&bytes, &archive);
+    Ok(NestedApk {
+        path: entry.name.to_owned(),
+        sha256: inventory.sha256,
+        size_bytes: bytes.len(),
+        role_hint_unverified: role_hint(entry.name),
+        manifest_package_unverified: package,
+        manifest_version_code_unverified: version,
+        manifest_error,
+        dex_count: inventory.dex_count,
+        native_abis: inventory.native_abis,
+    })
+}
+
+fn collect_apks(data: &[u8]) -> Result<(usize, Vec<NestedApk>), Error> {
     let (count, dir_start, dir_end) = directory_bounds(data)?;
     let mut pos = dir_start;
     let mut seen = BTreeSet::new();
@@ -137,8 +191,6 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     let mut members = Vec::new();
     let mut budget = MAX_TOTAL_INFLATED;
-    let outer_sha = hex32(&sha256(data));
-
     for _ in 0..count {
         let at = pos;
         let entry = member(data, at, dir_start, dir_end)?;
@@ -150,119 +202,45 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             return Err(Error::invalid_value("unsafe APK set member path"));
         }
         if !seen.insert(entry.name) || !seen_casefolded.insert(entry.name.to_ascii_lowercase()) {
-            return Err(Error::invalid_value(
-                "duplicate or case-ambiguous APK set member path",
-            ));
+            return Err(Error::invalid_value("duplicate or case-ambiguous APK set member path"));
         }
-        let Some(local_at) = le32(data, at + 42).and_then(|value| usize::try_from(value).ok())
-        else {
-            return Err(Error::invalid_value("invalid local ZIP header offset"));
-        };
+        let local_at = le32(data, at + 42)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| Error::invalid_value("invalid local ZIP header offset"))?;
         if le16(data, local_at + 6) != Some(entry.flags)
             || le16(data, local_at + 8) != Some(entry.method)
         {
-            return Err(Error::invalid_value(
-                "central/local ZIP flags or methods disagree",
-            ));
+            return Err(Error::invalid_value("central/local ZIP flags or methods disagree"));
         }
-        let end = entry
-            .payload_start
-            .checked_add(entry.payload_len)
+        let end = entry.payload_start.checked_add(entry.payload_len)
             .ok_or_else(|| Error::invalid_value("APK set payload offset overflow"))?;
-        if ranges
-            .iter()
-            .any(|(start, finish)| entry.payload_start < *finish && *start < end)
-        {
+        if ranges.iter().any(|(start, finish)| entry.payload_start < *finish && *start < end) {
             return Err(Error::invalid_value("overlapping APK set member payloads"));
         }
         ranges.push((entry.payload_start, end));
-
-        if !entry.name.to_ascii_lowercase().ends_with(".apk") {
-            continue;
-        }
-        if members.len() >= MAX_NESTED_APKS {
-            return Err(Error::invalid_value("APK set exceeds 32 nested APKs"));
-        }
-        if entry.flags & (1 | (1 << 6) | (1 << 13)) != 0 {
-            return Err(Error::invalid_value(
-                "encrypted or masked nested APK member",
-            ));
-        }
-        let unix_mode = le32(data, at + 38).unwrap_or_default() >> 16;
-        if unix_mode & 0o170000 == 0o120000 {
-            return Err(Error::invalid_value("nested APK member is a ZIP symlink"));
-        }
-        if entry.method != 0 && entry.method != 8 {
-            return Err(Error::invalid_value(
-                "unsupported nested APK compression method",
-            ));
-        }
-        if entry.size > MAX_NESTED_BYTES {
-            return Err(Error::invalid_value("nested APK exceeds 64 MiB limit"));
-        }
-        let (bytes, quirk) = read_member(data, &entry, MAX_NESTED_BYTES, &mut budget)
-            .map_err(Error::invalid_value)?;
-        if quirk.is_some() {
-            return Err(Error::invalid_value(
-                "unexpected nested APK compression quirk",
-            ));
-        }
-        validate_nested_structure(&bytes)?;
-        let (inventory, archive) = super::walk(&bytes)?;
-        let (package, version, manifest_error) = match archive.manifest {
-            Some(manifest_member) => {
-                let mut manifest_budget = MAX_APK_MANIFEST_BYTES;
-                match read_member(
-                    &bytes,
-                    &manifest_member,
-                    MAX_APK_MANIFEST_BYTES,
-                    &mut manifest_budget,
-                ) {
-                    Ok((manifest_bytes, _)) => match super::axml::manifest(&manifest_bytes) {
-                        Ok(parsed) => (parsed.package, parsed.version_code, None),
-                        Err(error) => (None, None, Some(error)),
-                    },
-                    Err(error) => (None, None, Some(error)),
-                }
+        if entry.name.to_ascii_lowercase().ends_with(".apk") {
+            if members.len() >= MAX_NESTED_APKS {
+                return Err(Error::invalid_value("APK set exceeds 32 nested APKs"));
             }
-            None => (
-                None,
-                None,
-                Some("missing nested AndroidManifest.xml".to_owned()),
-            ),
-        };
-        members.push(NestedApk {
-            path: entry.name.to_owned(),
-            sha256: inventory.sha256,
-            size_bytes: bytes.len(),
-            role_hint_unverified: role_hint(entry.name),
-            manifest_package_unverified: package,
-            manifest_version_code_unverified: version,
-            manifest_error,
-            dex_count: inventory.dex_count,
-            native_abis: inventory.native_abis,
-        });
+            members.push(inspect_nested(data, &entry, at, &mut budget)?);
+        }
     }
     if pos != dir_end {
-        return Err(Error::invalid_value(
-            "APK set directory count/size disagree",
-        ));
+        return Err(Error::invalid_value("APK set directory count/size disagree"));
     }
     if members.is_empty() {
         return Err(Error::invalid_value("APK set has no nested APK members"));
     }
-    let package_consistency = consistency(
-        members
-            .iter()
-            .map(|member| member.manifest_package_unverified.as_deref()),
-        members.len(),
-    );
-    let version_consistency = consistency(
-        members
-            .iter()
-            .map(|member| member.manifest_version_code_unverified.as_deref()),
-        members.len(),
-    );
+    Ok((count, members))
+}
+
+fn graph_entities(
+    label: &str,
+    outer_sha: &str,
+    members: &[NestedApk],
+    package_consistency: &str,
+    version_consistency: &str,
+) -> Vec<Entity> {
     let sid = scan_id(SOURCE, label);
     let mut entities = Vec::new();
     push_entity(
@@ -275,7 +253,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             EvidenceProvenance::for_scan(SOURCE, &sid),
             format!("Offline inventory of multi-APK container {label}; no signatures or package identity verified"),
         )
-        .with_attr("file_sha256", outer_sha.as_str())
+        .with_attr("file_sha256", outer_sha)
         .with_attr("file_hash_scope", "exact_input_bytes")
         .with_attr("apk_set_format_hint_unverified", format_hint(label))
         .with_attr("apk_set_member_count", members.len().to_string())
@@ -283,7 +261,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         .with_attr("apk_set_version_consistency", version_consistency),
         &[SOURCE, "offline", "apk_container"],
     );
-    for nested in &members {
+    for nested in members {
         push_entity(
             &mut entities,
             EntityKind::Other,
@@ -292,31 +270,50 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             &sid,
             Evidence::new(
                 EvidenceProvenance::for_scan(SOURCE, &sid),
-                format!(
-                    "Exact decompressed APK bytes in {label}, member {:?}",
-                    nested.path
-                ),
+                format!("Exact decompressed APK bytes in {label}, member {:?}", nested.path),
             )
             .with_attr("apk_member_sha256", nested.sha256.as_str())
             .with_attr("apk_member_path", nested.path.as_str())
-            .with_attr("apk_container_sha256", outer_sha.as_str())
+            .with_attr("apk_container_sha256", outer_sha)
             .with_attr(
                 "apk_manifest_package_unverified",
                 nested.manifest_package_unverified.as_deref().unwrap_or(""),
             )
-            .with_attr(
-                "apk_member_role_hint_unverified",
-                nested.role_hint_unverified,
-            ),
+            .with_attr("apk_member_role_hint_unverified", nested.role_hint_unverified),
             &[SOURCE, "offline", "apk_member"],
         );
     }
     merge_by_uid(&mut entities);
-    let outcomes = vec![SourceExecutionOutcome::success(
-        SOURCE,
-        now_unix,
-        entities.len(),
-    )];
+    entities
+}
+
+/// Inspect a bounded multi-APK ZIP without extracting to disk.
+///
+/// # Errors
+/// Refuses invalid ZIP structures, duplicate/unsafe paths, unsupported compression, encrypted
+/// APK members, CRC failures, invalid embedded APKs and decompression budget overruns.
+pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
+    if data.len() > 64 * 1024 * 1024 {
+        return Err(Error::invalid_value("APK set exceeds 64 MiB input limit"));
+    }
+    let (count, members) = collect_apks(data)?;
+    let outer_sha = hex32(&sha256(data));
+    let package_consistency = consistency(
+        members.iter().map(|member| member.manifest_package_unverified.as_deref()),
+        members.len(),
+    );
+    let version_consistency = consistency(
+        members.iter().map(|member| member.manifest_version_code_unverified.as_deref()),
+        members.len(),
+    );
+    let entities = graph_entities(
+        label,
+        &outer_sha,
+        &members,
+        package_consistency,
+        version_consistency,
+    );
+    let outcomes = vec![SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())];
     Ok(Report {
         container_sha256: outer_sha,
         container_size_bytes: data.len(),
@@ -469,7 +466,7 @@ mod tests {
         let directory =
             usize::try_from(super::le32(&symlink, symlink.len() - 22 + 16).expect("directory"))
                 .expect("directory offset");
-        let attributes = (0o120777_u32 << 16).to_le_bytes();
+        let attributes = (0o120_777_u32 << 16).to_le_bytes();
         symlink[directory + 38..directory + 42].copy_from_slice(&attributes);
         assert!(run(&symlink, "x.apks", 1).is_err());
     }
