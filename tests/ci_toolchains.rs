@@ -106,6 +106,33 @@ fn ci_gates_the_msrv_leg_with_msrv_and_the_pinned_stable_leg_with_full() {
 }
 
 #[test]
+fn ci_test_matrix_bounds_rust_artifacts_without_weakening_the_gates() {
+    let ci = workflow(".github/workflows/ci.yml");
+    let tests = ci
+        .split_once("  test:\n")
+        .expect("CI test matrix job must exist")
+        .1
+        .split_once("\n  container:\n")
+        .expect("CI container job must follow test matrix")
+        .0;
+
+    for setting in [
+        "CARGO_INCREMENTAL: \"0\"",
+        "CARGO_PROFILE_DEV_DEBUG: \"0\"",
+        "CARGO_PROFILE_TEST_DEBUG: \"0\"",
+    ] {
+        assert!(
+            tests.contains(setting),
+            "CI must bound ephemeral test build storage: missing {setting}"
+        );
+    }
+    assert!(tests.contains("cargo run --locked -p xtask -- gate full"));
+    assert!(tests.contains("cargo run --locked -p xtask -- gate msrv"));
+    assert!(tests.contains("Record remaining disk and test build footprint"));
+    assert!(tests.contains("if: always()"));
+}
+
+#[test]
 fn the_msrv_pin_is_the_manifest_rust_version() {
     let manifest = fs::read_to_string("Cargo.toml").expect("Cargo.toml");
     assert!(
