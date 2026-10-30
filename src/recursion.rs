@@ -217,9 +217,7 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     // bypass attribution.
     // Historical saved scans may still contain the former Wikidata-specific tag.
     // Preserve the attribution gate for those records without emitting the old tag anew.
-    if entity.has_tag(crate::tags::NAME_SEARCH_LEAD)
-        || entity.has_tag("wikidata-name-lead")
-    {
+    if entity.has_tag(crate::tags::NAME_SEARCH_LEAD) || entity.has_tag("wikidata-name-lead") {
         return Vec::new();
     }
     if entity.confidence < policy.expand_confidence_floor {
