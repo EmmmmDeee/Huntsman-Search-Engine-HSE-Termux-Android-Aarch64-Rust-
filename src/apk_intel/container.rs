@@ -641,10 +641,9 @@ mod tests {
     #[test]
     fn forged_v3_scheme_id_cannot_authenticate_nested_signers() {
         let inner = apk();
-        let old_directory = usize::try_from(
-            super::le32(&inner, inner.len() - 22 + 16).expect("directory offset"),
-        )
-        .expect("directory fits");
+        let old_directory =
+            usize::try_from(super::le32(&inner, inner.len() - 22 + 16).expect("directory offset"))
+                .expect("directory fits");
         let fake_signer = b"not signed data";
         let mut block = Vec::new();
         let pair_size = u64::try_from(fake_signer.len() + 4).expect("pair size");
