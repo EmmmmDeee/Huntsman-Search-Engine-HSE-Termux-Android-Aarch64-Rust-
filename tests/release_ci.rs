@@ -634,6 +634,29 @@ fn release_publish_requires_shared_quality_gate() {
 }
 
 #[test]
+fn release_quality_bounds_ephemeral_test_artifacts_without_skipping_checks() {
+    let wf = release();
+    for job_name in ["quality", "quality-msrv"] {
+        let definition = job(&wf, job_name);
+        for setting in [
+            "CARGO_INCREMENTAL: \"0\"",
+            "CARGO_PROFILE_DEV_DEBUG: \"0\"",
+            "CARGO_PROFILE_TEST_DEBUG: \"0\"",
+        ] {
+            assert!(
+                definition.contains(setting),
+                "{job_name} must bound CI artifact storage: missing {setting}"
+            );
+        }
+    }
+    let quality = job(&wf, "quality");
+    assert!(quality.contains("cargo run --locked -p xtask -- gate full"));
+    assert!(quality.contains("Record free disk before shared host acceptance"));
+    assert!(quality.contains("Record remaining disk and build footprint"));
+    assert!(quality.contains("if: always()"), "report disk exhaustion even after a gate failure");
+}
+
+#[test]
 fn publish_waits_for_the_web_ui_browser_check_on_the_same_commit() {
     // The web UI is half of the target, so a build whose page fails the phone-browser check must
     // not reach the pre-release channel. Publish waits for a web-ui job in this workflow. That job
