@@ -17,7 +17,7 @@ bash scripts/lifecycle.sh
 
 That builds the locked binary, runs `huntsman-recon check`, runs lib tests, commits non-secret worktree changes, and pushes `main`. No `HUNTSMAN_SYNC` flag. An interrupted test run (including exit 137 from SIGKILL or low memory) records a failed state and blocks commit/push; retry after restoring sufficient memory. A failed test must never publish unverified changes.
 
-State is `~/.huntsman/lifecycle-state` (mode 600). The log is `~/.huntsman/lifecycle.log`. Secret-looking paths (`*.env`, `*.pem`, `*.key`, `credentials`, `secret`) are refused. Non-main branches and force-push are refused. A failed push leaves the local commit and a failed state file.
+Each checkout builds in a cache of its own, `~/.cache/huntsman-recon-checkouts/<name>-<checksum of its path>`, or `checkouts/<name>-<checksum>` inside `CARGO_TARGET_DIR` when that is set, so two clones never build, test or push each other's code, and `run` builds before it runs. State is `~/.huntsman/lifecycle-state` (mode 600). The log is `~/.huntsman/lifecycle.log`. Secret-looking paths (`*.env`, `*.pem`, `*.key`, `credentials`, `secret`) are refused. Non-main branches and force-push are refused. A failed push leaves the local commit and a failed state file.
 
 Phone install remains `install.sh` (pins `main` to one SHA, installs `huntsman-recon`, runs offline acceptance).
 

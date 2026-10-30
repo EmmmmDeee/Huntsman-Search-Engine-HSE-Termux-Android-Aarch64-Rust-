@@ -176,6 +176,12 @@ jobs:
     name: Shared repair acceptance (Rust 1.87)
     needs: resolve
     runs-on: ubuntu-24.04
+    # Ephemeral runners gain nothing from incremental builds or DWARF in test artifacts.
+    # Keep assertions and every test; avoid filling the runner while linking the suite.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     permissions:
       contents: read
     steps:
@@ -192,6 +198,12 @@ jobs:
     name: Shared repair and container acceptance
     needs: resolve
     runs-on: ubuntu-24.04
+    # The full Rust test-suite previously exhausted the hosted runner during linking.
+    # This controls artifact size without removing tests or weakening lint/release gates.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     permissions:
       contents: read
     steps:
@@ -202,8 +214,15 @@ jobs:
         with:
           toolchain: "1.99" # the pinned stable release; tests/ci_toolchains.rs holds the pin
           components: clippy, rustfmt
+      - name: Record free disk before shared host acceptance
+        run: df -h .
       - name: Run shared host repair acceptance
         run: cargo run --locked -p xtask -- gate full
+      - name: Record remaining disk and build footprint
+        if: always()
+        run: |
+          df -h .
+          du -sh target 2>/dev/null || true
       - name: Build portable self-hosted container
         run: bash scripts/container-build-retry.sh --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
       - name: Exercise self-hosted container runtime

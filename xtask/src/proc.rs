@@ -1,8 +1,9 @@
 //! Process helpers the xtask commands share: the repository root, git output, and a command
 //! that runs under a time limit and is killed when the limit passes. A gate run keeps each
 //! step's output under `target/repair-gate/<run>/`, so a failure can be read again without
-//! running the gate once more. A gate run also holds the checkout's lock, so two runs cannot
-//! share one build directory and one tree.
+//! running the gate once more. Every step builds in a directory of the checkout's own
+//! ([`checkout_target_dir`]), and a gate run holds the checkout's lock, so no two runs share a
+//! build directory or a tree.
 
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
@@ -30,7 +31,7 @@ const LOCK_FILE: &str = "gate.lock";
 /// is the checkout to work on. The path compiled into the binary is only the fallback, for a
 /// binary run directly: checkouts that share a target directory share one `xtask` binary, which
 /// cargo does not rebuild for a checkout at another path, so its compiled path can name another
-/// checkout.
+/// checkout. The steps it runs build in the checkout's own directory, whichever binary runs them.
 #[must_use]
 pub fn repository_root() -> PathBuf {
     let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
@@ -39,6 +40,61 @@ pub fn repository_root() -> PathBuf {
     manifest
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+/// Where the gate builds for the checkout at ROOT: its own `target/`, or, when `CARGO_TARGET_DIR`
+/// (SHARED) names a directory, `checkouts/<name>-<cksum of its path>` inside it, the directory
+/// `scripts/lifecycle.sh` builds the checkout in there. Cargo names a workspace crate's build
+/// without its checkout's path and judges it fresh by file times, so in a directory several
+/// checkouts share it would test one checkout's code for another. A directory the caller chose
+/// is kept, as on Termux, where a checkout on shared storage cannot run what is built beside it.
+#[must_use]
+pub fn checkout_target_dir(root: &Path, shared: Option<&std::ffi::OsStr>) -> PathBuf {
+    let Some(shared) = shared.filter(|dir| !dir.is_empty()) else {
+        return root.join("target");
+    };
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // Only characters cargo accepts in a library path: a `:` would break every build there.
+    let name: String = root
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let path = root.as_os_str().to_string_lossy();
+    let shared =
+        std::env::current_dir().map_or_else(|_| PathBuf::from(shared), |cwd| cwd.join(shared));
+    shared
+        .join("checkouts")
+        .join(format!("{name}-{}", cksum(path.as_bytes())))
+}
+
+/// POSIX `cksum` of BYTES (CRC-32 over the bytes and then their length), as `cksum` prints it.
+fn cksum(bytes: &[u8]) -> u32 {
+    fn update(crc: u32, byte: u8) -> u32 {
+        let mut crc = crc ^ (u32::from(byte) << 24);
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 == 0 {
+                crc << 1
+            } else {
+                (crc << 1) ^ 0x04C1_1DB7
+            };
+        }
+        crc
+    }
+    let mut crc = bytes.iter().fold(0, |crc, &byte| update(crc, byte));
+    let mut length = bytes.len();
+    while length > 0 {
+        crc = update(crc, (length & 0xff) as u8);
+        length >>= 8;
+    }
+    !crc
 }
 
 /// The standard output of `git ARGS` in ROOT. A git failure is an error, never empty output.
@@ -225,6 +281,11 @@ fn process_is_alive(pid: u32) -> bool {
 /// in RECORD, and its outcome is one line in the record's summary. A run still going at LIMIT is
 /// killed, and the step fails. A failing step prints the end of its log, so the failure can be
 /// read without opening the file.
+///
+/// Cargo builds in ROOT's own directory ([`checkout_target_dir`]), as both its target and its
+/// build directory (cargo 1.91 and later keep compiled crates in the build directory, which a
+/// user may also share): in a directory another checkout shares, cargo can reuse that checkout's
+/// compiled crates as fresh, and the step would test its code instead of ROOT's.
 pub fn run_step(
     root: &Path,
     limit: Duration,
@@ -237,6 +298,7 @@ pub fn run_step(
         .collect::<Vec<_>>()
         .join(" ");
     println!("xtask: RUN: {shown}");
+    let builds = checkout_target_dir(root, std::env::var_os("CARGO_TARGET_DIR").as_deref());
     let (index, log, stdout) = record.next_log()?;
     let stderr = stdout
         .try_clone()
@@ -245,6 +307,8 @@ pub fn run_step(
     let mut child = match Command::new(program)
         .args(args)
         .current_dir(root)
+        .env("CARGO_TARGET_DIR", &builds)
+        .env("CARGO_BUILD_BUILD_DIR", &builds)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -380,6 +444,89 @@ mod tests {
         let summary = fs::read_to_string(record.dir().join("summary.txt")).expect("summary");
         assert!(summary.starts_with("01\tPASS\t"), "{summary}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_step_builds_in_the_checkouts_own_directory() {
+        // Whatever target directory the gate was started with, a step's cargo builds in ROOT's.
+        let root = scratch_root("target-dir");
+        let mut record = RunRecord::create(&root, "fast").expect("record");
+        run_step(
+            &root,
+            Duration::from_secs(60),
+            &mut record,
+            "sh",
+            &[
+                "-c",
+                "printf '%s|%s' \"$CARGO_TARGET_DIR\" \"$CARGO_BUILD_BUILD_DIR\"",
+            ],
+        )
+        .expect("the step passes");
+        let log = fs::read_to_string(record.dir().join("01.log")).expect("step log");
+        let builds = checkout_target_dir(&root, std::env::var_os("CARGO_TARGET_DIR").as_deref());
+        assert_eq!(log, format!("{0}|{0}", builds.display()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn each_checkout_builds_in_a_directory_of_its_own() {
+        let first = scratch_root("own-first");
+        let second = scratch_root("own-second");
+        // By default, in the checkout's own target/.
+        assert_eq!(checkout_target_dir(&first, None), first.join("target"));
+        assert_eq!(
+            checkout_target_dir(&first, Some(std::ffi::OsStr::new(""))),
+            first.join("target")
+        );
+        // In a directory the checkouts share, each in one of its own there, named as
+        // scripts/lifecycle.sh names it, and the same for another spelling of the checkout.
+        let shared = std::ffi::OsStr::new("/shared/cache");
+        let own = checkout_target_dir(&first, Some(shared));
+        let path = first.canonicalize().expect("checkout");
+        let name = path.file_name().expect("name").to_string_lossy();
+        let key = cksum(path.as_os_str().to_string_lossy().as_bytes());
+        assert_eq!(
+            own,
+            Path::new("/shared/cache/checkouts").join(format!("{name}-{key}"))
+        );
+        assert_ne!(own, checkout_target_dir(&second, Some(shared)));
+        fs::create_dir_all(first.join("xtask")).expect("xtask directory");
+        assert_eq!(
+            own,
+            checkout_target_dir(&first.join("xtask").join(".."), Some(shared))
+        );
+        let _ = fs::remove_dir_all(&first);
+        let _ = fs::remove_dir_all(&second);
+    }
+
+    #[test]
+    fn a_checkout_name_keeps_only_characters_a_library_path_accepts() {
+        let root = scratch_root("wt:fix one");
+        let own = checkout_target_dir(&root, Some(std::ffi::OsStr::new("/shared")));
+        let name = own
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.starts_with("xtask-proc-wt_fix_one-"), "{name}");
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+            "{name}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_checkout_key_is_the_posix_cksum_of_its_path() {
+        // As `printf '%s' PATH | cksum` prints it.
+        assert_eq!(cksum(b""), 4_294_967_295);
+        assert_eq!(cksum(b"x"), 12_738_659);
+        assert_eq!(cksum(b"123456789"), 930_766_865);
+        assert_eq!(
+            cksum(b"/data/data/com.termux/files/home/Huntsman"),
+            1_392_625_309
+        );
     }
 
     #[test]

@@ -51,20 +51,18 @@ fn an_empty_contributions_list_is_valid_zero() {
     assert!(got.entities.is_empty());
 }
 
+/// A name `MediaWiki` cannot read as a user can be no account, as current `MediaWiki` (`baduser`)
+/// and releases before 1.35 (`baduser_ucuser`) say it.
 #[test]
 fn an_api_error_is_a_clean_negative() {
-    let got = lookup(
-        &OneResponse::json(
-            200,
-            r#"{"error":{"code":"baduser_ucuser","info":"Invalid value for user parameter."}}"#,
-        ),
-        "bad|name",
-        "scan",
-        1,
-    )
-    .unwrap();
-    assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
-    assert!(got.entities.is_empty());
+    for code in ["baduser", "baduser_ucuser"] {
+        let body = format!(
+            r#"{{"error":{{"code":"{code}","info":"Invalid value for user parameter."}}}}"#
+        );
+        let got = lookup(&OneResponse::json(200, &body), "bad|name", "scan", 1).unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero, "{code}");
+        assert!(got.entities.is_empty());
+    }
 }
 
 #[test]

@@ -3,10 +3,15 @@
 use crate::netblock::{Ipv4Cidr, Ipv6Cidr};
 use crate::value_syntax::record_tag;
 
+/// RFC 7208 section 4.5: the version must be exactly `v=spf1`, followed
+/// by an ASCII space or the end of the TXT record (not `v=spf10`).
 #[must_use]
 pub fn is_spf(txt: &str) -> bool {
     let bytes = txt.as_bytes();
-    bytes.len() >= 6 && bytes[..6].eq_ignore_ascii_case(b"v=spf1")
+    bytes
+        .get(..6)
+        .is_some_and(|version| version.eq_ignore_ascii_case(b"v=spf1"))
+        && bytes.get(6).is_none_or(|next| *next == b' ')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +273,29 @@ impl SpfRecord {
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+
+    #[test]
+    fn version_token_requires_an_exact_spf1_with_a_space_or_end() {
+        // RFC 7208 section 4.5 gives v=spf10 as an explicit non-match.
+        for raw in [
+            "v=spf10 -all",
+            "v=spf1extra +all",
+            "v=spf1\t-all",
+            "v=spf1\n-all",
+            "v=spf1; -all",
+        ] {
+            assert!(!is_spf(raw), "accepted unsupported SPF version: {raw:?}");
+            assert!(
+                parse(raw).is_none(),
+                "parsed unsupported SPF version: {raw:?}"
+            );
+        }
+        // Retain case-insensitive recognition and existing valid records.
+        for raw in ["v=spf1", "v=spf1 -all", "V=SPF1 +mx -all"] {
+            assert!(is_spf(raw), "refused supported SPF version: {raw:?}");
+            assert!(parse(raw).is_some(), "failed to parse SPF record: {raw:?}");
+        }
+    }
 
     #[test]
     fn extracts_policies() {
