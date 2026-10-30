@@ -470,6 +470,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public crates.io account, its GitHub profile and its published crates' repository links",
     },
     ReachableModule {
+        name: "docker_hub_user",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.003"],
+        description: "public Docker Hub account, its profile, website and published image repository count",
+    },
+    ReachableModule {
         name: "hacker_news",
         command: "username HANDLE",
         access: "keyless",
@@ -1670,6 +1679,7 @@ mod tests {
             crate::crates_io::SRC,
             crate::hacker_news::SRC,
             crate::lobsters::SRC,
+            crate::docker_hub_user::SRC,
             crate::bluesky_user::SRC,
             crate::mastodon_user::SRC,
             crate::keybase::SRC,

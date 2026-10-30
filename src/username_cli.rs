@@ -13,6 +13,7 @@ use crate::bluesky_user;
 use crate::canonical::canonical_handle;
 use crate::concurrent::{self, Job};
 use crate::crates_io;
+use crate::docker_hub_user;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::github_repos;
@@ -81,7 +82,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     original: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 12] {
+) -> [(&'static str, Job<'a, Found>); 13] {
     [
         (
             github_user::SRC,
@@ -166,6 +167,13 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
             lobsters::SRC,
             Box::new(move || {
                 lobsters::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            docker_hub_user::SRC,
+            Box::new(move || {
+                docker_hub_user::lookup(transport, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -339,6 +347,7 @@ mod tests {
     const CRATES_IO: &str = "crates.io";
     const HACKER_NEWS: &str = "hacker-news.firebaseio.com";
     const LOBSTERS: &str = "lobste.rs";
+    const DOCKER: &str = "hub.docker.com";
 
     /// Answers each source by its host, as the sources run at once and in no fixed order; a host
     /// with no reply answers nothing, which no source may take for absence.
@@ -606,13 +615,14 @@ mod tests {
                     npm_author::SRC,
                     crates_io::SRC,
                     hacker_news::SRC,
-                    lobsters::SRC
+                    lobsters::SRC,
+                    docker_hub_user::SRC
                 ]
             );
         }
     }
 
-    /// Each source waits on its own server, so twelve that take 200 ms each answer in about 200 ms,
+    /// Each source waits on its own server, so thirteen that take 200 ms each answer in about 200 ms,
     /// not the second they took one after another.
     #[test]
     fn the_sources_run_at_once() {
@@ -653,16 +663,23 @@ mod tests {
                 LOBSTERS,
                 response(200, r#"{"username":"maxslow","karma":1}"#),
             ),
+            (
+                DOCKER,
+                response(
+                    200,
+                    r#"{"username":"maxslow","full_name":"Max Slow","type":"User"}"#,
+                ),
+            ),
         ]));
         let started = std::time::Instant::now();
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
         let took = started.elapsed();
-        assert_eq!(report.outcomes.len(), 12);
+        assert_eq!(report.outcomes.len(), 13);
         assert!(
             took < std::time::Duration::from_millis(800),
-            "twelve 200 ms sources took {took:?}"
+            "thirteen 200 ms sources took {took:?}"
         );
     }
 
