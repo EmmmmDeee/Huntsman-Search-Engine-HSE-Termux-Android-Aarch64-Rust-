@@ -25,7 +25,17 @@ pub struct SavePolicy {
     pub entity_provenance: ProvenanceFn,
 }
 
+/// The provenance of the `SeekNow` leg, which runs beside the email, username and people sources and
+/// is saved with each of their reports, so each names it as itself. **Pure.**
+fn seeknow_provenance(source: &str) -> Option<(&str, &'static str)> {
+    (source == crate::seeknow_collector::COLLECTOR_ID)
+        .then_some((source, "src/seeknow_collector.rs"))
+}
+
 fn email_provenance(source: &str) -> (&str, &'static str) {
+    if let Some(leg) = seeknow_provenance(source) {
+        return leg;
+    }
     match source {
         "gravatar" => ("gravatar", "src/gravatar.rs"),
         "duolingo" => ("duolingo", "src/duolingo.rs"),
@@ -35,6 +45,9 @@ fn email_provenance(source: &str) -> (&str, &'static str) {
 }
 
 fn username_provenance(source: &str) -> (&str, &'static str) {
+    if let Some(leg) = seeknow_provenance(source) {
+        return leg;
+    }
     match source {
         "github_user" => ("github_user", "src/github_user.rs"),
         "bluesky_user" => ("bluesky_user", "src/bluesky_user.rs"),
@@ -66,13 +79,20 @@ pub const USERNAME_POLICY: SavePolicy = SavePolicy {
     entity_provenance: username_provenance,
 };
 
+/// A people source's own name and component. A source not named here keeps its own name, as every
+/// other policy keeps one: a row is never saved as another source's. **Pure.**
 fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
-    match label.split('.').next().unwrap_or(label) {
+    let module = label.split('.').next().unwrap_or(label);
+    if let Some(leg) = seeknow_provenance(module) {
+        return leg;
+    }
+    match module {
+        "asic_persons" => ("asic_persons", "src/asic_persons.rs"),
         "asic_director" => ("asic_director", "src/asic_director.rs"),
         "wikidata" => ("wikidata", "src/wikidata.rs"),
         "acnc" => ("acnc", "src/acnc.rs"),
         "sec_edgar" => ("sec_edgar", "src/sec_edgar.rs"),
-        _ => ("asic_persons", "src/asic_persons.rs"),
+        _ => (module, "src/people_cli.rs"),
     }
 }
 
@@ -686,6 +706,40 @@ mod tests {
                 "refused_before_sending",
                 "inconclusive",
             ]
+        );
+    }
+
+    #[test]
+    fn the_seeknow_leg_is_saved_as_itself_in_every_report_it_joins() {
+        // The SeekNow leg runs beside the email, username and people sources and is saved with
+        // each of their reports: each names it `seeknow`, from its own component.
+        let seeknow = ("seeknow", "src/seeknow_collector.rs");
+        for policy in [EMAIL_POLICY, USERNAME_POLICY, PEOPLE_POLICY] {
+            assert_eq!((policy.outcome_provenance)("seeknow"), seeknow);
+            assert_eq!((policy.entity_provenance)("seeknow"), seeknow);
+        }
+        let saved = chain(
+            &[],
+            &[SourceExecutionOutcome::valid_zero("seeknow", 1)],
+            PEOPLE_POLICY,
+        )
+        .unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .map(|entry| (entry.claim.source.as_str(), entry.claim.component.as_str()))
+                .collect::<Vec<_>>(),
+            [seeknow]
+        );
+        // A people source the policy does not name keeps its own name; none is saved as another
+        // source's, and the register's own rows stay the register's.
+        assert_eq!(
+            (PEOPLE_POLICY.outcome_provenance)("people_new_source"),
+            ("people_new_source", "src/people_cli.rs")
+        );
+        assert_eq!(
+            (PEOPLE_POLICY.outcome_provenance)("asic_persons.banned"),
+            ("asic_persons", "src/asic_persons.rs")
         );
     }
 }
