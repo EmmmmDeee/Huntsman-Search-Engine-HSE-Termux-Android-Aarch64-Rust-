@@ -1,6 +1,6 @@
 //! Native MetaScan-compatible Facebook page intelligence for unrooted Android/Termux.
 //! Reuses Huntsman's egress guard, TLS, redaction and credential provenance.
-//! Only the four original RapidAPI collection endpoints are claimed as implemented.
+//! Only the four original `RapidAPI` collection endpoints are claimed as implemented.
 //! External provider results are unverified observations, not identity assertions.
 
 use std::env;
