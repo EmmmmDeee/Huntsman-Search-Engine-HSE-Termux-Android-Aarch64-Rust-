@@ -284,6 +284,7 @@ pub(super) fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<Scan
 
 /// Only large saved-scan materialisations consume the memory-intensive worker budget. Quick
 /// metadata reads and scan-control POSTs remain available even when both permits are held.
+/// False-positive edits are heavy: they read and rewrite the saved result and need a permit.
 fn heavy_saved_scan_response(method: Method, path: &str) -> bool {
     if matches!(
         path,
@@ -297,7 +298,7 @@ fn heavy_saved_scan_response(method: Method, path: &str) -> bool {
     if let Some((id, action)) = tail.split_once('/') {
         return !(method == Method::Post
             && !id.is_empty()
-            && matches!(action, "stop" | "delete" | "rerun" | "fp"));
+            && matches!(action, "stop" | "delete" | "rerun"));
     }
     // A two-segment GET is normally a cheap scan-status read. Reserved route names
     // are large report/search/alert operations and cannot masquerade as scan IDs.
