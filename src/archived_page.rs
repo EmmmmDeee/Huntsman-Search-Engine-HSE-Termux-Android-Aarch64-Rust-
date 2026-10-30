@@ -106,14 +106,21 @@ pub fn choose(captures: impl IntoIterator<Item = Capture>) -> Vec<Capture> {
 /// "not a web page" for a type other than HTML or plain text, "page over 1 MiB" past
 /// [`MAX_PAGE_BYTES`].
 pub fn web_page(content_type: &str, bytes: usize) -> Result<(), String> {
-    let content_type = content_type.trim().to_ascii_lowercase();
-    if !(content_type.contains("html") || content_type.starts_with("text/plain")) {
+    if !is_web_page_type(content_type) {
         return Err("not a web page".to_owned());
     }
     if bytes > MAX_PAGE_BYTES {
         return Err("page over 1 MiB".to_owned());
     }
     Ok(())
+}
+
+/// Whether `content_type` (a response's, or the type an archive's index recorded for a capture)
+/// is a web page: HTML or XHTML, or plain text. **Pure.**
+#[must_use]
+pub fn is_web_page_type(content_type: &str) -> bool {
+    let content_type = content_type.trim().to_ascii_lowercase();
+    content_type.contains("html") || content_type.starts_with("text/plain")
 }
 
 /// The e-mail addresses and phone numbers `html` publishes in its text and in its `mailto:` and

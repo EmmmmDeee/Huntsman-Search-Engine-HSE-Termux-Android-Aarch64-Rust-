@@ -24,7 +24,7 @@ const API: &str = "https://web.archive.org/cdx/search/cdx";
 const ARCHIVE: &str = "https://web.archive.org/web";
 const MAX_CAPTURES: usize = 32;
 const MAX_JSON_BYTES: usize = 128 * 1024;
-const FIELDS: [&str; 4] = ["timestamp", "original", "statuscode", "digest"];
+const FIELDS: [&str; 5] = ["timestamp", "original", "statuscode", "digest", "mimetype"];
 pub use crate::archived_page::Report;
 
 /// Retrieve a bounded sample of historically indexed web pages on this domain.
@@ -49,7 +49,7 @@ pub fn lookup<T: Transport + ?Sized>(
     let mut url = append_query_param(API, "url", &domain);
     url = append_query_param(&url, "matchType", "domain");
     url = append_query_param(&url, "output", "json");
-    url = append_query_param(&url, "fl", "timestamp,original,statuscode,digest");
+    url = append_query_param(&url, "fl", &FIELDS.join(","));
     url = append_query_param(&url, "filter", "statuscode:200");
     url = append_query_param(&url, "collapse", "urlkey");
     url = append_query_param(&url, "limit", &MAX_CAPTURES.to_string());
@@ -71,13 +71,21 @@ pub fn lookup<T: Transport + ?Sized>(
     Ok(report)
 }
 
-/// The captures to read for content, chosen by [`archived_page::choose`] from the URLs found.
+/// The captures to read for content, chosen by [`archived_page::choose`] from the URLs found
+/// that the index recorded as web pages: a PDF, an archive or an image whose path names a contact
+/// page is a historical URL lead, never one of the pages read.
 fn content_captures(entities: &[Entity]) -> Vec<Capture> {
     archived_page::choose(
         entities
             .iter()
             .filter(|entity| entity.kind == EntityKind::Url)
             .flat_map(|entity| &entity.evidence)
+            .filter(|evidence| {
+                evidence
+                    .attr_values("capture_mimetype")
+                    .next()
+                    .is_some_and(archived_page::is_web_page_type)
+            })
             .filter_map(|evidence| {
                 Some(Capture {
                     timestamp: evidence
@@ -309,6 +317,9 @@ fn parse_capture(
     if !row[3].is_empty() {
         evidence = evidence.with_attr("cdx_digest", &row[3]);
     }
+    if !row[4].is_empty() {
+        evidence = evidence.with_attr("capture_mimetype", &row[4]);
+    }
     push_entity(
         entities,
         EntityKind::Url,
@@ -360,7 +371,7 @@ mod tests {
 
     #[test]
     fn accepts_indexed_urls_and_historical_subdomain_pivots() {
-        let body = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/about","200","ABC"],["20221231235959","http://old.example.org/","200","DEF"]]"#;
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://example.org/about","200","ABC","text/html"],["20221231235959","http://old.example.org/","200","DEF","text/html"]]"#;
         let report =
             parse_response(&response(body), "example.org", "scan", NOW).expect("CDX contract");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
@@ -379,7 +390,7 @@ mod tests {
 
     #[test]
     fn domain_boundary_accepts_only_actual_subdomains() {
-        let body = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://deep.old.example.org/a","200","ABC"]]"#;
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://deep.old.example.org/a","200","ABC","text/html"]]"#;
         let report =
             parse_response(&response(body), "example.org", "scan", NOW).expect("nested subdomain");
         assert!(
@@ -388,13 +399,13 @@ mod tests {
                 .iter()
                 .any(|e| e.value == "deep.old.example.org")
         );
-        let bad = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://fakeexample.org/a","200","ABC"]]"#;
+        let bad = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://fakeexample.org/a","200","ABC","text/html"]]"#;
         assert!(parse_response(&response(bad), "example.org", "scan", NOW).is_err());
     }
 
     #[test]
     fn valid_empty_index_is_not_a_claim_that_site_never_existed() {
-        let body = r#"[["timestamp","original","statuscode","digest"]]"#;
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"]]"#;
         let report = parse_response(&response(body), "example.org", "scan", NOW).expect("zero");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
         assert!(report.entities.is_empty());
@@ -403,10 +414,10 @@ mod tests {
     #[test]
     fn rejects_foreign_hosts_bad_dates_and_schema_drift() {
         for body in [
-            r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://notexample.org/","200","ABC"]]"#,
-            r#"[["timestamp","original","statuscode","digest"],["20200102","https://example.org/","200","ABC"]]"#,
-            r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/","302","ABC"]]"#,
-            r#"[["original","timestamp","statuscode","digest"],["https://example.org/","20200102030405","200","ABC"]]"#,
+            r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://notexample.org/","200","ABC","text/html"]]"#,
+            r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102","https://example.org/","200","ABC","text/html"]]"#,
+            r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://example.org/","302","ABC","text/html"]]"#,
+            r#"[["original","timestamp","statuscode","digest","mimetype"],["https://example.org/","20200102030405","200","ABC","text/html"]]"#,
             r#"{"error":"rate limit"}"#,
         ] {
             assert!(
@@ -418,7 +429,7 @@ mod tests {
 
     #[test]
     fn excludes_sensitive_query_urls_without_losing_other_captures() {
-        let body = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/?token=secret","200","ABC"],["20200102030406","https://example.org/page","200","DEF"]]"#;
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://example.org/?token=secret","200","ABC","text/html"],["20200102030406","https://example.org/page","200","DEF","text/html"]]"#;
         let report =
             parse_response(&response(body), "example.org", "scan", NOW).expect("safe subset");
         assert_eq!(report.entities.len(), 1);
@@ -435,7 +446,7 @@ mod tests {
             if request.url.starts_with(API) {
                 assert!(request.url.contains("matchType=domain"));
                 return Ok(response(
-                    r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/a","200","ABC"]]"#,
+                    r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://example.org/a","200","ABC","text/html"]]"#,
                 ));
             }
             assert_eq!(
@@ -467,7 +478,7 @@ mod tests {
         }
     }
 
-    const CDX_THREE: &str = r#"[["timestamp","original","statuscode","digest"],["20220101000000","https://example.org/blog/post","200","A"],["20190505050505","https://example.org/contact-us","200","B"],["20210303030303","https://example.org/","200","C"]]"#;
+    const CDX_THREE: &str = r#"[["timestamp","original","statuscode","digest","mimetype"],["20220101000000","https://example.org/blog/post","200","A","text/html"],["20190505050505","https://example.org/contact-us","200","B","text/html"],["20210303030303","https://example.org/","200","C","text/html"]]"#;
 
     /// The contact page is read first, then the root, then the rest, each from the archive's raw
     /// replay; the contacts it published become historical leads naming the capture, and a page
@@ -544,10 +555,64 @@ mod tests {
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
     }
 
+    /// A capture the index recorded as a PDF, an archive or an image is a historical URL lead, never
+    /// one of the pages read, so the contact page further down the list still is.
+    #[test]
+    fn only_captures_the_index_recorded_as_web_pages_are_read() {
+        let cdx = r#"[["timestamp","original","statuscode","digest","mimetype"],["20230101000000","https://example.org/about/annual-report-2023.pdf","200","A","application/pdf"],["20220101000000","https://example.org/support/driver.zip","200","B","application/zip"],["20210101000000","https://example.org/team/group.jpg","200","C","image/jpeg"],["20090101000000","https://example.org/contact","200","D","text/html"]]"#;
+        let contact = r#"<html><body><a href="mailto:info%40example.org">us</a></body></html>"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(response(cdx)),
+            Ok(page(200, "text/html", contact)),
+        ]);
+        let report = lookup(&transport, "example.org", "scan", NOW).unwrap();
+        let urls: Vec<String> = transport
+            .seen
+            .borrow()
+            .iter()
+            .map(|r| r.url.clone())
+            .collect();
+        assert_eq!(
+            &urls[1..],
+            ["https://web.archive.org/web/20090101000000id_/https://example.org/contact"]
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "info@example.org"),
+            "{:?}",
+            report.entities
+        );
+        for (lead, mimetype) in [
+            (
+                "https://example.org/about/annual-report-2023.pdf",
+                "application/pdf",
+            ),
+            ("https://example.org/support/driver.zip", "application/zip"),
+            ("https://example.org/team/group.jpg", "image/jpeg"),
+        ] {
+            let entity = report
+                .entities
+                .iter()
+                .find(|e| e.kind == EntityKind::Url && e.value == lead)
+                .unwrap_or_else(|| panic!("{lead}: {:?}", report.entities));
+            assert_eq!(
+                entity.evidence[0].attr_values("capture_mimetype").next(),
+                Some(mimetype)
+            );
+        }
+        let detail = report.outcome.detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("archived content: 1 of 1 page(s) read"),
+            "{detail}"
+        );
+    }
+
     #[test]
     fn no_content_is_fetched_when_the_index_answer_is_not_a_success() {
         let transport = crate::test_support::ScriptedTransport::new(vec![Ok(response(
-            r#"[["timestamp","original","statuscode","digest"]]"#,
+            r#"[["timestamp","original","statuscode","digest","mimetype"]]"#,
         ))]);
         let report = lookup(&transport, "example.org", "scan", NOW).unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
@@ -556,7 +621,7 @@ mod tests {
 
     #[test]
     fn at_most_three_captures_are_read_contact_pages_first_and_newest_first() {
-        let body = r#"[["timestamp","original","statuscode","digest"],["20200101000000","https://example.org/a","200","A"],["20240101000000","https://example.org/b","200","B"],["20180101000000","https://example.org/about","200","C"],["20230101000000","https://example.org/team","200","D"],["20220101000000","https://example.org/","200","E"]]"#;
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200101000000","https://example.org/a","200","A","text/html"],["20240101000000","https://example.org/b","200","B","text/html"],["20180101000000","https://example.org/about","200","C","text/html"],["20230101000000","https://example.org/team","200","D","text/html"],["20220101000000","https://example.org/","200","E","text/html"]]"#;
         // The site root canonicalises to `https://example.org`.
         let report = parse_response(&response(body), "example.org", "scan", NOW).unwrap();
         let chosen: Vec<String> = content_captures(&report.entities)

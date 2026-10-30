@@ -18,7 +18,7 @@ The same domain lookup feeds saved scans and the existing local web UI/API. The
 ## Exact method
 
 One GET to `https://web.archive.org/cdx/search/cdx` with `url`, `matchType=domain`,
-`output=json`, `fl=timestamp,original,statuscode,digest`,
+`output=json`, `fl=timestamp,original,statuscode,digest,mimetype`,
 `filter=statuscode:200`, `collapse=urlkey` and `limit=32`.
 
 The collector validates the CDX field header, complete JSON, domain boundary,
@@ -30,7 +30,10 @@ discovered URL is executed, and no page is fetched from its own site.
 ## Archived content
 
 After a successful index answer, at most three of its captures are read for the
-contact details they published: pages whose path names contact, about, team, staff,
+contact details they published. Only a capture the index recorded as a web page (HTML,
+XHTML or plain text) is read; a PDF, an archive or an image stays a historical URL lead,
+with the type the index recorded kept as `capture_mimetype`. The pages read come in this
+order: pages whose path names contact, about, team, staff,
 people, impressum, imprint or support first, then the site root, then the rest, each
 group newest first. Each is one GET to the archive's raw replay
 `https://web.archive.org/web/TIMESTAMP` + `id_/URL` (the bytes as captured, without
