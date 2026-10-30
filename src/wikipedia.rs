@@ -12,7 +12,10 @@ use serde::Deserialize;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
+use crate::fetch::{
+    FetchOptions, Fetched, answer, decode_json, fetch, mediawiki_api_error, mediawiki_error_code,
+    whole_response,
+};
 use crate::http::{Request, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
@@ -138,26 +141,17 @@ fn interpret(
     // Only a rejected account selector is a clean negative. Other API errors must not
     // masquerade as evidence that an account has no public contributions.
     if let Some(error) = parsed.error {
-        let code = error
-            .get("code")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        if code == "baduser_ucuser" {
+        if mediawiki_error_code(&error) == "baduser_ucuser" {
             return Err(
                 SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
             );
         }
-        let kind = if matches!(code, "ratelimited" | "maxlag") {
-            SourceOutcomeKind::RateLimited
-        } else {
-            SourceOutcomeKind::Inconclusive
-        };
-        return Err(SourceExecutionOutcome::failed(
+        return Err(mediawiki_api_error(
+            &error,
             SRC,
+            response.status,
             now_unix,
-            kind,
-            Some(response.status),
-            format!("Wikipedia API error: {code}"),
+            "Wikipedia",
         ));
     }
     let Some(query) = parsed.query else {

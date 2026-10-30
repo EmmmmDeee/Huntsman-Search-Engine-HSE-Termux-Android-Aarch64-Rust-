@@ -393,6 +393,53 @@ pub fn json_error_detail(error: &serde_json::Error) -> String {
     )
 }
 
+/// The outcome of a `MediaWiki` Action API answer that carries an `error` envelope
+/// (`{"error":{"code":…,"info":…}}`) instead of its result. The Action API sends an error with
+/// HTTP 200, so [`answer`] passes it: the envelope says only that the API did not run the query,
+/// never that the query found nothing. `ratelimited` and `maxlag` ask the client to come back
+/// later; any other code is inconclusive. A source whose query one code does answer (Wikipedia's
+/// `baduser_ucuser`: the name is no account) checks for that code first, with
+/// [`mediawiki_error_code`]. `what` names the provider in the diagnostic. **Pure.**
+#[must_use]
+pub fn mediawiki_api_error(
+    error: &serde_json::Value,
+    module: &str,
+    status: u16,
+    now_unix: u64,
+    what: &str,
+) -> SourceExecutionOutcome {
+    let code = mediawiki_error_code(error);
+    let kind = if matches!(code, "ratelimited" | "maxlag") {
+        SourceOutcomeKind::RateLimited
+    } else {
+        SourceOutcomeKind::Inconclusive
+    };
+    SourceExecutionOutcome::failed(
+        module,
+        now_unix,
+        kind,
+        Some(status),
+        format!("{what} API error: {code}"),
+    )
+}
+
+/// The code of a `MediaWiki` Action API error envelope, or `unknown` when it has none or it is not
+/// shaped like one (ASCII letters, digits, `_` and `-`, at most 64 of them), so a diagnostic never
+/// carries arbitrary upstream text. **Pure.**
+#[must_use]
+pub fn mediawiki_error_code(error: &serde_json::Value) -> &str {
+    error
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .filter(|code| {
+            (1..=64).contains(&code.len())
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
+        .unwrap_or("unknown")
+}
+
 fn fetch_hops<T: Transport + ?Sized>(
     transport: &T,
     request: Request,
