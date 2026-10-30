@@ -1,0 +1,4 @@
+- `sources` and the shared lead-only route planner gain three independently curated, keyless Australian discovery routes: ABN Lookup active names, ABN Lookup all/historical names, and Trove newspapers/gazettes. The official ABR active/all result URLs were checked against public name-search results, including cancelled historical names.
+- Routes are available for organisation names; ABR routes also handle ABN/ACN identifiers, and Trove covers people. All values use Huntsman's existing RFC3986 encoder; no network traffic is triggered by route generation.
+- These are **lead-only URLs**, not evidence-bearing collectors, and do not claim to reproduce or import the third-party APK's 83 source entries. Trove remains marked as browser-required; actual fetching and source health require separate verification.
+- Regression tests assert the exact encoded URL contracts, status-specific ABR distinction, evidence-role boundary, and kind-specific eligibility.
