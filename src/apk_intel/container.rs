@@ -766,7 +766,7 @@ mod tests {
     }
 
     /// Build a structurally valid APK with an actual P-256 signature over its
-    /// v3/v3.1 signed-data and a matching AOSP chunked digest. The synthetic
+    /// v2/v3/v3.1 signed-data and a matching AOSP chunked digest. The synthetic
     /// certificate is not CA-trusted and installability is not asserted.
     fn length_prefixed(items: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -811,17 +811,22 @@ mod tests {
         digest_record.extend_from_slice(&length_prefixed(&[&digest]));
         let digests = length_prefixed(&[&digest_record]);
         let certs = length_prefixed(&[&cert]);
+        let is_v2 = scheme_id == 0x7109_871a;
         let mut signed_data = length_prefixed(&[&digests, &certs]);
-        signed_data.extend_from_slice(&min_sdk.to_le_bytes());
-        signed_data.extend_from_slice(&max_sdk.to_le_bytes());
+        if !is_v2 {
+            signed_data.extend_from_slice(&min_sdk.to_le_bytes());
+            signed_data.extend_from_slice(&max_sdk.to_le_bytes());
+        }
         signed_data.extend_from_slice(&length_prefixed(&[&[]]));
         let signature = keypair.sign(rng, &signed_data).expect("sign fixture");
         let mut signature_record = 0x0201_u32.to_le_bytes().to_vec();
         signature_record.extend_from_slice(&length_prefixed(&[signature.as_ref()]));
         let signatures = length_prefixed(&[&signature_record]);
         let mut signer = length_prefixed(&[&signed_data]);
-        signer.extend_from_slice(&min_sdk.to_le_bytes());
-        signer.extend_from_slice(&max_sdk.to_le_bytes());
+        if !is_v2 {
+            signer.extend_from_slice(&min_sdk.to_le_bytes());
+            signer.extend_from_slice(&max_sdk.to_le_bytes());
+        }
         signer.extend_from_slice(&length_prefixed(&[&signatures]));
         signer.extend_from_slice(&length_prefixed(&[spki]));
         let signers = length_prefixed(&[&signer]);
@@ -910,6 +915,55 @@ mod tests {
             assert_eq!(rejected.signer_continuity, "unverified");
             assert!(rejected.apk_members[1].authenticated_sdk_signers.is_empty());
         }
+    }
+
+    #[test]
+    fn real_ecdsa_v2_split_signers_match_conflict_and_reject_tampering() {
+        let rng = ring::rand::SystemRandom::new();
+        let make_key = || {
+            let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                &rng,
+            )
+            .expect("generate v2 fixture key");
+            ring::signature::EcdsaKeyPair::from_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                pkcs8.as_ref(),
+                &rng,
+            )
+            .expect("load v2 fixture key")
+        };
+        let first = signed_sdk_apk(&make_key(), &rng, 0x7109_871a, 24, u32::MAX);
+        let other = signed_sdk_apk(&make_key(), &rng, 0x7109_871a, 24, u32::MAX);
+        let matching = zip(&[("base.apk", &first, 0), ("split.apk", &first, 0)]);
+        let matched = run(&matching, "v2.apks", 42).expect("authenticated v2 APK set");
+        assert_eq!(matched.v2_signer_continuity, "authenticated_v2_match");
+        assert_eq!(matched.signer_continuity, "unverified");
+        assert_eq!(matched.apk_members[0].authenticated_v2_signers.len(), 1);
+        assert_eq!(
+            matched.apk_members[0].authenticated_v2_signers,
+            matched.apk_members[1].authenticated_v2_signers
+        );
+        let conflicting = zip(&[("base.apk", &first, 0), ("split.apk", &other, 0)]);
+        let conflicted = run(&conflicting, "v2-conflict.apks", 42).expect("different v2 keys");
+        assert_eq!(conflicted.v2_signer_continuity, "authenticated_v2_difference");
+
+        // A changed central-directory byte remains structurally valid but
+        // invalidates the authenticated content digest for the second APK.
+        let mut tampered = first.clone();
+        let eocd = tampered.len() - 22;
+        let directory = usize::try_from(super::le32(&tampered, eocd + 16).expect("directory"))
+            .expect("directory fits");
+        tampered[directory + 38] ^= 1;
+        let altered = zip(&[("base.apk", &first, 0), ("split.apk", &tampered, 0)]);
+        let rejected = run(&altered, "v2-tampered.apks", 42).expect("valid altered ZIP");
+        assert_eq!(rejected.v2_signer_continuity, "unverified");
+        assert!(rejected.apk_members[1].authenticated_v2_signers.is_empty());
+
+        let unsigned = apk();
+        let partial = zip(&[("base.apk", &first, 0), ("split.apk", &unsigned, 0)]);
+        let incomplete = run(&partial, "v2-partial.apks", 42).expect("mixed signed set");
+        assert_eq!(incomplete.v2_signer_continuity, "unverified");
     }
 
     #[test]
