@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-const CATALOG_JSON: &str = include_str!("../data/rhinser_catalog.json");
+const CATALOG_JSON: &str = include_str!("rhinser_catalog.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
