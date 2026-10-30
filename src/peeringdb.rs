@@ -522,7 +522,10 @@ fn facility_entities<T: Transport + ?Sized>(
         record.net_id != Some(net_id)
             || !record.fac_id.is_some_and(|id| id > 0)
             || record.local_asn.is_some_and(|asn| asn != expected_asn)
-            || record.status.as_deref().is_some_and(|status| status != "ok")
+            || record
+                .status
+                .as_deref()
+                .is_some_and(|status| status != "ok")
     }) {
         return Err(
             "netfac schema drift: foreign network, invalid facility, or foreign local ASN"
@@ -947,8 +950,20 @@ mod tests {
         ] {
             let report = report_of(vec![Ok(json_ok(net)), Ok(json_ok(body))]);
             assert!(has(&report, &EntityKind::Asn, "AS3333"));
-            assert!(!report.entities.iter().any(|e| e.raw_value.starts_with("peeringdb:facility:")));
-            assert!(report.outcome.detail.as_deref().unwrap_or_default().contains("netfac unavailable"));
+            assert!(
+                !report
+                    .entities
+                    .iter()
+                    .any(|e| e.raw_value.starts_with("peeringdb:facility:"))
+            );
+            assert!(
+                report
+                    .outcome
+                    .detail
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("netfac unavailable")
+            );
         }
     }
 
