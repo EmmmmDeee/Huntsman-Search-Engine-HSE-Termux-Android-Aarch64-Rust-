@@ -768,16 +768,16 @@ mod tests {
         });
         let mut stream = TcpStream::connect(address).unwrap();
         let request = format!(
-            "GET / HTTP/1.1\\r\\nHost: 127.0.0.1:{}\\r\\nConnection: close\\r\\n\\r\\n",
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
             address.port()
         );
         stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         handle.join().unwrap();
-        assert!(response.starts_with("HTTP/1.1 200 OK\\r\\n"));
-        assert!(response.contains("name=\\\"csrf\\\" value=\\\"test_token\\\""));
-        assert!(response.contains("action=\\\"/scan\\\""));
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("name=\\"csrf\\" value=\\"test_token\\""));
+        assert!(response.contains("action=\\"/scan\\""));
         assert!(!response.contains("<script"));
     }
 
