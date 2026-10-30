@@ -396,7 +396,9 @@ fn graph_entities(
         &sid,
         Evidence::new(
             EvidenceProvenance::for_scan(SOURCE, &sid),
-            format!("Offline multi-APK inventory of {label}; SDK-scoped v3/v3.1 signer evidence is separately qualified; manifest identity and Android installability are not verified"),
+            format!(
+                "Offline multi-APK inventory of {label}; SDK-scoped v3/v3.1 signer evidence is separately qualified; manifest identity and Android installability are not verified"
+            ),
         )
         .with_attr("file_sha256", outer_sha)
         .with_attr("file_hash_scope", "exact_input_bytes")
