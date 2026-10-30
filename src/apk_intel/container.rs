@@ -108,11 +108,15 @@ fn validate_nested_structure(data: &[u8]) -> Result<(), Error> {
         if le16(data, local_at + 6) != Some(entry.flags)
             || le16(data, local_at + 8) != Some(entry.method)
         {
-            return Err(Error::invalid_value("nested APK central/local ZIP disagreement"));
+            return Err(Error::invalid_value(
+                "nested APK central/local ZIP disagreement",
+            ));
         }
     }
     if pos != dir_end {
-        return Err(Error::invalid_value("nested APK directory count/size disagree"));
+        return Err(Error::invalid_value(
+            "nested APK directory count/size disagree",
+        ));
     }
     Ok(())
 }
@@ -180,7 +184,9 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             return Err(Error::invalid_value("APK set exceeds 32 nested APKs"));
         }
         if entry.flags & (1 | (1 << 6) | (1 << 13)) != 0 {
-            return Err(Error::invalid_value("encrypted or masked nested APK member"));
+            return Err(Error::invalid_value(
+                "encrypted or masked nested APK member",
+            ));
         }
         let unix_mode = le32(data, at + 38).unwrap_or_default() >> 16;
         if unix_mode & 0o170000 == 0o120000 {
@@ -453,18 +459,16 @@ mod tests {
         let mut encrypted = zip(&[("base.apk", &inner, 0)]);
         // Both local and central flags agree, but strong-encryption flag is not admissible.
         encrypted[6..8].copy_from_slice(&0x0040_u16.to_le_bytes());
-        let directory = usize::try_from(
-            super::le32(&encrypted, encrypted.len() - 22 + 16).expect("directory"),
-        )
-        .expect("directory offset");
+        let directory =
+            usize::try_from(super::le32(&encrypted, encrypted.len() - 22 + 16).expect("directory"))
+                .expect("directory offset");
         encrypted[directory + 8..directory + 10].copy_from_slice(&0x0040_u16.to_le_bytes());
         assert!(run(&encrypted, "x.apks", 1).is_err());
 
         let mut symlink = zip(&[("base.apk", &inner, 0)]);
-        let directory = usize::try_from(
-            super::le32(&symlink, symlink.len() - 22 + 16).expect("directory"),
-        )
-        .expect("directory offset");
+        let directory =
+            usize::try_from(super::le32(&symlink, symlink.len() - 22 + 16).expect("directory"))
+                .expect("directory offset");
         let attributes = (0o120777_u32 << 16).to_le_bytes();
         symlink[directory + 38..directory + 42].copy_from_slice(&attributes);
         assert!(run(&symlink, "x.apks", 1).is_err());
