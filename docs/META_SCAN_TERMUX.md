@@ -2,7 +2,7 @@
 
 This is a **Rust port of the four implemented** [HackUnderway MetaScan](https://github.com/HackUnderway/meta_scan) Facebook Pages Scraper 3 operations **plus a keyless discovery mode** using Huntsman's existing guarded web-index search. It is a standalone Huntsman binary with a mobile Web UI, not a replacement for the existing `huntsman-recon` UI.
 
-**Modes:** Keyless indexed URL discovery is the default and does not require a subscription, an API key or paid quota; it produces **URL leads only**, never Facebook profile metadata or identity verification. The four richer profile/business collection operations run **only if the operator explicitly selects `--provider` or checks the Web UI's provider-enrichment checkbox**. Those routes still depend on an independent RapidAPI subscription. Missing records, restricted access, rate limits and blocked indexes are **not** interpreted as proof that an account is absent.
+**Modes:** Keyless indexed URL discovery is the default and does not require a subscription, an API key or paid quota; it produces **URL leads only**, never Facebook profile metadata or identity verification. The four richer profile/business collection operations run **only if the operator explicitly selects `--provider` or selects provider enrichment using the Rust-rendered Web UI form**. Those routes still depend on an independent RapidAPI subscription. Missing records, restricted access, rate limits and blocked indexes are **not** interpreted as proof that an account is absent.
 
 ## Run on Android Termux (no root)
 
@@ -19,7 +19,7 @@ The binary is `target/release/meta_scan`. To start the browser UI:
 target/release/meta_scan --serve
 ```
 
-Visit **http://127.0.0.1:8787/** in Android Chrome or your preferred local browser. No root, privileged port, Python, Node.js, CDN, or externally hosted JavaScript is needed. The UI serves HTML/CSS/JS from the Rust binary and binds **only to loopback**, including when you specify `--bind`.
+Visit **http://127.0.0.1:8787/** in Android Chrome or your preferred local browser. No root, privileged port, Python, Node.js, CDN, or externally hosted JavaScript is needed. The UI serves HTML and CSS generated from Rust source without JavaScript or WASM and binds **only to loopback**, including when you specify `--bind`.
 
 For long sessions, Termux may require keeping the terminal awake; the existing Huntsman Termux wakelock wrapper can be used. Builds use Huntsman's existing release profile (thin LTO and symbol stripping). This binary adds no new Rust crate dependencies.
 
@@ -62,7 +62,7 @@ target/release/meta_scan --serve --bind 127.0.0.1:8788
 target/release/meta_scan -u nasa --connect-timeout 10 --read-timeout 20
 ```
 
-The browser UI supports up to 20 handles per run with sequential, bounded calls and browser-side JSON/TXT downloads. **Its default is keyless indexed URL discovery**, showing indexed leads and independent search-engine outcomes. When provider enrichment is explicitly checked, it provides separate results for profile, business home, About and transparency. The API key stays server-side.
+The browser UI supports up to 20 handles per run with sequential, bounded calls and Rust-generated JSON/TXT downloads. **Its default is keyless indexed URL discovery**, showing indexed leads and independent search-engine outcomes. When provider enrichment is explicitly selected, it provides separate results for profile, business home, About and transparency. The API key stays server-side.
 
 ## Mapping from MetaScan Python
 
@@ -80,10 +80,10 @@ The browser UI supports up to 20 handles per run with sequential, bounded calls 
 | Configurable timeouts | Yes (combined bounded request timeout) |
 | HTTP 5xx retry with backoff | Yes, max 3 attempts; 429 is reported without blind paid retries |
 | Keyless indexed URL discovery (new) | Yes; three guarded search indexes, direct-page links only |
-| Explicit paid-provider opt-in (new) | `--provider` in CLI or checkbox in Web UI |
+| Explicit paid-provider opt-in (new) | `--provider` in CLI or form selection in Web UI |
 | Single handle | Yes |
 | Batch by file | Added, up to 200 names |
-| Web UI | Added, mobile-first and localhost-only |
+| Web UI | Pure Rust server-rendered HTML forms; mobile-first, localhost-only, no JavaScript, WASM or frontend toolchain |
 | Python interactive `--set-api` | Replaced by secure existing Huntsman keys file/environment |
 | Python `--donate` | Not included; unrelated to collection |
 
@@ -91,7 +91,9 @@ The browser UI supports up to 20 handles per run with sequential, bounded calls 
 
 - HTTPS requests use **Huntsman's shared guarded ureq/rustls transport**, egress policy, maximum 1 MiB response body, disabled redirects, a fixed RapidAPI origin and credential provenance.
 - Handle validation prevents arbitrary URLs, query-string injection and open proxying. No login or Facebook cookie collection.
-- The Web UI caps headers at 8 KiB, JSON bodies at 4 KiB and simultaneous client sockets at 8. It rejects non-loopback bindings, mismatched Host headers and cross-origin state-changing browser requests.
+- The Web UI caps headers at 8 KiB, form/JSON request bodies at 4 KiB and simultaneous client sockets at 8. It rejects non-loopback bindings, mismatched Host headers, invalid same-origin submissions and requests lacking a per-process cryptographically random HTML-form token.
+- Every HTML form, scan decision, report preview and export is processed by Rust; there is no JavaScript file, WebAssembly module, external template engine, Node.js, Python or CDN. A mobile browser only renders standard HTML/CSS.
+- Rust retains the last Web UI batch in a bounded 8 MiB in-process cache for JSON/TXT exports, so exporting does not repeat provider calls or consume additional API quota. Cached results disappear when the process stops.
 - Each HTTP collection request is bounded; the Web UI deliberately executes a small number of handles sequentially to avoid exhausting a low-memory Android device.
 - Keyless mode queries up to three public search indexes per handle and keeps at most 20 exact, HTTPS, direct-page URL leads from genuine `facebook.com`, `www.facebook.com` or `m.facebook.com` hosts. It excludes posts, lookalike domains and off-platform links, and treats all returned URLs as unverified leads. Search engines may rate-limit or suppress results; zero leads is inconclusive.
 - Provider mode is never triggered automatically by a key being present; enabling it may consume paid quota and should be budgeted before scanning large batches.
