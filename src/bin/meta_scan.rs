@@ -767,13 +767,17 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
             "--no-business" => out.business = false,
             "--show-raw" => out.display_style = DisplayStyle::Raw,
             "--provider" => {
-                if out.mode != CollectionMode::Indexed { return Err("choose only one of --provider or --combined".into()); }
+                if out.mode != CollectionMode::Indexed {
+                    return Err("choose only one of --provider or --combined".into());
+                }
                 out.mode = CollectionMode::Provider;
             }
             "--combined" => {
-                if out.mode != CollectionMode::Indexed { return Err("choose only one of --provider or --combined".into()); }
+                if out.mode != CollectionMode::Indexed {
+                    return Err("choose only one of --provider or --combined".into());
+                }
                 out.mode = CollectionMode::Combined;
-            },
+            }
             "--serve" => out.serve = true,
             "--connect-timeout" => {
                 out.connect_timeout = iter
@@ -1020,10 +1024,19 @@ mod tests {
         let fake = Fake::new(200, r#"{"name":"Example","followers":42}"#);
         let key = Secret::new("test-provider-key").unwrap();
         let report = scan_mode(
-            &fake, Some(&key), "nasa", CollectionMode::Combined, true,
-            1234, Duration::from_secs(3),
-        ).unwrap();
-        assert_eq!(report.verification, "unverified_distinct_sources_not_identity_corroboration");
+            &fake,
+            Some(&key),
+            "nasa",
+            CollectionMode::Combined,
+            true,
+            1234,
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        assert_eq!(
+            report.verification,
+            "unverified_distinct_sources_not_identity_corroboration"
+        );
         assert!(report.discovery.is_some());
         assert_eq!(report.profile.state, "observed");
         let sent = fake.sent.lock().unwrap();
@@ -1033,10 +1046,29 @@ mod tests {
 
     #[test]
     fn invalid_or_conflicting_collection_modes_are_rejected() {
-        assert_eq!(CollectionMode::from_name("combined"), Some(CollectionMode::Combined));
+        assert_eq!(
+            CollectionMode::from_name("combined"),
+            Some(CollectionMode::Combined)
+        );
         assert_eq!(CollectionMode::from_name("unexpected"), None);
-        assert!(parse_args(["-u".into(), "nasa".into(), "--combined".into(), "--provider".into()]).is_err());
-        assert!(parse_args(["-u".into(), "nasa".into(), "--provider".into(), "--combined".into()]).is_err());
+        assert!(
+            parse_args([
+                "-u".into(),
+                "nasa".into(),
+                "--combined".into(),
+                "--provider".into()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_args([
+                "-u".into(),
+                "nasa".into(),
+                "--provider".into(),
+                "--combined".into()
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -1145,8 +1177,16 @@ mod tests {
 
     #[test]
     fn collection_defaults_to_keyless_mode_without_provider_opt_in() {
-        assert_eq!(parse_args(["-u".into(), "nasa".into()]).unwrap().mode, CollectionMode::Indexed);
-        assert_eq!(parse_args(["-u".into(), "nasa".into(), "--provider".into()]).unwrap().mode, CollectionMode::Provider);
+        assert_eq!(
+            parse_args(["-u".into(), "nasa".into()]).unwrap().mode,
+            CollectionMode::Indexed
+        );
+        assert_eq!(
+            parse_args(["-u".into(), "nasa".into(), "--provider".into()])
+                .unwrap()
+                .mode,
+            CollectionMode::Provider
+        );
     }
 
     #[test]
