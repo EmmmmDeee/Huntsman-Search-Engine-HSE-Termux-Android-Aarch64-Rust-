@@ -234,6 +234,19 @@ pub(super) fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<Scan
         return json_error(400, "send the parameters in the query string, with no body")
             .into_bytes();
     }
+    // Keep the permit until the complete HTTP response is encoded, not merely until the
+    // ScanApi worker finishes. A panicking worker or a failed spawn also releases it.
+    let _permit = if heavy_saved_scan_response(parsed.method, parsed.path) {
+        match Slot::take_of(scans.web_request_slots(), super::MAX_HEAVY_SCAN_REQUESTS) {
+            Some(permit) => Some(permit),
+            None => {
+                return json_error(503, "saved-scan response capacity in use; retry shortly")
+                    .into_bytes();
+            }
+        }
+    } else {
+        None
+    };
     let head = parsed.method == Method::Head;
     let (api, method, path, query) = (
         Arc::clone(scans),
@@ -267,6 +280,30 @@ pub(super) fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<Scan
         }
         Err(_) => json_error(500, "the scan API failed unexpectedly").into_bytes(),
     }
+}
+
+/// Only large saved-scan materialisations consume the memory-intensive worker budget. Quick
+/// metadata reads and scan-control POSTs remain available even when both permits are held.
+fn heavy_saved_scan_response(method: Method, path: &str) -> bool {
+    if matches!(
+        path,
+        "/api/scans" | "/api/eventtypes" | "/api/correlationrules" | "/api/settings"
+    ) {
+        return false;
+    }
+    let Some(tail) = path.strip_prefix("/api/scans/") else {
+        return true;
+    };
+    if let Some((id, action)) = tail.split_once('/') {
+        return !(method == Method::Post
+            && !id.is_empty()
+            && matches!(action, "stop" | "delete" | "rerun" | "fp"));
+    }
+    // A two-segment GET is normally a cheap scan-status read. Reserved route names
+    // are large report/search/alert operations and cannot masquerade as scan IDs.
+    !(matches!(method, Method::Get | Method::Head)
+        && !tail.is_empty()
+        && !matches!(tail, "export" | "compare" | "alert" | "alerts" | "search"))
 }
 
 /// A file name safe inside a quoted header value: letters, digits, `.`, `-` and `_` kept, every
