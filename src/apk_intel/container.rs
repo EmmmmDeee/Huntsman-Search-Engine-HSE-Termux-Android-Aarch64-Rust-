@@ -121,11 +121,7 @@ fn validate_nested_structure(data: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Inspect a bounded multi-APK ZIP without extracting to disk.
-///
-/// # Errors
-/// Refuses invalid ZIP structures, duplicate/unsafe paths, unsupported compression, encrypted
-/// APK members, CRC failures, invalid embedded APKs and decompression budget overruns.
+/// Decode only a nested APK's compiled manifest, keeping failures explicit and unverified.
 fn nested_manifest(
     data: &[u8],
     archive: &super::Archive<'_>,
