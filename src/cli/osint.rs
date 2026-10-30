@@ -17,9 +17,10 @@ use huntsman_recon::keys::Keys;
 use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
 use huntsman_recon::rhinser_catalog::Catalog;
+use huntsman_recon::rhinser_workspace::{Workspace, MAX_WORKSPACE_BYTES};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-pub(super) const OSINT_HELP: &str = "osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID] | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+pub(super) const OSINT_HELP: &str = "osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID] | osint workspace FILE init|show|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
@@ -69,6 +70,84 @@ fn catalog_cmd(args: &[String]) -> ExitCode {
             EX_USAGE,
             "usage: osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID]",
         ),
+    }
+}
+
+/// Persistent, bounded, private OSINT casebook; the Rust library owns validation.
+fn workspace_cmd(args: &[String]) -> ExitCode {
+    let [filename, operation, rest @ ..] = args else {
+        return fail(EX_USAGE, "usage: osint workspace FILE init|show|case|note|lead|bookmark|favourite|recent|search|setting ...");
+    };
+    let path = Path::new(filename);
+    if operation == "init" {
+        if !rest.is_empty() {
+            return fail(EX_USAGE, "usage: osint workspace FILE init");
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => return fail(EX_DATAERR, "workspace already exists"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return fail(EX_DATAERR, &error.to_string()),
+        }
+        let bytes = match serde_json::to_vec_pretty(&Workspace::default()) {
+            Ok(bytes) => bytes,
+            Err(error) => return fail(EX_DATAERR, &error.to_string()),
+        };
+        return match huntsman_recon::fsio::write_atomic(path, &bytes, MAX_WORKSPACE_BYTES) {
+            Ok(()) => {
+                println!("workspace_initialized");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail_error(&error),
+        };
+    }
+
+    let bytes = match read_bounded(path, MAX_WORKSPACE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) => return fail_error(&error),
+    };
+    let mut workspace = match Workspace::from_json(&bytes) {
+        Ok(workspace) => workspace,
+        Err(error) => return fail(EX_DATAERR, &error),
+    };
+    if operation == "show" {
+        return if rest.is_empty() {
+            emit(&workspace, true)
+        } else {
+            fail(EX_USAGE, "usage: osint workspace FILE show")
+        };
+    }
+    let now = clock::unix_now();
+    let outcome = match (operation.as_str(), rest) {
+        ("case", [id, title]) => workspace.create_case(id, title),
+        ("note", [case_id, note]) => workspace.add_note(case_id, note, now),
+        ("lead", [case_id, id, url, summary]) => {
+            workspace.add_lead(case_id, id, url, summary, now)
+        }
+        ("bookmark" | "favourite" | "recent", [id]) => workspace.remember_tool(id, operation),
+        ("search", [query]) => workspace.remember_search(query),
+        ("setting", [key, value]) => {
+            if key.is_empty() || workspace.settings.len() >= 512 && !workspace.settings.contains_key(key) {
+                Err("invalid setting or limit reached".to_owned())
+            } else {
+                workspace.settings.insert(key.clone(), value.clone());
+                Ok(())
+            }
+        }
+        _ => return fail(EX_USAGE, "invalid workspace operation or argument count"),
+    };
+    if let Err(error) = outcome.and_then(|()| workspace.validate()) {
+        return fail(EX_DATAERR, &error);
+    }
+    let updated = match serde_json::to_vec_pretty(&workspace) {
+        Ok(data) => data,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    match huntsman_recon::fsio::write_atomic(path, &updated, MAX_WORKSPACE_BYTES) {
+        Ok(()) => {
+            println!("workspace_saved");
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail_error(&error),
     }
 }
 
@@ -122,6 +201,7 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     let now = clock::unix_now();
     match args {
         [mode, rest @ ..] if mode == "catalog" => catalog_cmd(rest),
+        [mode, rest @ ..] if mode == "workspace" => workspace_cmd(rest),
         [mode, path] if mode == "case" => {
             match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
                 Ok(data) => match osint_casework::review_json(&data) {
