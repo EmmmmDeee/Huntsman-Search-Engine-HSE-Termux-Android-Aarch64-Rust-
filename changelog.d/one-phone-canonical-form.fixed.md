@@ -11,7 +11,7 @@
     being accepted as a generic international number by scans.
   - A number written after Australia's `0011` international prefix (`0011 44 20 7946 0958`) is
     `+442079460958`; a scan read it as the made-up `+11442079460958`.
-  - A number written after `00` as `+1` must have the North American plan's ten digits after
+  - A number written after `00` or `0011` as `+1` must have the North American plan's ten digits after
     the `1`, so a zero-padded identifier (`001234567890`) is no phone. Two numbers run
     together (`+44 +1 415 555 2671`) are refused rather than joined.
   `value_syntax::canonical_phone` is the rule, and `phone_intl::canonicalize` calls it.
