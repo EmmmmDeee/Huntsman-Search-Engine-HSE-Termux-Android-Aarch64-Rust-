@@ -580,64 +580,63 @@ fn allowed_host(host: Option<&str>, port: u16) -> bool {
 }
 
 fn serve_scan_request(stream: &mut TcpStream, request: &HttpRequest, port: u16, timeout: Duration) {
-        if request.header("X-Meta-Scan") != Some("1")
-            || request
-                .header("Content-Type")
-                .is_none_or(|v| !v.to_ascii_lowercase().starts_with("application/json"))
-            || request.header("Origin").is_some_and(|v| {
-                v != format!("http://127.0.0.1:{port}")
-                    && v != format!("http://localhost:{port}")
-            })
-        {
+    if request.header("X-Meta-Scan") != Some("1")
+        || request
+            .header("Content-Type")
+            .is_none_or(|v| !v.to_ascii_lowercase().starts_with("application/json"))
+        || request.header("Origin").is_some_and(|v| {
+            v != format!("http://127.0.0.1:{port}") && v != format!("http://localhost:{port}")
+        })
+    {
+        let _ = json_reply(
+            stream,
+            "403 Forbidden",
+            &json!({"error":"same-origin JSON request and X-Meta-Scan header required"}),
+        );
+        return;
+    }
+    let Ok(input) = serde_json::from_slice::<Value>(&request.body) else {
+        let _ = json_reply(
+            stream,
+            "400 Bad Request",
+            &json!({"error":"invalid JSON body"}),
+        );
+        return;
+    };
+    let Some(username) = input.get("username").and_then(Value::as_str) else {
+        let _ = json_reply(
+            stream,
+            "400 Bad Request",
+            &json!({"error":"username required"}),
+        );
+        return;
+    };
+    let business = input
+        .get("include_business")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let key = configured_secret();
+    let transport = transport(timeout);
+    match scan(
+        &transport,
+        key.as_ref(),
+        username,
+        business,
+        unix_now(),
+        timeout,
+    ) {
+        Ok(report) => {
             let _ = json_reply(
                 stream,
-                "403 Forbidden",
-                &json!({"error":"same-origin JSON request and X-Meta-Scan header required"}),
+                "200 OK",
+                &serde_json::to_value(report)
+                    .unwrap_or_else(|_| json!({"error":"serialisation failed"})),
             );
-            return;
         }
-        let Ok(input) = serde_json::from_slice::<Value>(&request.body) else {
-            let _ = json_reply(
-                stream,
-                "400 Bad Request",
-                &json!({"error":"invalid JSON body"}),
-            );
-            return;
-        };
-        let Some(username) = input.get("username").and_then(Value::as_str) else {
-            let _ = json_reply(
-                stream,
-                "400 Bad Request",
-                &json!({"error":"username required"}),
-            );
-            return;
-        };
-        let business = input
-            .get("include_business")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        let key = configured_secret();
-        let transport = transport(timeout);
-        match scan(
-            &transport,
-            key.as_ref(),
-            username,
-            business,
-            unix_now(),
-            timeout,
-        ) {
-            Ok(report) => {
-                let _ = json_reply(
-                    stream,
-                    "200 OK",
-                    &serde_json::to_value(report)
-                        .unwrap_or_else(|_| json!({"error":"serialisation failed"})),
-                );
-            }
-            Err(reason) => {
-                let _ = json_reply(stream, "400 Bad Request", &json!({"error":reason}));
-            }
+        Err(reason) => {
+            let _ = json_reply(stream, "400 Bad Request", &json!({"error":reason}));
         }
+    }
 }
 
 fn serve_client(mut stream: TcpStream, port: u16, timeout: Duration) {
