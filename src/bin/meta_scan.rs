@@ -6,7 +6,7 @@
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -220,7 +220,7 @@ fn provider_result<T: Transport + ?Sized>(
         {
             return EndpointResult::new(source, "empty", status, None, Some("Provider returned no records"));
         }
-        if data.get("error").is_some_and(|e| !e.is_null() && e != false)
+        if data.get("error").is_some_and(|e| !e.is_null() && e != &Value::Bool(false))
             || data.get("success") == Some(&Value::Bool(false))
         {
             return EndpointResult::new(source, "provider_error", status, None, Some("Provider reported an error in its JSON response"));
@@ -239,7 +239,7 @@ fn scan<T: Transport + ?Sized>(
     timeout: Duration,
 ) -> Result<Report, &'static str> {
     let username = checked_username(username)?;
-    let mut get = |ep| provider_result(transport, secret, ep, &username, now, timeout);
+    let get = |ep| provider_result(transport, secret, ep, &username, now, timeout);
     Ok(Report {
         page_url: format!("https://www.facebook.com/{username}"),
         profile: get(Endpoint::Profile),
@@ -343,7 +343,8 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
     if body.len() > length { return Err("unexpected request body"); }
     while body.len() < length {
         let remain = length - body.len();
-        let n = stream.read(&mut chunk[..remain.min(chunk.len())]).map_err(|_| "body read failed")?;
+        let take = remain.min(chunk.len());
+        let n = stream.read(&mut chunk[..take]).map_err(|_| "body read failed")?;
         if n == 0 { return Err("incomplete request body"); }
         body.extend_from_slice(&chunk[..n]);
     }
