@@ -653,7 +653,10 @@ fn release_quality_bounds_ephemeral_test_artifacts_without_skipping_checks() {
     assert!(quality.contains("cargo run --locked -p xtask -- gate full"));
     assert!(quality.contains("Record free disk before shared host acceptance"));
     assert!(quality.contains("Record remaining disk and build footprint"));
-    assert!(quality.contains("if: always()"), "report disk exhaustion even after a gate failure");
+    assert!(
+        quality.contains("if: always()"),
+        "report disk exhaustion even after a gate failure"
+    );
 }
 
 #[test]
