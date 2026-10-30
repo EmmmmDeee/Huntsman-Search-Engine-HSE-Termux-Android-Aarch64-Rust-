@@ -136,16 +136,15 @@ impl Catalog {
     /// # Errors
     /// Refuses unsupported tools and invalid or overlong query text.
     pub fn search_url(&self, id: &str, query: &str) -> Result<String, String> {
-        let hit = self.tool(id).ok_or_else(|| "unknown catalogue tool".to_owned())?;
+        let hit = self
+            .tool(id)
+            .ok_or_else(|| "unknown catalogue tool".to_owned())?;
         let template = hit
             .tool
             .query_template
             .as_ref()
             .ok_or_else(|| "this tool has no verified query template".to_owned())?;
-        if query.trim().is_empty()
-            || query.len() > 256
-            || query.chars().any(char::is_control)
-        {
+        if query.trim().is_empty() || query.len() > 256 || query.chars().any(char::is_control) {
             return Err("invalid catalogue query".to_owned());
         }
         let encoded = crate::http::percent_encode_unreserved(query.trim());
@@ -232,7 +231,9 @@ mod tests {
     fn reconstructed_email_query_templates_percent_encode_without_fetching() {
         let catalog = Catalog::load().unwrap();
         assert_eq!(
-            catalog.search_url("emailosint", "person+tag@example.org").unwrap(),
+            catalog
+                .search_url("emailosint", "person+tag@example.org")
+                .unwrap(),
             "https://emailosint.com/?q=person%2Btag%40example.org"
         );
         assert!(catalog.search_url("t0343", "test").is_err());
