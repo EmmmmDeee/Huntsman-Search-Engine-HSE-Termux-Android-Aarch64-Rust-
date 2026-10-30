@@ -243,6 +243,10 @@ pub fn is_iana_tld(label: &str) -> bool {
     !upper.is_empty() && iana_tlds().binary_search(&upper.as_str()).is_ok()
 }
 
+/// `raw` as a domain name: lower-cased, outer dots trimmed, two or more valid labels. A top-level
+/// label is never all digits (RFC 3696 §2), so a dotted IPv4 address (`93.184.216.34`, a
+/// website's host) is no domain: a domain lookup of it would ask certificate logs, archives and
+/// DNS about an address while the address's own lookup never ran.
 #[must_use]
 pub fn canonical_domain(raw: &str) -> Option<String> {
     let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
@@ -250,7 +254,12 @@ pub fn canonical_domain(raw: &str) -> Option<String> {
         return None;
     }
     let labels: Vec<&str> = domain.split('.').collect();
-    if labels.len() < 2 || !labels.iter().all(|label| is_domain_label(label)) {
+    if labels.len() < 2
+        || !labels.iter().all(|label| is_domain_label(label))
+        || labels
+            .last()
+            .is_some_and(|tld| tld.bytes().all(|byte| byte.is_ascii_digit()))
+    {
         return None;
     }
     Some(domain)
@@ -550,6 +559,11 @@ mod tests {
         assert!(canonical_domain("bad..example").is_none());
         assert!(canonical_domain("bad_example.com").is_none());
         assert!(canonical_domain("example.café").is_none());
+        // A dotted IPv4 address is no domain: no top-level label is all digits.
+        assert!(canonical_domain("93.184.216.34").is_none());
+        assert!(canonical_domain("example.123").is_none());
+        assert!(canonical_domain("1.2.3.example").is_some());
+        assert!(canonical_domain("0412345678.com.au").is_some());
     }
 
     #[test]

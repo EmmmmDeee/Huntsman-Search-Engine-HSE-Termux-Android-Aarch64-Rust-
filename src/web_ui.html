@@ -1040,7 +1040,7 @@ function rawView(x){
   if(x.confidence!=null)meta.push('confidence '+x.confidence);
   if(x.entity)meta.push('entity '+show(x.entity));
   b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
-  if(PIVOT.has(x.type))b.append(button('New Scan of this',()=>pivot(x),'pivot'));
+  if(x.scan_kind)b.append(button('New Scan of this',()=>pivot(x),'pivot'));
   if(x.entity){const a=button('Source attribution',async()=>{a.disabled=true;try{await assess(x,b)}catch(e){a.disabled=false;fail('scerror',e.message)}});b.append(a)}
   return b;
 }
@@ -1398,9 +1398,9 @@ async function prefill(f){
   $('nerror').hidden=true;location.hash='#/newscan';
 }
 const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
-// Launch a follow-up scan from a typed pivot, preserving depth/use case.
-const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS','HSE_CRYPTO_ADDRESS','PHYSICAL_ADDRESS','PHYSICAL_COORDINATES']);
-const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.type==='PHYSICAL_ADDRESS'?'geocode':(x.type==='BITCOIN_ADDRESS'||x.type==='HSE_CRYPTO_ADDRESS')?'crypto':'auto',usecase:o.usecase,depth:o.depth})};
+// Launch a follow-up scan of an element with the lookup the server names for it (the row's
+// scan_kind), preserving depth/use case.
+const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.scan_kind,usecase:o.usecase,depth:o.depth})};
 // Spiderfoot has no offline analysis of a saved scan; this is Huntsman's /analyze over the saved
 // entities, shown whole: every count, every stated limitation, and the report as returned. Not
 // cached: a false-positive flag set since must turn it into the server's refusal.
