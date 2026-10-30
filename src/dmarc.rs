@@ -270,6 +270,17 @@ mod tests {
     }
 
     #[test]
+    fn uppercase_mailto_schemes_remain_valid_aggregate_and_failure_destinations() {
+        let record = parse(
+            "v=DMARC1; p=reject; rua=MAILTO:Reports@Example.org; ruf=MaIlTo:Failures@Example.org",
+        )
+        .expect("DMARC record");
+        assert_eq!(record.rua, ["Reports@Example.org"]);
+        assert_eq!(record.ruf, ["Failures@Example.org"]);
+        assert!(!record.issues().contains(&DmarcIssue::NoAggregateReports));
+    }
+
+    #[test]
     fn flags_missing_policy_and_non_enforcement() {
         let missing = parse("v=DMARC1; rua=mailto:a@b.com").expect("record");
         assert!(missing.issues().contains(&DmarcIssue::MissingPolicy));
