@@ -13,7 +13,7 @@ generator lives in the existing Rust xtask workspace crate and adds **no runtime
 
 ## Canonical material
 
-1. **Current Git index** — every tracked path, including non-overlapping and inactive files.
+1. **Current Git index** — every tracked path, including non-overlapping and inactive files. The report explicitly distinguishes this mutable index from the reference HEAD commit, tracks staged and unstaged divergence, and notes untracked paths excluded from the tree.
 2. **docs/completion/tasks.json** — reviewed work items, declared implementation states,
    evidence, affected paths, exact actions and test/acceptance criteria.
 3. **xtask/src/completion.rs** — deterministic renderer, dependency validator and sorted tree.
@@ -22,7 +22,9 @@ generator lives in the existing Rust xtask workspace crate and adds **no runtime
    on pull requests, pushes to main, manual dispatches and the daily schedule.
 6. **AGENTS.md** and existing CI/workflows — authority and quality gates, not replaced here.
 
-The generated report names its actual checked-out HEAD. Because a source-addressed report changes
+The generated report names its actual checked-out HEAD as a **reference revision only**. Its inventory comes from the current Git index and its task definitions from the on-disk working tree. An index can differ from HEAD, and the task ledger may contain unstaged edits. The report displays these distinctions, warns about divergence and refuses unmerged index entries. Check the recorded provenance flags before treating it as evidence of a committed snapshot.
+
+Because a source-addressed report changes
 with every commit, it is deliberately kept in ignored target/ instead of being committed to the
 same commit it describes. This prevents a self-referential perpetual-diff loop. The generator and
 the reviewed task manifest ARE versioned; generated reports are CI artifacts.
