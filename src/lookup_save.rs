@@ -273,6 +273,7 @@ fn crypto_provenance(source: &str) -> (&str, &'static str) {
         "blockchain" => ("blockchain", "src/blockchain.rs"),
         "base_rpc" => ("base_rpc", "src/base_rpc.rs"),
         "eth_rpc" => ("eth_rpc", "src/eth_rpc.rs"),
+        "solana_rpc" => ("solana_rpc", "src/solana_rpc.rs"),
         _ => (source, "src/crypto_cli.rs"),
     }
 }

@@ -20,6 +20,7 @@ benchmark	diagnostic	benchmarking support
 blockchain	adapter	blockchain.info Bitcoin address source client reached through crypto_cli
 base_rpc	adapter	keyless Base mainnet account observations through crypto_cli, scan and shared Web UI lookup; provenance retained without ownership attribution
 eth_rpc	adapter	keyless Ethereum mainnet account observations through crypto_cli, scan and shared Web UI lookup over the shared evm_rpc core; provenance retained without ownership attribution
+solana_rpc	adapter	keyless Solana mainnet-beta account observations through crypto_cli, scan and shared Web UI lookup: genesis-gated read-only batch, bounded SPL token, mint and multisig decode, recent transactions naming the address; provenance retained without ownership attribution
 evm_rpc	leaf	the one keyless EVM JSON-RPC account-observation core (batch request, fail-closed decode, exact-wei provenance) shared by base_rpc and eth_rpc
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI

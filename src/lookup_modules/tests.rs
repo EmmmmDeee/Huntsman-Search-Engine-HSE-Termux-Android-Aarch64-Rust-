@@ -76,6 +76,12 @@ impl Transport for Everywhere {
                 200,
                 br#"[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x0"},{"jsonrpc":"2.0","id":3,"result":"0x0"},{"jsonrpc":"2.0","id":4,"result":"0x"}]"#,
             )
+        } else if url == crate::solana_rpc::RPC_URL {
+            // Mainnet-beta, no account and no recent signature: a clean valid-zero.
+            (
+                200,
+                br#"[{"jsonrpc":"2.0","id":1,"result":"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"},{"jsonrpc":"2.0","id":2,"result":{"context":{"slot":1},"value":null}},{"jsonrpc":"2.0","id":3,"result":[]},{"jsonrpc":"2.0","id":4,"result":1}]"#,
+            )
         } else if url.contains("wbsearchentities") {
             // Wikidata search with no hit: a clean valid-zero, so a people scan that chose
             // wikidata still produces its row without an item fetch.
@@ -384,6 +390,8 @@ fn a_lookup_asks_only_the_chosen_modules() {
                 "base:0x1111111111111111111111111111111111111111"
             } else if kind == ScanKind::CryptoAddress && module == crate::eth_rpc::SOURCE {
                 "eth:0x1111111111111111111111111111111111111111"
+            } else if kind == ScanKind::CryptoAddress && module == crate::solana_rpc::SOURCE {
+                "sol:29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2"
             } else if kind == ScanKind::Place
                 && (module == crate::stac::SOURCE || module == crate::opensky::SOURCE)
             {

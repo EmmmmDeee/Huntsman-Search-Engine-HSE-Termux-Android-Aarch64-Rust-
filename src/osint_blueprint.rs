@@ -386,7 +386,7 @@ pub const ENTRIES: &[Entry] = &[
         features: "Bitcoin network monitor: block height, hashrate, mempool size and fee rates, alerts when a TXID confirms, a fee estimator, a self-hosted mempool server option and Tor.",
         modules: &["blockchain", "crypto_cli"],
         commands: &["crypto BITCOIN-ADDRESS"],
-        integration: "CLI (crypto, scan -k crypto), /api/lookup and the Web UI's Bitcoin / Base / Ethereum wallet scan",
+        integration: "CLI (crypto, scan -k crypto), /api/lookup and the Web UI's Bitcoin / Base / Ethereum / Solana address scan",
         termux: "None beyond Termux; keyless",
         priority: "P3",
         status: Status::Partial,

@@ -122,6 +122,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             blockchain::SOURCE,
             crate::base_rpc::SOURCE,
             crate::eth_rpc::SOURCE,
+            crate::solana_rpc::SOURCE,
         ],
         ScanKind::Place => vec![
             nominatim::SOURCE,

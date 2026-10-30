@@ -87,6 +87,10 @@ pub fn canonical_bitcoin_address(raw: &str) -> Option<String> {
     None
 }
 
+/// The selector prefix naming a Solana mainnet-beta address. Base58 is case-significant and has no
+/// checksum, so a value carrying this prefix keeps its letter case wherever it is canonicalised.
+pub const SOLANA_PREFIX: &str = "sol:";
+
 #[must_use]
 pub fn canonical_handle(raw: &str) -> Option<String> {
     let raw = raw.trim().trim_start_matches('@');

@@ -390,7 +390,7 @@ pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
         "PHONE_NUMBER" => Some(ScanKind::Phone),
         "USERNAME" => Some(ScanKind::Username),
         "HUMAN_NAME" => Some(ScanKind::People),
-        "BITCOIN_ADDRESS" => Some(ScanKind::CryptoAddress),
+        "BITCOIN_ADDRESS" | "HSE_CRYPTO_ADDRESS" => Some(ScanKind::CryptoAddress),
         "PHYSICAL_ADDRESS" => Some(ScanKind::Place),
         _ => None,
     }
@@ -417,6 +417,10 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
             Some(NetworkSelector::Cell { .. }) => "HSE_OTHER",
             _ => "HSE_WIFI_SSID",
         },
+        // A `base:`, `eth:` or `sol:` selector is another chain's address, not Bitcoin's.
+        ScanKind::CryptoAddress if crate::crypto_cli::prefixed_selector(canonical).is_some() => {
+            "HSE_CRYPTO_ADDRESS"
+        }
         ScanKind::CryptoAddress => "BITCOIN_ADDRESS",
         ScanKind::Place if crate::canonical::canonical_coordinates(canonical).is_some() => {
             "PHYSICAL_COORDINATES"
@@ -866,6 +870,22 @@ mod tests {
             ),
             "BITCOIN_ADDRESS"
         );
+        // A prefixed chain selector is a takeable crypto target typed as no Bitcoin address.
+        assert_eq!(
+            scan_kind("HSE_CRYPTO_ADDRESS"),
+            Some(ScanKind::CryptoAddress)
+        );
+        for prefixed in [
+            "base:0x1111111111111111111111111111111111111111",
+            "eth:0x1111111111111111111111111111111111111111",
+            "sol:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        ] {
+            assert_eq!(
+                target_type(ScanKind::CryptoAddress, prefixed),
+                "HSE_CRYPTO_ADDRESS",
+                "{prefixed}"
+            );
+        }
         // A written address is a takeable target: the geocode lookup runs it. Its point is the
         // coordinates type, which the network lookup also takes, so a coordinates element names
         // no one lookup; `sf.py` detects neither, so neither is reached from `-s`.
