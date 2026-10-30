@@ -511,6 +511,31 @@ fn scan_indexed<T: Transport + ?Sized>(
     })
 }
 
+/// Keep indexed leads and opt-in provider metadata in separate evidence compartments.
+/// Shared URL appearances are not independent confirmation of a person's identity.
+fn scan_mode<T: Transport + ?Sized>(
+    transport: &T,
+    secret: Option<&Secret>,
+    username: &str,
+    mode: CollectionMode,
+    business: bool,
+    now: u64,
+    timeout: Duration,
+) -> Result<Report, &'static str> {
+    match mode {
+        CollectionMode::Indexed => scan_indexed(transport, username, now),
+        CollectionMode::Provider => scan(transport, secret, username, business, now, timeout),
+        CollectionMode::Combined => {
+            let indexed = scan_indexed(transport, username, now)?;
+            let mut enriched = scan(transport, secret, username, business, now, timeout)?;
+            enriched.discovery = indexed.discovery;
+            enriched.provider = "public_search_indexes_and_opt_in_rapidapi";
+            enriched.verification = "unverified_distinct_sources_not_identity_corroboration";
+            Ok(enriched)
+        }
+    }
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -672,6 +697,29 @@ fn allowed_host(host: Option<&str>, port: u16) -> bool {
     host.is_some_and(|h| allowed.iter().any(|v| h.eq_ignore_ascii_case(v)))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CollectionMode {
+    #[default]
+    Indexed,
+    Provider,
+    Combined,
+}
+
+impl CollectionMode {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "indexed" => Some(Self::Indexed),
+            "provider" => Some(Self::Provider),
+            "combined" => Some(Self::Combined),
+            _ => None,
+        }
+    }
+
+    const fn requires_key(self) -> bool {
+        matches!(self, Self::Provider | Self::Combined)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum DisplayStyle {
     #[default]
@@ -689,13 +737,13 @@ struct Options {
     bind: String,
     business: bool,
     display_style: DisplayStyle,
-    provider: bool,
+    mode: CollectionMode,
     connect_timeout: u64,
     read_timeout: u64,
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  meta_scan -u HANDLE [--provider] [--no-business] [--show-raw] [--out-json DIR] [--out-txt DIR]\n  meta_scan --batch FILE [--provider] [--out-json DIR] [--out-txt DIR]\n  meta_scan --serve [--bind 127.0.0.1:8787]\nOptions: --connect-timeout SECONDS --read-timeout SECONDS\nDefault: keyless public indexed URL discovery, not profile scraping.\n--provider: opt into RapidAPI profile/business requests (may consume billable quota).\nAPI key: RAPIDAPI_KEY environment variable or mode-0600 ~/.huntsman.env\n"
+    "Usage:\n  meta_scan -u HANDLE [--provider | --combined] [--no-business] [--show-raw] [--out-json DIR] [--out-txt DIR]\n  meta_scan --batch FILE [--provider | --combined] [--out-json DIR] [--out-txt DIR]\n  meta_scan --serve [--bind 127.0.0.1:8787]\nOptions: --connect-timeout SECONDS --read-timeout SECONDS\nDefault: keyless public indexed URL discovery, not profile scraping.\n--provider: opt into RapidAPI profile/business requests (may consume billable quota).\n--combined: keyless indexed leads PLUS opt-in RapidAPI results (may consume quota).\nAPI key: RAPIDAPI_KEY environment variable or mode-0600 ~/.huntsman.env\n"
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
@@ -718,7 +766,14 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
             "--bind" => out.bind = iter.next().ok_or("missing bind")?,
             "--no-business" => out.business = false,
             "--show-raw" => out.display_style = DisplayStyle::Raw,
-            "--provider" => out.provider = true,
+            "--provider" => {
+                if out.mode != CollectionMode::Indexed { return Err("choose only one of --provider or --combined".into()); }
+                out.mode = CollectionMode::Provider;
+            }
+            "--combined" => {
+                if out.mode != CollectionMode::Indexed { return Err("choose only one of --provider or --combined".into()); }
+                out.mode = CollectionMode::Combined;
+            },
             "--serve" => out.serve = true,
             "--connect-timeout" => {
                 out.connect_timeout = iter
@@ -810,25 +865,22 @@ fn run() -> Result<(), String> {
         .into_iter()
         .map(|x| checked_username(&x).map_err(str::to_owned))
         .collect::<Result<_, _>>()?;
-    let secret = opts.provider.then(configured_secret).flatten();
-    if opts.provider && secret.is_none() {
+    let secret = opts.mode.requires_key().then(configured_secret).flatten();
+    if opts.mode.requires_key() && secret.is_none() {
         return Err("RAPIDAPI_KEY is not configured; set it in ~/.huntsman.env (chmod 600) or the environment".into());
     }
     let transport = transport(timeout);
     let mut successful = 0;
     for name in names {
-        let report = if opts.provider {
-            scan(
-                &transport,
-                secret.as_ref(),
-                &name,
-                opts.business,
-                unix_now(),
-                timeout,
-            )
-        } else {
-            scan_indexed(&transport, &name, unix_now())
-        }
+        let report = scan_mode(
+            &transport,
+            secret.as_ref(),
+            &name,
+            opts.mode,
+            opts.business,
+            unix_now(),
+            timeout,
+        )
         .map_err(str::to_owned)?;
         if report.has_observation() {
             successful += 1;
@@ -964,6 +1016,30 @@ mod tests {
     }
 
     #[test]
+    fn combined_mode_preserves_distinct_evidence_and_explicit_provider_calls() {
+        let fake = Fake::new(200, r#"{"name":"Example","followers":42}"#);
+        let key = Secret::new("test-provider-key").unwrap();
+        let report = scan_mode(
+            &fake, Some(&key), "nasa", CollectionMode::Combined, true,
+            1234, Duration::from_secs(3),
+        ).unwrap();
+        assert_eq!(report.verification, "unverified_distinct_sources_not_identity_corroboration");
+        assert!(report.discovery.is_some());
+        assert_eq!(report.profile.state, "observed");
+        let sent = fake.sent.lock().unwrap();
+        assert_eq!(sent.iter().filter(|r| r.url.contains(API_HOST)).count(), 4);
+        assert_eq!(sent.iter().filter(|r| !r.url.contains(API_HOST)).count(), 3);
+    }
+
+    #[test]
+    fn invalid_or_conflicting_collection_modes_are_rejected() {
+        assert_eq!(CollectionMode::from_name("combined"), Some(CollectionMode::Combined));
+        assert_eq!(CollectionMode::from_name("unexpected"), None);
+        assert!(parse_args(["-u".into(), "nasa".into(), "--combined".into(), "--provider".into()]).is_err());
+        assert!(parse_args(["-u".into(), "nasa".into(), "--provider".into(), "--combined".into()]).is_err());
+    }
+
+    #[test]
     fn no_key_does_not_contact_provider() {
         let fake = Fake::new(200, r#"{"name":"Example"}"#);
         let report = scan(&fake, None, "nasa", true, 1234, Duration::from_secs(10)).unwrap();
@@ -1069,12 +1145,8 @@ mod tests {
 
     #[test]
     fn collection_defaults_to_keyless_mode_without_provider_opt_in() {
-        assert!(!parse_args(["-u".into(), "nasa".into()]).unwrap().provider);
-        assert!(
-            parse_args(["-u".into(), "nasa".into(), "--provider".into()])
-                .unwrap()
-                .provider
-        );
+        assert_eq!(parse_args(["-u".into(), "nasa".into()]).unwrap().mode, CollectionMode::Indexed);
+        assert_eq!(parse_args(["-u".into(), "nasa".into(), "--provider".into()]).unwrap().mode, CollectionMode::Provider);
     }
 
     #[test]
