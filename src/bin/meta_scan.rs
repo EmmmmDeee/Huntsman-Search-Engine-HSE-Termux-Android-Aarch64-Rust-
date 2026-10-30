@@ -22,7 +22,7 @@ use huntsman_recon::keys::{Keys, Secret};
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use huntsman_recon::web_query::{self, SearchHit};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 #[path = "meta_scan/web.rs"]
 mod web;
