@@ -76,6 +76,11 @@ fn validated_user_agent(value: Option<&str>) -> Option<&str> {
             return false;
         };
         !local.is_empty()
+            // RFC 5321 dot-atom: a dot cannot begin/end the local part or repeat.
+            && local.len() <= 64
+            && !local.starts_with('.')
+            && !local.ends_with('.')
+            && !local.contains("..")
             && local
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+/=?^`{|}~_-".contains(&byte))
@@ -938,6 +943,10 @@ mod tests {
             Some("Huntsman project-only https://github.com/repo"),
             Some("Huntsman none@domain"),
             Some("Huntsman admin@example..com"),
+            Some("Huntsman .admin@example.com"),
+            Some("Huntsman admin.@example.com"),
+            Some("Huntsman admin..ops@example.com"),
+            Some("Huntsman aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"),
             Some("Huntsman admin@example.123"),
             Some("Huntsman admin@example.c"),
             Some("Huntsman contact@example.com\r\nX-Injected: yes"),
