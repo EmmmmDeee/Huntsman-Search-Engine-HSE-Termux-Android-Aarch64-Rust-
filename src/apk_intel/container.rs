@@ -169,9 +169,7 @@ fn authenticated_v2_signers(
         };
         for (index, certificate) in claims {
             if !checks.iter().any(|check| {
-                check.scheme == "v2"
-                    && check.signer_index == index
-                    && check.signature_authenticated
+                check.scheme == "v2" && check.signer_index == index && check.signature_authenticated
             }) {
                 return Vec::new();
             }
@@ -367,12 +365,12 @@ fn inspect_nested(
     } else {
         None
     };
-    let authenticated_sdk_signers = checks
-        .as_deref()
-        .map_or_else(Vec::new, |checks| authenticated_sdk_signers(&archive, checks));
-    let authenticated_v2_signers = checks
-        .as_deref()
-        .map_or_else(Vec::new, |checks| authenticated_v2_signers(&archive, checks));
+    let authenticated_sdk_signers = checks.as_deref().map_or_else(Vec::new, |checks| {
+        authenticated_sdk_signers(&archive, checks)
+    });
+    let authenticated_v2_signers = checks.as_deref().map_or_else(Vec::new, |checks| {
+        authenticated_v2_signers(&archive, checks)
+    });
     let (package, version, manifest_error) = nested_manifest(&bytes, &archive);
     Ok(NestedApk {
         path: entry.name.to_owned(),
@@ -946,7 +944,10 @@ mod tests {
         );
         let conflicting = zip(&[("base.apk", &first, 0), ("split.apk", &other, 0)]);
         let conflicted = run(&conflicting, "v2-conflict.apks", 42).expect("different v2 keys");
-        assert_eq!(conflicted.v2_signer_continuity, "authenticated_v2_difference");
+        assert_eq!(
+            conflicted.v2_signer_continuity,
+            "authenticated_v2_difference"
+        );
 
         // A changed central-directory byte remains structurally valid but
         // invalidates the authenticated content digest for the second APK.
