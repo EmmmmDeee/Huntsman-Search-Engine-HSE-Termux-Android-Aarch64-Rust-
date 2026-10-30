@@ -1,4 +1,4 @@
-//! Native Rust server-rendered interface for MetaScan.
+//! Native Rust server-rendered interface for `MetaScan`.
 //!
 //! No JavaScript, WASM, Python, Node, template engine, CDN, or frontend build.
 //! Native HTML forms make all collection, filtering, state and exports Rust-owned.
@@ -374,7 +374,7 @@ fn handle_form_scan(
             return;
         }
     };
-    let mode = form.get("mode").map(String::as_str).unwrap_or("indexed");
+    let mode = form.get("mode").map_or("indexed", String::as_str);
     if !matches!(mode, "indexed" | "provider") {
         html_response(
             stream,
@@ -435,7 +435,7 @@ fn handle_form_scan(
     let count = reports.len();
     let mut saved = state.saved.lock().unwrap_or_else(PoisonError::into_inner);
     saved.reports = reports;
-    saved.handles = raw.to_owned();
+    raw.clone_into(&mut saved.handles);
     saved.provider = provider;
     saved.business = business;
     drop(saved);
@@ -469,7 +469,7 @@ fn handle_export(stream: &mut TcpStream, state: &WebState, req: &HttpRequest, po
             return;
         }
     };
-    let kind = form.get("format").map(String::as_str).unwrap_or("");
+    let kind = form.get("format").map_or("", String::as_str);
     if !matches!(kind, "json" | "txt") {
         html_response(
             stream,
