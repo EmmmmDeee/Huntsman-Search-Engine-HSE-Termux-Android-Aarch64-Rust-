@@ -2,17 +2,15 @@
 
 use crate::value_syntax::{self, record_tag};
 
-/// True if the first tag is exactly `v=DMARC1` (ASCII-case-insensitive).
+/// True if the first TXT tag has name `v` and the entire value `DMARC1`.
 ///
-/// An unsupported version such as `v=DMARC10` must not be read as a DMARC1 policy.
-/// Only whitespace, a tag separator, or the end of the record may follow the version.
+/// RFC 7489 requires an exact version, not a prefix such as `DMARC10`. Reusing
+/// `record_tag` also respects the permitted whitespace around the equals sign.
 #[must_use]
 pub fn is_dmarc(txt: &str) -> bool {
-    txt.get(..8)
-        .is_some_and(|version| version.eq_ignore_ascii_case("v=DMARC1"))
-        && txt
-            .get(8..)
-            .is_some_and(|tail| matches!(tail.trim_start().chars().next(), None | Some(';')))
+    let version_tag = txt.split(';').next().unwrap_or(txt);
+    record_tag(version_tag)
+        .is_some_and(|(name, value)| name == "v" && value.eq_ignore_ascii_case("DMARC1"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +310,8 @@ mod tests {
             "V=dmarc1",
             "v=DMARC1; p=reject",
             "v=DMARC1 \t; p=quarantine",
+            "v = DMARC1; p=reject",
+            "v= DMARC1 ; p=none",
         ] {
             assert!(is_dmarc(raw), "version gate refused {raw:?}");
             assert!(parse(raw).is_some(), "parser refused {raw:?}");
