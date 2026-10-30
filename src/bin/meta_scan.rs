@@ -840,6 +840,13 @@ fn serve(bind: &str, timeout: Duration) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum DisplayStyle {
+    #[default]
+    Human,
+    Raw,
+}
+
 #[derive(Default)]
 struct Options {
     username: Option<String>,
@@ -849,7 +856,7 @@ struct Options {
     serve: bool,
     bind: String,
     business: bool,
-    show_raw: bool,
+    display_style: DisplayStyle,
     provider: bool,
     connect_timeout: u64,
     read_timeout: u64,
@@ -878,7 +885,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
             "--out-txt" => out.out_txt = Some(iter.next().ok_or("missing TXT directory")?.into()),
             "--bind" => out.bind = iter.next().ok_or("missing bind")?,
             "--no-business" => out.business = false,
-            "--show-raw" => out.show_raw = true,
+            "--show-raw" => out.display_style = DisplayStyle::Raw,
             "--provider" => out.provider = true,
             "--serve" => out.serve = true,
             "--connect-timeout" => {
@@ -994,7 +1001,7 @@ fn run() -> Result<(), String> {
         if report.has_observation() {
             successful += 1;
         }
-        if opts.show_raw {
+        if opts.display_style == DisplayStyle::Raw {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
