@@ -281,7 +281,7 @@ fn scope_wikidata_items(mut entities: Vec<Entity>) -> Vec<Entity> {
                 | crate::entity::EntityKind::Organisation
                 | crate::entity::EntityKind::Other
         ) {
-            entity.tag(wikidata::NAME_SEARCH_LEAD_TAG);
+            entity.tag(crate::tags::NAME_SEARCH_LEAD);
             continue;
         }
         let Some(qid) = entity
@@ -446,10 +446,13 @@ mod tests {
         let entities = scope_wikidata_items(vec![person, domain]);
         assert_eq!(entities.len(), 2);
         assert!(entities[0].has_tag("wikidata-item-scoped"));
-        assert!(!entities[0].has_tag(wikidata::NAME_SEARCH_LEAD_TAG));
+        assert!(!entities[0].has_tag(crate::tags::NAME_SEARCH_LEAD));
         assert_eq!(entities[1].value, "stranger.example");
         assert_eq!(entities[1].confidence, 0.55);
-        assert!(entities[1].has_tag(wikidata::NAME_SEARCH_LEAD_TAG));
+        // The shared name-search-lead tag, the one the ACNC and SEC EDGAR legs use, so one tag
+        // finds every name-only lead in a report, the Web UI and an export.
+        assert!(entities[1].has_tag(crate::tags::NAME_SEARCH_LEAD));
+        assert!(!entities[1].has_tag("wikidata-name-lead"));
         assert_eq!(
             entities[1].evidence[0]
                 .attributes
