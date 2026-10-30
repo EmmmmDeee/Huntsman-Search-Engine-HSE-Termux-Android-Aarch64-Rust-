@@ -297,10 +297,15 @@ impl Subject<'_> {
                 self.value
             )
         };
+        // The contact's jCard kind (`individual`, `group`, `org`) says whether it names a person
+        // or a function, which the identity-cluster rule reads.
         let evidence = || {
             self.named(summary())
                 .with_attr("role", roles.as_str())
-                .with_optional_attrs([("iana_id", contact.iana_id.as_deref())])
+                .with_optional_attrs([
+                    ("iana_id", contact.iana_id.as_deref()),
+                    ("contact_kind", contact.kind.as_deref()),
+                ])
         };
         if let Some(org) = organisation(contact) {
             let tags: &[&str] = if registrar { &[tags::REGISTRAR] } else { &[] };
