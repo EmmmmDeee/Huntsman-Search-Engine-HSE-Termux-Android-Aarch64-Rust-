@@ -928,8 +928,8 @@ mod tests {
             Some("Huntsman project-only https://github.com/repo"),
             Some("Huntsman none@domain"),
             Some("Huntsman admin@example..com"),
-            Some("Huntsman contact@example.com\\r\\nX-Injected: yes"),
-            Some("Huntsman contact@example.com\\n"),
+            Some("Huntsman contact@example.com\r\nX-Injected: yes"),
+            Some("Huntsman contact@example.com\n"),
         ] {
             let transport = ScriptedTransport::new(vec![]);
             let report = lookup_with_config(&transport, "elon musk", "scan-edgar", 1, agent)
