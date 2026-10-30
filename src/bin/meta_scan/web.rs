@@ -4,8 +4,8 @@
 //! Native HTML forms make all collection, filtering, state and exports Rust-owned.
 
 use super::{
-    API_HOST, CollectionMode, HttpRequest, Report, WEB_MAX_CLIENTS, allowed_host, checked_username,
-    configured_secret, http_reply, json_reply, read_request, scan_mode, transport, unix_now,
+    API_HOST, CollectionMode, Report, allowed_host, checked_username, configured_secret, scan_mode,
+    transport,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -17,9 +17,145 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use huntsman_recon::clock::unix_now;
+use serde_json::Value;
+
 const MAX_HANDLES: usize = 20;
 const MAX_REPORT_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PREVIEW_CHARS: usize = 12_000;
+const HTTP_MAX_HEAD: usize = 8192;
+const HTTP_MAX_BODY: usize = 4096;
+const WEB_MAX_CLIENTS: usize = 8;
+
+fn json_reply(stream: &mut TcpStream, status: &str, value: &Value) -> std::io::Result<()> {
+    http_reply(
+        stream,
+        status,
+        "application/json; charset=utf-8",
+        value.to_string().as_bytes(),
+    )
+}
+
+fn http_reply(
+    stream: &mut TcpStream,
+    status: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
+        bytes.len()
+    )?;
+    stream.write_all(bytes)
+}
+
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl HttpRequest {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|_| "read timeout setup failed")?;
+    let mut bytes = Vec::with_capacity(2048);
+    let mut chunk = [0_u8; 1024];
+    let header_end = loop {
+        let n = stream.read(&mut chunk).map_err(|_| "request read failed")?;
+        if n == 0 {
+            return Err("connection closed while reading headers");
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+            if i + 4 > HTTP_MAX_HEAD {
+                return Err("headers too large");
+            }
+            break i + 4;
+        }
+        if bytes.len() > HTTP_MAX_HEAD {
+            return Err("headers too large");
+        }
+    };
+    let text = std::str::from_utf8(&bytes[..header_end]).map_err(|_| "invalid request headers")?;
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next().ok_or("missing request line")?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().ok_or("missing method")?.to_owned();
+    let path = parts.next().ok_or("missing path")?.to_owned();
+    if parts.next() != Some("HTTP/1.1") || parts.next().is_some() {
+        return Err("HTTP/1.1 required");
+    }
+    if path.len() > 256 || !path.starts_with('/') {
+        return Err("invalid path");
+    }
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let (name, value) = line.split_once(':').ok_or("invalid header")?;
+        if name.trim().is_empty() {
+            return Err("invalid header");
+        }
+        headers.push((name.trim().to_owned(), value.trim().to_owned()));
+    }
+    let lengths: Vec<_> = headers
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.as_str())
+        .collect();
+    if lengths.len() > 1 {
+        return Err("duplicate content length");
+    }
+    if headers
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("transfer-encoding"))
+    {
+        return Err("transfer encoding not supported");
+    }
+    let length = match lengths.first() {
+        Some(s) => s.parse::<usize>().map_err(|_| "invalid content length")?,
+        None => 0,
+    };
+    if length > HTTP_MAX_BODY {
+        return Err("body exceeds limit");
+    }
+    let mut body = bytes[header_end..].to_vec();
+    if body.len() > length {
+        return Err("unexpected request body");
+    }
+    while body.len() < length {
+        let remain = length - body.len();
+        let take = remain.min(chunk.len());
+        let n = stream
+            .read(&mut chunk[..take])
+            .map_err(|_| "body read failed")?;
+        if n == 0 {
+            return Err("incomplete request body");
+        }
+        body.extend_from_slice(&chunk[..n]);
+    }
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
 
 #[derive(Default)]
 struct Saved {

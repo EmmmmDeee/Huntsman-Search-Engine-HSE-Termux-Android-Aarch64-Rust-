@@ -7,12 +7,12 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use huntsman_recon::clock;
 use huntsman_recon::credential_origin::AuthenticationAuthority;
 use huntsman_recon::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use huntsman_recon::http::{
@@ -31,9 +31,6 @@ const API_HOST: &str = "facebook-pages-scraper3.p.rapidapi.com";
 const API_ORIGIN: &str = "https://facebook-pages-scraper3.p.rapidapi.com:443";
 const KEY_SLOT: &str = "RAPIDAPI_KEY";
 const DEFAULT_BIND: &str = "127.0.0.1:8787";
-const HTTP_MAX_HEAD: usize = 8192;
-const HTTP_MAX_BODY: usize = 4096;
-const WEB_MAX_CLIENTS: usize = 8;
 const MAX_PROVIDER_BODY: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -536,12 +533,6 @@ fn scan_mode<T: Transport + ?Sized>(
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |x| x.as_secs())
-}
-
 fn configured_secret() -> Option<Secret> {
     let resolved = Keys::for_lookup(env::var_os("HOME").as_deref());
     if let Some(warning) = resolved.warning {
@@ -556,135 +547,6 @@ fn transport(timeout: Duration) -> UreqTransport {
         max_body: MAX_PROVIDER_BODY,
         user_agent: concat!("huntsman-meta-scan/", env!("CARGO_PKG_VERSION")).to_owned(),
         ..TransportConfig::default()
-    })
-}
-
-fn json_reply(stream: &mut TcpStream, status: &str, value: &Value) -> std::io::Result<()> {
-    http_reply(
-        stream,
-        status,
-        "application/json; charset=utf-8",
-        value.to_string().as_bytes(),
-    )
-}
-
-fn http_reply(
-    stream: &mut TcpStream,
-    status: &str,
-    mime: &str,
-    bytes: &[u8],
-) -> std::io::Result<()> {
-    write!(
-        stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n",
-        bytes.len()
-    )?;
-    stream.write_all(bytes)
-}
-
-#[derive(Debug)]
-struct HttpRequest {
-    method: String,
-    path: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
-
-impl HttpRequest {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    }
-}
-
-fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|_| "read timeout setup failed")?;
-    let mut bytes = Vec::with_capacity(2048);
-    let mut chunk = [0_u8; 1024];
-    let header_end = loop {
-        let n = stream.read(&mut chunk).map_err(|_| "request read failed")?;
-        if n == 0 {
-            return Err("connection closed while reading headers");
-        }
-        bytes.extend_from_slice(&chunk[..n]);
-        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-            if i + 4 > HTTP_MAX_HEAD {
-                return Err("headers too large");
-            }
-            break i + 4;
-        }
-        if bytes.len() > HTTP_MAX_HEAD {
-            return Err("headers too large");
-        }
-    };
-    let text = std::str::from_utf8(&bytes[..header_end]).map_err(|_| "invalid request headers")?;
-    let mut lines = text.split("\r\n");
-    let request_line = lines.next().ok_or("missing request line")?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().ok_or("missing method")?.to_owned();
-    let path = parts.next().ok_or("missing path")?.to_owned();
-    if parts.next() != Some("HTTP/1.1") || parts.next().is_some() {
-        return Err("HTTP/1.1 required");
-    }
-    if path.len() > 256 || !path.starts_with('/') {
-        return Err("invalid path");
-    }
-    let mut headers = Vec::new();
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        let (name, value) = line.split_once(':').ok_or("invalid header")?;
-        if name.trim().is_empty() {
-            return Err("invalid header");
-        }
-        headers.push((name.trim().to_owned(), value.trim().to_owned()));
-    }
-    let lengths: Vec<_> = headers
-        .iter()
-        .filter(|(n, _)| n.eq_ignore_ascii_case("content-length"))
-        .map(|(_, v)| v.as_str())
-        .collect();
-    if lengths.len() > 1 {
-        return Err("duplicate content length");
-    }
-    if headers
-        .iter()
-        .any(|(n, _)| n.eq_ignore_ascii_case("transfer-encoding"))
-    {
-        return Err("transfer encoding not supported");
-    }
-    let length = match lengths.first() {
-        Some(s) => s.parse::<usize>().map_err(|_| "invalid content length")?,
-        None => 0,
-    };
-    if length > HTTP_MAX_BODY {
-        return Err("body exceeds limit");
-    }
-    let mut body = bytes[header_end..].to_vec();
-    if body.len() > length {
-        return Err("unexpected request body");
-    }
-    while body.len() < length {
-        let remain = length - body.len();
-        let take = remain.min(chunk.len());
-        let n = stream
-            .read(&mut chunk[..take])
-            .map_err(|_| "body read failed")?;
-        if n == 0 {
-            return Err("incomplete request body");
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
     })
 }
 
@@ -814,9 +676,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
 
 fn save_report(dir: &Path, report: &Report, ext: &str, contents: &[u8]) -> Result<PathBuf, String> {
     fs::create_dir_all(dir).map_err(|e| format!("cannot create report directory: {e}"))?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let stamp = clock::unix_now_nanos();
     for suffix in 0..10 {
         let path = dir.join(format!("{}_{}_{}.{}", report.username, stamp, suffix, ext));
         let mut opts = OpenOptions::new();
@@ -882,7 +742,7 @@ fn run() -> Result<(), String> {
             &name,
             opts.mode,
             opts.business,
-            unix_now(),
+            clock::unix_now(),
             timeout,
         )
         .map_err(str::to_owned)?;
