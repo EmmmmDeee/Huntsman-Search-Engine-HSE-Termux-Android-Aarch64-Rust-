@@ -119,6 +119,8 @@ const KEYS_PATH: &str = "/api/settings/keys";
 const INSPECT_PATH: &str = "/api/inspect";
 /// The OSINT app blueprint: JSON, or the Word document with `format=docx`.
 const BLUEPRINT_PATH: &str = "/api/blueprint";
+/// Offline, unverified Rhinser source directory exposed to authenticated local clients.
+const RHINSER_CATALOG_PATH: &str = "/api/rhinser/catalog";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
 /// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
@@ -1413,6 +1415,7 @@ fn route(
             | KEYS_PATH
             | INSPECT_PATH
             | BLUEPRINT_PATH
+            | RHINSER_CATALOG_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
@@ -1438,6 +1441,23 @@ fn route(
             .unwrap_or_else(|_| "{\"count\":0,\"modules\":[]}".into());
             json_ok(&body, head)
         }
+        RHINSER_CATALOG_PATH => match crate::rhinser_catalog::Catalog::load() {
+            Ok(catalog) => match serde_json::to_string_pretty(&catalog) {
+                Ok(body) => json_ok(&body, head),
+                Err(_) => response(
+                    500,
+                    "application/json; charset=utf-8",
+                    "{\"error\":\"catalogue serialization unavailable\"}\n",
+                    head,
+                ),
+            },
+            Err(_) => response(
+                500,
+                "application/json; charset=utf-8",
+                "{\"error\":\"catalogue unavailable\"}\n",
+                head,
+            ),
+        },
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
