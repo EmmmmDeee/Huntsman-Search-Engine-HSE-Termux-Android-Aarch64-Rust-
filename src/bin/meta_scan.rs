@@ -3,6 +3,7 @@
 //! Only the four original `RapidAPI` collection endpoints are claimed as implemented.
 //! External provider results are unverified observations, not identity assertions.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
@@ -17,10 +18,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use huntsman_recon::credential_origin::AuthenticationAuthority;
 use huntsman_recon::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use huntsman_recon::http::{
-    Request, Transport, TransportConfig, UreqTransport, append_query_param,
+    Request, Transport, TransportConfig, UreqTransport, append_query_param, parse_http_uri,
 };
 use huntsman_recon::keys::{Keys, Secret};
-use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use huntsman_recon::web_query::{self, SearchHit};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -114,12 +116,21 @@ impl EndpointResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct IndexedDiscovery {
+    state: &'static str,
+    evidence_role: &'static str,
+    hits: Vec<SearchHit>,
+    outcomes: Vec<SourceExecutionOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct Report {
     username: String,
     page_url: String,
     observed_at_unix: u64,
     provider: &'static str,
     verification: &'static str,
+    discovery: Option<IndexedDiscovery>,
     profile: EndpointResult,
     business_home: Option<EndpointResult>,
     business_about: Option<EndpointResult>,
@@ -128,7 +139,8 @@ struct Report {
 
 impl Report {
     fn has_observation(&self) -> bool {
-        self.profile.successful()
+        self.discovery.as_ref().is_some_and(|d| !d.hits.is_empty())
+            || self.profile.successful()
             || self
                 .business_home
                 .as_ref()
@@ -148,6 +160,22 @@ impl Report {
             "MetaScan (Huntsman Rust)\nUsername: {}\nPage: {}\nObserved at (Unix): {}\nVerification: {}\n\n",
             self.username, self.page_url, self.observed_at_unix, self.verification
         );
+        if let Some(discovery) = &self.discovery {
+            let _ = writeln!(
+                out,
+                "[PUBLIC INDEX DISCOVERY]\nState: {}\nEvidence: {}\nDirect page leads: {}",
+                discovery.state,
+                discovery.evidence_role,
+                discovery.hits.len()
+            );
+            for hit in &discovery.hits {
+                let _ = writeln!(out, "engine={} url={}", hit.engine, hit.url);
+            }
+            for outcome in &discovery.outcomes {
+                let _ = writeln!(out, "engine={} outcome={}", outcome.module, outcome.kind.as_str());
+            }
+            out.push('\n');
+        }
         for (label, item) in [
             ("PROFILE", Some(&self.profile)),
             ("BUSINESS HOME", self.business_home.as_ref()),
@@ -399,6 +427,73 @@ fn scan<T: Transport + ?Sized>(
         observed_at_unix: now,
         provider: "facebook-pages-scraper3.p.rapidapi.com",
         verification: "unverified_provider_observation",
+        discovery: None,
+    })
+}
+
+/// Exact direct page URL candidates from public indexes: never identity verification.
+fn is_direct_facebook_page(url: &str, username: &str) -> bool {
+    let Ok(uri) = parse_http_uri(url) else {
+        return false;
+    };
+    let known_host = matches!(
+        uri.host().map(str::to_ascii_lowercase).as_deref(),
+        Some("facebook.com" | "www.facebook.com" | "m.facebook.com")
+    );
+    uri.scheme_str() == Some("https")
+        && known_host
+        && uri.port_u16().is_none_or(|port| port == 443)
+        && uri.path().trim_end_matches('/').strip_prefix('/')
+            .is_some_and(|name| name.eq_ignore_ascii_case(username))
+}
+
+/// Keyless search is a bounded discovery of indexed URLs, not Facebook profile scraping.
+/// A zero-hit result never means that the requested account does not exist.
+fn scan_indexed<T: Transport + ?Sized>(
+    transport: &T,
+    raw: &str,
+    now: u64,
+) -> Result<Report, &'static str> {
+    let username = checked_username(raw)?;
+    let query = format!("site:facebook.com \"{username}\"");
+    let (hits, outcomes, state) = match web_query::search(transport, &query, now) {
+        Ok(report) => {
+            let mut seen = BTreeSet::new();
+            let mut hits = Vec::new();
+            for hit in report.hits {
+                if is_direct_facebook_page(&hit.url, &username)
+                    && seen.insert(hit.url.clone())
+                {
+                    hits.push(hit);
+                }
+                if hits.len() >= 20 {
+                    break;
+                }
+            }
+            let state = if hits.is_empty() { "no_indexed_leads" } else { "indexed_leads" };
+            (hits, report.outcomes, state)
+        }
+        Err(_) => (Vec::new(), Vec::new(), "search_unavailable"),
+    };
+    Ok(Report {
+        page_url: format!("https://www.facebook.com/{username}"),
+        profile: EndpointResult::new(
+            "profile", "not_requested", None, None,
+            Some("Indexed discovery does not extract or verify Facebook profile attributes")
+        ),
+        business_home: None,
+        business_about: None,
+        business_transparency: None,
+        username,
+        observed_at_unix: now,
+        provider: "public_search_indexes",
+        verification: "unverified_indexed_url_lead",
+        discovery: Some(IndexedDiscovery {
+            state,
+            evidence_role: "url_discovery_only_no_identity_verification",
+            hits,
+            outcomes,
+        }),
     })
 }
 
@@ -599,16 +694,19 @@ fn serve_scan_request(stream: &mut TcpStream, request: &HttpRequest, port: u16, 
         .get("include_business")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    let key = configured_secret();
+    let mode = input.get("mode").and_then(Value::as_str).unwrap_or("indexed");
+    if !matches!(mode, "indexed" | "provider") {
+        let _ = json_reply(stream, "400 Bad Request", &json!({"error":"unknown collection mode"}));
+        return;
+    }
+    let key = (mode == "provider").then(configured_secret).flatten();
     let transport = transport(timeout);
-    match scan(
-        &transport,
-        key.as_ref(),
-        username,
-        business,
-        unix_now(),
-        timeout,
-    ) {
+    let result = if mode == "provider" {
+        scan(&transport, key.as_ref(), username, business, unix_now(), timeout)
+    } else {
+        scan_indexed(&transport, username, unix_now())
+    };
+    match result {
         Ok(report) => {
             let _ = json_reply(
                 stream,
@@ -725,12 +823,13 @@ struct Options {
     bind: String,
     business: bool,
     show_raw: bool,
+    provider: bool,
     connect_timeout: u64,
     read_timeout: u64,
 }
 
 fn usage() -> &'static str {
-    "Usage:\n  meta_scan -u HANDLE [--no-business] [--show-raw] [--out-json DIR] [--out-txt DIR]\n  meta_scan --batch FILE [--out-json DIR] [--out-txt DIR]\n  meta_scan --serve [--bind 127.0.0.1:8787]\nOptions: --connect-timeout SECONDS --read-timeout SECONDS\nAPI key: RAPIDAPI_KEY environment variable or mode-0600 ~/.huntsman.env\nThe four RapidAPI endpoints require an active provider subscription.\n"
+    "Usage:\n  meta_scan -u HANDLE [--provider] [--no-business] [--show-raw] [--out-json DIR] [--out-txt DIR]\n  meta_scan --batch FILE [--provider] [--out-json DIR] [--out-txt DIR]\n  meta_scan --serve [--bind 127.0.0.1:8787]\nOptions: --connect-timeout SECONDS --read-timeout SECONDS\nDefault: keyless public indexed URL discovery, not profile scraping.\n--provider: opt into RapidAPI profile/business requests (may consume billable quota).\nAPI key: RAPIDAPI_KEY environment variable or mode-0600 ~/.huntsman.env\n"
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
@@ -753,6 +852,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String>
             "--bind" => out.bind = iter.next().ok_or("missing bind")?,
             "--no-business" => out.business = false,
             "--show-raw" => out.show_raw = true,
+            "--provider" => out.provider = true,
             "--serve" => out.serve = true,
             "--connect-timeout" => {
                 out.connect_timeout = iter
@@ -844,21 +944,18 @@ fn run() -> Result<(), String> {
         .into_iter()
         .map(|x| checked_username(&x).map_err(str::to_owned))
         .collect::<Result<_, _>>()?;
-    let secret = configured_secret();
-    if secret.is_none() {
+    let secret = opts.provider.then(configured_secret).flatten();
+    if opts.provider && secret.is_none() {
         return Err("RAPIDAPI_KEY is not configured; set it in ~/.huntsman.env (chmod 600) or the environment".into());
     }
     let transport = transport(timeout);
     let mut successful = 0;
     for name in names {
-        let report = scan(
-            &transport,
-            secret.as_ref(),
-            &name,
-            opts.business,
-            unix_now(),
-            timeout,
-        )
+        let report = if opts.provider {
+            scan(&transport, secret.as_ref(), &name, opts.business, unix_now(), timeout)
+        } else {
+            scan_indexed(&transport, &name, unix_now())
+        }
         .map_err(str::to_owned)?;
         if report.has_observation() {
             successful += 1;
@@ -887,7 +984,7 @@ fn run() -> Result<(), String> {
     }
     if successful == 0 {
         return Err(
-            "No provider observations were returned; see per-endpoint outcomes above".into(),
+            "No direct indexed URL leads or provider observations; this is not proof the page is absent".into(),
         );
     }
     Ok(())
@@ -1035,6 +1132,46 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn keyless_discovery_rejects_nonfacebook_hosts_and_nondirect_paths() {
+        assert!(is_direct_facebook_page("https://www.facebook.com/nasa", "nasa"));
+        assert!(is_direct_facebook_page("https://m.facebook.com/NASA/", "nasa"));
+        for bad in [
+            "http://facebook.com/nasa",
+            "https://facebook.com.evil.test/nasa",
+            "https://www.facebook.com/nasa/posts",
+            "https://www.facebook.com/nasa2",
+            "https://www.facebook.com/nasa%2Fposts",
+            "https://www.facebook.com:8443/nasa",
+        ] {
+            assert!(!is_direct_facebook_page(bad, "nasa"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn indexed_scan_does_not_use_rapidapi_or_credentials() {
+        let fake = Fake::new(200, "<html><body>No indexed results</body></html>");
+        let report = scan_indexed(&fake, "nasa", 1234).unwrap();
+        assert_eq!(report.provider, "public_search_indexes");
+        assert_eq!(report.profile.state, "not_requested");
+        assert!(report.discovery.is_some());
+        assert!(!report.has_observation());
+        let requests = fake.sent.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        for req in requests.iter() {
+            assert!(!req.url.contains("rapidapi"));
+            assert!(req.header_value("x-rapidapi-key").is_none());
+        }
+    }
+
+    #[test]
+    fn collection_defaults_to_keyless_mode_without_provider_opt_in() {
+        assert!(!parse_args(["-u".into(), "nasa".into()]).unwrap().provider);
+        assert!(parse_args(["-u".into(), "nasa".into(), "--provider".into()])
+            .unwrap()
+            .provider);
     }
 
     #[test]
