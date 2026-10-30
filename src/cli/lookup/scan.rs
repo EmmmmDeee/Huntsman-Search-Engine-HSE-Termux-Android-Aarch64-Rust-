@@ -731,11 +731,7 @@ mod tests {
             kind: ScanKind::Exposure,
             selector: "ada@example.org".to_owned(),
         });
-        assert!(
-            step.entities.is_empty() && step.outcomes.is_empty(),
-            "{:?}",
-            step.outcomes
-        );
+        assert_eq!((step.entities.len(), step.outcomes.len()), (0, 0));
     }
 
     /// A report carrying only the entities a crawl would have reached, for driving the correlation
