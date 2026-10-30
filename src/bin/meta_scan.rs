@@ -637,7 +637,7 @@ fn serve_scan_request(stream: &mut TcpStream, request: &HttpRequest, port: u16, 
             Err(reason) => {
                 let _ = json_reply(stream, "400 Bad Request", &json!({"error":reason}));
             }
-        };
+        }
 }
 
 fn serve_client(mut stream: TcpStream, port: u16, timeout: Duration) {
