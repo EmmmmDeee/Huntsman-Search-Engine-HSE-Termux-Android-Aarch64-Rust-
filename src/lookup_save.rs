@@ -795,6 +795,56 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn username_legs_keep_collector_provenance_in_direct_and_folded_ledgers() {
+        let sources = [
+            (crate::github_user::SRC, "src/github_user.rs"),
+            (crate::github_repos::SRC, "src/github_repos.rs"),
+            (crate::gitlab_user::SRC, "src/gitlab_user.rs"),
+            (crate::bluesky_user::SRC, "src/bluesky_user.rs"),
+            (crate::keybase::SRC, "src/keybase.rs"),
+            (crate::wikipedia::SRC, "src/wikipedia.rs"),
+            (crate::mastodon_user::SRC, "src/mastodon_user.rs"),
+            (crate::tiktok_public_contact::SRC, "src/tiktok_public_contact.rs"),
+            (crate::npm_author::SRC, "src/npm_author.rs"),
+            (crate::crates_io::SRC, "src/crates_io.rs"),
+            (crate::hacker_news::SRC, "src/hacker_news.rs"),
+            (crate::lobsters::SRC, "src/lobsters.rs"),
+            (crate::docker_hub_user::SRC, "src/docker_hub_user.rs"),
+            (
+                crate::seeknow_collector::COLLECTOR_ID,
+                "src/seeknow_collector.rs",
+            ),
+        ];
+        for policy in [USERNAME_POLICY, USERNAME_EXPOSURE_POLICY] {
+            for (source, component) in sources {
+                let entity = entity_with([scanned(source, "observed username leg")]);
+                let outcome = SourceExecutionOutcome::success(source, 1, 1);
+                let entries = chain(&[entity], &[outcome], policy).unwrap();
+                assert_eq!(entries.len(), 3, "outcome, entity, evidence for {source}");
+                for entry in entries {
+                    assert_eq!(entry.claim.source, source);
+                    assert_eq!(entry.claim.component, component, "{source}");
+                }
+            }
+        }
+        for policy in [USERNAME_POLICY, USERNAME_EXPOSURE_POLICY] {
+            assert_eq!(
+                (policy.outcome_provenance)("username_variants"),
+                ("username_variants", "src/username_cli.rs")
+            );
+            assert_eq!(
+                (policy.outcome_provenance)("unknown_username_module"),
+                ("unknown_username_module", "src/username_cli.rs")
+            );
+        }
+        assert_eq!(
+            (USERNAME_EXPOSURE_POLICY.outcome_provenance)(crate::dehashed::COLLECTOR_ID),
+            (crate::dehashed::COLLECTOR_ID, "src/dehashed/exposure.rs")
+        );
+    }
+
     #[test]
     fn place_legs_keep_their_own_provenance_in_every_ledger_claim() {
         for (source, component) in [
