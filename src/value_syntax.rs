@@ -184,19 +184,80 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
     au_national_key(&compact)
 }
 
+/// The one canonical form of a phone number, which every phone value is read by (an entity, a
+/// classified token, a selector, `phone_intl::canonicalize`): an explicit international number or
+/// a recognised Australian national number in E.164, else `None`. **Pure.**
+///
+/// - The number starts at its first digit or `+`, so `tel:+1…` and `(+44)…` are read as written.
+/// - A `00` or Australian `0011` international prefix is a `+` (`0044 20…`, `0011 44 20…` are
+///   `+4420…`).
+/// - A number with digits after an extension marker (`x12`, `ext 22`, `;ext=12`, `#12`) is
+///   refused: dropping the marker would join the extension onto the number.
+/// - A `+61` number is Australian or none, keeping no trunk zero (`+61 (0)4…` is `+614…`).
+/// - A `+1` number written after an international prefix has the North American plan's ten
+///   digits after the `1`. Any `+` number holds 10 to 15 digits, its country code not starting
+///   with `0`, and one `+` only. The country of a bare non-Australian national number is never
+///   guessed.
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
-    let compact: String = raw
+    let number =
+        raw.trim_start_matches(|character: char| !(character.is_ascii_digit() || character == '+'));
+    if has_digits_after_a_marker(number) {
+        return None;
+    }
+    // Every `+` is kept, so a second one (two numbers run together) is refused below.
+    let dialled: String = number
         .chars()
         .filter(|character| character.is_ascii_digit() || *character == '+')
         .collect();
-    if compact.starts_with("+61") {
-        return normalise_au_phone(&compact);
+    let candidate = if dialled.starts_with('+') {
+        dialled
+    } else if let Some(international) = INTERNATIONAL_PREFIXES
+        .iter()
+        .find_map(|prefix| dialled.strip_prefix(prefix))
+    {
+        let candidate = format!("+{international}");
+        // A run of digits that merely starts `00` (a zero-padded identifier) is no North
+        // American number unless it has that plan's ten digits after the `1`. An explicit `+1`
+        // number is left to the plan's own check, which says what it breaks.
+        if candidate.starts_with("+1") && candidate.len() != NANP_E164_LEN {
+            return None;
+        }
+        candidate
+    } else {
+        return normalise_au_phone(number);
+    };
+    if candidate.starts_with("+61") {
+        return normalise_au_phone(&candidate);
     }
-    if compact.starts_with('+') {
-        return phone_e164_error(&compact).is_none().then_some(compact);
+    phone_e164_error(&candidate).is_none().then_some(candidate)
+}
+
+/// The international dialling prefixes a number may be written after in place of `+`: Australia's
+/// `0011` first, so its `11` is never read as a country code, then the common `00`.
+const INTERNATIONAL_PREFIXES: [&str; 2] = ["0011", "00"];
+
+/// A North American number in E.164: `+`, `1` and ten digits.
+const NANP_E164_LEN: usize = 12;
+
+/// Whether a letter, `#`, `;` or `,` stands between two of `raw`'s digits: an extension, a
+/// dialling pause or a vanity word, after which the remaining digits are not the number's own.
+/// Words after the last digit (`(office)`) are not. **Pure.**
+fn has_digits_after_a_marker(raw: &str) -> bool {
+    let mut seen_digit = false;
+    let mut marker = false;
+    for character in raw.chars() {
+        if character.is_ascii_digit() {
+            if marker {
+                return true;
+            }
+            seen_digit = true;
+        } else if seen_digit && (character.is_alphabetic() || matches!(character, '#' | ';' | ','))
+        {
+            marker = true;
+        }
     }
-    normalise_au_phone(&compact)
+    false
 }
 
 /// Shape defect in an email local part. One rule shared by
@@ -685,11 +746,47 @@ mod au_phone_key_contract {
         assert_eq!(canonical_phone("0412 345 678"), want);
     }
 
+    /// Every way a number reaches a key gives the key a scan of it gives: a `00` prefix is a
+    /// `+`, and an extension is never joined onto the number.
+    #[test]
+    fn a_phone_has_one_key_however_it_is_written() {
+        let want = Some("+442079460958".to_string());
+        for written in [
+            "+44 20 7946 0958",
+            "0044 20 7946 0958",
+            "tel:+44-20-7946-0958",
+        ] {
+            assert_eq!(canonical_phone(written), want, "{written}");
+        }
+        for extended in [
+            "+1 415 555 2671 ext 22",
+            "+44 20 7946 0958 x12",
+            "0044 20 7946 0958;ext=3",
+        ] {
+            assert_eq!(canonical_phone(extended), None, "{extended}");
+        }
+        assert_eq!(
+            canonical_phone("+1 415 555 2671 (office)").as_deref(),
+            Some("+14155552671")
+        );
+        assert_eq!(canonical_phone("0011 44 20 7946 0958"), want);
+        // Two numbers run together, and a zero-padded identifier, are no number.
+        assert_eq!(canonical_phone("+44 +1 415 555 2671"), None);
+        assert_eq!(canonical_phone("001234567890"), None);
+        // An explicit `+1` number of the wrong length is still read, so the `phone` command's
+        // own plan check can say what it breaks.
+        assert_eq!(
+            canonical_phone("+1202555010").as_deref(),
+            Some("+1202555010")
+        );
+    }
+
     #[test]
     fn au_country_code_requires_au_national_length() {
         assert_eq!(normalise_au_phone("+61 4123 4567 8901"), None);
         assert_eq!(normalise_au_phone("+61 9 1234 5678"), None);
         assert_eq!(canonical_phone("+61 4123 4567 8901"), None);
+        assert_eq!(canonical_phone("0061 4123 4567 8901"), None);
         assert_eq!(
             normalise_au_phone("+61 1300 123 456").as_deref(),
             Some("+611300123456")

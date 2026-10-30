@@ -3,10 +3,6 @@
 //! The country table is ported from the legacy Huntsman `phone_intl` module.
 //! This module performs no network I/O.
 
-use crate::address_au;
-use crate::textnorm;
-use crate::validation::validate_phone_e164;
-
 pub const COUNTRIES: &[(&str, &str, &str)] = &[
     // Multi-digit codes first (longest-prefix-first).
     ("1242", "BS", "Bahamas"),
@@ -319,54 +315,12 @@ pub fn match_country(digits: &str) -> Option<(&'static str, &'static str, &'stat
         .copied()
 }
 
-/// Canonicalise an explicit international number or a recognised Australian
-/// national number to E.164.
-///
-/// This follows the current repository validation contract (10..=15 total
-/// digits) and never guesses the country of a bare non-Australian number. A
-/// number with digits after an extension marker (`x12`, `;ext=12`, `#12`) is
-/// refused: dropping the marker would join the extension onto the number.
-/// An Australian number keeps no trunk zero (`+61 (0)4…` is `+614…`).
+/// Canonicalise an explicit international number or a recognised Australian national number to
+/// E.164, by [`crate::value_syntax::canonical_phone`]: the one rule every phone value is read by,
+/// so a scan's selector and the entities its sources report key one number alike.
 #[must_use]
 pub fn canonicalize(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if has_digits_after_a_marker(trimmed) {
-        return None;
-    }
-    let candidate = if trimmed.starts_with('+') {
-        textnorm::ascii_digits_and_plus(trimmed)
-    } else if trimmed.starts_with("00") {
-        let digits = textnorm::ascii_digits(trimmed);
-        format!("+{}", digits.strip_prefix("00")?)
-    } else {
-        return address_au::normalise_phone(trimmed);
-    };
-    if candidate.starts_with("+61") {
-        if let Some(australian) = address_au::normalise_phone(&candidate) {
-            return Some(australian);
-        }
-    }
-    validate_phone_e164(&candidate).valid.then_some(candidate)
-}
-
-/// Whether a letter, `#`, `;` or `,` stands between two of `raw`'s digits: an extension, a
-/// dialling pause or a vanity word, after which the remaining digits are not the number's own.
-/// A marker before the first digit (`tel:`) or words after the last (`(office)`) are not.
-fn has_digits_after_a_marker(raw: &str) -> bool {
-    let mut seen_digit = false;
-    let mut marker = false;
-    for character in raw.chars() {
-        if character.is_ascii_digit() {
-            if marker {
-                return true;
-            }
-            seen_digit = true;
-        } else if seen_digit && (character.is_alphabetic() || matches!(character, '#' | ';' | ','))
-        {
-            marker = true;
-        }
-    }
-    false
+    crate::value_syntax::canonical_phone(raw)
 }
 
 /// The ITU calling code of a canonical E.164 number: the shortest prefix in [`COUNTRIES`] it

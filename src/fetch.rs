@@ -393,6 +393,62 @@ pub fn json_error_detail(error: &serde_json::Error) -> String {
     )
 }
 
+/// The outcome of a `MediaWiki` Action API answer that carries an `error` envelope
+/// (`{"error":{"code":…,"info":…}}`) instead of its result. The Action API sends an error with
+/// HTTP 200, so [`answer`] passes it: the envelope says only that the API did not run the query,
+/// never that the query found nothing. A search backend too busy to run it
+/// (`cirrussearch-too-busy-error`) and a throttle or lag refusal (`ratelimited`, `maxlag`) ask the
+/// client to come back later; any other code (`cirrussearch-backend-error`, an
+/// `internal_api_error_…`) is inconclusive. A source whose query one code does answer (Wikipedia's
+/// `baduser`: the name can be no account) checks for that code first, with
+/// [`mediawiki_error_code`]. `what` names the provider in the diagnostic. **Pure.**
+#[must_use]
+pub fn mediawiki_api_error(
+    error: &serde_json::Value,
+    module: &str,
+    status: u16,
+    now_unix: u64,
+    what: &str,
+) -> SourceExecutionOutcome {
+    let code = mediawiki_error_code(error);
+    let kind = if matches!(
+        code,
+        "cirrussearch-too-busy-error" | "ratelimited" | "maxlag"
+    ) {
+        SourceOutcomeKind::RateLimited
+    } else {
+        SourceOutcomeKind::Inconclusive
+    };
+    SourceExecutionOutcome::failed(
+        module,
+        now_unix,
+        kind,
+        Some(status),
+        format!("{what} API error: {code}"),
+    )
+}
+
+/// The code of a `MediaWiki` Action API error envelope, or `unknown` when it has none or it is not
+/// shaped like one (ASCII letters, digits, `_`, `-` and the `\` of a namespaced exception's
+/// `internal_api_error_…`, at most [`MEDIAWIKI_CODE_MAX`] of them), so a diagnostic never carries
+/// arbitrary upstream text. **Pure.**
+#[must_use]
+pub fn mediawiki_error_code(error: &serde_json::Value) -> &str {
+    error
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .filter(|code| {
+            (1..=MEDIAWIKI_CODE_MAX).contains(&code.len())
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'\\'))
+        })
+        .unwrap_or("unknown")
+}
+
+/// The longest `MediaWiki` error code a diagnostic carries.
+pub const MEDIAWIKI_CODE_MAX: usize = 128;
+
 fn fetch_hops<T: Transport + ?Sized>(
     transport: &T,
     request: Request,
@@ -857,6 +913,39 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+
+    /// A `MediaWiki` error code is carried only in its own shape: letters, digits, `_`, `-` and the
+    /// `\` of a namespaced exception, one to [`MEDIAWIKI_CODE_MAX`] of them.
+    #[test]
+    fn a_mediawiki_error_code_is_carried_only_in_its_own_shape() {
+        let code = |raw: &str| mediawiki_error_code(&serde_json::json!({ "code": raw })).to_owned();
+        for kept in [
+            "baduser",
+            "cirrussearch-too-busy-error",
+            "internal_api_error_DBQueryError",
+            "internal_api_error_MediaWiki\\Revision\\RevisionAccessException",
+            "a2",
+        ] {
+            assert_eq!(code(kept), kept);
+        }
+        let longest = "x".repeat(MEDIAWIKI_CODE_MAX);
+        assert_eq!(code(&longest), longest);
+        for refused in [
+            String::new(),
+            "x".repeat(MEDIAWIKI_CODE_MAX + 1),
+            "<script>".to_owned(),
+            "bad user".to_owned(),
+            "bad\nuser".to_owned(),
+            "baduser\u{e9}".to_owned(),
+        ] {
+            assert_eq!(code(&refused), "unknown", "{refused:?}");
+        }
+        assert_eq!(mediawiki_error_code(&serde_json::json!({})), "unknown");
+        assert_eq!(
+            mediawiki_error_code(&serde_json::json!({ "code": 7 })),
+            "unknown"
+        );
+    }
     use crate::circuit::BreakerState;
     use crate::credential_origin::OperatorCredentialRef;
     use crate::http::TransportFailure;

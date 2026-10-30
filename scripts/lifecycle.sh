@@ -43,7 +43,28 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
 }
 
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}"
+# One build directory per checkout, named for the checkout's path, as the gate names it. Cargo
+# names a workspace crate's build without its checkout's path and judges it fresh by file times,
+# so checkouts sharing one directory would build, test, run and sync each other's code. Under an
+# explicit CARGO_TARGET_DIR the checkout gets a directory of its own inside it, and cargo's build
+# directory (where cargo 1.91 and later keep compiled crates) is the same one.
+# The name keeps only characters cargo accepts in a library path (a `:` would break it).
+checkout_key() {
+  local root name crc
+  root="$(pwd -P)"
+  crc="$(printf '%s' "$root" | cksum)" || return 1
+  crc="${crc%% *}"
+  name="${root##*/}"
+  printf '%s-%s\n' "${name//[^A-Za-z0-9._-]/_}" "$crc"
+}
+key="$(checkout_key)" || die "cannot name this checkout's build directory: cksum failed"
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  CARGO_TARGET_DIR="$CARGO_TARGET_DIR/checkouts/$key"
+else
+  CARGO_TARGET_DIR="$HOME/.cache/huntsman-recon-checkouts/$key"
+fi
+export CARGO_TARGET_DIR
+export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
 BIN="$CARGO_TARGET_DIR/debug/huntsman-recon"
 # Ephemeral only: a previous process or persisted state cannot authorise a push.
 SYNC_VERIFIED=0
@@ -60,7 +81,9 @@ build() {
 }
 
 check_cmd() {
-  [[ -x "$BIN" ]] || build
+  # Built first, every time: cargo does nothing when the binary is current, and a binary an
+  # earlier build left is never run in place of this checkout's.
+  build
   log "check start"
   write_state check running "$BIN check"
   "$BIN" check
@@ -158,7 +181,6 @@ sync_cmd() {
   [[ -n "$SYNC_EXPECTED_TREE" ]] || prepare_sync
   if [[ "$SYNC_VERIFIED" != "1" ]]; then
     log "sync verification: running build, check, and lib tests"
-    build
     check_cmd
     test_cmd
     SYNC_VERIFIED=1
@@ -213,7 +235,6 @@ case "$cmd" in
   sync) sync_cmd ;;
   all)
     prepare_sync
-    build
     check_cmd
     test_cmd
     SYNC_VERIFIED=1
