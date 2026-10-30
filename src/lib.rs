@@ -235,6 +235,7 @@ pub mod sha256;
 pub mod shadow_assessment;
 pub mod shodan;
 pub mod snake_graph;
+pub mod solana_rpc;
 pub mod source_outcome;
 pub mod source_registry;
 pub mod spf;

@@ -769,6 +769,13 @@ fn every_value_a_scan_could_follow_can_start_a_scan_of_its_own() {
         );
     }
     assert!(script.contains("if(PIVOT.has(x.type))b.append(button('New Scan of this'"));
+    // A crypto element names its chain only by its value, so its scan is the crypto lookup, never
+    // a guess that would read a bare Bitcoin address as a name.
+    assert!(
+        script.contains(
+            "(x.type==='BITCOIN_ADDRESS'||x.type==='HSE_CRYPTO_ADDRESS')?'crypto':'auto'"
+        )
+    );
 }
 
 #[test]

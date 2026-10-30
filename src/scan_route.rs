@@ -31,11 +31,11 @@ pub enum ScanKind {
     /// A `WiFi` network: a BSSID, a coordinate pair or an SSID, classified offline and searched
     /// on `WiGLE` when its credentials are configured.
     Network,
-    /// One Bitcoin address or an explicitly prefixed EVM address (`base:` Base mainnet, `eth:`
-    /// Ethereum mainnet), enriched with its on-chain account state (and, for Bitcoin, lifetime
-    /// totals from blockchain.info). Not inferred as a kind of its
-    /// own: a bare base58 or bech32 string is ambiguous against usernames and other selectors, so
-    /// a crypto route is asked for explicitly.
+    /// One Bitcoin address or an explicitly prefixed address (`base:` Base mainnet, `eth:`
+    /// Ethereum mainnet, `sol:` Solana mainnet-beta), enriched with its on-chain account state
+    /// (and, for Bitcoin, lifetime totals from blockchain.info). A bare base58 or bech32 string is
+    /// never inferred as one, being ambiguous against usernames and other selectors, so a bare
+    /// address takes an explicit crypto route; a prefixed selector names its chain and is inferred.
     CryptoAddress,
     /// A place name, street address or `LAT,LON` point, geocoded through OpenStreetMap's
     /// Nominatim, keyless: Spiderfoot's `PHYSICAL_ADDRESS` and `PHYSICAL_COORDINATES` targets.
@@ -146,9 +146,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
 /// number. An SSID is free text, so it is never inferred.
 #[must_use]
 pub fn infer_kind(selector: &str) -> ScanKind {
-    if crate::base_rpc::canonical_selector(selector).is_some()
-        || crate::eth_rpc::canonical_selector(selector).is_some()
-    {
+    if crate::crypto_cli::prefixed_selector(selector).is_some() {
         ScanKind::CryptoAddress
     } else if canonical_email(selector).is_some() {
         ScanKind::Email
@@ -360,6 +358,21 @@ mod tests {
         assert_ne!(
             infer_kind("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
             ScanKind::CryptoAddress
+        );
+        // A prefixed chain selector names its chain, so it is inferred as a crypto route; the
+        // same Solana address bare is shared by every SVM chain and is not.
+        let solana = "sol:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        assert_eq!(infer_kind(solana), ScanKind::CryptoAddress);
+        assert_eq!(
+            canonical_selector(ScanKind::CryptoAddress, solana).as_deref(),
+            Some(solana)
+        );
+        assert_eq!(
+            canonical_selector(
+                ScanKind::CryptoAddress,
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ),
+            None
         );
     }
 

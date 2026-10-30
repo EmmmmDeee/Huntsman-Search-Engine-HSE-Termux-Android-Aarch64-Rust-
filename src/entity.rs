@@ -562,6 +562,11 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         EntityKind::IpAddress | EntityKind::Credential | EntityKind::Document => {
             value.trim().to_owned()
         }
+        // A Solana address is base58 without a checksum: two spellings that differ only in case
+        // are two different keys, so its case is part of its identity.
+        EntityKind::CryptoAddress if value.trim().starts_with(crate::canonical::SOLANA_PREFIX) => {
+            value.trim().to_owned()
+        }
         EntityKind::CryptoAddress
         | EntityKind::DeviceId
         | EntityKind::Ssid
@@ -863,6 +868,42 @@ mod tests {
             entity.evidence[0].provenance.scan_id.as_deref(),
             Some("scan-x")
         );
+    }
+
+    #[test]
+    fn a_solana_address_keeps_its_case_in_its_identity() {
+        // Base58 without a checksum: one letter's case changed is another key.
+        let upper = Entity::new(
+            EntityKind::CryptoAddress,
+            "sol:3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+            0.7,
+            "s",
+        );
+        let lower = Entity::new(
+            EntityKind::CryptoAddress,
+            "sol:3jF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+            0.7,
+            "s",
+        );
+        assert_ne!(upper.uid, lower.uid);
+        assert_eq!(
+            upper.value,
+            "sol:3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        );
+        // Hex has no case, so an EVM selector still folds to one identity.
+        let mixed = Entity::new(
+            EntityKind::CryptoAddress,
+            "eth:0xABCDEF0000000000000000000000000000000000",
+            0.7,
+            "s",
+        );
+        let folded = Entity::new(
+            EntityKind::CryptoAddress,
+            "eth:0xabcdef0000000000000000000000000000000000",
+            0.7,
+            "s",
+        );
+        assert_eq!(mixed.uid, folded.uid);
     }
 
     #[test]
