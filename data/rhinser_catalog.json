@@ -1,0 +1,488 @@
+{
+  "schema_version": 1,
+  "origin_apk_sha256": "e6be6b6bbff2128cf72a34d1a64d25fbaf7c121a0ce803e60e45bdb97f363036",
+  "notice": "Reconstructed public directory references from the user-provided APK; destinations and access conditions are not currently verified; source entries are discovery leads only.",
+  "categories": [
+    {
+      "id": "au_people",
+      "name": "People Search",
+      "tools": [
+        {
+          "id": "t0333",
+          "name": "Australian Person Lookup",
+          "url": "https://personlookup.com.au/"
+        },
+        {
+          "id": "t0334",
+          "name": "Australian Public Records",
+          "url": "https://australiapublicrecord.com/people-finder/"
+        },
+        {
+          "id": "t0335",
+          "name": "Australian Census Records",
+          "url": "https://guides.slv.vic.gov.au/earlycensus/findpeople"
+        },
+        {
+          "id": "t0336",
+          "name": "National Archives Of Australia",
+          "url": "https://recordsearch.naa.gov.au/"
+        },
+        {
+          "id": "t0337",
+          "name": "Missing Persons Australia",
+          "url": "https://missingpersons.gov.au/view-all-profiles"
+        },
+        {
+          "id": "t0338",
+          "name": "White Pages (AU Residential)",
+          "url": "https://www.whitepages.com.au/residential"
+        },
+        {
+          "id": "t0339",
+          "name": "People Search Australia",
+          "url": "https://www.peoplesearch.com.au/"
+        },
+        {
+          "id": "t0340",
+          "name": "Ancestry Australia",
+          "url": "https://www.ancestry.com.au/"
+        },
+        {
+          "id": "t0341",
+          "name": "Australian Military Service Records",
+          "url": "https://www.naa.gov.au/explore-collection/defence-and-war-service-records"
+        },
+        {
+          "id": "t0342",
+          "name": "Australian War Memorial — Research a person",
+          "url": "https://www.awm.gov.au/collection/understanding-the-memorials-collection/researching-a-person"
+        }
+      ]
+    },
+    {
+      "id": "au_email",
+      "name": "Email OSINT",
+      "tools": [
+        {
+          "id": "emailosint",
+          "name": "EmailOSINT",
+          "url": "https://emailosint.com/"
+        },
+        {
+          "id": "emailosint_dashboard",
+          "name": "EmailOSINT Dashboard Lookup",
+          "url": "https://www.emailosint.org/dashboard/lookup"
+        },
+        {
+          "id": "emailosint_docs",
+          "name": "EmailOSINT API Docs",
+          "url": "https://emailosint.org/docs"
+        }
+      ]
+    },
+    {
+      "id": "au_business",
+      "name": "Business Search",
+      "tools": [
+        {
+          "id": "t0343",
+          "name": "ABN Lookup",
+          "url": "https://abr.business.gov.au/"
+        },
+        {
+          "id": "t0344",
+          "name": "ASIC Connect",
+          "url": "https://connectonline.asic.gov.au/"
+        },
+        {
+          "id": "t0345",
+          "name": "White Pages (AU)",
+          "url": "https://www.whitepages.com.au/"
+        },
+        {
+          "id": "t0346",
+          "name": "Yellow Pages (AU)",
+          "url": "https://www.yellowpages.com.au/"
+        },
+        {
+          "id": "t0347",
+          "name": "Reverse Australia",
+          "url": "https://www.reverseaustralia.com/"
+        },
+        {
+          "id": "t0348",
+          "name": "SearchFrog",
+          "url": "https://searchfrog.com.au/"
+        },
+        {
+          "id": "t0349",
+          "name": "True Local",
+          "url": "https://www.truelocal.com.au/"
+        }
+      ]
+    },
+    {
+      "id": "au_obituary",
+      "name": "Obituary Search",
+      "tools": [
+        {
+          "id": "t0350",
+          "name": "The Ryerson Index",
+          "url": "https://ryersonindex.org/"
+        },
+        {
+          "id": "t0351",
+          "name": "Herald Sun MyTributes",
+          "url": "https://www.heraldsun.com.au/tributes"
+        },
+        {
+          "id": "t0352",
+          "name": "Australian Cemeteries Index",
+          "url": "https://www.austcemindex.com/"
+        },
+        {
+          "id": "t0353",
+          "name": "Rookwood Cemetery",
+          "url": "https://www.rookwoodcemetery.com.au/"
+        }
+      ]
+    },
+    {
+      "id": "au_property",
+      "name": "Property Search",
+      "tools": [
+        {
+          "id": "t0354",
+          "name": "Planning Alerts",
+          "url": "https://www.planningalerts.org.au/"
+        },
+        {
+          "id": "t0355",
+          "name": "OnTheHouse",
+          "url": "https://www.onthehouse.com.au/"
+        },
+        {
+          "id": "t0356",
+          "name": "NSW Planning Portal",
+          "url": "https://www.planningportal.nsw.gov.au/"
+        }
+      ]
+    },
+    {
+      "id": "au_public_records",
+      "name": "Public Records",
+      "tools": [
+        {
+          "id": "t0357",
+          "name": "Public Records Australia",
+          "url": "https://www.publicrecords.com.au/"
+        },
+        {
+          "id": "t0358",
+          "name": "Unpaid Wages Australia",
+          "url": "https://www.fairwork.gov.au/"
+        },
+        {
+          "id": "t0359",
+          "name": "NSW Unclaimed Money",
+          "url": "https://www.apps09.revenue.nsw.gov.au/"
+        },
+        {
+          "id": "t0360",
+          "name": "VIC Unclaimed Money",
+          "url": "https://www.e-business.sro.vic.gov.au/"
+        },
+        {
+          "id": "t0361",
+          "name": "SA Unclaimed Money",
+          "url": "https://www.treasury.sa.gov.au/"
+        },
+        {
+          "id": "t0362",
+          "name": "WA Unclaimed Money",
+          "url": "https://unclaimedmonies.treasury.wa.gov.au/"
+        },
+        {
+          "id": "t0363",
+          "name": "ACT Unclaimed Money",
+          "url": "https://www.ptg.act.gov.au/"
+        },
+        {
+          "id": "t0364",
+          "name": "Australian Court Data",
+          "url": "https://www.courtdata.com.au/"
+        },
+        {
+          "id": "t0365",
+          "name": "WA CheckMyCrime",
+          "url": "https://onlineservices.police.wa.gov.au/"
+        },
+        {
+          "id": "t0366",
+          "name": "VIC Wanted Persons",
+          "url": "https://www.crimestoppersvic.com.au/"
+        },
+        {
+          "id": "t0367",
+          "name": "Court Judgements QLD",
+          "url": "https://www.sclqld.org.au/"
+        },
+        {
+          "id": "t0368",
+          "name": "Birth, Death and Marriage Records",
+          "url": "https://www.nla.gov.au/"
+        }
+      ]
+    },
+    {
+      "id": "au_archives",
+      "name": "Archives & Newspapers",
+      "tools": [
+        {
+          "id": "t0369",
+          "name": "National Archives of Australia",
+          "url": "https://www.naa.gov.au/"
+        },
+        {
+          "id": "t0370",
+          "name": "NSW State Archives",
+          "url": "https://www.records.nsw.gov.au/"
+        },
+        {
+          "id": "t0371",
+          "name": "VIC Government Open Data",
+          "url": "https://www.data.vic.gov.au/"
+        },
+        {
+          "id": "t0372",
+          "name": "data.gov.au",
+          "url": "https://data.gov.au/"
+        },
+        {
+          "id": "t0373",
+          "name": "Research Data Australia",
+          "url": "https://researchdata.edu.au/"
+        },
+        {
+          "id": "t0374",
+          "name": "Trove (NLA)",
+          "url": "https://trove.nla.gov.au/"
+        },
+        {
+          "id": "t0375",
+          "name": "Trove Websites",
+          "url": "https://trove.nla.gov.au/"
+        },
+        {
+          "id": "t0376",
+          "name": "Our Digital Island (TAS)",
+          "url": "https://linctas.ent.sirsidynix.net.au/"
+        },
+        {
+          "id": "t0377",
+          "name": "Newspapers.com",
+          "url": "https://www.newspapers.com/"
+        }
+      ]
+    },
+    {
+      "id": "au_vehicles",
+      "name": "Vehicle Search",
+      "tools": [
+        {
+          "id": "t0378",
+          "name": "NSW Registration Check",
+          "url": "https://www.service.nsw.gov.au/"
+        },
+        {
+          "id": "t0379",
+          "name": "VIC Registration Check",
+          "url": "https://www.vicroads.vic.gov.au/"
+        },
+        {
+          "id": "t0380",
+          "name": "QLD Registration Check",
+          "url": "https://www.service.transport.qld.gov.au/"
+        },
+        {
+          "id": "t0381",
+          "name": "WA Registration Check",
+          "url": "https://www.transport.wa.gov.au/"
+        },
+        {
+          "id": "t0382",
+          "name": "SA Registration Check",
+          "url": "https://www.sa.gov.au/"
+        },
+        {
+          "id": "t0383",
+          "name": "NT Registration Check",
+          "url": "https://nt.gov.au/"
+        },
+        {
+          "id": "t0384",
+          "name": "ACT Registration Check",
+          "url": "https://rego.act.gov.au/"
+        },
+        {
+          "id": "t0385",
+          "name": "TAS Registration Check",
+          "url": "https://www.transport.tas.gov.au/"
+        }
+      ]
+    },
+    {
+      "id": "au_professions",
+      "name": "Registered Professions",
+      "tools": [
+        {
+          "id": "t0386",
+          "name": "LicensedTrades",
+          "url": "https://www.licensedtrades.com.au/"
+        },
+        {
+          "id": "t0387",
+          "name": "OneGov Public Register (NSW)",
+          "url": "https://www.onegov.nsw.gov.au/"
+        },
+        {
+          "id": "t0388",
+          "name": "Tax Practitioners Board",
+          "url": "https://www.tpb.gov.au/"
+        },
+        {
+          "id": "t0389",
+          "name": "CPA Australia Find a CPA",
+          "url": "https://www.cpaaustralia.com.au/"
+        },
+        {
+          "id": "t0390",
+          "name": "ASIC Professional Registers",
+          "url": "https://connectonline.asic.gov.au/"
+        },
+        {
+          "id": "t0391",
+          "name": "Medical Board — Register of practitioners",
+          "url": "https://www.medicalboard.gov.au/"
+        },
+        {
+          "id": "t0392",
+          "name": "AHPRA Register of practitioners",
+          "url": "https://www.ahpra.gov.au/"
+        },
+        {
+          "id": "t0393",
+          "name": "Family Court Judgements (AustLII)",
+          "url": "https://www.austlii.edu.au/"
+        },
+        {
+          "id": "t0394",
+          "name": "NSW Conveyancers licence check",
+          "url": "https://www.fairtrading.nsw.gov.au/"
+        },
+        {
+          "id": "t0395",
+          "name": "ARC Licence Check",
+          "url": "https://www.lookforthetick.com.au/"
+        },
+        {
+          "id": "t0396",
+          "name": "Tasmania Occupational Licence Search",
+          "url": "https://occupationallicensing.justice.tas.gov.au/"
+        },
+        {
+          "id": "t0397",
+          "name": "WA Occupational Licence Search",
+          "url": "https://www.commerce.wa.gov.au/"
+        },
+        {
+          "id": "t0398",
+          "name": "ACT Building Professionals",
+          "url": "https://www.accesscanberra.act.gov.au/"
+        },
+        {
+          "id": "t0399",
+          "name": "VIC Builders Register",
+          "url": "https://consumer.etoolbox.buildingcommission.com.au/"
+        },
+        {
+          "id": "t0400",
+          "name": "NSW Tradespeople Licence Check",
+          "url": "https://www.onegov.nsw.gov.au/"
+        },
+        {
+          "id": "t0401",
+          "name": "VIC Real Estate Agents Register",
+          "url": "https://registers.consumer.vic.gov.au/"
+        }
+      ]
+    },
+    {
+      "id": "au_maps",
+      "name": "Maps & Aerial Images",
+      "tools": [
+        {
+          "id": "t0402",
+          "name": "NationalMap Australia",
+          "url": "https://nationalmap.gov.au/"
+        },
+        {
+          "id": "t0403",
+          "name": "SIX Maps NSW (incl. 1943 aerial)",
+          "url": "https://maps.six.nsw.gov.au/"
+        },
+        {
+          "id": "t0404",
+          "name": "ACTMapi",
+          "url": "https://actmapi.act.gov.au/"
+        }
+      ]
+    },
+    {
+      "id": "au_cameras",
+      "name": "Live Camera Feeds",
+      "tools": [
+        {
+          "id": "t0405",
+          "name": "Traffic Live NSW",
+          "url": "https://www.livetraffic.com/"
+        },
+        {
+          "id": "t0406",
+          "name": "QLD Traffic Cameras",
+          "url": "https://qldtraffic.qld.gov.au/"
+        },
+        {
+          "id": "t0407",
+          "name": "Straya Traffic Cameras",
+          "url": "https://straya.io/"
+        },
+        {
+          "id": "t0408",
+          "name": "Sydney Harbour Webcam",
+          "url": "https://webcamsydney.com/"
+        },
+        {
+          "id": "t0409",
+          "name": "Quay West Sydney Webcam",
+          "url": "https://www.quaywestsuitessydney.com.au/"
+        },
+        {
+          "id": "t0410",
+          "name": "Sydney CBD Webcam (webcams.travel)",
+          "url": "https://www.webcams.travel/"
+        },
+        {
+          "id": "t0411",
+          "name": "Insecam Australia",
+          "url": "https://www.insecam.org/"
+        },
+        {
+          "id": "t0412",
+          "name": "EarthCam Australia",
+          "url": "https://www.earthcam.com/"
+        }
+      ]
+    }
+  ]
+}
