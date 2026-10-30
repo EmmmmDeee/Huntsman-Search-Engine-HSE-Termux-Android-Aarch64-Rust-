@@ -8,11 +8,14 @@ pub struct TlsRptRecord {
     pub urls: Vec<String>,
 }
 
+/// RFC 8460 version 1 requires the entire first version tag to be
+/// `v=TLSRPTv1`. Unsupported versions must not be reported as policy.
 #[must_use]
 pub fn is_tlsrpt(txt: &str) -> bool {
-    let trimmed = txt.trim_start();
-    let bytes = trimmed.as_bytes();
-    bytes.len() >= 9 && bytes[..9].eq_ignore_ascii_case(b"v=TLSRPTv")
+    txt.trim_start()
+        .split(';')
+        .next()
+        .is_some_and(|version| version.trim_end().eq_ignore_ascii_case("v=TLSRPTv1"))
 }
 
 #[must_use]
