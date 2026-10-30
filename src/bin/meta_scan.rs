@@ -1207,6 +1207,22 @@ mod tests {
     }
 
     #[test]
+    fn indexed_scan_keeps_only_matching_direct_page_urls_as_leads() {
+        let fake = Fake::new(
+            200,
+            r#"<html><a href="https://www.facebook.com/examplelegit">Page</a>
+            <a href="https://www.facebook.com/examplelegit/posts">Post</a>
+            <a href="https://facebook.com.evil.example/examplelegit">Lookalike</a></html>"#,
+        );
+        let report = scan_indexed(&fake, "examplelegit", 1235).unwrap();
+        let discovery = report.discovery.unwrap();
+        assert_eq!(discovery.state, "indexed_leads");
+        assert_eq!(discovery.evidence_role, "url_discovery_only_no_identity_verification");
+        assert_eq!(discovery.hits.len(), 1);
+        assert_eq!(discovery.hits[0].url, "https://www.facebook.com/examplelegit");
+    }
+
+    #[test]
     fn collection_defaults_to_keyless_mode_without_provider_opt_in() {
         assert!(!parse_args(["-u".into(), "nasa".into()]).unwrap().provider);
         assert!(
