@@ -946,7 +946,9 @@ mod tests {
             Some("Huntsman .admin@example.com"),
             Some("Huntsman admin.@example.com"),
             Some("Huntsman admin..ops@example.com"),
-            Some("Huntsman aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"),
+            Some(
+                "Huntsman aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+            ),
             Some("Huntsman admin@example.123"),
             Some("Huntsman admin@example.c"),
             Some("Huntsman contact@example.com\r\nX-Injected: yes"),
