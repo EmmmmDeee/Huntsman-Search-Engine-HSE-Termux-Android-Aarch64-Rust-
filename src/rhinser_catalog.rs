@@ -58,7 +58,10 @@ impl Catalog {
             || self.categories.is_empty()
             || self.categories.len() > 64
             || self.origin_apk_sha256.len() != 64
-            || !self.origin_apk_sha256.bytes().all(|c| c.is_ascii_hexdigit())
+            || !self
+                .origin_apk_sha256
+                .bytes()
+                .all(|c| c.is_ascii_hexdigit())
         {
             return Err("invalid catalogue header".to_owned());
         }
@@ -94,7 +97,10 @@ impl Catalog {
 
     #[must_use]
     pub fn tool_count(&self) -> usize {
-        self.categories.iter().map(|category| category.tools.len()).sum()
+        self.categories
+            .iter()
+            .map(|category| category.tools.len())
+            .sum()
     }
 
     #[must_use]
@@ -167,8 +173,18 @@ mod tests {
         let catalog = Catalog::load().unwrap();
         let hits = catalog.find("unclaimed money");
         assert!(hits.len() >= 4);
-        assert!(hits.iter().all(|hit| hit.evidence_role == "lead_only_unverified"));
-        assert!(catalog.tool("t0406").unwrap().tool.url.contains("qldtraffic"));
+        assert!(
+            hits.iter()
+                .all(|hit| hit.evidence_role == "lead_only_unverified")
+        );
+        assert!(
+            catalog
+                .tool("t0406")
+                .unwrap()
+                .tool
+                .url
+                .contains("qldtraffic")
+        );
         assert!(catalog.tool("unknown").is_none());
         assert!(catalog.find("  ").is_empty());
     }

@@ -63,9 +63,7 @@ impl Default for Workspace {
 }
 
 fn valid(value: &str, max_len: usize) -> bool {
-    !value.trim().is_empty()
-        && value.len() <= max_len
-        && !value.chars().any(char::is_control)
+    !value.trim().is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
 }
 
 impl Workspace {
@@ -120,7 +118,12 @@ impl Workspace {
                 return Err("invalid case note".to_owned());
             }
         }
-        for id in self.bookmarks.iter().chain(&self.favourites).chain(&self.recent_tools) {
+        for id in self
+            .bookmarks
+            .iter()
+            .chain(&self.favourites)
+            .chain(&self.recent_tools)
+        {
             if !valid(id, 100) {
                 return Err("invalid tool identifier".to_owned());
             }
@@ -159,12 +162,18 @@ impl Workspace {
         if !valid(text, 4096) {
             return Err("invalid note".to_owned());
         }
-        let case = self.cases.iter_mut().find(|case| case.id == id)
+        let case = self
+            .cases
+            .iter_mut()
+            .find(|case| case.id == id)
             .ok_or_else(|| "unknown case".to_owned())?;
         if case.notes.len() >= MAX_ENTRIES {
             return Err("case note limit reached".to_owned());
         }
-        case.notes.push(Note { text: text.to_owned(), recorded_at_unix: now });
+        case.notes.push(Note {
+            text: text.to_owned(),
+            recorded_at_unix: now,
+        });
         Ok(())
     }
 
@@ -183,7 +192,10 @@ impl Workspace {
         }
         crate::osint_casework::validate_public_source_url(url)
             .map_err(|error| error.to_string())?;
-        let case = self.cases.iter_mut().find(|case| case.id == case_id)
+        let case = self
+            .cases
+            .iter_mut()
+            .find(|case| case.id == case_id)
             .ok_or_else(|| "unknown case".to_owned())?;
         if case.source_leads.len() >= MAX_ENTRIES
             || case.source_leads.iter().any(|lead| lead.id == lead_id)
@@ -203,7 +215,10 @@ impl Workspace {
     /// # Errors
     /// Unknown catalogue tool ID or excessive entries.
     pub fn remember_tool(&mut self, tool_id: &str, mode: &str) -> Result<(), String> {
-        if crate::rhinser_catalog::Catalog::load()?.tool(tool_id).is_none() {
+        if crate::rhinser_catalog::Catalog::load()?
+            .tool(tool_id)
+            .is_none()
+        {
             return Err("tool absent from catalogue".to_owned());
         }
         let list = match mode {
@@ -213,7 +228,11 @@ impl Workspace {
             _ => return Err("unknown tool action".to_owned()),
         };
         list.retain(|id| id != tool_id);
-        let limit = if mode == "recent" { MAX_RECENT } else { MAX_ENTRIES };
+        let limit = if mode == "recent" {
+            MAX_RECENT
+        } else {
+            MAX_ENTRIES
+        };
         if list.len() >= limit {
             list.remove(0);
         }
@@ -243,10 +262,21 @@ mod tests {
     #[test]
     fn complete_offline_case_and_source_lead_roundtrip() {
         let mut workspace = Workspace::default();
-        workspace.create_case("case-1", "Australian records").unwrap();
-        workspace.add_note("case-1", "Check historical business name", 5).unwrap();
-        workspace.add_lead("case-1", "ref-1", "https://abr.business.gov.au/",
-            "Unverified link, not a fact", 6).unwrap();
+        workspace
+            .create_case("case-1", "Australian records")
+            .unwrap();
+        workspace
+            .add_note("case-1", "Check historical business name", 5)
+            .unwrap();
+        workspace
+            .add_lead(
+                "case-1",
+                "ref-1",
+                "https://abr.business.gov.au/",
+                "Unverified link, not a fact",
+                6,
+            )
+            .unwrap();
         workspace.remember_tool("t0343", "favourite").unwrap();
         workspace.remember_tool("t0343", "bookmark").unwrap();
         workspace.remember_tool("t0343", "recent").unwrap();
@@ -254,7 +284,10 @@ mod tests {
         let bytes = serde_json::to_vec(&workspace).unwrap();
         let restored = Workspace::from_json(&bytes).unwrap();
         assert_eq!(restored, workspace);
-        assert_eq!(restored.cases[0].source_leads[0].evidence_status, "lead_only_unverified");
+        assert_eq!(
+            restored.cases[0].source_leads[0].evidence_status,
+            "lead_only_unverified"
+        );
         assert_eq!(restored.search_history, vec!["company"]);
     }
 
@@ -263,10 +296,16 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.create_case("a", "title").unwrap();
         assert!(workspace.create_case("a", "again").is_err());
-        assert!(workspace.add_lead("a", "b", "https://user:password@example.com/",
-            "unsafe", 1).is_err());
-        assert!(workspace.add_lead("a", "b", "https://example.com/?token=hidden",
-            "unsafe", 1).is_err());
+        assert!(
+            workspace
+                .add_lead("a", "b", "https://user:password@example.com/", "unsafe", 1)
+                .is_err()
+        );
+        assert!(
+            workspace
+                .add_lead("a", "b", "https://example.com/?token=hidden", "unsafe", 1)
+                .is_err()
+        );
         assert!(workspace.add_note("missing", "note", 1).is_err());
         assert!(workspace.remember_tool("unknown", "favourite").is_err());
     }

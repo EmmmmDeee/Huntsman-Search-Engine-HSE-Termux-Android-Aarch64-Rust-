@@ -18,7 +18,7 @@ use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
 use huntsman_recon::rhinser_catalog::Catalog;
 use huntsman_recon::rhinser_nfc;
-use huntsman_recon::rhinser_workspace::{Workspace, MAX_WORKSPACE_BYTES};
+use huntsman_recon::rhinser_workspace::{MAX_WORKSPACE_BYTES, Workspace};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 pub(super) const OSINT_HELP: &str = "osint nfc apdu|ndef HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID] | osint workspace FILE init|show|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
@@ -46,7 +46,12 @@ fn catalog_cmd(args: &[String]) -> ExitCode {
                 catalog.tool_count()
             );
             for category in &catalog.categories {
-                println!("category={} count={} name={}", category.id, category.tools.len(), category.name);
+                println!(
+                    "category={} count={} name={}",
+                    category.id,
+                    category.tools.len(),
+                    category.name
+                );
             }
             ExitCode::SUCCESS
         }
@@ -99,7 +104,10 @@ fn nfc_cmd(args: &[String]) -> ExitCode {
 /// Persistent, bounded, private OSINT casebook; the Rust library owns validation.
 fn workspace_cmd(args: &[String]) -> ExitCode {
     let [filename, operation, rest @ ..] = args else {
-        return fail(EX_USAGE, "usage: osint workspace FILE init|show|case|note|lead|bookmark|favourite|recent|search|setting ...");
+        return fail(
+            EX_USAGE,
+            "usage: osint workspace FILE init|show|case|note|lead|bookmark|favourite|recent|search|setting ...",
+        );
     };
     let path = Path::new(filename);
     if operation == "init" {
@@ -143,13 +151,13 @@ fn workspace_cmd(args: &[String]) -> ExitCode {
     let outcome = match (operation.as_str(), rest) {
         ("case", [id, title]) => workspace.create_case(id, title),
         ("note", [case_id, note]) => workspace.add_note(case_id, note, now),
-        ("lead", [case_id, id, url, summary]) => {
-            workspace.add_lead(case_id, id, url, summary, now)
-        }
+        ("lead", [case_id, id, url, summary]) => workspace.add_lead(case_id, id, url, summary, now),
         ("bookmark" | "favourite" | "recent", [id]) => workspace.remember_tool(id, operation),
         ("search", [query]) => workspace.remember_search(query),
         ("setting", [key, value]) => {
-            if key.is_empty() || workspace.settings.len() >= 512 && !workspace.settings.contains_key(key) {
+            if key.is_empty()
+                || workspace.settings.len() >= 512 && !workspace.settings.contains_key(key)
+            {
                 Err("invalid setting or limit reached".to_owned())
             } else {
                 workspace.settings.insert(key.clone(), value.clone());
