@@ -53,11 +53,15 @@ const USER_AGENT_CONFIGURATION_MESSAGE: &str =
 /// A syntactically plausible contact address does not establish authorisation: the operator must
 /// supply an address they actually control. The contact is not embedded in project source.
 fn validated_user_agent(value: Option<&str>) -> Option<&str> {
-    let value = value?.trim();
-    if !(12..=200).contains(&value.len())
-        || !value.is_ascii()
-        || !value.bytes().all(|byte| byte == b' ' || (33..=126).contains(&byte))
+    let raw = value?;
+    // Reject controls before trimming: a trailing CR/LF must not become a valid header.
+    if !raw.is_ascii()
+        || !raw.bytes().all(|byte| byte == b' ' || (33..=126).contains(&byte))
     {
+        return None;
+    }
+    let value = raw.trim();
+    if !(12..=200).contains(&value.len()) {
         return None;
     }
     let mut words = value.split_ascii_whitespace();
