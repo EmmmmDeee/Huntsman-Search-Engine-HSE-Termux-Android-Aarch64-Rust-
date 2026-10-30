@@ -60,6 +60,33 @@ fn web_analyze(
 /// findings and says why in an inconclusive `exif` outcome.
 fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
     let now = clock::unix_now();
+    // APK set containers are ZIP archives with nested APKs, not individual APKs.
+    // Reuse the same bounded offline parser and evidence contract as `apk set`.
+    if label.rsplit_once('.').is_some_and(|(_, extension)| {
+        ["apks", "xapk", "apkm"]
+            .iter()
+            .any(|kind| extension.eq_ignore_ascii_case(kind))
+    }) {
+        let report = huntsman_recon::apk_intel::container::run(bytes, label, now).map_err(
+            |error| LookupError {
+                status: 422,
+                message: error.to_string(),
+            },
+        )?;
+        let text = huntsman_recon::lookup_report::render(&report.entities, &report.outcomes)
+            .map_err(|message| LookupError {
+                status: 500,
+                message,
+            })?;
+        return Ok(LookupReport {
+            route: "inspect",
+            text,
+            entities: report.entities,
+            outcomes: report.outcomes,
+            scan: None,
+            status: None,
+        });
+    }
     // Reuse the CLI's bounded offline parser. Archive names and signing-block IDs
     // remain unverified observations, never proof of package ownership.
     if label
