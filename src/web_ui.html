@@ -1350,7 +1350,7 @@ async function openCompare(ids){
     $('cmpcoverage').textContent=ex?
       'Earlier: '+coverage(ex.earlier)+' Later: '+coverage(ex.later)+
       ((ex.changed_modules||[]).length?' Changed provider outcomes: '+ex.changed_modules.join(', ')+'.':'')+
-      ((ex.later.not_configured||ex.later.unresolved)?' Missing later findings may reflect unqueried or unresolved sources, not disappearance.':''):
+      ((ex.later.not_configured||ex.later.refused_before_sending||ex.later.unresolved)?' Missing later findings may reflect unqueried, refused or unresolved sources, not disappearance.':''):
       'Execution coverage comparison unavailable; compare recorded source outcomes manually.';
     fill('cmptypes',c.types,t=>[t.description||t.type,t.base,t.other,t.added,t.removed,t.kept]);
     const cs=c.correlations.added.map(x=>['Added',x]).concat(c.correlations.removed.map(x=>['Removed',x]));
