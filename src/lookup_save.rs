@@ -115,13 +115,20 @@ pub const PHONE_POLICY: SavePolicy = SavePolicy {
     entity_provenance: phone_provenance,
 };
 
-fn exposure_provenance(source: &str) -> (&str, &'static str) {
+/// One authority for the components that execute the keyed exposure legs.
+/// A folded email/username lookup must not reclassify these rows as its own.
+fn exposure_component(source: &str) -> Option<&'static str> {
     match source {
-        "hibp_account" => ("hibp_account", "src/exposure_cli.rs"),
-        "stolen_tax" => ("stolen_tax", "src/stolen_tax.rs"),
-        "oathnet" => ("oathnet", "src/oathnet.rs"),
-        _ => (source, "src/exposure_cli.rs"),
+        "hibp_account" => Some("src/exposure_cli.rs"),
+        "stolen_tax" => Some("src/stolen_tax.rs"),
+        "oathnet" => Some("src/oathnet.rs"),
+        crate::dehashed::COLLECTOR_ID => Some("src/dehashed/exposure.rs"),
+        _ => None,
     }
+}
+
+fn exposure_provenance(source: &str) -> (&str, &'static str) {
+    (source, exposure_component(source).unwrap_or("src/exposure_cli.rs"))
 }
 
 pub const EXPOSURE_POLICY: SavePolicy = SavePolicy {
@@ -137,9 +144,10 @@ fn with_exposure<'a>(
     source: &'a str,
     other: fn(&'a str) -> (&'a str, &'static str),
 ) -> (&'a str, &'static str) {
-    match source {
-        "hibp_account" | "stolen_tax" | "oathnet" => exposure_provenance(source),
-        _ => other(source),
+    if let Some(component) = exposure_component(source) {
+        (source, component)
+    } else {
+        other(source)
     }
 }
 
@@ -740,6 +748,44 @@ mod tests {
         assert_eq!(
             (PEOPLE_POLICY.outcome_provenance)("asic_persons.banned"),
             ("asic_persons", "src/asic_persons.rs")
+        );
+    }
+
+    #[test]
+    fn dehashed_exposure_ledgers_keep_the_dehashed_component() {
+        // The DeHashed exposure leg runs both directly and folded beside email/username lookups.
+        // Its source label must retain its own executing component in every saved ledger claim.
+        let source = crate::dehashed::COLLECTOR_ID;
+        let component = "src/dehashed/exposure.rs";
+        for policy in [
+            EXPOSURE_POLICY,
+            EMAIL_EXPOSURE_POLICY,
+            USERNAME_EXPOSURE_POLICY,
+        ] {
+            assert_eq!((policy.outcome_provenance)(source), (source, component));
+            assert_eq!((policy.entity_provenance)(source), (source, component));
+            let entity = entity_with([scanned(source, "breach metadata only")]);
+            let outcome = SourceExecutionOutcome::not_configured(source, 1);
+            let entries = chain(&[entity], &[outcome], policy).unwrap();
+            assert_eq!(entries.len(), 3, "outcome, entity, evidence");
+            for entry in entries {
+                assert_eq!(entry.claim.source, source);
+                assert_eq!(entry.claim.component, component);
+            }
+        }
+
+        // Routing a breach leg must not change another lookup's own source mapping.
+        assert_eq!(
+            (EMAIL_EXPOSURE_POLICY.outcome_provenance)("duolingo"),
+            ("duolingo", "src/duolingo.rs")
+        );
+        assert_eq!(
+            (USERNAME_EXPOSURE_POLICY.outcome_provenance)("github_user"),
+            ("github_user", "src/github_user.rs")
+        );
+        assert_eq!(
+            (EXPOSURE_POLICY.outcome_provenance)("new_breach_source"),
+            ("new_breach_source", "src/exposure_cli.rs")
         );
     }
 }
