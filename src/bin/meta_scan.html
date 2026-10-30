@@ -50,11 +50,12 @@ footer{color:#91a4be;font-size:12px;margin:24px 0}
 </header>
 <section class="card" aria-label="New scan">
 <h2>Run collection</h2>
-<p>Enter one Facebook page handle per line, up to 20. The original four MetaScan collection routes are supported when the RapidAPI subscription permits them.</p>
+<p>Enter one Facebook page handle per line, up to 20. Keyless mode discovers publicly indexed page URLs. Optional provider enrichment collects the four original MetaScan information categories.</p>
 <label for="handles">Public page handles</label>
 <textarea id="handles" spellcheck="false" placeholder="nasa&#10;HackUnderway" maxlength="3000" autocomplete="off"></textarea>
 <div class="row">
-<label class="checkbox"><input type="checkbox" id="business" checked>Business homepage, About &amp; transparency</label>
+<label class="checkbox"><input type="checkbox" id="provider">Use RapidAPI enrichment (may consume paid credits)</label>
+<label class="checkbox"><input type="checkbox" id="business" checked disabled>Business homepage, About &amp; transparency</label>
 </div>
 <div class="row">
 <button class="primary" id="scan">Start collection</button>
@@ -62,11 +63,11 @@ footer{color:#91a4be;font-size:12px;margin:24px 0}
 <button id="txt" disabled>Export TXT</button>
 </div>
 <p id="progress" role="status" aria-live="polite" class="small">Ready. Data is not collected until you start a scan.</p>
-<div class="notice">Provider responses are third-party observations, not verified identity claims. This interface runs on your device and does not expose your API key to the browser. Missing fields and access denials are not treated as negative findings.</div>
+<div class="notice">Keyless mode is <strong>indexed URL discovery only</strong>, not a Facebook scraper or identity verification. RapidAPI calls occur only when explicitly enabled. They may consume subscription quota. Neither missing results nor blocked sources establish that an account is absent.</div>
 </section>
 <section class="card" id="reportSection" aria-label="Collected evidence">
 <div class="results-head"><h2>Results</h2><span class="small" id="count">No scan yet</span></div>
-<div id="results" aria-live="polite"><p>Run a scan to see separately classified outcomes for each collection route.</p></div>
+<div id="results" aria-live="polite"><p>Run a keyless discovery or explicitly enable provider enrichment to see separately classified outcomes.</p></div>
 </section>
 <footer>Loopback-only Web UI. No root, Python, external frontend assets or telemetry. Uses Huntsman's bounded Rust HTTP transport. MetaScan functionality attributed to HackUnderway (MIT).</footer>
 </main>
@@ -100,6 +101,32 @@ footer{color:#91a4be;font-size:12px;margin:24px 0}
     box.appendChild(header);
     const container = text('div', '', 'result-body');
     container.appendChild(text('p', 'Source: ' + report.provider + ' · ' + report.verification, 'small'));
+    if (report.discovery) {
+      const section = text('div', '', 'result');
+      const title = text('div', '', 'result-head');
+      title.appendChild(text('strong', 'Public indexed page leads'));
+      title.appendChild(text('span', report.discovery.state, 'badge ' + report.discovery.state));
+      section.appendChild(title);
+      const body = text('div', '', 'result-body');
+      body.appendChild(text('p', 'Discovery only. A search result does not confirm ownership or identity.', 'small'));
+      report.discovery.hits.forEach(function (hit) {
+        const row = document.createElement('p');
+        const link = document.createElement('a');
+        link.href = hit.url;
+        link.textContent = hit.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        row.appendChild(text('span', hit.engine + ' · '));
+        row.appendChild(link);
+        body.appendChild(row);
+      });
+      const details = document.createElement('details');
+      details.appendChild(text('summary', 'Search-source outcomes'));
+      details.appendChild(text('pre', JSON.stringify(report.discovery.outcomes, null, 2)));
+      body.appendChild(details);
+      section.appendChild(body);
+      container.appendChild(section);
+    }
     labels.forEach(function (pair) {
       const outcome = report[pair[0]];
       if (!outcome) return;
@@ -158,7 +185,7 @@ footer{color:#91a4be;font-size:12px;margin:24px 0}
           const response = await fetch('/api/scan', {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'X-Meta-Scan': '1'},
-            body: JSON.stringify({username: names[i], include_business: $('business').checked})
+            body: JSON.stringify({username: names[i], include_business: $('business').checked, mode: $('provider').checked ? 'provider' : 'indexed'})
           });
           const payload = await response.json();
           if (!response.ok) throw new Error(payload.error || 'HTTP ' + response.status);
@@ -178,6 +205,7 @@ footer{color:#91a4be;font-size:12px;margin:24px 0}
     }
   }
   $('scan').addEventListener('click', start);
+  $('provider').addEventListener('change', function () { $('business').disabled = !$('provider').checked; });
   $('json').addEventListener('click', function () {
     download('json', JSON.stringify(collected, null, 2), 'application/json');
   });
@@ -188,6 +216,11 @@ footer{color:#91a4be;font-size:12px;margin:24px 0}
         'Page: ' + report.page_url, 'Time: ' + report.observed_at_unix,
         'Verification: ' + report.verification, ''
       ];
+      if (report.discovery) {
+        lines.push('[PUBLIC INDEX DISCOVERY]', 'State: ' + report.discovery.state, 'Evidence: ' + report.discovery.evidence_role);
+        report.discovery.hits.forEach(function (hit) { lines.push(hit.engine + ': ' + hit.url); });
+        lines.push('');
+      }
       labels.forEach(function (pair) {
         if (!report[pair[0]]) return;
         const item = report[pair[0]];
@@ -201,7 +234,7 @@ footer{color:#91a4be;font-size:12px;margin:24px 0}
     download('txt', output, 'text/plain');
   });
   fetch('/api/status').then(function (r) { return r.json(); }).then(function (status) {
-    $('status').textContent = status.api_key_configured ? '● API key configured' : '○ API key not configured';
+    $('status').textContent = status.api_key_configured ? '● Keyless ready · Provider configured' : '● Keyless ready · Provider not configured';
   }).catch(function () { $('status').textContent = 'Configuration unavailable'; });
 }());
 </script>
