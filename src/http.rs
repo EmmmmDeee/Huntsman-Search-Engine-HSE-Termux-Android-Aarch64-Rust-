@@ -55,10 +55,18 @@ pub fn is_sensitive_header(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(
         n.as_str(),
-        "authorization" | "proxy-authorization" | "cookie" | "set-cookie" | "user-agent"
+        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
     ) || ["key", "token", "secret", "password", "auth"]
         .iter()
         .any(|needle| n.contains(needle))
+}
+
+/// Value-aware redaction and redirect protection. A contact-bearing User-Agent may
+/// contain an operator email even though an ordinary tool User-Agent is not a
+/// credential. Preserve ordinary User-Agent semantics for existing providers.
+#[must_use]
+pub fn is_sensitive_header_value(name: &str, value: &str) -> bool {
+    is_sensitive_header(name) || (name.eq_ignore_ascii_case("user-agent") && value.contains('@'))
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -123,7 +131,7 @@ impl fmt::Debug for Request {
             .map(|(k, v)| {
                 (
                     k.as_str(),
-                    if is_sensitive_header(k) {
+                    if is_sensitive_header_value(k, v) {
                         REDACTED
                     } else {
                         v.as_str()
@@ -1268,6 +1276,23 @@ mod tests {
         assert!(!shown.contains("pw@"));
         assert!(shown.contains("text/html"));
         assert!(shown.contains("example.com/p"));
+    }
+
+    #[test]
+    fn contact_user_agent_is_redacted_without_removing_ordinary_user_agent() {
+        let contact = "Huntsman contact@research.example";
+        let request = Request::get("https://efts.sec.gov/LATEST/search-index")
+            .header("User-Agent", contact);
+        assert_eq!(request.header_value("user-agent"), Some(contact));
+        let shown = format!("{request:?}");
+        assert!(!shown.contains(contact), "operator identity must not be logged");
+        assert!(shown.contains(REDACTED));
+        assert!(!is_sensitive_header("user-agent"));
+        assert!(is_sensitive_header_value("User-Agent", contact));
+        assert!(!is_sensitive_header_value("User-Agent", DEFAULT_USER_AGENT));
+
+        let ordinary = Request::get("https://example.test").header("User-Agent", DEFAULT_USER_AGENT);
+        assert!(format!("{ordinary:?}").contains(DEFAULT_USER_AGENT));
     }
 
     #[test]
