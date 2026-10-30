@@ -217,9 +217,12 @@ mod tests {
         }));
         assert_eq!(Catalog::load().unwrap().origin_apk_sha256, chunks.concat());
         // Keep the public digest out of the 32-hex secret-signature window.
-        assert!(!CATALOG_JSON.as_bytes().windows(32).any(|window| {
-            window.iter().all(|byte| byte.is_ascii_hexdigit())
-        }));
+        assert!(
+            !CATALOG_JSON
+                .as_bytes()
+                .windows(32)
+                .any(|window| { window.iter().all(|byte| byte.is_ascii_hexdigit()) })
+        );
     }
 
     #[test]
