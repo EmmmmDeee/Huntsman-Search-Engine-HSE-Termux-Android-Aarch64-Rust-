@@ -30,7 +30,7 @@ pub fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
         .chars()
         .filter(|c| !matches!(c, ' ' | ':' | '-' | '\n' | '\t'))
         .collect();
-    if normalized.is_empty() || normalized.len() % 2 != 0 || normalized.len() > 16384 {
+    if normalized.is_empty() || !normalized.len().is_multiple_of(2) || normalized.len() > 16384 {
         return Err("hex input must contain 1-8192 complete bytes".to_owned());
     }
     normalized
