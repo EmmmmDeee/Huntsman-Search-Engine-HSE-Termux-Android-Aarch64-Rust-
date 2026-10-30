@@ -51,8 +51,40 @@ fn diff_cmd(old: &str, new: &str, as_json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn set_cmd(file: &str, as_json: bool) -> ExitCode {
+    if file.is_empty() {
+        return fail(EX_USAGE, APK_HELP);
+    }
+    let data = match read_bounded(Path::new(file), MAX_FILE_BYTES) {
+        Ok(data) => data,
+        Err(error) => return fail(EX_NOINPUT, &error.to_string()),
+    };
+    let report = match apk_intel::container::run(&data, file, clock::unix_now()) {
+        Ok(report) => report,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    if as_json {
+        match terminal_json_pretty(&report) {
+            Ok(json) => println!("{json}"),
+            Err(error) => return fail(EX_IOERR, &error.to_string()),
+        }
+    } else {
+        match lookup_report::render(&report.entities, &report.outcomes) {
+            Ok(text) => print!("{text}"),
+            Err(error) => return fail(EX_IOERR, &error),
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 pub(super) fn apk_cmd(args: &[String]) -> ExitCode {
     match args {
+        [operation, file] if operation == "set" => {
+            return set_cmd(file, false);
+        }
+        [operation, file, flag] if operation == "set" && flag == "--json" => {
+            return set_cmd(file, true);
+        }
         [operation, old, new] if operation == "diff" => {
             return diff_cmd(old, new, false);
         }
