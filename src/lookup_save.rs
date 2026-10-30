@@ -317,10 +317,13 @@ pub const CRYPTO_POLICY: SavePolicy = SavePolicy {
 };
 
 fn place_provenance(source: &str) -> (&str, &'static str) {
-    match source {
-        "nominatim" => ("nominatim", "src/nominatim.rs"),
-        _ => (source, "src/nominatim_cli.rs"),
-    }
+    let component = match source {
+        crate::nominatim::SOURCE => "src/nominatim.rs",
+        crate::stac::SOURCE => "src/stac.rs",
+        crate::opensky::SOURCE => "src/opensky.rs",
+        _ => "src/nominatim_cli.rs",
+    };
+    (source, component)
 }
 
 pub const PLACE_POLICY: SavePolicy = SavePolicy {
