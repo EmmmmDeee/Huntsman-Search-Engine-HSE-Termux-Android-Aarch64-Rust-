@@ -268,13 +268,18 @@ fn area_cells_leg(
 
 fn seed_entity(selector: &NetworkSelector, scan_id: &str) -> Entity {
     let (kind, note) = match selector {
-        NetworkSelector::Bssid(_) => (EntityKind::MacAddress, "operator-supplied BSSID selector"),
-        NetworkSelector::Ssid(_) => (EntityKind::Ssid, "operator-supplied SSID selector"),
+        NetworkSelector::Bssid(_) => (
+            EntityKind::MacAddress,
+            "BSSID selector the lookup was asked",
+        ),
+        NetworkSelector::Ssid(_) => (EntityKind::Ssid, "SSID selector the lookup was asked"),
         NetworkSelector::Area { .. } => (
             EntityKind::Coordinates,
-            "operator-supplied coordinate selector",
+            "coordinate selector the lookup was asked",
         ),
-        NetworkSelector::Cell { .. } => (EntityKind::Other, "operator-supplied cell site selector"),
+        NetworkSelector::Cell { .. } => {
+            (EntityKind::Other, "cell site selector the lookup was asked")
+        }
     };
     let value = match selector {
         NetworkSelector::Ssid(name) => name.clone(),

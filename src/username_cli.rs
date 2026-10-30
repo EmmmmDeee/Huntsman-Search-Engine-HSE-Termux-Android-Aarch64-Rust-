@@ -279,7 +279,7 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
     seed.tag("seed");
     seed.add_evidence(Evidence::new(
         EvidenceProvenance::for_scan("seed", scan_id),
-        "operator-supplied username selector",
+        "username selector the lookup was asked",
     ));
     let seed_uid = seed.uid.clone();
     entities.push(seed);

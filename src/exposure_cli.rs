@@ -1054,9 +1054,9 @@ fn seed_entity(kind: &EntityKind, value: &str, scan_id: &str) -> Entity {
     let mut entity = Entity::new(kind.clone(), value, 0.99, scan_id);
     entity.tag("seed");
     let what = if *kind == EntityKind::Email {
-        "operator-supplied email selector"
+        "email selector the lookup was asked"
     } else {
-        "operator-supplied username selector"
+        "username selector the lookup was asked"
     };
     entity.add_evidence(Evidence::new(
         EvidenceProvenance::for_scan("seed", scan_id),

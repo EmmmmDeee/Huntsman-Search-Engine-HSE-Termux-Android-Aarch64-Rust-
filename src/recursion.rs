@@ -250,11 +250,9 @@ fn names_a_mailbox_holder(email: &str) -> bool {
 /// nobody observed where handles are case- or separator-sensitive (Hacker News, GitHub). A
 /// username no observation of which reaches the floor, as one only guessed from an e-mail's local
 /// part, is followed by its identity key, the separator-free form most platforms accept. The
-/// operator's own handle (its operator-seed record, which its lookup echoes back) was already
-/// looked up: it is followed by what sources observed, never by the key. A pivot's lookup echoes
-/// it back too, but the crawl does not keep that echo ([`forget_pivot_echo`]): a pivot was followed
-/// by a spelling a source observed, which stays observed, or by its identity key, already
-/// dispatched. Every other route follows the entity's canonical value. Edges resolve by
+/// handle a lookup was asked (its operator-seed record, which every lookup echoes back) was already
+/// looked up: it is followed by what sources observed, never by the key. The crawl routes a pivot
+/// lookup's echo before it forgets it ([`forget_pivot_echo`]), so this holds for a pivot too. Every other route follows the entity's canonical value. Edges resolve by
 /// [`selector_identity`], so what each lookup finds joins the same entity. **Pure.**
 fn route_selectors(kind: ScanKind, entity: &Entity, floor: f64) -> Vec<String> {
     if kind == ScanKind::Username && entity.kind == EntityKind::Username {
@@ -644,25 +642,25 @@ impl CrawlState {
     }
 
     /// Reduce what one dispatch of `target` returned into the crawl: its outcomes, and each entity
-    /// with the edge it was reached by and the targets it queues for the next generation.
-    /// Generation 0 is the operator's seeds; every later target is a pivot the crawl found, whose
-    /// lookup's echo of it as the operator's seed is not kept ([`forget_pivot_echo`]).
+    /// with the edge it was reached by and the targets it queues for the next generation. Each
+    /// entity is routed and recorded as the lookup returned it, so a lookup's echo of its own
+    /// selector still says that selector was looked up ([`route_selectors`]) and still shows the
+    /// lookup in the lineage. Generation 0 is the operator's seeds; every later target is a pivot
+    /// the crawl found, whose echo is then not kept as the operator's seed ([`forget_pivot_echo`]).
     fn take_step(
         &mut self,
         generation: u32,
         target: &Target,
-        mut step: Step,
+        step: Step,
         policy: &RecursionPolicy,
         next: &mut Frontier,
     ) {
-        if generation > 0 {
-            let followed_at = self
-                .followed_at
+        let followed_at = (generation > 0).then(|| {
+            self.followed_at
                 .get(&target.owned_key())
                 .copied()
-                .unwrap_or(policy.expand_confidence_floor);
-            forget_pivot_echo(&mut step.entities, followed_at);
-        }
+                .unwrap_or(policy.expand_confidence_floor)
+        });
         self.dispatches += 1;
         self.outcomes.extend(step.outcomes);
         for mut entity in step.entities {
@@ -675,6 +673,11 @@ impl CrawlState {
                 generation,
             });
             self.queue_expansions(&entity, policy, next);
+            if let Some(followed_at) = followed_at {
+                if !forget_pivot_echo(&mut entity, followed_at) {
+                    continue;
+                }
+            }
             self.entities.push(entity);
         }
     }
@@ -747,35 +750,33 @@ impl CrawlState {
     }
 }
 
-/// What a lookup the crawl dispatched on a pivot returned, without the lookup's echo of the
-/// selector it was asked. Every lookup echoes its selector back as the operator's seed: tagged
-/// `seed`, at the seed's confidence, with an operator-supplied record. A pivot was found by the
-/// crawl, not supplied by the operator, and its echo would fold into the entity it was followed
-/// from, so a weak lead (a handle guessed from an e-mail's local part) would leave the crawl as
-/// the operator's own seed at 0.99. The echo's records and tag are not kept. An echo holding
-/// nothing else is dropped, as the crawl already holds the entity it was followed from; one a
-/// source also described keeps what the source said, at no more than `followed_at`, the
-/// confidence the crawl followed it at. **Pure.**
-fn forget_pivot_echo(entities: &mut Vec<Entity>, followed_at: f64) {
-    entities.retain_mut(|entity| {
-        if !entity.evidence.iter().any(Evidence::is_operator_seed) {
-            return true;
-        }
-        // Each echo the lookup folded in was one observation of the entity; none was a source's.
-        let echoes: u32 = entity
-            .evidence
-            .iter()
-            .filter(|evidence| evidence.is_operator_seed())
-            .map(|evidence| 1 + u32::try_from(evidence.merged_provenance.len()).unwrap_or(u32::MAX))
-            .fold(0, u32::saturating_add);
-        entity
-            .evidence
-            .retain(|evidence| !evidence.is_operator_seed());
-        entity.tags.retain(|tag| tag != "seed");
-        entity.confidence = entity.confidence.min(followed_at);
-        entity.corroboration = entity.corroboration.saturating_sub(echoes).max(1);
-        !entity.evidence.is_empty()
-    });
+/// Forget a pivot lookup's echo of its selector in `entity`, and say whether anything is left to
+/// keep. Every lookup echoes its selector back as the operator's seed: tagged `seed`, at the seed's
+/// confidence, with a seed record ([`Evidence::is_operator_seed`]). A pivot was found by the crawl, not supplied by the
+/// operator, and its echo would fold into the entity it was followed from, so a weak lead (a handle
+/// guessed from an e-mail's local part) would leave the crawl as the operator's own seed at 0.99.
+/// The echo's records and tag are not kept, nor counted as observations. An echo holding nothing
+/// else is not kept at all, as the crawl already holds the entity it was followed from; one a source
+/// also described keeps what the source said, at no more than `followed_at`, the confidence the
+/// crawl followed it at. An entity with no operator-seed record is kept as it is. **Pure.**
+fn forget_pivot_echo(entity: &mut Entity, followed_at: f64) -> bool {
+    if !entity.evidence.iter().any(Evidence::is_operator_seed) {
+        return true;
+    }
+    // Each echo the lookup folded in was one observation of the entity; none was a source's.
+    let echoes: u32 = entity
+        .evidence
+        .iter()
+        .filter(|evidence| evidence.is_operator_seed())
+        .map(|evidence| 1 + u32::try_from(evidence.merged_provenance.len()).unwrap_or(u32::MAX))
+        .fold(0, u32::saturating_add);
+    entity
+        .evidence
+        .retain(|evidence| !evidence.is_operator_seed());
+    entity.tags.retain(|tag| tag != "seed");
+    entity.confidence = entity.confidence.min(followed_at);
+    entity.corroboration = entity.corroboration.saturating_sub(echoes).max(1);
+    !entity.evidence.is_empty()
 }
 
 /// Run a bounded recursive crawl from `seeds`, dispatching live lookups through `collector`.
@@ -1405,7 +1406,7 @@ mod tests {
         entity.tag("seed");
         entity.add_evidence(crate::entity::Evidence::new(
             crate::entity::EvidenceProvenance::for_scan("seed", "test"),
-            "operator-supplied username selector",
+            "username selector the lookup was asked",
         ));
         entity
     }
@@ -1438,7 +1439,7 @@ mod tests {
         seed.tag("seed");
         seed.add_evidence(crate::entity::Evidence::new(
             crate::entity::EvidenceProvenance::for_scan("seed", "test"),
-            "operator-supplied email selector",
+            "email selector the lookup was asked",
         ));
         let find = |report: &RecursionReport, kind: EntityKind| -> Entity {
             report
@@ -1482,6 +1483,86 @@ mod tests {
             );
             assert!((mailbox.confidence - 0.99).abs() < f64::EPSILON);
         }
+    }
+
+    /// A pivot lookup's echo loses its seed record and tag, is never held above the confidence the
+    /// crawl followed it at, and is not counted as an observation; an echo holding nothing else is
+    /// not kept, and an entity that is no echo is kept as it is.
+    #[test]
+    fn a_pivots_echo_keeps_only_what_sources_said_of_it() {
+        let mut echo = asked("pgsmith");
+        assert!(!forget_pivot_echo(&mut echo, 0.7), "{echo:?}");
+
+        let mut described = asked("pgsmith");
+        described.absorb(observed(EntityKind::Username, "pgsmith", "github"));
+        assert_eq!(described.corroboration, 2);
+        assert!(forget_pivot_echo(&mut described, 0.7));
+        assert!(!described.evidence.iter().any(Evidence::is_operator_seed));
+        assert!(!described.has_tag("seed"));
+        assert!(
+            (described.confidence - 0.7).abs() < f64::EPSILON,
+            "{described:?}"
+        );
+        assert_eq!(described.corroboration, 1);
+        assert_eq!(
+            described.evidence_sources(),
+            BTreeSet::from(["github".to_owned()])
+        );
+
+        let mut finding = observed(EntityKind::Username, "pgsmith", "github");
+        let before = finding.clone();
+        assert!(forget_pivot_echo(&mut finding, 0.1));
+        assert_eq!(finding, before);
+    }
+
+    /// A pivot's lookup is routed and recorded as it returned, before its echo is forgotten: a
+    /// handle followed by a spelling a source observed is not looked up again by its identity key
+    /// when every other spelling is below the floor (the echo says it was looked up), and a lookup
+    /// whose echo was all it returned still shows in the lineage.
+    #[test]
+    fn a_pivots_lookup_is_routed_and_recorded_before_its_echo_is_forgotten() {
+        let email = "pg.smith@corp.example";
+        let floor = RecursionPolicy {
+            expose_emails: false,
+            expand_confidence_floor: 0.8,
+            ..policy()
+        };
+        let mut echo = asked("pg_smith");
+        let mut other = observed(EntityKind::Username, "PG-Smith", "keybase");
+        other.confidence = 0.7;
+        echo.absorb(other);
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Email,
+                email,
+                vec![observed(EntityKind::Username, "PG_Smith", "gravatar")],
+            )
+            .on(ScanKind::Username, "PG_Smith", vec![echo]);
+        run(&[email.to_owned()], &floor, &mut collector);
+        let handles: Vec<&str> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind == "username")
+            .map(|(_, selector)| selector.as_str())
+            .collect();
+        assert_eq!(handles, ["PG_Smith"]);
+
+        let mailbox_only = RecursionPolicy {
+            expose_emails: false,
+            ..policy()
+        };
+        let mut collector = Scripted::new()
+            .on(ScanKind::Email, email, vec![guessed("pg-smith")])
+            .on(ScanKind::Username, "pgsmith", vec![asked("pgsmith")]);
+        let report = run(&[email.to_owned()], &mailbox_only, &mut collector);
+        assert!(
+            report
+                .edges
+                .iter()
+                .any(|edge| edge.from_kind == "username" && edge.from_selector == "pgsmith"),
+            "{:?}",
+            report.edges
+        );
     }
 
     #[test]
