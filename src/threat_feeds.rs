@@ -11,7 +11,9 @@
 //! reads the copy and sends nothing. A feed that cannot be refreshed is read from its last copy,
 //! and its row says how old that copy is; one never downloaded is a failed row, not "not listed".
 //! A feed that downloads but holds no entry this module can read has changed form, and says so
-//! instead of reading as "not listed".
+//! instead of reading as "not listed". A page served in a list's place (an HTML document: a
+//! landing, terms, "feed has moved" or challenge page) is a failed download: it is never kept, and
+//! the last copy still answers.
 //!
 //! A list is only as current as its publisher keeps it. The `Last-Modified` date a download
 //! carries is kept beside the copy, with the copy's length and CRC-32 so it is read only with that
@@ -52,7 +54,7 @@ pub enum Format {
     /// A hosts file: each line an address, then the host names it maps.
     Hosts,
     /// One URL a line, with or without its scheme. A line that is not a URL, such as the HTML
-    /// around a list, is skipped.
+    /// around a list or a URL inside its markup (`<a href="https://…">`), is skipped.
     Urls,
     /// CSV whose given column (from 0) holds a URL or a host name. Lines starting `#` are
     /// comments, and a header row reads as no entry.
@@ -502,7 +504,11 @@ fn load(
     now_unix: u64,
 ) -> Result<Copy, Failure> {
     let path = dir.map(|dir| dir.join(feed.id));
-    let kept = path.as_deref().and_then(read_copy);
+    // A page an earlier version kept in the list's place is no copy of the list.
+    let kept = path
+        .as_deref()
+        .and_then(read_copy)
+        .filter(|(body, _)| !is_page(feed, body));
     let kept_date = match (path.as_deref(), &kept) {
         (Some(path), Some((body, _))) => read_updated(path, body),
         _ => KeptDate::Missing,
@@ -520,7 +526,19 @@ fn load(
             });
         }
     }
-    match download(transport, feed, now_unix) {
+    // A page served in the list's place is a failed download: it is not kept, and the copy kept
+    // before it still answers.
+    let downloaded = download(transport, feed, now_unix).and_then(|(body, updated)| {
+        if is_page(feed, &body) {
+            Err((
+                SourceOutcomeKind::ProtocolDrift,
+                format!("an HTML page of {} bytes in place of the list", body.len()),
+            ))
+        } else {
+            Ok((body, updated))
+        }
+    });
+    match downloaded {
         Ok((body, updated)) => {
             let note = path
                 .and_then(|path| keep(&path, &body, updated).err())
@@ -545,6 +563,24 @@ fn load(
         },
     }
 }
+
+/// Whether `body` is a page served in `feed`'s place (a landing, terms, "feed has moved" or
+/// challenge page): an HTML document, by its doctype or its `<html>`, `<head>` or `<body>`, in its
+/// first kilobyte. A list wrapped in markup that is no document (VX Vault's `<pre>`) is the list,
+/// whatever its entries spell, and Tor's Onionoo answer is JSON, never a page. **Pure.**
+fn is_page(feed: &Feed, body: &[u8]) -> bool {
+    if feed.format == Format::Onionoo {
+        return false;
+    }
+    let head =
+        String::from_utf8_lossy(&body[..body.len().min(PAGE_HEAD_BYTES)]).to_ascii_lowercase();
+    ["<!doctype html", "<html", "<head", "<body"]
+        .iter()
+        .any(|tag| head.contains(tag))
+}
+
+/// How much of a body [`is_page`] reads for an HTML document's opening tags.
+const PAGE_HEAD_BYTES: usize = 1024;
 
 /// Where the publisher's date of the copy at `copy` is kept: beside it, with the copy's length
 /// and CRC-32, so it is read only with the body it came with.
@@ -777,7 +813,13 @@ fn listed_key(word: &str) -> Option<Key> {
 /// The host of a URL, with or without its scheme, or of a bare host name: an address or a name.
 fn url_key(url: &str) -> Option<Key> {
     let url = url.trim();
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    // What comes before `://` must be a URI scheme (RFC 3986: a letter, then letters, digits, `+`,
+    // `-` and `.`), so a `://` inside markup (`<link href="https://…">`) is no URL.
+    let rest = match url.split_once("://") {
+        Some((scheme, rest)) if is_scheme(scheme) => rest,
+        Some(_) => return None,
+        None => url,
+    };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let host = authority.rsplit('@').next().unwrap_or(authority);
     let host = if let Some(bracketed) = host.strip_prefix('[') {
@@ -791,6 +833,15 @@ fn url_key(url: &str) -> Option<Key> {
         return Some(Key::Address(address));
     }
     host_name(host).map(Key::Name)
+}
+
+/// Whether `scheme` is a URI scheme: a letter, then letters, digits, `+`, `-` and `.`. **Pure.**
+fn is_scheme(scheme: &str) -> bool {
+    let mut bytes = scheme.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
 }
 
 /// `raw` as a host name in lower case without a trailing dot, when it is one: dotted labels of
