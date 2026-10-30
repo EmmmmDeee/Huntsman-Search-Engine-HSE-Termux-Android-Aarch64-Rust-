@@ -671,9 +671,8 @@ fn module_map_matches_the_compiled_tree() {
         for entry in fs::read_dir(bin_dir).unwrap() {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|ext| ext == "rs") {
-                compiled_binaries.insert(
-                    path.file_stem().unwrap().to_string_lossy().into_owned(),
-                );
+                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                compiled_binaries.insert(name);
             }
         }
     }
