@@ -481,6 +481,44 @@ mod tests {
     }
 
     #[test]
+    fn compiled_axml_package_consistency_is_observed_not_authenticated() {
+        use super::super::axml::tests::{Axml, Val, sample_manifest};
+
+        let base_manifest = sample_manifest().build();
+        let base = zip(&[("AndroidManifest.xml", &base_manifest, 0)]);
+        let same = zip(&[("AndroidManifest.xml", &base_manifest, 0)]);
+        let consistent = zip(&[("base.apk", &base, 0), ("config.arm64.apk", &same, 8)]);
+        let report = run(&consistent, "sample.apks", 7).expect("compiled AXML");
+        assert_eq!(report.package_consistency, "consistent_unverified");
+        assert_eq!(report.version_consistency, "consistent_unverified");
+        assert_eq!(
+            report.apk_members[0].manifest_package_unverified.as_deref(),
+            Some("com.example.field")
+        );
+        assert_eq!(
+            report.apk_members[0].manifest_version_code_unverified.as_deref(),
+            Some("42")
+        );
+
+        let mut different = Axml::new(&["versionCode"]);
+        different
+            .start(
+                "manifest",
+                &[
+                    ("versionCode", Val::Int(99)),
+                    ("package", Val::Str("com.example.other")),
+                ],
+            )
+            .end("manifest");
+        let other_manifest = different.build();
+        let other = zip(&[("AndroidManifest.xml", &other_manifest, 0)]);
+        let conflicted = zip(&[("base.apk", &base, 0), ("split.apk", &other, 0)]);
+        let report = run(&conflicted, "sample.xapk", 7).expect("valid but conflicting claims");
+        assert_eq!(report.package_consistency, "conflicted");
+        assert_eq!(report.version_consistency, "conflicted");
+    }
+
+    #[test]
     fn conflicting_and_missing_claims_never_become_verified() {
         assert_eq!(
             consistency([Some("a"), Some("b")].into_iter(), 2),
