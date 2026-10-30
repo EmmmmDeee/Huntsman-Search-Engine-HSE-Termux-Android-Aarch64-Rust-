@@ -14,6 +14,8 @@ pub struct Tool {
     pub id: String,
     pub name: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +83,11 @@ impl Catalog {
                     || tool.name.len() > 200
                     || tool.url.len() > 2048
                     || !tool.url.starts_with("https://")
+                    || tool.query_template.as_ref().is_some_and(|template| {
+                        !template.starts_with("https://")
+                            || template.matches("{q}").count() != 1
+                            || template.len() > 2048
+                    })
                     || tool.url.contains('@')
                     || tool.url.chars().any(char::is_control)
                     || !tool_ids.insert(&tool.id)
@@ -122,6 +129,27 @@ impl Catalog {
                     evidence_role: "lead_only_unverified",
                 })
         })
+    }
+
+    /// Render a provider-provided search template without requesting the URL.
+    ///
+    /// # Errors
+    /// Refuses unsupported tools and invalid or overlong query text.
+    pub fn search_url(&self, id: &str, query: &str) -> Result<String, String> {
+        let hit = self.tool(id).ok_or_else(|| "unknown catalogue tool".to_owned())?;
+        let template = hit
+            .tool
+            .query_template
+            .as_ref()
+            .ok_or_else(|| "this tool has no verified query template".to_owned())?;
+        if query.trim().is_empty()
+            || query.len() > 256
+            || query.chars().any(char::is_control)
+        {
+            return Err("invalid catalogue query".to_owned());
+        }
+        let encoded = crate::http::percent_encode_unreserved(query.trim());
+        Ok(template.replace("{q}", &encoded))
     }
 
     /// Search official source names, categories and destinations; no remote requests.
@@ -198,6 +226,17 @@ mod tests {
         catalog.categories[1].tools.pop();
         catalog.categories[0].tools[0].url = "http://example.org".to_owned();
         assert!(catalog.validate().is_err());
+    }
+
+    #[test]
+    fn reconstructed_email_query_templates_percent_encode_without_fetching() {
+        let catalog = Catalog::load().unwrap();
+        assert_eq!(
+            catalog.search_url("emailosint", "person+tag@example.org").unwrap(),
+            "https://emailosint.com/?q=person%2Btag%40example.org"
+        );
+        assert!(catalog.search_url("t0343", "test").is_err());
+        assert!(catalog.search_url("emailosint", "").is_err());
     }
 
     #[test]
