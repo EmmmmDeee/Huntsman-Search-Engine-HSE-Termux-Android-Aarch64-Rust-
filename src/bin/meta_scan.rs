@@ -172,7 +172,12 @@ impl Report {
                 let _ = writeln!(out, "engine={} url={}", hit.engine, hit.url);
             }
             for outcome in &discovery.outcomes {
-                let _ = writeln!(out, "engine={} outcome={}", outcome.module, outcome.kind.as_str());
+                let _ = writeln!(
+                    out,
+                    "engine={} outcome={}",
+                    outcome.module,
+                    outcome.kind.as_str()
+                );
             }
             out.push('\n');
         }
@@ -443,7 +448,10 @@ fn is_direct_facebook_page(url: &str, username: &str) -> bool {
     uri.scheme_str() == Some("https")
         && known_host
         && uri.port_u16().is_none_or(|port| port == 443)
-        && uri.path().trim_end_matches('/').strip_prefix('/')
+        && uri
+            .path()
+            .trim_end_matches('/')
+            .strip_prefix('/')
             .is_some_and(|name| name.eq_ignore_ascii_case(username))
 }
 
@@ -461,16 +469,18 @@ fn scan_indexed<T: Transport + ?Sized>(
             let mut seen = BTreeSet::new();
             let mut hits = Vec::new();
             for hit in report.hits {
-                if is_direct_facebook_page(&hit.url, &username)
-                    && seen.insert(hit.url.clone())
-                {
+                if is_direct_facebook_page(&hit.url, &username) && seen.insert(hit.url.clone()) {
                     hits.push(hit);
                 }
                 if hits.len() >= 20 {
                     break;
                 }
             }
-            let state = if hits.is_empty() { "no_indexed_leads" } else { "indexed_leads" };
+            let state = if hits.is_empty() {
+                "no_indexed_leads"
+            } else {
+                "indexed_leads"
+            };
             (hits, report.outcomes, state)
         }
         Err(_) => (Vec::new(), Vec::new(), "search_unavailable"),
@@ -478,8 +488,11 @@ fn scan_indexed<T: Transport + ?Sized>(
     Ok(Report {
         page_url: format!("https://www.facebook.com/{username}"),
         profile: EndpointResult::new(
-            "profile", "not_requested", None, None,
-            Some("Indexed discovery does not extract or verify Facebook profile attributes")
+            "profile",
+            "not_requested",
+            None,
+            None,
+            Some("Indexed discovery does not extract or verify Facebook profile attributes"),
         ),
         business_home: None,
         business_about: None,
@@ -694,15 +707,29 @@ fn serve_scan_request(stream: &mut TcpStream, request: &HttpRequest, port: u16, 
         .get("include_business")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    let mode = input.get("mode").and_then(Value::as_str).unwrap_or("indexed");
+    let mode = input
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("indexed");
     if !matches!(mode, "indexed" | "provider") {
-        let _ = json_reply(stream, "400 Bad Request", &json!({"error":"unknown collection mode"}));
+        let _ = json_reply(
+            stream,
+            "400 Bad Request",
+            &json!({"error":"unknown collection mode"}),
+        );
         return;
     }
     let key = (mode == "provider").then(configured_secret).flatten();
     let transport = transport(timeout);
     let result = if mode == "provider" {
-        scan(&transport, key.as_ref(), username, business, unix_now(), timeout)
+        scan(
+            &transport,
+            key.as_ref(),
+            username,
+            business,
+            unix_now(),
+            timeout,
+        )
     } else {
         scan_indexed(&transport, username, unix_now())
     };
@@ -952,7 +979,14 @@ fn run() -> Result<(), String> {
     let mut successful = 0;
     for name in names {
         let report = if opts.provider {
-            scan(&transport, secret.as_ref(), &name, opts.business, unix_now(), timeout)
+            scan(
+                &transport,
+                secret.as_ref(),
+                &name,
+                opts.business,
+                unix_now(),
+                timeout,
+            )
         } else {
             scan_indexed(&transport, &name, unix_now())
         }
@@ -1136,8 +1170,14 @@ mod tests {
 
     #[test]
     fn keyless_discovery_rejects_nonfacebook_hosts_and_nondirect_paths() {
-        assert!(is_direct_facebook_page("https://www.facebook.com/nasa", "nasa"));
-        assert!(is_direct_facebook_page("https://m.facebook.com/NASA/", "nasa"));
+        assert!(is_direct_facebook_page(
+            "https://www.facebook.com/nasa",
+            "nasa"
+        ));
+        assert!(is_direct_facebook_page(
+            "https://m.facebook.com/NASA/",
+            "nasa"
+        ));
         for bad in [
             "http://facebook.com/nasa",
             "https://facebook.com.evil.test/nasa",
@@ -1169,9 +1209,11 @@ mod tests {
     #[test]
     fn collection_defaults_to_keyless_mode_without_provider_opt_in() {
         assert!(!parse_args(["-u".into(), "nasa".into()]).unwrap().provider);
-        assert!(parse_args(["-u".into(), "nasa".into(), "--provider".into()])
-            .unwrap()
-            .provider);
+        assert!(
+            parse_args(["-u".into(), "nasa".into(), "--provider".into()])
+                .unwrap()
+                .provider
+        );
     }
 
     #[test]
