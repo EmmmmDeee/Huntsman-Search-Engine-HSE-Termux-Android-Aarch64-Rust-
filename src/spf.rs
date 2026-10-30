@@ -270,6 +270,26 @@ mod tests {
     use std::fmt::Write as _;
 
     #[test]
+    fn version_token_requires_an_exact_spf1_with_a_space_or_end() {
+        // RFC 7208 section 4.5 gives v=spf10 as an explicit non-match.
+        for raw in [
+            "v=spf10 -all",
+            "v=spf1extra +all",
+            "v=spf1\t-all",
+            "v=spf1\n-all",
+            "v=spf1; -all",
+        ] {
+            assert!(!is_spf(raw), "accepted unsupported SPF version: {raw:?}");
+            assert!(parse(raw).is_none(), "parsed unsupported SPF version: {raw:?}");
+        }
+        // Retain case-insensitive recognition and existing valid records.
+        for raw in ["v=spf1", "v=spf1 -all", "V=SPF1 +mx -all"] {
+            assert!(is_spf(raw), "refused supported SPF version: {raw:?}");
+            assert!(parse(raw).is_some(), "failed to parse SPF record: {raw:?}");
+        }
+    }
+
+    #[test]
     fn extracts_policies() {
         let record =
             parse("v=spf1 ip4:198.51.100.0/24 include:_spf.example.com -all").expect("SPF record");
