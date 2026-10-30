@@ -558,6 +558,21 @@ mod form_tests {
     }
 
     #[test]
+    fn report_mailto_scheme_is_case_insensitive_without_changing_address_case() {
+        assert_eq!(
+            parse_mailto_list(
+                "MAILTO:Reports@Example.org!10m, MaIlTo:Ops@Example.org, https://example.org/r, mailto:valid@example.org"
+            ),
+            [
+                "Reports@Example.org",
+                "Ops@Example.org",
+                "valid@example.org"
+            ]
+        );
+        assert!(parse_mailto_list("mailtox:wrong@example.org").is_empty());
+    }
+
+    #[test]
     fn record_tag_parser_normalises_name_and_trims_value() {
         assert_eq!(record_tag(" Pct = 75 "), Some(("pct".to_string(), "75")));
         assert_eq!(record_tag("missing"), None);
