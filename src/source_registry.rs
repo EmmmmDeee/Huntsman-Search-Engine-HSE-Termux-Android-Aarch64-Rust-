@@ -401,9 +401,11 @@ mod tests {
             assert_eq!(all.evidence_role, EvidenceRole::LeadOnly);
             assert_eq!(active.access, SourceAccess::Public);
         }
-        assert!(!routes_for(&EntityKind::Domain, "example.org")
-            .iter()
-            .any(|route| route.source_id.starts_with("au_abr_")));
+        assert!(
+            !routes_for(&EntityKind::Domain, "example.org")
+                .iter()
+                .any(|route| route.source_id.starts_with("au_abr_"))
+        );
     }
 
     #[test]
