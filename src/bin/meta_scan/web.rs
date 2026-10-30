@@ -776,8 +776,8 @@ mod tests {
         stream.read_to_string(&mut response).unwrap();
         handle.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(response.contains("name=\\"csrf\\" value=\\"test_token\\""));
-        assert!(response.contains("action=\\"/scan\\""));
+        assert!(response.contains("name=\"csrf\" value=\"test_token\""));
+        assert!(response.contains("action=\"/scan\""));
         assert!(!response.contains("<script"));
     }
 
