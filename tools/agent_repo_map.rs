@@ -3,11 +3,14 @@
 //! Usage: /tmp/agent-repo-map . [query words...]
 //! This is a lexical navigation aid, not a Rust parser or call graph.
 
-use std::{env, fs, io, path::{Path, PathBuf}};
+use std::{env, fs, io::{self, Read}, path::{Path, PathBuf}};
 
 const MAX_FILE_BYTES: u64 = 1_000_000;
 const MAX_FILES: usize = 20_000;
 const MAX_SYMBOLS: usize = 2_000;
+const MAX_DIRS: usize = 20_000;
+const MAX_DIR_ENTRIES: usize = 20_000;
+const MAX_DEPTH: usize = 64;
 
 fn is_symbol(line: &str) -> bool {
     let s = line.trim_start();
@@ -18,18 +21,35 @@ fn is_symbol(line: &str) -> bool {
 fn allowed_dir(name: &str) -> bool {
     !matches!(name, ".git" | "target" | "node_modules" | ".venv" | ".idea" | "vendor")
 }
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
-    if out.len() >= MAX_FILES { return Ok(()); }
-    let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+fn require_room(count: usize, limit: usize, kind: &str) -> io::Result<()> {
+    if count >= limit {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            format!("{kind} limit exceeded ({limit})")));
+    }
+    Ok(())
+}
+fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize) -> io::Result<()> {
+    if depth > MAX_DEPTH {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "directory depth limit exceeded"));
+    }
+    require_room(*visited, MAX_DIRS, "directory")?;
+    *visited += 1;
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        require_room(entries.len(), MAX_DIR_ENTRIES, "directory entry")?;
+        entries.push(entry?);
+    }
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
-        if out.len() >= MAX_FILES { break; }
         let ty = e.file_type()?;
         if ty.is_symlink() { continue; }
         if ty.is_dir() {
-            if allowed_dir(&e.file_name().to_string_lossy()) { collect(&e.path(), out)?; }
+            if allowed_dir(&e.file_name().to_string_lossy()) {
+                collect(&e.path(), out, visited, depth + 1)?;
+            }
         } else if ty.is_file() && e.path().extension().is_some_and(|x| x == "rs")
             && e.metadata()?.len() <= MAX_FILE_BYTES {
+            require_room(out.len(), MAX_FILES, "Rust file")?;
             out.push(e.path());
         }
     }
@@ -46,10 +66,16 @@ fn main() -> io::Result<()> {
     let root = Path::new(args.get(1).map(String::as_str).unwrap_or(".")).canonicalize()?;
     let terms: Vec<String> = args.iter().skip(2).map(|s| s.to_ascii_lowercase()).collect();
     let mut paths = Vec::new();
-    collect(&root, &mut paths)?;
+    let mut visited = 0;
+    collect(&root, &mut paths, &mut visited, 0)?;
     let mut matches = Vec::new();
     for path in paths.iter() {
-        let bytes = fs::read(path)?;
+        let mut bytes = Vec::new();
+        fs::File::open(path)?.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "Rust source exceeded file size limit during read"));
+        }
         let Ok(src) = String::from_utf8(bytes) else { continue };
         let symbols: Vec<(usize, String)> = src.lines().enumerate()
             .filter(|(_, s)| is_symbol(s))
@@ -82,6 +108,17 @@ mod tests {
         let s = vec![(1, "fn correlate()".to_string())];
         assert_eq!(score("src/correlator.rs", &s, &["correlat".into()]), 12);
         assert_eq!(score("src/other.rs", &s, &["correlat".into()]), 3);
+    }
+    #[test] fn budgets_fail_closed() {
+        assert!(require_room(0, 1, "item").is_ok());
+        assert_eq!(require_room(1, 1, "item").unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let mut paths = Vec::new();
+        let mut visited = 0;
+        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, MAX_DEPTH + 1)
+            .unwrap_err().kind(), io::ErrorKind::InvalidData);
+        visited = MAX_DIRS;
+        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, 0)
+            .unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
     #[test] fn exclusions() {
         assert!(!allowed_dir(".git"));
