@@ -112,11 +112,29 @@ fn identity_entities(entities: &[Entity]) -> Vec<&Entity> {
         .collect()
 }
 
-/// A username the analysis inferred, such as one derived from an email's local part. It adds no
-/// identity beyond the address it came from, so the identity-cluster rule does not count it.
-fn is_inferred_username(entity: &Entity) -> bool {
-    entity.kind == EntityKind::Username
+/// A username or a person the analysis inferred, such as one derived from an email's local part
+/// (`jane.doe@` gives `janedoe` and "Jane Doe"). It adds no identity beyond the address it came
+/// from, so the identity-cluster rule does not count it.
+fn is_inferred_identity(entity: &Entity) -> bool {
+    matches!(entity.kind, EntityKind::Username | EntityKind::Person)
         && entity.evidence.iter().any(|evidence| evidence.is_inferred)
+}
+
+/// A mailbox or telephone that names a function or a service rather than a person: one only a
+/// registration record names (an abuse desk, a registrar's or an operator's role contact, tagged
+/// [`tags::ABUSE_CONTACT`] or [`tags::WHOIS_CONTACT`]) unless another source observed it too, or a
+/// role or infrastructure mailbox wherever it was found (`abuse@`, `hostmaster@`, a provider's own
+/// address). The identity-cluster rule does not count it.
+fn is_role_contact(entity: &Entity) -> bool {
+    let registration_only = (entity.has_tag(tags::ABUSE_CONTACT)
+        || entity.has_tag(tags::WHOIS_CONTACT))
+        && entity
+            .evidence
+            .iter()
+            .all(|evidence| evidence.provenance.source == crate::rdap::SOURCE);
+    registration_only
+        || (entity.kind == EntityKind::Email
+            && crate::domains::is_infrastructure_email(&entity.value))
 }
 
 fn dates_for_breach(entity: &Entity) -> Vec<i64> {
@@ -175,7 +193,7 @@ pub fn rule_au_002_identity_cluster(
     let identities = identity_entities(context.entities())
         .into_iter()
         .filter(|entity| entity.confidence >= 0.5)
-        .filter(|entity| !is_inferred_username(entity))
+        .filter(|entity| !is_inferred_identity(entity) && !is_role_contact(entity))
         .collect::<Vec<_>>();
     let emails = identities
         .iter()

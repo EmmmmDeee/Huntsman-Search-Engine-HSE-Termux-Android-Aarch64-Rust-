@@ -235,7 +235,7 @@ static AU_002: FnRule = FnRule {
     id: "AU-002",
     name: "identity_cluster",
     severity: Severity::Critical,
-    description: "Identities of at least two kinds (email, username, phone, name) that plausibly belong to one person.",
+    description: "Identities of at least two kinds (email, username, phone, name) that plausibly belong to one person; a name or handle guessed from an address and a registration record's role contact are not counted.",
     runner: rule_au_002_identity_cluster,
 };
 static AU_003: FnRule = FnRule {
@@ -616,6 +616,81 @@ mod tests {
         let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(findings[0].description.contains("1 username(s)"));
+    }
+
+    /// A person guessed from an e-mail's local part is no identity beside the address: a corporate
+    /// `first.last@` alone is no identity cluster.
+    #[test]
+    fn au002_does_not_count_a_person_inferred_from_the_email() {
+        let email = ent(
+            EntityKind::Email,
+            "jane.doe@acme.example",
+            0.99,
+            "seed",
+            false,
+        );
+        let mut person = Entity::new(EntityKind::Person, "Jane Doe", 0.55, "scan");
+        person
+            .add_evidence(evidence("email_parse", "derived from jane.doe@acme.example").inferred());
+        let entities = vec![email, person];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// A registration record's role contacts (an abuse desk, an operator's role mailbox, its
+    /// switchboard) name a function, not a person, so an AS, address or domain scan raises no
+    /// identity cluster from them; a role or provider mailbox never counts, and a registration
+    /// contact another source also observed does.
+    #[test]
+    fn au002_does_not_count_a_registration_records_role_contacts() {
+        let contact = |kind: EntityKind, value: &str, tag: &str| {
+            let mut entity = ent(kind, value, 0.85, crate::rdap::SOURCE, false);
+            entity.tag(tag);
+            entity
+        };
+        let registry = vec![
+            contact(
+                EntityKind::Email,
+                "abuse@cloudflare.com",
+                tags::ABUSE_CONTACT,
+            ),
+            contact(EntityKind::Email, "rir@cloudflare.com", tags::WHOIS_CONTACT),
+            contact(EntityKind::Phone, "+16503198930", tags::ABUSE_CONTACT),
+        ];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&registry, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
+        assert!(
+            evaluate_rules(&registry, &[], "scan")
+                .iter()
+                .all(|correlation| correlation.rule_id != "AU-002")
+        );
+
+        let role = vec![
+            ent(
+                EntityKind::Email,
+                "hostmaster@acme.example",
+                0.85,
+                "crtsh",
+                false,
+            ),
+            ent(EntityKind::Phone, "+61412345678", 0.85, "hibp", false),
+        ];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&role, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
+
+        // A registration contact another source also observed counts.
+        let seen = |kind: EntityKind, value: &str| {
+            let mut entity = contact(kind, value, tags::WHOIS_CONTACT);
+            entity.add_evidence(evidence("hibp", "breach record"));
+            entity
+        };
+        let corroborated = vec![
+            seen(EntityKind::Email, "jane@acme.example"),
+            seen(EntityKind::Phone, "+61412345678"),
+        ];
+        let findings =
+            rule_au_002_identity_cluster(&RuleContext::new(&corroborated, &[]), "scan", 0);
+        assert_eq!(findings.len(), 1, "{findings:?}");
     }
 
     #[test]
