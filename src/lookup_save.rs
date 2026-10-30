@@ -183,6 +183,8 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
         "certspotter" => ("certspotter", "src/certspotter.rs"),
         "dns" => ("dns", "src/dns.rs"),
+        crate::wayback_cdx::SOURCE => (source, "src/wayback_cdx.rs"),
+        crate::common_crawl::SOURCE => (source, "src/common_crawl.rs"),
         "virustotal" => ("virustotal", "src/virustotal.rs"),
         "hunter" => ("hunter", "src/hunter.rs"),
         other => indicator_provenance(other).unwrap_or((source, "src/domain_cli.rs")),
