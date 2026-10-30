@@ -1084,17 +1084,47 @@ impl ScanApi {
     }
 
     fn export(&self, id: &str, param: &Params) -> ApiResponse {
-        let (record, results) = match self.results(id) {
-            Ok(found) => found,
+        let limit = u64::try_from(PipelineLimits::default().max_export_bytes).unwrap_or(u64::MAX);
+        self.export_with_budget(id, param, limit)
+    }
+
+    fn export_with_budget(&self, id: &str, param: &Params, max_bytes: u64) -> ApiResponse {
+        // Refuse unsupported output formats before loading or deserializing evidence.
+        let format = param.get("format").unwrap_or("csv");
+        let normalized = format.trim().to_ascii_lowercase();
+        if normalized != "excel" && !scan_export::FORMATS.contains(&normalized.as_str()) {
+            return error(400, "unsupported single-scan export format");
+        }
+        let record = match self.record(id) {
+            Ok(record) => record,
             Err(response) => return response,
+        };
+        // The general results() loader permits a much larger saved scan. Exports
+        // must acquire their smaller I/O budget before allocating parsed records.
+        let (results, _) = match self
+            .service
+            .store()
+            .results_with_byte_budget(id, max_bytes)
+        {
+            Ok(found) => found,
+            Err(crate::scan_store::StoreError::Invalid(message)) => {
+                return error(413, &message);
+            }
+            Err(failure) => return service_error(&failure.into()),
         };
         let results = results.unwrap_or_else(|| empty_results(&record));
         match scan_export::render(
             &record,
             &results,
-            param.get("format").unwrap_or("csv"),
+            format,
             param.get("type").filter(|kind| !kind.is_empty()),
         ) {
+            Ok(export) if u64::try_from(export.body.len()).unwrap_or(u64::MAX) > max_bytes => {
+                // The legacy single-scan renderer still constructs its output
+                // before this check. Input admission is bounded above; streaming
+                // output serializers are a separate follow-up.
+                error(413, "export output budget exceeded")
+            }
             Ok(export) => ApiResponse::export(export),
             Err(message) => error(400, &message),
         }
@@ -1619,6 +1649,64 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn single_export_limits_input_before_deserializing_and_keeps_small_exports() {
+        let (api, dir) = api("single-export-budget");
+        let id = finished(&api);
+        let path = dir.join(&id).join("results.json");
+        let saved = std::fs::metadata(&path).unwrap().len();
+        assert!(saved > 1);
+
+        let csv = Params(vec![("format".into(), "csv".into())]);
+        let refused = api.export_with_budget(&id, &csv, saved - 1);
+        assert_eq!(refused.status, 413, "{}", refused.text());
+
+        let normal = api.handle(
+            "GET",
+            &format!("/api/scans/{id}/export"),
+            "format=csv",
+        );
+        assert_eq!(normal.status, 200, "{}", normal.text());
+        assert!(normal.body.starts_with(b"Updated,Type,Module,Source,F/P,Data"));
+
+        // A corrupt saved file must not be parsed for an invalid format.
+        std::fs::write(&path, b"not JSON").unwrap();
+        let invalid = Params(vec![("format".into(), "unknown".into())]);
+        let refused = api.export_with_budget(&id, &invalid, 1);
+        assert_eq!(refused.status, 400, "{}", refused.text());
+        assert!(refused.text().contains("unsupported single-scan export format"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn single_export_rejects_oversized_output_without_returning_partial_bytes() {
+        let (api, dir) = api("single-export-output-budget");
+        let id = finished(&api);
+        let saved = std::fs::metadata(dir.join(&id).join("results.json"))
+            .unwrap()
+            .len();
+        // The HTML investigation report adds substantial layout around saved
+        // evidence, so its output exceeds the source JSON size.
+        let path = format!("/api/scans/{id}/export");
+        let normal = api.handle("GET", &path, "format=html");
+        assert_eq!(normal.status, 200, "{}", normal.text());
+        let body_bytes = u64::try_from(normal.body.len()).unwrap();
+        assert!(body_bytes > saved);
+
+        let html = Params(vec![("format".into(), "html".into())]);
+        let limited = api.export_with_budget(&id, &html, body_bytes - 1);
+        assert_eq!(limited.status, 413, "{}", limited.text());
+        assert!(limited.text().contains("export output budget exceeded"));
+        assert!(!limited.body.starts_with(b"<!DOCTYPE html"));
+
+        let accepted = api.export_with_budget(&id, &html, body_bytes);
+        assert_eq!(accepted.status, 200, "{}", accepted.text());
+        assert_eq!(accepted.body, normal.body);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
