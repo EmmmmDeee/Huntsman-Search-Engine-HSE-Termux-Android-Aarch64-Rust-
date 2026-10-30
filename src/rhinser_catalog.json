@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "origin_apk_sha256": "e6be6b6bbff2128cf72a34d1a64d25fbaf7c121a0ce803e60e45bdb97f363036",
+  "origin_apk_sha256": "e6be6b6bbff2128c:f72a34d1a64d25fb:af7c121a0ce803e6:0e45bdb97f363036",
   "notice": "Reconstructed public directory references from the user-provided APK; destinations and access conditions are not currently verified; source entries are discovery leads only.",
   "categories": [
     {
