@@ -384,14 +384,24 @@ fn resolve<T: Transport + ?Sized>(
             "Wikidata search response omitted search",
         )));
     };
+    if hits.is_empty() {
+        return Ok(Resolved::None(
+            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
+        ));
+    }
+    // Hits that name no item matched something the search cannot say: no clean negative.
     match hits.into_iter().find(|hit| !hit.id.trim().is_empty()) {
         Some(hit) => Ok(Resolved::Item {
             qid: hit.id,
             label: hit.label.or(hit.description),
         }),
-        None => Ok(Resolved::None(
-            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
-        )),
+        None => Ok(Resolved::None(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Wikidata search hits carried no item id",
+        ))),
     }
 }
 
@@ -965,12 +975,20 @@ mod tests {
     fn a_search_the_api_did_not_run_is_never_a_clean_negative() {
         for (body, kind) in [
             (
-                r#"{"error":{"code":"maxlag","info":"Waiting for a database server"}}"#,
+                r#"{"error":{"code":"cirrussearch-too-busy-error","info":"Search is currently too busy. Please try again later."}}"#,
                 SourceOutcomeKind::RateLimited,
+            ),
+            (
+                r#"{"error":{"code":"cirrussearch-backend-error","info":"We could not complete your search"}}"#,
+                SourceOutcomeKind::Inconclusive,
             ),
             (
                 r#"{"error":{"code":"ratelimited","info":"slow down"}}"#,
                 SourceOutcomeKind::RateLimited,
+            ),
+            (
+                r#"{"search":[{"label":"Jane Example","description":"x"}]}"#,
+                SourceOutcomeKind::SchemaDrift,
             ),
             (
                 r#"{"error":{"code":"internal_api_error_DBQueryError","info":"x"},"search":[]}"#,

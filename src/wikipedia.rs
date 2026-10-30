@@ -49,7 +49,7 @@ pub struct Report {
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
-    /// Present (any shape) when `MediaWiki` rejects the query, for example `baduser_ucuser`.
+    /// Present (any shape) when `MediaWiki` rejects the query, for example `baduser`.
     #[serde(default)]
     error: Option<serde_json::Value>,
     #[serde(default)]
@@ -141,7 +141,9 @@ fn interpret(
     // Only a rejected account selector is a clean negative. Other API errors must not
     // masquerade as evidence that an account has no public contributions.
     if let Some(error) = parsed.error {
-        if mediawiki_error_code(&error) == "baduser_ucuser" {
+        // A name `MediaWiki` cannot read as a user (`baduser`, `baduser_ucuser` before 1.35) can
+        // be no account: the one error that answers the query.
+        if matches!(mediawiki_error_code(&error), "baduser" | "baduser_ucuser") {
             return Err(
                 SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
             );
