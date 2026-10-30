@@ -9,7 +9,7 @@ use super::{
     Error, MAX_APK_MANIFEST_BYTES, MAX_FILE_BYTES, directory_bounds, hex32, le16, le32, member,
     read_member, scan_id, sha256, suspicious,
 };
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::source_outcome::SourceExecutionOutcome;
 
 pub const SOURCE: &str = "apk_set";
@@ -91,12 +91,13 @@ fn consistency<'a>(values: impl Iterator<Item = Option<&'a str>>, count: usize) 
 /// Refuses invalid ZIP structures, duplicate/unsafe paths, unsupported compression, encrypted
 /// APK members, CRC failures, invalid embedded APKs and decompression budget overruns.
 pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
-    if data.len() > MAX_FILE_BYTES as usize {
+    if data.len() > 64 * 1024 * 1024 {
         return Err(Error::invalid_value("APK set exceeds 64 MiB input limit"));
     }
     let (count, dir_start, dir_end) = directory_bounds(data)?;
     let mut pos = dir_start;
     let mut seen = BTreeSet::new();
+    let mut seen_casefolded = BTreeSet::new();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     let mut members = Vec::new();
     let mut budget = MAX_TOTAL_INFLATED;
@@ -112,8 +113,10 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         {
             return Err(Error::invalid_value("unsafe APK set member path"));
         }
-        if !seen.insert(entry.name) {
-            return Err(Error::invalid_value("duplicate APK set member path"));
+        if !seen.insert(entry.name)
+            || !seen_casefolded.insert(entry.name.to_ascii_lowercase())
+        {
+            return Err(Error::invalid_value("duplicate or case-ambiguous APK set member path"));
         }
         let Some(local_at) = le32(data, at + 42).and_then(|value| usize::try_from(value).ok()) else {
             return Err(Error::invalid_value("invalid local ZIP header offset"));
@@ -234,6 +237,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
             &[SOURCE, "offline", "apk_member"],
         );
     }
+    merge_by_uid(&mut entities);
     let outcomes = vec![SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())];
     Ok(Report {
         container_sha256: outer_sha,
@@ -319,7 +323,7 @@ mod tests {
         assert_eq!(report.package_consistency, "unverified");
         assert_eq!(report.apk_members[0].role_hint_unverified, "base_filename_hint");
         assert!(report.apk_members[0].manifest_error.is_some());
-        assert_eq!(report.entities.len(), 3);
+        assert_eq!(report.entities.len(), 2);
         assert_eq!(report.outcomes.len(), 1);
     }
 
@@ -329,6 +333,11 @@ mod tests {
         let inner = apk();
         assert!(run(
             &zip(&[("base.apk", &inner, 0), ("base.apk", &inner, 0)]),
+            "x.apks",
+            1
+        ).is_err());
+        assert!(run(
+            &zip(&[("base.apk", &inner, 0), ("BASE.APK", &inner, 0)]),
             "x.apks",
             1
         ).is_err());
