@@ -693,7 +693,10 @@ mod tests {
                     "person evidence must count as the banned dataset family: {text}"
                 );
                 assert!(!report.entities.is_empty(), "{report:?}");
-                assert_eq!(fake.seen.borrow().len(), PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT);
+                assert_eq!(
+                    fake.seen.borrow().len(),
+                    PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -804,16 +807,20 @@ mod tests {
                 assert!(entities.is_empty(), "{entities:?}");
                 assert_eq!(report.outcomes.len(), PEOPLE_SOURCE_OUTCOMES);
                 assert!(
-                    report.outcomes.iter().any(|outcome|
-                        outcome.module == sec_edgar::SOURCE
-                            && outcome.kind == SourceOutcomeKind::NotConfigured
-                    ),
+                    report
+                        .outcomes
+                        .iter()
+                        .any(|outcome| outcome.module == sec_edgar::SOURCE
+                            && outcome.kind == SourceOutcomeKind::NotConfigured),
                     "SEC must report a configuration gap without issuing an HTTP request"
                 );
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(fake.seen.borrow().len(), PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT);
+        assert_eq!(
+            fake.seen.borrow().len(),
+            PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT
+        );
     }
 
     #[test]
