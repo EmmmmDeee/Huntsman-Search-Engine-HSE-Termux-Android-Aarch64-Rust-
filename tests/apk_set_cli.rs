@@ -81,8 +81,15 @@ fn apk_set_cli_preserves_hashes_and_explicit_uncertainty() {
     assert_eq!(report["apk_members"].as_array().map(Vec::len), Some(1));
     assert_eq!(report["package_consistency"], "unverified");
     assert_eq!(report["signer_continuity"], "unverified");
+    assert_eq!(report["v2_signer_continuity"], "unverified");
     assert_eq!(
         report["apk_members"][0]["authenticated_sdk_signers"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        report["apk_members"][0]["authenticated_v2_signers"]
             .as_array()
             .map(Vec::len),
         Some(0)

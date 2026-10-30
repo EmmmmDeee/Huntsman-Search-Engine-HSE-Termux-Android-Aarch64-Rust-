@@ -682,6 +682,27 @@ pub fn signing_block(value: &[u8], scheme: &str) -> Vec<Certificate> {
     found().unwrap_or_default()
 }
 
+/// Return the leaf signing certificate for every structurally valid v2 signer.
+/// These are untrusted declarations until signed-data and APK digests are verified.
+/// A malformed signer invalidates the entire v2 observation rather than silently
+/// dropping an incompatible co-signer.
+pub(super) fn v2_signers(value: &[u8]) -> Option<Vec<(usize, Certificate)>> {
+    let [(start, end)] = prefixed(value, 0, value.len())?[..] else {
+        return None;
+    };
+    let signers = prefixed(value, start, end)?;
+    if signers.is_empty() || signers.len() > MAX_CERTIFICATES {
+        return None;
+    }
+    let mut result = Vec::new();
+    for (index, (signer_start, signer_end)) in signers.into_iter().enumerate() {
+        let certificates = signer_certificates(value, signer_start, signer_end, "v2")?;
+        let leaf = certificates.into_iter().next()?;
+        result.push((index, leaf));
+    }
+    Some(result)
+}
+
 /// Extract SDK-scoped v3/v3.1 signer identities without implying installation or
 /// cryptographic verification. All signers in a scheme must be structurally valid;
 /// malformed SDK copies, missing certificates or oversized lists withhold that scheme.

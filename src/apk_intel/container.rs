@@ -17,7 +17,7 @@ const MAX_NESTED_APKS: usize = 32;
 const MAX_NESTED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TOTAL_INFLATED: usize = 128 * 1024 * 1024;
 const MAX_AUTHENTICATED_SIGNERS: usize = 8;
-const LIMITATIONS: &str = "Offline inventory. APK member hashes cover exact decompressed bytes; container names, manifest package/version and base/split filename hints are unauthenticated. Only v3/v3.1 SDK-scoped signer certificates backed by verified signed-data signatures and matching APK content digests are reported as authenticated; v1/v2-only or unsupported signatures remain unverified. Matching or differing SDK-scoped signers do not prove installability, ownership or rotation compatibility. Proprietary/encrypted containers, ZIP64 and non-ZIP variants are unsupported; no files are extracted, installed or fetched.";
+const LIMITATIONS: &str = "Offline inventory. APK member hashes cover exact decompressed bytes; container names, manifest package/version and base/split filename hints are unauthenticated. Only v2 signer certificates and v3/v3.1 SDK-scoped signer certificates backed by verified signed-data signatures and matching APK content digests are reported as authenticated. V2 identities are not SDK-scoped and are compared separately; v1-only or unsupported signatures remain unverified. Matching or differing SDK-scoped signers do not prove installability, ownership or rotation compatibility. Proprietary/encrypted containers, ZIP64 and non-ZIP variants are unsupported; no files are extracted, installed or fetched.";
 
 /// An SDK-scoped v3/v3.1 signer whose signed-data signature and APK content digest both verify.
 /// This authenticates the stated certificate for these bytes, not Android installability.
@@ -26,6 +26,14 @@ pub struct AuthenticatedSdkSigner {
     pub scheme: String,
     pub min_sdk: u32,
     pub max_sdk: u32,
+    pub certificate_sha256: String,
+    pub public_key_sha256: String,
+}
+
+/// A v2 leaf signing certificate authenticated for the exact embedded APK bytes.
+/// V2 has no signed SDK range; this is not a platform signer-selection verdict.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct AuthenticatedV2Signer {
     pub certificate_sha256: String,
     pub public_key_sha256: String,
 }
@@ -40,6 +48,7 @@ pub struct NestedApk {
     pub manifest_version_code_unverified: Option<String>,
     pub manifest_error: Option<String>,
     pub authenticated_sdk_signers: Vec<AuthenticatedSdkSigner>,
+    pub authenticated_v2_signers: Vec<AuthenticatedV2Signer>,
     pub dex_count: usize,
     pub native_abis: Vec<String>,
 }
@@ -54,6 +63,7 @@ pub struct Report {
     pub package_consistency: &'static str,
     pub version_consistency: &'static str,
     pub signer_continuity: &'static str,
+    pub v2_signer_continuity: &'static str,
     pub limitations: &'static str,
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
@@ -105,26 +115,9 @@ fn consistency<'a>(values: impl Iterator<Item = Option<&'a str>>, count: usize) 
 /// signature and the AOSP content digest validate against these exact APK bytes.
 /// Unsupported, malformed, partially authenticated and ambiguous schemes fail closed.
 fn authenticated_sdk_signers(
-    data: &[u8],
-    inventory: &super::Inventory,
     archive: &super::Archive<'_>,
+    checks: &[super::content_digest::ContentDigestCheck],
 ) -> Vec<AuthenticatedSdkSigner> {
-    if !inventory.duplicate_signing_scheme_ids.is_empty() {
-        return Vec::new();
-    }
-    let (Some(start), Ok(end_at)) = (archive.signing_start, super::eocd(data)) else {
-        return Vec::new();
-    };
-    let (checks, errors) = super::content_digest::compare(
-        data,
-        start,
-        archive.directory_start,
-        end_at,
-        &archive.signing_values,
-    );
-    if !errors.is_empty() {
-        return Vec::new();
-    }
     let mut verified = Vec::new();
     for (scheme, value) in &archive.signing_values {
         if !matches!(*scheme, "v3" | "v3.1") {
@@ -151,6 +144,41 @@ fn authenticated_sdk_signers(
                 max_sdk: claim.max_sdk,
                 certificate_sha256: claim.certificate_sha256,
                 public_key_sha256: claim.public_key_sha256,
+            });
+        }
+    }
+    verified.sort();
+    verified.dedup();
+    verified
+}
+
+/// Authenticate all v2 co-signers, never just the first certificate or a
+/// digest declaration. Reuse the exact APK's digest/signature checks calculated
+/// once for both v2 and v3; malformed or unsupported co-signers fail closed.
+fn authenticated_v2_signers(
+    archive: &super::Archive<'_>,
+    checks: &[super::content_digest::ContentDigestCheck],
+) -> Vec<AuthenticatedV2Signer> {
+    let mut verified = Vec::new();
+    for (scheme, value) in &archive.signing_values {
+        if *scheme != "v2" {
+            continue;
+        }
+        let Some(claims) = super::signer::v2_signers(value) else {
+            return Vec::new();
+        };
+        for (index, certificate) in claims {
+            if !checks.iter().any(|check| {
+                check.scheme == "v2" && check.signer_index == index && check.signature_authenticated
+            }) {
+                return Vec::new();
+            }
+            if verified.len() >= MAX_AUTHENTICATED_SIGNERS {
+                return Vec::new();
+            }
+            verified.push(AuthenticatedV2Signer {
+                certificate_sha256: certificate.sha256,
+                public_key_sha256: certificate.public_key_sha256,
             });
         }
     }
@@ -209,6 +237,28 @@ fn signer_continuity(members: &[NestedApk]) -> &'static str {
         "authenticated_sdk_scope_difference"
     } else {
         "unverified"
+    }
+}
+
+/// V2 lacks signed SDK ranges, so compare authenticated v2 identities
+/// separately rather than conflating them with v3/v3.1 signer selection.
+fn v2_signer_continuity(members: &[NestedApk]) -> &'static str {
+    if members.len() < 2
+        || members
+            .iter()
+            .any(|member| member.authenticated_v2_signers.is_empty())
+    {
+        return "unverified";
+    }
+    let first = &members[0].authenticated_v2_signers;
+    if members
+        .iter()
+        .skip(1)
+        .all(|member| member.authenticated_v2_signers == *first)
+    {
+        "authenticated_v2_match"
+    } else {
+        "authenticated_v2_difference"
     }
 }
 
@@ -300,7 +350,27 @@ fn inspect_nested(
     }
     validate_nested_structure(&bytes)?;
     let (inventory, archive) = super::walk(&bytes)?;
-    let authenticated_sdk_signers = authenticated_sdk_signers(&bytes, &inventory, &archive);
+    let checks = if inventory.duplicate_signing_scheme_ids.is_empty() {
+        archive.signing_start.and_then(|start| {
+            let end_at = super::eocd(&bytes).ok()?;
+            let (checks, errors) = super::content_digest::compare(
+                &bytes,
+                start,
+                archive.directory_start,
+                end_at,
+                &archive.signing_values,
+            );
+            errors.is_empty().then_some(checks)
+        })
+    } else {
+        None
+    };
+    let authenticated_sdk_signers = checks.as_deref().map_or_else(Vec::new, |checks| {
+        authenticated_sdk_signers(&archive, checks)
+    });
+    let authenticated_v2_signers = checks.as_deref().map_or_else(Vec::new, |checks| {
+        authenticated_v2_signers(&archive, checks)
+    });
     let (package, version, manifest_error) = nested_manifest(&bytes, &archive);
     Ok(NestedApk {
         path: entry.name.to_owned(),
@@ -311,6 +381,7 @@ fn inspect_nested(
         manifest_version_code_unverified: version,
         manifest_error,
         authenticated_sdk_signers,
+        authenticated_v2_signers,
         dex_count: inventory.dex_count,
         native_abis: inventory.native_abis,
     })
@@ -385,6 +456,7 @@ fn graph_entities(
     package_consistency: &str,
     version_consistency: &str,
     signer_continuity: &str,
+    v2_signer_continuity: &str,
 ) -> Vec<Entity> {
     let sid = scan_id(SOURCE, label);
     let mut entities = Vec::new();
@@ -397,7 +469,7 @@ fn graph_entities(
         Evidence::new(
             EvidenceProvenance::for_scan(SOURCE, &sid),
             format!(
-                "Offline multi-APK inventory of {label}; SDK-scoped v3/v3.1 signer evidence is separately qualified; manifest identity and Android installability are not verified"
+                "Offline multi-APK inventory of {label}; v2 and SDK-scoped v3/v3.1 signer evidence is separately qualified; manifest identity and Android installability are not verified"
             ),
         )
         .with_attr("file_sha256", outer_sha)
@@ -406,7 +478,8 @@ fn graph_entities(
         .with_attr("apk_set_member_count", members.len().to_string())
         .with_attr("apk_set_package_consistency", package_consistency)
         .with_attr("apk_set_version_consistency", version_consistency)
-        .with_attr("apk_set_signer_continuity", signer_continuity),
+        .with_attr("apk_set_signer_continuity", signer_continuity)
+        .with_attr("apk_set_v2_signer_continuity", v2_signer_continuity),
         &[SOURCE, "offline", "apk_container"],
     );
     for nested in members {
@@ -429,6 +502,15 @@ fn graph_entities(
                 "apk_authenticated_sdk_signer_certificates",
                 nested
                     .authenticated_sdk_signers
+                    .iter()
+                    .map(|signer| signer.certificate_sha256.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .with_attr(
+                "apk_authenticated_v2_signer_certificates",
+                nested
+                    .authenticated_v2_signers
                     .iter()
                     .map(|signer| signer.certificate_sha256.as_str())
                     .collect::<Vec<_>>()
@@ -474,6 +556,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         members.len(),
     );
     let signer_continuity = signer_continuity(&members);
+    let v2_signer_continuity = v2_signer_continuity(&members);
     let entities = graph_entities(
         label,
         &outer_sha,
@@ -481,6 +564,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         package_consistency,
         version_consistency,
         signer_continuity,
+        v2_signer_continuity,
     );
     let outcomes = vec![SourceExecutionOutcome::success(
         SOURCE,
@@ -496,6 +580,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
         package_consistency,
         version_consistency,
         signer_continuity,
+        v2_signer_continuity,
         limitations: LIMITATIONS,
         entities,
         outcomes,
@@ -602,6 +687,7 @@ mod tests {
             manifest_version_code_unverified: None,
             manifest_error: None,
             authenticated_sdk_signers: signers,
+            authenticated_v2_signers: Vec::new(),
             dex_count: 0,
             native_abis: Vec::new(),
         }
@@ -678,7 +764,7 @@ mod tests {
     }
 
     /// Build a structurally valid APK with an actual P-256 signature over its
-    /// v3/v3.1 signed-data and a matching AOSP chunked digest. The synthetic
+    /// v2/v3/v3.1 signed-data and a matching AOSP chunked digest. The synthetic
     /// certificate is not CA-trusted and installability is not asserted.
     fn length_prefixed(items: &[&[u8]]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -723,17 +809,22 @@ mod tests {
         digest_record.extend_from_slice(&length_prefixed(&[&digest]));
         let digests = length_prefixed(&[&digest_record]);
         let certs = length_prefixed(&[&cert]);
+        let is_v2 = scheme_id == 0x7109_871a;
         let mut signed_data = length_prefixed(&[&digests, &certs]);
-        signed_data.extend_from_slice(&min_sdk.to_le_bytes());
-        signed_data.extend_from_slice(&max_sdk.to_le_bytes());
+        if !is_v2 {
+            signed_data.extend_from_slice(&min_sdk.to_le_bytes());
+            signed_data.extend_from_slice(&max_sdk.to_le_bytes());
+        }
         signed_data.extend_from_slice(&length_prefixed(&[&[]]));
         let signature = keypair.sign(rng, &signed_data).expect("sign fixture");
         let mut signature_record = 0x0201_u32.to_le_bytes().to_vec();
         signature_record.extend_from_slice(&length_prefixed(&[signature.as_ref()]));
         let signatures = length_prefixed(&[&signature_record]);
         let mut signer = length_prefixed(&[&signed_data]);
-        signer.extend_from_slice(&min_sdk.to_le_bytes());
-        signer.extend_from_slice(&max_sdk.to_le_bytes());
+        if !is_v2 {
+            signer.extend_from_slice(&min_sdk.to_le_bytes());
+            signer.extend_from_slice(&max_sdk.to_le_bytes());
+        }
         signer.extend_from_slice(&length_prefixed(&[&signatures]));
         signer.extend_from_slice(&length_prefixed(&[spki]));
         let signers = length_prefixed(&[&signer]);
@@ -822,6 +913,58 @@ mod tests {
             assert_eq!(rejected.signer_continuity, "unverified");
             assert!(rejected.apk_members[1].authenticated_sdk_signers.is_empty());
         }
+    }
+
+    #[test]
+    fn real_ecdsa_v2_split_signers_match_conflict_and_reject_tampering() {
+        let rng = ring::rand::SystemRandom::new();
+        let make_key = || {
+            let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                &rng,
+            )
+            .expect("generate v2 fixture key");
+            ring::signature::EcdsaKeyPair::from_pkcs8(
+                &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+                pkcs8.as_ref(),
+                &rng,
+            )
+            .expect("load v2 fixture key")
+        };
+        let first = signed_sdk_apk(&make_key(), &rng, 0x7109_871a, 24, u32::MAX);
+        let other = signed_sdk_apk(&make_key(), &rng, 0x7109_871a, 24, u32::MAX);
+        let matching = zip(&[("base.apk", &first, 0), ("split.apk", &first, 0)]);
+        let matched = run(&matching, "v2.apks", 42).expect("authenticated v2 APK set");
+        assert_eq!(matched.v2_signer_continuity, "authenticated_v2_match");
+        assert_eq!(matched.signer_continuity, "unverified");
+        assert_eq!(matched.apk_members[0].authenticated_v2_signers.len(), 1);
+        assert_eq!(
+            matched.apk_members[0].authenticated_v2_signers,
+            matched.apk_members[1].authenticated_v2_signers
+        );
+        let conflicting = zip(&[("base.apk", &first, 0), ("split.apk", &other, 0)]);
+        let conflicted = run(&conflicting, "v2-conflict.apks", 42).expect("different v2 keys");
+        assert_eq!(
+            conflicted.v2_signer_continuity,
+            "authenticated_v2_difference"
+        );
+
+        // A changed central-directory byte remains structurally valid but
+        // invalidates the authenticated content digest for the second APK.
+        let mut tampered = first.clone();
+        let eocd = tampered.len() - 22;
+        let directory = usize::try_from(super::le32(&tampered, eocd + 16).expect("directory"))
+            .expect("directory fits");
+        tampered[directory + 38] ^= 1;
+        let altered = zip(&[("base.apk", &first, 0), ("split.apk", &tampered, 0)]);
+        let rejected = run(&altered, "v2-tampered.apks", 42).expect("valid altered ZIP");
+        assert_eq!(rejected.v2_signer_continuity, "unverified");
+        assert!(rejected.apk_members[1].authenticated_v2_signers.is_empty());
+
+        let unsigned = apk();
+        let partial = zip(&[("base.apk", &first, 0), ("split.apk", &unsigned, 0)]);
+        let incomplete = run(&partial, "v2-partial.apks", 42).expect("mixed signed set");
+        assert_eq!(incomplete.v2_signer_continuity, "unverified");
     }
 
     #[test]
