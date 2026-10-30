@@ -678,8 +678,7 @@ fn module_map_matches_the_compiled_tree() {
     }
     let documented_binaries: BTreeSet<String> = map.binary.iter().cloned().collect();
     assert_eq!(
-        documented_binaries,
-        compiled_binaries,
+        documented_binaries, compiled_binaries,
         "the Binary row must name every executable entry point in src/main.rs and src/bin/"
     );
 
