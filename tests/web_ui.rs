@@ -1143,3 +1143,16 @@ fn universal_research_mobile_panel_uses_guarded_api_and_preserves_existing_scans
         "phone page exceeds its size budget"
     );
 }
+
+#[test]
+fn autonomous_research_controls_require_explicit_start_and_reuse_saved_scan_ui() {
+    assert!(PAGE.contains("id=\"uresearch-mission\" type=\"button\" disabled"));
+    assert!(PAGE.contains("missionSeed=null;$('uresearch-mission').disabled=true"));
+    assert!(PAGE.contains("missionSeed=q;$('uresearch-mission').disabled=false"));
+    assert!(PAGE.contains("await api('/api/research/mission?'"));
+    assert!(PAGE.contains("{method:'POST'}"));
+    assert!(PAGE.contains("location.hash='#/scan/'+enc(result.scan)+'/summary'"));
+    assert!(PAGE.contains("id=\"newscan\""));
+    assert!(PAGE.contains("id=\"sdepth\""));
+    assert!(PAGE.len() <= PAGE_BUDGET);
+}
