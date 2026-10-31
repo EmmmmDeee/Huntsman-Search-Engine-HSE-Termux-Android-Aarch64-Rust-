@@ -12,6 +12,8 @@ enum Reply {
     /// A body with the `Last-Modified` date its publisher sent.
     Dated(String, String),
     Status(u16),
+    /// A status with a body, as a server's own error page.
+    Page(u16, String),
     Truncated,
     Down,
 }
@@ -77,6 +79,7 @@ impl Transport for Shared {
                 ..response(200, &body, false)
             }),
             Reply::Status(status) => Ok(response(status, "", false)),
+            Reply::Page(status, body) => Ok(response(status, &body, false)),
             Reply::Truncated => Ok(response(200, "192.0.2.1\n", true)),
             Reply::Down => Err(TransportFailure {
                 kind: SourceOutcomeKind::ConnectFailure,
@@ -436,7 +439,8 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
     net.asked();
     // A feed down keeps answering from its old copy, and says how old that is.
     net.set("cinsscore", Reply::Down);
-    // A list that turns into a page of HTML, as Talos's did, is no list.
+    // A list that turns into a page of HTML, as Talos's did, is no list: it is not kept, and the
+    // copy kept before it still answers, saying the list could not be downloaded again.
     let page = "<!DOCTYPE html><html><head><title>Terms</title></head></html>";
     net.set("greensnow", Reply::Body(page.into()));
     let later = start + 19 * 3_600;
@@ -453,24 +457,40 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
             .iter()
             .any(|(source, _, _)| source == "cinsscore")
     );
-    assert_eq!(
-        row(&rows, "greensnow").kind,
-        SourceOutcomeKind::ProtocolDrift
+    assert_eq!(row(&rows, "greensnow").kind, SourceOutcomeKind::Success);
+    let green = detail(&rows, "greensnow");
+    assert!(
+        green.starts_with("GreenSnow: lists 194.180.49.70 (1 entries, copy from ")
+            && green.ends_with(&format!(
+                ", could not be downloaded again (an HTML page of {} bytes in place of the list))",
+                page.len()
+            )),
+        "{green}"
     );
     assert_eq!(
-        detail(&rows, "greensnow"),
-        format!(
-            "GreenSnow: no entry it could read in {} bytes; the feed may have changed form",
-            page.len()
-        )
+        std::fs::read_to_string(dir.join("greensnow")).expect("copy"),
+        sample("greensnow")
     );
-    assert!(listings(&entities, "194.180.49.70").is_empty());
+    assert!(
+        listings(&entities, "194.180.49.70")
+            .iter()
+            .any(|(source, _, _)| source == "greensnow")
+    );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 
-    // With no copy, a feed that is down, refuses or is larger than the limit is a failed row.
+    // With no copy, a feed that is down, refuses, is larger than the limit or is a page is a
+    // failed row.
     let net = Net::serving();
+    net.set("greensnow", Reply::Body(page.into()));
     net.set("cinsscore", Reply::Down);
     net.set("emergingthreats", Reply::Status(503));
+    net.set(
+        "botvrij",
+        Reply::Page(
+            404,
+            "<!DOCTYPE html><html><body>Not Found</body></html>".into(),
+        ),
+    );
     net.set("phishtank", Reply::Truncated);
     let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), None);
     let (_, rows) = check(&feeds, &subjects, "s", start);
@@ -482,6 +502,8 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
         detail(&rows, "emergingthreats"),
         "Emerging Threats: HTTP 503"
     );
+    // A server's error page is its status, not a page in the list's place.
+    assert_eq!(detail(&rows, "botvrij"), "botvrij.eu: HTTP 404");
     assert_eq!(
         row(&rows, "phishtank").kind,
         SourceOutcomeKind::ProtocolDrift
@@ -490,6 +512,148 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
         detail(&rows, "phishtank"),
         format!("PhishTank: larger than {MAX_FEED_BYTES} bytes")
     );
+    assert_eq!(
+        row(&rows, "greensnow").kind,
+        SourceOutcomeKind::ProtocolDrift
+    );
+    assert_eq!(
+        detail(&rows, "greensnow"),
+        format!(
+            "GreenSnow: an HTML page of {} bytes in place of the list",
+            page.len()
+        )
+    );
+}
+
+/// A page served in a list's place (a "feed has moved" page whose markup holds URLs, a refresh
+/// stub, a challenge page) is no download: it is never kept over the list, and never reads as "not
+/// listed". A challenge is a challenge, as the fetch reads it, and Tor's list is no exception.
+#[test]
+fn a_page_served_in_a_lists_place_never_reads_as_not_listed() {
+    let moved = "<html><head><link rel=\"stylesheet\" href=\"https://openphish.com/static/main.css\">\
+                 </head>\n<body><a href=\"https://openphish.com/\">The feed has moved</a></body></html>\n";
+    let challenge = "<html><title>Just a moment...</title>Cloudflare</html>";
+    let stub = "<meta http-equiv=\"refresh\" content=\"0; url=https://new.example/feed.txt\">\n\
+                https://new.example/feed.txt\n";
+    let subjects = [Subject::Name("login.evil.example".into())];
+    for (page, kind) in [
+        (moved, SourceOutcomeKind::ProtocolDrift),
+        (challenge, SourceOutcomeKind::BotWaf),
+        (stub, SourceOutcomeKind::ProtocolDrift),
+    ] {
+        let net = Net::serving();
+        net.set("openphish", Reply::Body(page.into()));
+        let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), None);
+        let (entities, rows) = check(&feeds, &subjects, "s", now());
+        assert_eq!(row(&rows, "openphish").kind, kind, "{page}");
+        assert!(
+            listings(&entities, "login.evil.example")
+                .iter()
+                .all(|(source, _, _)| source != "openphish")
+        );
+    }
+    // With a copy, the page is not kept and the copy still answers.
+    let dir = scratch("pages");
+    let net = Net::serving();
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let start = now();
+    let _ = check(&feeds, &subjects, "s", start);
+    for page in [moved, challenge, stub] {
+        net.set("openphish", Reply::Body(page.into()));
+        let (entities, rows) = check(&feeds, &subjects, "s", start + 19 * 3_600);
+        assert_eq!(row(&rows, "openphish").kind, SourceOutcomeKind::Success);
+        assert!(
+            detail(&rows, "openphish").contains("could not be downloaded again ("),
+            "{}",
+            detail(&rows, "openphish")
+        );
+        assert!(
+            listings(&entities, "login.evil.example")
+                .iter()
+                .any(|(source, _, _)| source == "openphish")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("openphish")).expect("copy"),
+            sample("openphish")
+        );
+    }
+    // Tor's relay list, JSON, is replaced by no page either.
+    let relay = [address("204.8.96.141")];
+    let _ = check(&feeds, &relay, "s", start);
+    net.set("torexits", Reply::Body(challenge.into()));
+    let (entities, rows) = check(&feeds, &relay, "s", start + 2 * 3_600);
+    assert_eq!(row(&rows, "torexits").kind, SourceOutcomeKind::Success);
+    assert!(
+        listings(&entities, "204.8.96.141")
+            .iter()
+            .any(|(source, _, _)| source == "torexits")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("torexits")).expect("copy"),
+        sample("torexits")
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A body is a page by how it opens, never by what its entries spell: a tag after any byte-order
+/// mark, white space, XML declaration and comments, other than the `<pre>` VX Vault wraps its list
+/// in.
+#[test]
+fn a_body_is_a_page_by_how_it_opens() {
+    let padding = " ".repeat(2_048);
+    for page in [
+        "<!DOCTYPE html><html></html>".to_owned(),
+        "\u{feff}<?xml version=\"1.0\"?>\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\">"
+            .to_owned(),
+        "<meta http-equiv=\"refresh\" content=\"0; url=https://new.example/feed.txt\">".to_owned(),
+        "<script>location = 'https://new.example/feed.txt'</script>".to_owned(),
+        "<br />\n<b>Warning</b>: feed.php on line 3<br />\n198.51.100.20\n".to_owned(),
+        format!("{padding}<!-- generated -->\n<html><body>moved</body></html>"),
+        "<!-- never closed".to_owned(),
+        "<?php echo 1;".to_owned(),
+        "<prefix>".to_owned(),
+    ] {
+        assert!(is_page(page.as_bytes()), "{page}");
+    }
+    for list in [
+        sample("vxvault").to_owned(),
+        "<PRE>\nhttp://203.0.113.5/<header><body>.exe\n</PRE>\n".to_owned(),
+        sample("torexits").to_owned(),
+        "# <html> is no entry\n198.51.100.20\n".to_owned(),
+        "\u{feff}http://evil.example/<body>\n".to_owned(),
+        "<203.0.113.5>\n".to_owned(),
+        "<!-- generated -->\n198.51.100.20\n".to_owned(),
+        "<!-- x -->\n<pre class=\"l\">\nhttp://e.example/a\n".to_owned(),
+        String::new(),
+    ] {
+        assert!(!is_page(list.as_bytes()), "{list}");
+    }
+}
+
+/// An entry is read by its host however a `://` falls in it: after its scheme, in its query (the
+/// entry is read without a scheme) or in markup (no host); and a list's byte-order mark is no part
+/// of its first entry.
+#[test]
+fn an_entry_is_read_by_its_host_wherever_a_scheme_falls_in_it() {
+    let host = |entry: &str| match url_key(entry) {
+        Some(Key::Name(name)) => Some(name),
+        _ => None,
+    };
+    assert_eq!(
+        host("https://login.evil.example/x").as_deref(),
+        Some("login.evil.example")
+    );
+    assert_eq!(
+        host("evil.example/g.php?u=http://x.example/").as_deref(),
+        Some("evil.example")
+    );
+    assert_eq!(host("<link href=\"https://cdn.example/main.css\">"), None);
+    let listed = index(
+        Format::Urls,
+        "\u{feff}http://first.example/a\nhttp://second.example/b\n",
+    );
+    assert_eq!(listed.entries, 2);
+    assert!(listed.names.contains_key("first.example"));
 }
 
 #[test]
@@ -915,6 +1079,83 @@ fn a_copy_that_cannot_be_refreshed_answers_only_for_when_it_was_downloaded() {
             .contains(", a copy of unknown date, which cannot say what is listed now"),
         "{}",
         detail(&rows, "blocklistde")
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A list is read as the list whatever its entries spell, a listed URL the fetch reads as a
+/// challenge's marker included; a list that empties replaces its copy rather than leaving the old one answering; and a
+/// page an earlier version kept in a list's place, with its date beside it, is downloaded again.
+#[test]
+fn a_list_is_the_list_however_it_reads_and_a_kept_page_is_no_copy() {
+    let net = Net::serving();
+    let vxvault = format!(
+        "{}http://45.131.135.227/sorry/index\nhttp://203.0.113.5/<header><body>.exe\n",
+        sample("vxvault").replace("</pre>\n", "")
+    );
+    net.set("vxvault", Reply::Body(vxvault));
+    let dir = scratch("emptied");
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let start = now();
+    let feodo = address("162.243.103.246");
+    let (entities, rows) = check(
+        &feeds,
+        &[
+            address("45.131.135.227"),
+            address("203.0.113.5"),
+            feodo.clone(),
+        ],
+        "s",
+        start,
+    );
+    assert_eq!(row(&rows, "vxvault").kind, SourceOutcomeKind::Success);
+    for listed in ["45.131.135.227", "203.0.113.5"] {
+        assert!(
+            listings(&entities, listed)
+                .iter()
+                .any(|(source, _, _)| source == "vxvault"),
+            "{listed}"
+        );
+    }
+    assert!(
+        listings(&entities, "162.243.103.246")
+            .iter()
+            .any(|(source, _, _)| source == "abusech")
+    );
+
+    let emptied = "# abuse.ch Feodo Tracker Botnet C2 IP Blocklist\n# END 0 entries\n";
+    net.set("feodotracker", Reply::Body(emptied.into()));
+    let (entities, rows) = check(&feeds, &[feodo], "s", start + 19 * 3_600);
+    assert_eq!(row(&rows, "abusech").kind, SourceOutcomeKind::ProtocolDrift);
+    assert!(listings(&entities, "162.243.103.246").is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("feodotracker")).expect("copy"),
+        emptied
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+
+    let dir = scratch("kept-page");
+    let net = Net::serving();
+    let page =
+        "<!DOCTYPE html><html><body><a href=\"https://openphish.com/\">moved</a></body></html>";
+    keep(&dir.join("openphish"), page.as_bytes(), None).expect("keep a page");
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let (entities, rows) = check(
+        &feeds,
+        &[Subject::Name("login.evil.example".into())],
+        "s",
+        now(),
+    );
+    let openphish = FEEDS
+        .iter()
+        .find(|feed| feed.id == "openphish")
+        .expect("openphish");
+    assert!(net.asked().contains(&openphish.url.to_owned()));
+    assert_eq!(row(&rows, "openphish").kind, SourceOutcomeKind::Success);
+    assert!(
+        listings(&entities, "login.evil.example")
+            .iter()
+            .any(|(source, _, _)| source == "openphish")
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
