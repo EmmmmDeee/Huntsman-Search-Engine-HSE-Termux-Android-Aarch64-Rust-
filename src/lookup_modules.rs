@@ -162,7 +162,8 @@ pub struct BreachPasses {
 impl BreachPasses {
     /// Note what `kind`'s lookup of `selector` returned: an e-mail lookup with a row of any breach
     /// source (a label such as `hibp_account` read as its module) ran the breach legs for its
-    /// address.
+    /// address. A no-key or refused-before-send row proves no request occurred and never covers
+    /// the later exposure pass.
     pub fn record(
         &mut self,
         kind: ScanKind,
@@ -171,7 +172,14 @@ impl BreachPasses {
     ) {
         let ran = outcomes
             .iter()
-            .any(|outcome| BREACH.contains(&crate::module::module_of(&outcome.module)));
+            .any(|outcome| {
+                BREACH.contains(&crate::module::module_of(&outcome.module))
+                    && !matches!(
+                        outcome.kind,
+                        crate::source_outcome::SourceOutcomeKind::NotConfigured
+                            | crate::source_outcome::SourceOutcomeKind::RefusedBeforeSending
+                    )
+            });
         if kind == ScanKind::Email && ran {
             if let Some(address) =
                 crate::scan_route::canonical_selector(ScanKind::Exposure, selector)
