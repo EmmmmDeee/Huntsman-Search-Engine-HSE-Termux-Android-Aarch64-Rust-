@@ -226,6 +226,7 @@ fn ip_provenance(source: &str) -> (&str, &'static str) {
 fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
     Some(match source {
         "shodan" => ("shodan", "src/shodan.rs"),
+        "censys" => ("censys", "src/censys.rs"),
         "pulsedive" => ("pulsedive", "src/pulsedive.rs"),
         "leakix" => ("leakix", "src/leakix.rs"),
         "threatfox" => ("threatfox", "src/threatfox.rs"),
@@ -241,11 +242,14 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "kickbox" => ("kickbox", "src/kickbox.rs"),
         "robtex" => ("robtex", "src/robtex.rs"),
         "hackertarget" => ("hackertarget", "src/hackertarget.rs"),
+        "submd" => ("submd", "src/submd.rs"),
+        "opencellid" => ("opencellid", "src/opencellid.rs"),
         "stopforumspam" => ("stopforumspam", "src/stopforumspam.rs"),
         "isc" => ("isc", "src/isc.rs"),
         "maltiverse" => ("maltiverse", "src/maltiverse.rs"),
         "phishstats" => ("phishstats", "src/phishstats.rs"),
         "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
+        "hudsonrock" => ("hudsonrock", "src/hudsonrock.rs"),
         "rdap" => ("rdap", "src/rdap.rs"),
         "mnemonic" => ("mnemonic", "src/mnemonic.rs"),
         "dnsresolve" => ("dnsresolve", "src/dns.rs"),
@@ -303,7 +307,7 @@ fn network_provenance(source: &str) -> (&str, &'static str) {
         "wigle" => ("wigle", "src/wigle.rs"),
         "wigle_bluetooth" => ("wigle_bluetooth", "src/wigle.rs"),
         "oui" => ("oui", "src/oui.rs"),
-        _ => (source, "src/network_cli.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/network_cli.rs")),
     }
 }
 
@@ -509,6 +513,29 @@ mod tests {
     use crate::confidence::VerificationMethod;
     use crate::entity::EvidenceProvenance;
     use crate::source_outcome::SourceOutcomeKind;
+
+    /// Every indicator source a lookup runs is saved under its own module, never under the front
+    /// end that ran it.
+    #[test]
+    fn every_indicator_source_is_saved_under_its_own_module() {
+        for source in crate::indicator_legs::SOURCES {
+            let label = source.api.source;
+            let (module, file) = indicator_provenance(label)
+                .unwrap_or_else(|| panic!("{label} is saved under no module of its own"));
+            assert_eq!(module, label);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                text.contains(&format!("\"{label}\"")),
+                "{label}: {file} does not define it"
+            );
+        }
+        // A network lookup's cell and place legs ask OpenCelliD, an indicator source too.
+        assert_eq!(
+            network_provenance("opencellid"),
+            ("opencellid", "src/opencellid.rs")
+        );
+    }
 
     fn provenance(source: &str) -> (&str, &'static str) {
         (source, "test")

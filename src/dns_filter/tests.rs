@@ -418,6 +418,11 @@ fn an_untrustworthy_filter_says_why_instead_of_not_blocked() {
         )),
         "{adguard}"
     );
+    // Its family filter not blocking the name says nothing of its default filter.
+    assert_eq!(
+        row(&rows, "adguard_dns").kind,
+        SourceOutcomeKind::Inconclusive
+    );
     assert_eq!(
         detail(&rows, "cloudflaredns"),
         format!("{SECURITY}: answered SERVFAIL; {FAMILY}: HTTP 503")
@@ -451,6 +456,30 @@ fn an_untrustworthy_filter_says_why_instead_of_not_blocked() {
         net.asked()
             .iter()
             .any(|(at, asked, _)| at == "8.20.247.20" && asked == name)
+    );
+}
+
+/// A source says "not blocked" only when every filter of it asked says so: Cloudflare's family
+/// filter not blocking a name says nothing of its malware filter, which did not answer, so the
+/// row is inconclusive, not a clean negative.
+#[test]
+fn a_source_one_of_whose_filters_did_not_answer_is_no_clean_negative() {
+    let name = "example.org";
+    let net = Net::healthy(&[(name, &["192.0.2.9"])]).with(SECURITY, name, Reply::Http(503));
+    let (entities, rows) = run(&net, name);
+    assert!(entities.is_empty());
+    assert_eq!(
+        row(&rows, "cloudflaredns").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    assert_eq!(
+        detail(&rows, "cloudflaredns"),
+        format!("{SECURITY}: HTTP 503; {FAMILY}: not blocked (192.0.2.9)")
+    );
+    // The sources whose every filter answered stand.
+    assert_eq!(
+        row(&rows, "cleanbrowsing").kind,
+        SourceOutcomeKind::ValidZero
     );
 }
 
