@@ -88,6 +88,14 @@ mod tests {
     }
 
     #[test]
+    fn uppercase_mailto_scheme_keeps_report_recipient() {
+        let record =
+            parse("v=TLSRPTv1; rua=MAILTO:Reports@Example.org!10m").expect("TLS-RPT record");
+        assert_eq!(record.emails, ["Reports@Example.org"]);
+        assert!(record.urls.is_empty());
+    }
+
+    #[test]
     fn version_tag_requires_exact_tlsrpt_v1() {
         for raw in [
             "v=TLSRPTv2; rua=mailto:reports@example.com",
