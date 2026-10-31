@@ -16,7 +16,8 @@ const CRTSH: &str = r#"[
  {"issuer_ca_id":295815,"issuer_name":"C=US, O=Let's Encrypt, CN=R10","common_name":"api.example.com","name_value":"api.example.com","id":9003,"entry_timestamp":"2026-09-01T01:00:00.789","not_before":"2026-09-01T00:00:00","not_after":"2026-12-01T00:00:00","serial_number":"05cc","result_count":1}
 ]"#;
 
-struct OnlyCrtSh;
+/// A transport that answers crt.sh with its JSON rows and refuses every other host.
+struct OnlyCrtSh(&'static str);
 
 impl Transport for OnlyCrtSh {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
@@ -24,7 +25,7 @@ impl Transport for OnlyCrtSh {
             return Ok(Response {
                 status: 200,
                 headers: vec![("content-type".into(), "application/json".into())],
-                body: CRTSH.as_bytes().to_vec(),
+                body: self.0.as_bytes().to_vec(),
                 truncated: false,
             });
         }
@@ -48,7 +49,7 @@ fn evidence(entities: &[Entity], name: &str) -> Evidence {
 #[test]
 fn every_certificate_crtsh_logs_for_a_name_reaches_it() {
     let entities = match run(
-        &OnlyCrtSh,
+        &OnlyCrtSh(CRTSH),
         &Keys::default(),
         &Feeds::none(),
         "example.com",
@@ -78,5 +79,44 @@ fn every_certificate_crtsh_logs_for_a_name_reaches_it() {
     assert_eq!(
         mail.attributes.get("cert_ids").map(String::as_str),
         Some("9002")
+    );
+}
+
+/// crt.sh writes `-1` for the issuing CA it has no record of, naming it "Issuer Not Found", as it
+/// did for a certificate of example.com on 2026-10-31. That row is a certificate like any other:
+/// the lookup keeps it and every other row. Before, `-1` failed to decode as a CA id and the
+/// whole answer was discarded, so the domain's certificate log read as inconclusive.
+#[test]
+fn a_certificate_whose_issuer_crtsh_has_no_record_of_is_kept_with_every_other() {
+    const ISSUER_NOT_FOUND: &str = r#"[
+ {"issuer_ca_id":-1,"issuer_name":"Issuer Not Found","common_name":"example.com","name_value":"example.com\nlegacy.example.com","id":8506962125,"entry_timestamp":"2023-01-27T01:21:18.507","not_before":"2023-01-27T01:21:18","not_after":"2033-01-24T01:21:18","serial_number":"1ac1e693c87d36563a92ca145c87bbc26fd49f4c","result_count":3},
+ {"issuer_ca_id":295815,"issuer_name":"C=US, O=Let's Encrypt, CN=R10","common_name":"api.example.com","name_value":"api.example.com","id":9001,"entry_timestamp":"2026-01-01T01:00:00.123","not_before":"2026-01-01T00:00:00","not_after":"2026-04-01T00:00:00","serial_number":"04aa","result_count":1}
+]"#;
+    let report = match run(
+        &OnlyCrtSh(ISSUER_NOT_FOUND),
+        &Keys::default(),
+        &Feeds::none(),
+        "example.com",
+        1_760_000_000,
+    ) {
+        DomainRun::Printed { report, .. } => report,
+        DomainRun::Network(why) | DomainRun::Failed(why) => panic!("did not print: {why}"),
+    };
+    let crtsh = report
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.module == "crtsh")
+        .expect("a crtsh row");
+    assert_eq!(crtsh.kind, SourceOutcomeKind::Success, "{crtsh:?}");
+    let legacy = evidence(&report.entities, "legacy.example.com");
+    assert_eq!(
+        legacy.attributes.get("issuers").map(String::as_str),
+        Some("Issuer Not Found")
+    );
+    assert_eq!(legacy.attributes.get("issuer_ca_ids"), None);
+    let api = evidence(&report.entities, "api.example.com");
+    assert_eq!(
+        api.attributes.get("issuer_ca_ids").map(String::as_str),
+        Some("295815")
     );
 }

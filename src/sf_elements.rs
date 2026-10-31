@@ -777,7 +777,8 @@ pub fn elements(target: Target<'_>, entities: &[Entity], now_unix: u64) -> Vec<D
 }
 
 /// Where a scan that followed its findings found each entity: an entity's lowercased value to
-/// the lowercased selector of the first lookup that found it. That selector's element becomes the
+/// the lowercased identity ([`PivotEdge::from_identity`]) of the first lookup that found it, the
+/// key the source entity's own value carries whichever spelling the lookup ran under. That selector's element becomes the
 /// entity's source, as a Spiderfoot event's source is the event its module was handed.
 pub type Lineage = BTreeMap<String, String>;
 
@@ -790,7 +791,7 @@ pub fn lineage(edges: &[PivotEdge]) -> Lineage {
     let mut out = Lineage::new();
     for edge in sorted {
         let child = edge.to_value.to_ascii_lowercase();
-        let parent = edge.from_selector.to_ascii_lowercase();
+        let parent = edge.from_identity().to_ascii_lowercase();
         if child != parent {
             out.entry(child).or_insert(parent);
         }
@@ -878,6 +879,19 @@ impl<'a> Walk<'a> {
         );
         let mut by_value = BTreeMap::new();
         by_value.insert(target.value.trim().to_ascii_lowercase(), target_id.clone());
+        // A crawl's lineage names a lookup by the identity it ran under (`PivotEdge::from_identity`).
+        // A username target is also known by its identity key, so what a lookup of the target found
+        // stays under the target, never under another element that spells the same handle.
+        if target.kind == "USERNAME" {
+            by_value.insert(
+                crate::recursion::selector_identity(
+                    crate::scan_route::ScanKind::Username,
+                    target.value.trim(),
+                )
+                .to_ascii_lowercase(),
+                target_id.clone(),
+            );
+        }
         Self {
             builder,
             target,
@@ -1188,6 +1202,84 @@ mod tests {
         value: "example.com",
         kind: "INTERNET_NAME",
     };
+
+    /// A lookup of a username target records its edges under the target's identity key. An echo of
+    /// the handle under another separator is its own element with that key, but what the target's
+    /// lookup found stays under the target.
+    #[test]
+    fn findings_of_a_username_target_stay_under_the_target_beside_a_respelled_echo() {
+        let echo = entity(EntityKind::Username, "PG-Smith", "github_user", &[]);
+        let site = entity(EntityKind::Domain, "pg-smith.example", "github_user", &[]);
+        let edges: Vec<PivotEdge> = [&echo, &site]
+            .into_iter()
+            .map(|to| PivotEdge {
+                from_kind: "username".to_owned(),
+                from_selector: "PG_Smith".to_owned(),
+                to_kind: to.kind.as_str().to_owned(),
+                to_value: to.value.clone(),
+                generation: 0,
+            })
+            .collect();
+        let target = Target {
+            value: "PG_Smith",
+            kind: "USERNAME",
+        };
+        let found = elements_with_lineage(target, &[echo, site], &lineage(&edges), 1_700_000_200);
+        let target_element = of_type(&found, "USERNAME")
+            .into_iter()
+            .find(|element| element.data == "PG_Smith")
+            .expect("target element")
+            .id
+            .clone();
+        let site_element = of_type(&found, "INTERNET_NAME")
+            .into_iter()
+            .find(|element| element.data == "pg-smith.example")
+            .expect("site element");
+        assert_eq!(
+            site_element.source.as_deref(),
+            Some(target_element.as_str())
+        );
+    }
+
+    /// A crawl follows a handle by the spelling it was observed with (`PG_Smith`), while the handle
+    /// entity's value is its identity key (`pgsmith`). The discovery tree still places what that
+    /// lookup found under the handle's element, not under the scan target.
+    #[test]
+    fn findings_of_a_handle_followed_by_its_observed_spelling_stay_under_that_handle() {
+        let handle = entity(EntityKind::Username, "PG_Smith", "email_cli", &[]);
+        let mut site = entity(EntityKind::Domain, "pg-smith.example", "github_user", &[]);
+        site.generation = 1;
+        let edge = |from_kind: &str, from_selector: &str, to: &Entity, generation| PivotEdge {
+            from_kind: from_kind.to_owned(),
+            from_selector: from_selector.to_owned(),
+            to_kind: to.kind.as_str().to_owned(),
+            to_value: to.value.clone(),
+            generation,
+        };
+        let edges = [
+            edge("email", "person@example.com", &handle, 0),
+            edge("username", "PG_Smith", &site, 1),
+        ];
+        let lineage = lineage(&edges);
+        assert_eq!(
+            lineage.get("pg-smith.example").map(String::as_str),
+            Some("pgsmith")
+        );
+        let target = Target {
+            value: "person@example.com",
+            kind: "EMAILADDR",
+        };
+        let found = elements_with_lineage(target, &[handle, site], &lineage, 1_700_000_200);
+        let handle_element = of_type(&found, "USERNAME")[0].id.clone();
+        let site_element = of_type(&found, "INTERNET_NAME")
+            .into_iter()
+            .find(|element| element.data == "pg-smith.example")
+            .expect("site element");
+        assert_eq!(
+            site_element.source.as_deref(),
+            Some(handle_element.as_str())
+        );
+    }
 
     /// Two records from one source about one host are one element, as Spiderfoot keys an event,
     /// but both stay readable: the element's raw lists each record, and the element is created

@@ -236,7 +236,7 @@ fn add_seed(email: &str, scan_id: &str, entities: &mut Vec<Entity>) {
     entity.tag("seed");
     entity.add_evidence(Evidence::new(
         EvidenceProvenance::for_scan("seed", scan_id),
-        "operator-supplied email selector",
+        "email selector the lookup was asked",
     ));
     entities.push(entity);
 }

@@ -60,8 +60,9 @@ impl UsernameArgs {
     pub fn parse(args: &[String]) -> Result<Self, Error> {
         let (raw, save) = LookupTokens::single(args, "username needs exactly one HANDLE")?;
         // Validate charset, length and placeholder through the canonical form, but keep the
-        // operator's ORIGINAL case: Hacker News ids are case-sensitive, so the exact case must
-        // survive to that leg. Every other username source canonicalises its input again.
+        // operator's ORIGINAL case: Hacker News ids and Wikipedia account names are case-sensitive,
+        // so the exact case must survive to those legs. Every other username source canonicalises
+        // its input again.
         canonical_username(&raw)?;
         let username = raw.trim().trim_start_matches('@').to_owned();
         Ok(Self { username, save })
@@ -122,7 +123,9 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
         (
             wikipedia::SRC,
             Box::new(move || {
-                wikipedia::lookup(transport, name, scan, now_unix)
+                // A Wikipedia account name keeps its case after the first letter (`JohnDoe` and
+                // `Johndoe` are two accounts): query the operator's exact case.
+                wikipedia::lookup(transport, original, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -158,7 +161,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
             hacker_news::SRC,
             Box::new(move || {
                 // Hacker News ids are case-sensitive: query the operator's exact case, not the
-                // case-folded `name` every other leg uses.
+                // case-folded `name` every case-insensitive leg uses.
                 hacker_news::lookup(transport, original, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
@@ -189,9 +192,9 @@ pub fn run<T: Transport + Sync + ?Sized>(
     username: &str,
     now_unix: u64,
 ) -> UsernameRun {
-    // The operator's exact selector. The Hacker News leg keys a case-sensitive id on it, so it is
-    // threaded to that leg verbatim; the report cohort and every case-insensitive source use the
-    // canonical (case-folded) form below.
+    // The operator's exact selector. The Hacker News and Wikipedia legs key a case-sensitive name
+    // on it, so it is threaded to those legs verbatim; the report cohort and every
+    // case-insensitive source use the canonical (case-folded) form below.
     let original = username.trim().trim_start_matches('@').to_owned();
     let username = match canonical_username(username) {
         Ok(username) => username,
@@ -279,7 +282,7 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
     seed.tag("seed");
     seed.add_evidence(Evidence::new(
         EvidenceProvenance::for_scan("seed", scan_id),
-        "operator-supplied username selector",
+        "username selector the lookup was asked",
     ));
     let seed_uid = seed.uid.clone();
     entities.push(seed);
@@ -710,6 +713,77 @@ mod tests {
                     && entity.has_tag(crate::tags::WIKIPEDIA_EDIT)
                     && entity.value.contains("oldid=900001"))
         );
+    }
+
+    /// `MediaWiki` keeps an account name's case after its first letter, so the Wikipedia leg must
+    /// query the operator's ORIGINAL case too. This transport runs only that leg and answers as the
+    /// real API does: it reads the asked name as `MediaWiki` does (an underscore is a space, the
+    /// first letter a capital) and lists an edit only for the one account that exists.
+    struct WikiExactCase {
+        exists: &'static str,
+    }
+
+    impl Transport for WikiExactCase {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let asked = request
+                .url
+                .split(['?', '&'])
+                .find_map(|pair| pair.strip_prefix("ucuser="))
+                .unwrap_or_default()
+                .replace('_', " ");
+            let mut letters = asked.chars();
+            let read: String = letters
+                .next()
+                .map(|first| first.to_ascii_uppercase())
+                .into_iter()
+                .chain(letters)
+                .collect();
+            let body = if read == self.exists {
+                format!(
+                    r#"{{"query":{{"usercontribs":[{{"user":"{}","revid":900001,"title":"T","timestamp":"2024-01-01T00:00:00Z","comment":""}}]}}}}"#,
+                    self.exists
+                )
+            } else {
+                r#"{"query":{"usercontribs":[]}}"#.to_owned()
+            };
+            Ok(response(200, &body))
+        }
+
+        fn runs_module(&self, module: &str) -> bool {
+            module == wikipedia::SRC
+        }
+    }
+
+    fn wikipedia_only(selector: &str, exists: &'static str) -> Report {
+        match run(&WikiExactCase { exists }, &Keys::default(), selector, 1) {
+            UsernameRun::Printed { report, .. } => report,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn wikipedia_edits(report: &Report) -> usize {
+        report
+            .entities
+            .iter()
+            .filter(|entity| entity.has_tag(crate::tags::WIKIPEDIA_EDIT))
+            .count()
+    }
+
+    #[test]
+    fn a_mixed_case_wikipedia_account_is_queried_in_its_original_case() {
+        // `JohnDoe` is queried as `JohnDoe`, not the case-folded `johndoe` MediaWiki reads as the
+        // other account `Johndoe`: its edit is found.
+        let report = wikipedia_only("JohnDoe", "JohnDoe");
+        let outcome = report
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == wikipedia::SRC)
+            .expect("the wikipedia leg ran");
+        assert_eq!(outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(wikipedia_edits(&report), 1, "{:#?}", report.entities);
+        // Only the other account `Johndoe` exists: none of its edits is credited to `JohnDoe`.
+        let report = wikipedia_only("JohnDoe", "Johndoe");
+        assert_eq!(wikipedia_edits(&report), 0, "{:#?}", report.entities);
     }
 
     /// Hacker News ids are case-sensitive, yet the engine case-folds every username selector. The

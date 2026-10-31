@@ -45,11 +45,6 @@ pub struct NormalizedSeed {
     pub other_spellings: Vec<String>,
 }
 
-/// How a handle is routed: as written, without its leading `@`s, ignoring ASCII case.
-fn route_spelling(raw: &str) -> String {
-    raw.trim().trim_start_matches('@').to_ascii_lowercase()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SeedRejection {
     Empty,
@@ -140,10 +135,10 @@ pub fn normalize_seeds(input: &InvestigationInput, limits: &PipelineLimits) -> S
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
                 let kept = slot.get_mut();
-                let spelling = route_spelling(&seed.raw);
+                let spelling = crate::canonical::handle_route_key(&seed.raw);
                 let known = std::iter::once(&kept.raw)
                     .chain(&kept.other_spellings)
-                    .any(|written| route_spelling(written) == spelling);
+                    .any(|written| crate::canonical::handle_route_key(written) == spelling);
                 if kept.kind == EntityKind::Username && !known {
                     kept.other_spellings.push(seed.raw);
                 }
