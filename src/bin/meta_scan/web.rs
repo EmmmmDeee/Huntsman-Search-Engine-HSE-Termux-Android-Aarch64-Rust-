@@ -67,6 +67,20 @@ impl HttpRequest {
     }
 }
 
+/// Fields used as single values by request routing. Duplicates are ambiguous even
+/// when the names differ only in case; repeatable headers remain permitted.
+fn is_singleton_header(name: &str) -> bool {
+    [
+        "host",
+        "origin",
+        "content-type",
+        "x-meta-scan",
+        "content-length",
+    ]
+    .iter()
+    .any(|field| name.eq_ignore_ascii_case(field))
+}
+
 fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -114,15 +128,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
         // Ambiguous singleton fields must be refused before routing. Downstream handlers
         // read one value via HttpRequest::header; accepting another value would let
         // different HTTP clients disagree about the Host, origin, or request semantics.
-        let singleton = [
-            "host",
-            "origin",
-            "content-type",
-            "x-meta-scan",
-            "content-length",
-        ]
-        .iter()
-        .any(|field| name.eq_ignore_ascii_case(field));
+        let singleton = is_singleton_header(name);
         if singleton
             && headers
                 .iter()
