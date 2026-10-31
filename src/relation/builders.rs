@@ -103,6 +103,11 @@ pub fn basis_kind(basis: &str) -> &'static str {
 }
 
 fn persona_key(entity: &Entity) -> Option<String> {
+    // A guess read off another value keys nothing: an alias from it would bind that value to
+    // itself.
+    if entity.is_offline_reading() {
+        return None;
+    }
     let handle = match entity.kind {
         EntityKind::Email => extract_email_localpart(&entity.value)?,
         EntityKind::Username => entity.value.as_str(),
@@ -146,7 +151,7 @@ fn person_fingerprints(value: &str) -> BTreeSet<String> {
 
 fn coreference_key(entity: &Entity) -> Option<String> {
     match entity.kind {
-        EntityKind::Person => {
+        EntityKind::Person if !entity.is_offline_reading() => {
             let key = person_key(&entity.value);
             (!key.is_empty()).then_some(key)
         }
@@ -1083,6 +1088,83 @@ mod tests {
         );
         assert_eq!(personal.len(), 1, "{personal:?}");
         assert!(!is_generic_handle("ada.l@acme.example"));
+    }
+
+    /// An address a profile publishes is something its source observed, though read from free
+    /// text, so it still aliases the account; only a guess read off another value keys nothing.
+    #[test]
+    fn a_published_address_aliases_its_account_and_a_guess_keys_nothing() {
+        let observed = |kind: EntityKind, value: &str, source: &str| {
+            let mut entity = ent(kind, value, 0.6);
+            entity.add_evidence(evidence(source, "seen").inferred());
+            entity
+        };
+        let mut account = ent(EntityKind::Username, "alice_w", 0.9);
+        account.add_evidence(evidence("mastodon_user", "the account"));
+        let published = observed(EntityKind::Email, "alice_w@proton.me", "mastodon_user");
+        assert_eq!(derive_handles(&[account.clone(), published], "s").len(), 1);
+        let guessed = observed(EntityKind::Email, "alice_w@proton.me", "email_parse");
+        assert!(guessed.is_offline_reading());
+        assert!(derive_handles(&[account, guessed], "s").is_empty());
+    }
+
+    /// The address or handle the operator asked about is that value itself, not a guess read off
+    /// another one, so it keys its handle before any source has observed it, as an observed one
+    /// does: it aliases an account a source found under the same handle.
+    #[test]
+    fn the_operators_own_selector_keys_its_handle_before_any_source_sees_it() {
+        let seed = |kind: EntityKind, value: &str| {
+            let mut entity = ent(kind, value, 0.99);
+            entity.add_evidence(evidence("seed", "the selector the lookup was asked"));
+            entity
+        };
+        let mut account = ent(EntityKind::Username, "alice_w", 0.9);
+        account.add_evidence(evidence("mastodon_user", "the account"));
+        let mut published = ent(EntityKind::Email, "alice_w@proton.me", 0.6);
+        published.add_evidence(evidence("mastodon_user", "the bio"));
+        for (selector, observed) in [
+            (seed(EntityKind::Email, "alice_w@proton.me"), account),
+            (seed(EntityKind::Username, "alice_w"), published),
+        ] {
+            assert!(!selector.is_offline_reading(), "{}", selector.value);
+            assert_eq!(
+                derive_handles(&[selector.clone(), observed], "s").len(),
+                1,
+                "{}",
+                selector.value
+            );
+        }
+    }
+
+    /// A name guessed from another value keys no coreference, as a guessed handle keys no alias;
+    /// the same name observed by a source keys one, and so does a guess some source also observed:
+    /// one observation is enough for the value to be more than a reading of another.
+    #[test]
+    fn a_guessed_name_keys_nothing_and_an_observed_or_corroborated_one_keys() {
+        let with = |kind: EntityKind, value: &str, sources: &[&str]| {
+            let mut entity = ent(kind, value, 0.7);
+            for source in sources {
+                entity.add_evidence(evidence(source, "seen"));
+            }
+            entity
+        };
+        let address = with(EntityKind::Email, "jsmith@gmail.com", &["hibp"]);
+        let guessed = with(EntityKind::Person, "J Smith", &["email_parse"]);
+        assert!(guessed.is_offline_reading());
+        assert!(derive_coreferences(&[guessed, address.clone()], &[], "s").is_empty());
+        for sources in [&["github_user"][..], &["email_parse", "github_user"][..]] {
+            let named = with(EntityKind::Person, "J Smith", sources);
+            assert!(!named.is_offline_reading(), "{sources:?}");
+            let linked = derive_coreferences(&[named, address.clone()], &[], "s");
+            assert_eq!(linked.len(), 1, "{sources:?}: {linked:?}");
+            assert_eq!(linked[0].kind, RelationKind::IdentifiedBy);
+        }
+        let account = with(
+            EntityKind::Username,
+            "jsmith",
+            &["email_parse", "github_user"],
+        );
+        assert_eq!(derive_handles(&[account, address], "s").len(), 1);
     }
 
     /// Every relation that holds only because its entities share a handle rests on that handle:
