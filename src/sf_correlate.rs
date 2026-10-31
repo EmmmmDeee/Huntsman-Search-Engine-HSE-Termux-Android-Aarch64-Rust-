@@ -730,9 +730,7 @@ impl Scan<'_> {
         let multiple_malicious = rule.origin == "spiderfoot"
             && matches!(
                 rule.id.as_str(),
-                "multiple_malicious"
-                    | "multiple_malicious_affiliate"
-                    | "multiple_malicious_cohost"
+                "multiple_malicious" | "multiple_malicious_affiliate" | "multiple_malicious_cohost"
             );
         for (collection, matchers) in rule.collections.iter().enumerate() {
             for (index, element) in self.elements.iter().enumerate() {
