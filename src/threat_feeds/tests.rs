@@ -12,6 +12,8 @@ enum Reply {
     /// A body with the `Last-Modified` date its publisher sent.
     Dated(String, String),
     Status(u16),
+    /// A status with a body, as a server's own error page.
+    Page(u16, String),
     Truncated,
     Down,
 }
@@ -77,6 +79,7 @@ impl Transport for Shared {
                 ..response(200, &body, false)
             }),
             Reply::Status(status) => Ok(response(status, "", false)),
+            Reply::Page(status, body) => Ok(response(status, &body, false)),
             Reply::Truncated => Ok(response(200, "192.0.2.1\n", true)),
             Reply::Down => Err(TransportFailure {
                 kind: SourceOutcomeKind::ConnectFailure,
@@ -481,6 +484,13 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
     net.set("greensnow", Reply::Body(page.into()));
     net.set("cinsscore", Reply::Down);
     net.set("emergingthreats", Reply::Status(503));
+    net.set(
+        "botvrij",
+        Reply::Page(
+            404,
+            "<!DOCTYPE html><html><body>Not Found</body></html>".into(),
+        ),
+    );
     net.set("phishtank", Reply::Truncated);
     let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), None);
     let (_, rows) = check(&feeds, &subjects, "s", start);
@@ -492,6 +502,8 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
         detail(&rows, "emergingthreats"),
         "Emerging Threats: HTTP 503"
     );
+    // A server's error page is its status, not a page in the list's place.
+    assert_eq!(detail(&rows, "botvrij"), "botvrij.eu: HTTP 404");
     assert_eq!(
         row(&rows, "phishtank").kind,
         SourceOutcomeKind::ProtocolDrift
@@ -598,6 +610,8 @@ fn a_body_is_a_page_by_how_it_opens() {
         "<br />\n<b>Warning</b>: feed.php on line 3<br />\n198.51.100.20\n".to_owned(),
         format!("{padding}<!-- generated -->\n<html><body>moved</body></html>"),
         "<!-- never closed".to_owned(),
+        "<?php echo 1;".to_owned(),
+        "<prefix>".to_owned(),
     ] {
         assert!(is_page(page.as_bytes()), "{page}");
     }
@@ -608,6 +622,8 @@ fn a_body_is_a_page_by_how_it_opens() {
         "# <html> is no entry\n198.51.100.20\n".to_owned(),
         "\u{feff}http://evil.example/<body>\n".to_owned(),
         "<203.0.113.5>\n".to_owned(),
+        "<!-- generated -->\n198.51.100.20\n".to_owned(),
+        "<!-- x -->\n<pre class=\"l\">\nhttp://e.example/a\n".to_owned(),
         String::new(),
     ] {
         assert!(!is_page(list.as_bytes()), "{list}");
@@ -1067,14 +1083,14 @@ fn a_copy_that_cannot_be_refreshed_answers_only_for_when_it_was_downloaded() {
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
 
-/// A list is read as the list whatever its entries spell, a challenge marker in a listed URL
-/// included; a list that empties replaces its copy rather than leaving the old one answering; and a
+/// A list is read as the list whatever its entries spell, a listed URL the fetch reads as a
+/// challenge's marker included; a list that empties replaces its copy rather than leaving the old one answering; and a
 /// page an earlier version kept in a list's place, with its date beside it, is downloaded again.
 #[test]
 fn a_list_is_the_list_however_it_reads_and_a_kept_page_is_no_copy() {
     let net = Net::serving();
     let vxvault = format!(
-        "{}http://45.131.135.227/Captcha.exe\nhttp://203.0.113.5/<header><body>.exe\n",
+        "{}http://45.131.135.227/sorry/index\nhttp://203.0.113.5/<header><body>.exe\n",
         sample("vxvault").replace("</pre>\n", "")
     );
     net.set("vxvault", Reply::Body(vxvault));

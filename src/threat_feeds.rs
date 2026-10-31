@@ -12,8 +12,8 @@
 //! and its row says how old that copy is; one never downloaded is a failed row, not "not listed".
 //! A feed that downloads but holds no entry this module can read has changed form, and says so
 //! instead of reading as "not listed". A page served in a list's place (a landing, terms, "feed
-//! has moved" or challenge page: a body that opens with a tag) is a failed download: it is never
-//! kept, and the last copy still answers.
+//! has moved" or challenge page: a body that opens with a tag other than the `<pre>` VX Vault wraps
+//! its list in) is a failed download: it is never kept, and the last copy still answers.
 //!
 //! A list is only as current as its publisher keeps it. The `Last-Modified` date a download
 //! carries is kept beside the copy, with the copy's length and CRC-32 so it is read only with that
