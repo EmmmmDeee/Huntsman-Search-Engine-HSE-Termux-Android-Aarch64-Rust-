@@ -55,6 +55,7 @@ pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
     "phone_geo",
     "phone_intl",
     "phone_nanp",
+    "registry_policy",
     "seed",
     "structured_id",
     "url_extract",
