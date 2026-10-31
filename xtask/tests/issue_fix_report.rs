@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A directory that is removed when the test ends.
 struct Scratch(PathBuf);
@@ -15,8 +16,12 @@ static NEXT_SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
 impl Scratch {
     fn new(name: &str) -> Self {
         let sequence = NEXT_SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock must be after the Unix epoch")
+            .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "report-{name}-{}-{sequence}",
+            "report-{name}-{}-{nonce}-{sequence}",
             std::process::id()
         ));
         fs::create_dir(&dir).expect("the scratch directory must be new");
