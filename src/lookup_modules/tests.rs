@@ -133,6 +133,9 @@ impl Transport for Everywhere {
                 200,
                 br#"[{"jsonrpc":"2.0","id":1,"result":"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"},{"jsonrpc":"2.0","id":2,"result":{"context":{"slot":1},"value":null}},{"jsonrpc":"2.0","id":3,"result":[]},{"jsonrpc":"2.0","id":4,"result":1}]"#,
             )
+        } else if url.contains("api.certspotter.com") {
+            // A domain with no logged certificate, as Cert Spotter answers it: `[]` at 200.
+            (200, b"[]")
         } else if url.contains("wbsearchentities") {
             // Wikidata search with no hit: a clean valid-zero, so a people scan that chose
             // wikidata still produces its row without an item fetch.

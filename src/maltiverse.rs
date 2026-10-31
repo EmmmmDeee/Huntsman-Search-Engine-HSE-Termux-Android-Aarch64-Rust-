@@ -6,7 +6,8 @@
 //! sets (known attacker, C&C, Tor or VPN node, open proxy, phishing, sinkhole), its tags, the AS,
 //! registrant, place and coordinates, the counts of domains and malicious URLs tied to it and, for
 //! a host name, every address it has resolved to. A `malicious` classification is malicious, as
-//! `sfp_maltiverse` reports it, and `suspicious` is marked so. A `404` is a valid zero.
+//! `sfp_maltiverse` reports it, and `suspicious` is marked so. A `404` is an error, as `sfp_maltiverse` reads it: Maltiverse
+//! answers a selector it has not seen with a `200`.
 //!
 //! Maltiverse records a host name the first time anyone asks about it, as it does for Spiderfoot.
 
@@ -110,7 +111,9 @@ pub fn lookup(
     };
     match api_leg::get(transport, &API, keys, &url, now_unix)? {
         Answer::Body(body) => decode(&body, indicator),
-        Answer::NotFound(_) => Ok(None),
+        // An address or name Maltiverse has not seen is a 200 (it records it as it answers);
+        // `sfp_maltiverse` reads a 404 as "API endpoint not found", never as nothing known.
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 

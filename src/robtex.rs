@@ -138,7 +138,12 @@ pub fn decode_ip(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let body: IpBody = api_leg::decode_value(&raw)?;
     match body.status.as_str() {
         "ok" => {}
-        "ratelimited" => return Err(LegError::RateLimited { retry_after: None }),
+        "ratelimited" => {
+            return Err(LegError::RateLimited {
+                status: 200,
+                retry_after: None,
+            });
+        }
         other => {
             let other = api_leg::clean(Some(other)).unwrap_or_default();
             return Err(LegError::Decode(format!("Robtex status {other}")));

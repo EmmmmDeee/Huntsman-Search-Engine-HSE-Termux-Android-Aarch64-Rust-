@@ -102,7 +102,9 @@ pub fn lookup(
     };
     match api_leg::get(transport, &API, keys, &url, now_unix)? {
         Answer::Body(body) => decode(&body, indicator),
-        Answer::NotFound(_) => Ok(None),
+        // ISC answers every address with a 200 (one it has no record of has null fields), and
+        // `sfp_isc` reads any other status as an error: a 404 is no record of the address.
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 

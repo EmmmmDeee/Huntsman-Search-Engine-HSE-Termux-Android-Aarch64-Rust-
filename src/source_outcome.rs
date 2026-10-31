@@ -568,15 +568,14 @@ pub const fn classify_http_status(status: u16) -> SourceOutcomeKind {
 /// status, so a 403 or 200 interstitial is never `AuthRejected` or `Inconclusive`; a 200
 /// content page that embeds a CAPTCHA widget or a bot-management sensor is content
 /// (`Inconclusive`), see [`crate::classify::is_served_challenge`]. A 403 without a challenge
-/// signature is `AuthRejected`.
+/// signature is the provider refusing the request (`Upstream4xx`): only a sent credential can be
+/// rejected, and [`crate::fetch`], which knows whether one was sent, makes it `AuthRejected` then.
 #[must_use]
 pub fn classify_fetch(status: u16, body: &str) -> SourceOutcomeKind {
     if status == 429 {
         SourceOutcomeKind::RateLimited
     } else if is_challenge_at(status, body) {
         SourceOutcomeKind::BotWaf
-    } else if status == 403 {
-        SourceOutcomeKind::AuthRejected
     } else {
         classify_http_status(status)
     }
@@ -633,7 +632,7 @@ mod tests {
         assert_eq!(classify_http_status(401), SourceOutcomeKind::AuthRequired);
         assert_eq!(
             classify_fetch(403, "forbidden: key revoked"),
-            SourceOutcomeKind::AuthRejected
+            SourceOutcomeKind::Upstream4xx
         );
         assert_eq!(classify_http_status(429), SourceOutcomeKind::RateLimited);
     }

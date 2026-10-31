@@ -223,7 +223,10 @@ fn refusal(reason: Option<&str>) -> LegError {
     } else if reason.contains("balance") || reason.contains("credit") {
         LegError::Forbidden
     } else if reason.contains("limit") {
-        LegError::RateLimited { retry_after: None }
+        LegError::RateLimited {
+            status: 200,
+            retry_after: None,
+        }
     } else {
         LegError::Decode(format!(
             "whoxy refused: {}",
