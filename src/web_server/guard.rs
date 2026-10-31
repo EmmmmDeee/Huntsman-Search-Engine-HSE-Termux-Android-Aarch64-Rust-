@@ -5,7 +5,7 @@
 use super::response::json_error;
 use super::{
     INSPECT_PATH, INVESTIGATE_PATH, KEYS_PATH, OSINT_CASE_PATH, OSINT_RISK_PATH, ParsedRequest,
-    ServeConfig, TRACK_PATH,
+    RESEARCH_MISSION_PATH, ServeConfig, TRACK_PATH,
 };
 use crate::scan_api::ScanApi;
 
