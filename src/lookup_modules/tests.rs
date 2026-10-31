@@ -475,19 +475,22 @@ fn a_spiderfoot_name_chooses_every_module_that_does_its_work() {
 }
 
 /// Each use case leaves every lookup a module to ask, so no target is refused for its use case
-/// alone, and Footprint and Investigate are each narrower than All.
+/// alone, but for the breach lookup under Passive, which asks only the keyed breach sources Passive
+/// leaves out (a breach scan under Passive is refused by name before it is saved). Footprint,
+/// Investigate and Passive are each narrower than All.
 #[test]
 fn every_use_case_leaves_each_lookup_a_module_to_ask() {
     for usecase in crate::scan_service::USE_CASES {
         let chosen = crate::module::use_case_selection(usecase, &Selection::all());
         for kind in ScanKind::ALL {
-            assert!(
+            assert_eq!(
                 asks_any(kind, &chosen),
-                "{usecase} leaves the {kind:?} lookup nothing to ask"
+                !(usecase == "passive" && kind == ScanKind::Exposure),
+                "{usecase} and the {kind:?} lookup"
             );
         }
     }
-    for usecase in ["footprint", "investigate"] {
+    for usecase in ["footprint", "investigate", "passive"] {
         let chosen = crate::module::use_case_selection(usecase, &Selection::all());
         assert!(
             ScanKind::ALL
