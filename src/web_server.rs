@@ -1386,6 +1386,31 @@ fn health_response(config: &ServeConfig, head: bool) -> String {
     json_ok(&body, head)
 }
 
+/// The same authorisation classification for every guarded HTTP route.
+fn protected_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/api/modules"
+            | "/api/command"
+            | "/api/lookup"
+            | "/api/research"
+            | RESEARCH_MISSION_PATH
+            | "/api/analyze"
+            | "/api/evidence"
+            | "/evidence"
+            | "/api/radar/wifi"
+            | "/api/radar/cells"
+            | TRACK_PATH
+            | KEYS_PATH
+            | INSPECT_PATH
+            | BLUEPRINT_PATH
+            | RHINSER_CATALOG_PATH
+            | OSINT_CASE_PATH
+            | OSINT_RISK_PATH
+            | INVESTIGATE_PATH
+    ) || ScanApi::handles(path);
+}
+
 /// The answer to a parsed request: the guards every route shares, then the route's own.
 fn route(
     parsed: &ParsedRequest<'_>,
@@ -1424,28 +1449,7 @@ fn route(
     }
 
     let head = parsed.method == Method::Head;
-    let protected = matches!(
-        parsed.path,
-        "/api/modules"
-            | "/api/command"
-            | "/api/lookup"
-            | "/api/research"
-            | RESEARCH_MISSION_PATH
-            | "/api/analyze"
-            | "/api/evidence"
-            | "/evidence"
-            | "/api/radar/wifi"
-            | "/api/radar/cells"
-            | TRACK_PATH
-            | KEYS_PATH
-            | INSPECT_PATH
-            | BLUEPRINT_PATH
-            | RHINSER_CATALOG_PATH
-            | OSINT_CASE_PATH
-            | OSINT_RISK_PATH
-            | INVESTIGATE_PATH
-    ) || ScanApi::handles(parsed.path);
-    if protected && !authorized(parsed, config) {
+    if protected_path(parsed.path) && !authorized(parsed, config) {
         return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head).into_bytes();
     }
 
