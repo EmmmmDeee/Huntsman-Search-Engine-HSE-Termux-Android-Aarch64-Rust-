@@ -466,13 +466,18 @@ pub(crate) fn record_tag(raw: &str) -> Option<(String, &str)> {
 }
 
 /// The mailboxes of a comma-separated report URI list (`rua`, `ruf`, TLS-RPT's `rua`): each
-/// `mailto:` entry without its `!size` limit, kept when it holds an `@` and is at least five
-/// bytes long. Other schemes are skipped.
+/// case-insensitive `mailto:` scheme without its `!size` limit, kept when it holds an `@`
+/// and is at least five bytes long. Other schemes are skipped; mailbox case is preserved.
 pub(crate) fn parse_mailto_list(raw: &str) -> Vec<String> {
     raw.split(',')
         .filter_map(|entry| {
             let trimmed = entry.trim();
-            let addr = trimmed.strip_prefix("mailto:")?;
+            // RFC 3986: only the URI scheme is case-insensitive, not the mailbox.
+            let scheme = trimmed.get(..7)?;
+            if !scheme.eq_ignore_ascii_case("mailto:") {
+                return None;
+            }
+            let addr = trimmed.get(7..)?;
             let addr = addr.split('!').next().unwrap_or(addr).trim();
             if addr.contains('@') && addr.len() >= 5 {
                 Some(addr.to_string())
@@ -555,6 +560,21 @@ mod form_tests {
             ])
         );
         assert_eq!(form_pairs("a=%zz"), None);
+    }
+
+    #[test]
+    fn report_mailto_scheme_is_case_insensitive_without_changing_address_case() {
+        assert_eq!(
+            parse_mailto_list(
+                "MAILTO:Reports@Example.org!10m, MaIlTo:Ops@Example.org, https://example.org/r, mailto:valid@example.org"
+            ),
+            [
+                "Reports@Example.org",
+                "Ops@Example.org",
+                "valid@example.org"
+            ]
+        );
+        assert!(parse_mailto_list("mailtox:wrong@example.org").is_empty());
     }
 
     #[test]
