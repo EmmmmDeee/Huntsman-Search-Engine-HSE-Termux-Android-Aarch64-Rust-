@@ -1748,6 +1748,7 @@ fn analyses(
 ) -> Routes {
     Routes {
         lookups: None,
+        research: None,
         radar: None,
         cells: None,
         track: None,
