@@ -250,7 +250,7 @@ fn names_a_mailbox_holder(email: &str) -> bool {
 /// nobody observed where handles are case- or separator-sensitive (Hacker News, GitHub). A
 /// username no observation of which reaches the floor, as one only guessed from an e-mail's local
 /// part, is followed by its identity key, the separator-free form most platforms accept. The
-/// handle a lookup was asked (its operator-seed record, which every lookup echoes back) was already
+/// handle a lookup was asked (its operator-seed record, which the username lookup echoes back) was already
 /// looked up: it is followed by what sources observed, never by the key. The crawl routes a pivot
 /// lookup's echo before it forgets it ([`forget_pivot_echo`]), so this holds for a pivot too. Every other route follows the entity's canonical value. Edges resolve by
 /// [`selector_identity`], so what each lookup finds joins the same entity. **Pure.**
@@ -762,14 +762,18 @@ impl CrawlState {
 }
 
 /// Forget a pivot lookup's echo of its selector in `entity`, and say whether anything is left to
-/// keep. Every lookup echoes its selector back as the operator's seed: tagged `seed`, at the seed's
-/// confidence, with a seed record ([`Evidence::is_operator_seed`]). A pivot was found by the crawl, not supplied by the
+/// keep. The e-mail, exposure, username and network lookups echo their selector back as the
+/// operator's seed: tagged `seed`, at the seed's confidence, with a seed record
+/// ([`Evidence::is_operator_seed`]). A pivot was found by the crawl, not supplied by the
 /// operator, and its echo would fold into the entity it was followed from, so a weak lead (a handle
 /// guessed from an e-mail's local part) would leave the crawl as the operator's own seed at 0.99.
 /// The echo's records and tag are not kept, nor counted as observations. An echo holding nothing
 /// else is not kept at all, as the crawl already holds the entity it was followed from; one a source
 /// also described keeps what the source said, at no more than `followed_at`, the confidence the
-/// crawl followed it at. An entity with no operator-seed record is kept as it is. **Pure.**
+/// crawl followed it at, though the source held it higher: a pivot is no more likely the subject's
+/// than the lead it was followed from (an account under a guessed handle exists, which says nothing
+/// of whose it is), and a record keeps no confidence of its own to say what the source alone held
+/// it at. An entity with no operator-seed record is kept as it is. **Pure.**
 fn forget_pivot_echo(entity: &mut Entity, followed_at: f64) -> bool {
     if !entity.evidence.iter().any(Evidence::is_operator_seed) {
         return true;
@@ -1423,8 +1427,8 @@ mod tests {
         );
     }
 
-    /// The entity a username lookup returns for the selector it was asked, as every lookup the
-    /// crawl dispatches returns one (`username_cli`'s seed).
+    /// The entity a username lookup returns for the selector it was asked, as the e-mail,
+    /// exposure, username and network lookups return one (`username_cli`'s seed).
     fn asked(value: &str) -> Entity {
         let mut entity = ent(EntityKind::Username, value, 0.99);
         entity.tag("seed");
@@ -1537,6 +1541,69 @@ mod tests {
         let before = finding.clone();
         assert!(forget_pivot_echo(&mut finding, 0.1));
         assert_eq!(finding, before);
+    }
+
+    /// An e-mail pivot's lookup echoes it twice over when its breach pass is folded in (one seed
+    /// record, a second echo merged into it): both echoes are forgotten and only what sources
+    /// observed is counted, the pivot stays at the confidence it was followed at, and the
+    /// operator's own e-mail, which its breach pass echoes too, stays the seed.
+    #[test]
+    fn an_email_pivots_folded_echoes_are_forgotten_and_only_sources_counted() {
+        let seed = "ada@example.com";
+        let pivot = "ada.l@example.org";
+        // As the e-mail and exposure lookups echo it, each under its own scan.
+        let echo_in = |value: &str, scan: &str| {
+            let mut entity = ent(EntityKind::Email, value, 0.99);
+            entity.tag("seed");
+            entity.add_evidence(crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("seed", scan),
+                "email selector the lookup was asked",
+            ));
+            entity
+        };
+        let echo = |value: &str| echo_in(value, "email");
+        let mut found = observed(EntityKind::Email, pivot, "hunter");
+        found.confidence = 0.6;
+        let mut folded = echo(pivot);
+        folded.absorb(echo_in(pivot, "exposure"));
+        folded.absorb(observed(EntityKind::Email, pivot, "hibp"));
+        folded.absorb(observed(EntityKind::Email, pivot, "dehashed"));
+        let seed_record = folded
+            .evidence
+            .iter()
+            .find(|evidence| evidence.is_operator_seed())
+            .expect("the echo's record");
+        assert_eq!(seed_record.merged_provenance.len(), 1, "{folded:?}");
+        let mut collector = Scripted::new()
+            .on(ScanKind::Email, seed, vec![echo(seed), found])
+            .on(ScanKind::Exposure, seed, vec![echo(seed)])
+            .on(ScanKind::Email, pivot, vec![folded])
+            .on(ScanKind::Exposure, pivot, vec![echo(pivot)]);
+        let report = run(&[seed.to_owned()], &policy(), &mut collector);
+        let email = |value: &str| -> Entity {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.kind == EntityKind::Email && entity.value == value)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {value} in {:?}", report.entities))
+        };
+        let lead = email(pivot);
+        assert!(!lead.has_tag("seed"), "{lead:?}");
+        assert!(
+            !lead.evidence.iter().any(Evidence::is_operator_seed),
+            "{lead:?}"
+        );
+        assert!((lead.confidence - 0.6).abs() < f64::EPSILON, "{lead:?}");
+        // Hunter's, HIBP's and DeHashed's observations, and no echo.
+        assert_eq!(lead.corroboration, 3, "{lead:?}");
+        let mailbox = email(seed);
+        assert!(mailbox.has_tag("seed"), "{mailbox:?}");
+        assert!(
+            mailbox.evidence.iter().any(Evidence::is_operator_seed),
+            "{mailbox:?}"
+        );
+        assert!((mailbox.confidence - 0.99).abs() < f64::EPSILON);
     }
 
     /// What a pivot's echo queues is followed at no more than the pivot: a spelling a source
