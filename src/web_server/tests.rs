@@ -3537,16 +3537,34 @@ fn universal_research_api_is_bounded_guarded_and_uses_canonical_rust_routes() {
         "GET /api/research?q=any+research+phrase HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
     );
     assert!(plain.starts_with("HTTP/1.1 200"), "{plain}");
-    assert!(plain.contains("\"input\":\"any research phrase\""), "{plain}");
+    assert!(
+        plain.contains("\"input\":\"any research phrase\""),
+        "{plain}"
+    );
     assert!(plain.contains("lead_only"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     for (request, status) in [
-        ("GET /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\n\r\n", 403),
-        ("GET /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: cross-site\r\nX-Huntsman-Lookup: 1\r\n\r\n", 403),
-        ("POST /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n", 405),
-        ("GET /api/research?q=127.0.0.1 HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n", 400),
-        ("GET /api/research?q=1.1.1.1%2F33 HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n", 400),
+        (
+            "GET /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            403,
+        ),
+        (
+            "GET /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: cross-site\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            403,
+        ),
+        (
+            "POST /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            405,
+        ),
+        (
+            "GET /api/research?q=127.0.0.1 HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            400,
+        ),
+        (
+            "GET /api/research?q=1.1.1.1%2F33 HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            400,
+        ),
     ] {
         let answer = ask(request);
         assert!(
