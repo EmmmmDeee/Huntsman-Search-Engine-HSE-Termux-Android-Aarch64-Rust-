@@ -147,6 +147,7 @@ pub fn inspect_ndef(data: &[u8]) -> Result<NdefInspection, String> {
         let tnf = flags & 0x07;
         if matches!(tnf, 6 | 7)
             || (tnf == 0 && (type_len != 0 || id_len != 0 || payload_len != 0 || has_id))
+            || ((1..=4).contains(&tnf) && type_len == 0)
             || (tnf == 5 && type_len != 0)
         {
             return Err("invalid NDEF type-name format for a complete record".to_owned());
@@ -219,6 +220,21 @@ mod tests {
         assert_eq!(empty.total_payload_bytes, 0);
         let unknown = inspect_ndef(&[0xD5, 0x00, 0x01, 0xCA]).unwrap();
         assert_eq!(unknown.total_payload_bytes, 1);
+
+        // Typed records (well-known, MIME, URI, external) require a TYPE field.
+        // Previously these three-byte inputs were incorrectly accepted as valid.
+        for (tnf, type_name) in [
+            (1_u8, "T"),
+            (2, "text/plain"),
+            (3, "https://example.org"),
+            (4, "example.org:thing"),
+        ] {
+            let missing_type = [0xD0 | tnf, 0x00, 0x00];
+            assert!(inspect_ndef(&missing_type).is_err(), "TNF={tnf}");
+            let mut typed_record = vec![0xD0 | tnf, type_name.len() as u8, 0x00];
+            typed_record.extend_from_slice(type_name.as_bytes());
+            assert_eq!(inspect_ndef(&typed_record).unwrap().records, 1);
+        }
 
         let malformed: &[&[u8]] = &[
             &[0xD7, 0x00, 0x00],       // reserved TNF
