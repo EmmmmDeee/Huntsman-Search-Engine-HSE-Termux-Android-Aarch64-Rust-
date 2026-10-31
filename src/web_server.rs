@@ -200,7 +200,6 @@ pub type LookupHandler =
     Arc<dyn Fn(&LookupQuery) -> Result<LookupReport, LookupError> + Send + Sync>;
 
 #[derive(Clone)]
-#[derive(Clone)]
 struct Research {
     handler: ResearchHandler,
     live: Arc<AtomicUsize>,
