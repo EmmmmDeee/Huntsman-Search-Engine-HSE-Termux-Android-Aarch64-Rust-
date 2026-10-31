@@ -223,6 +223,27 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     }
 }
 
+/// /api/research uses the same bounded, keyless adaptive search as `query --adaptive`.
+/// The server handles capacity and same-origin controls; this adapter owns the transport.
+fn web_research(query: &str) -> Result<serde_json::Value, LookupError> {
+    let transport = huntsman_recon::http::UreqTransport::new(
+        &huntsman_recon::http::TransportConfig::default(),
+    );
+    let report = huntsman_recon::web_query::adaptive_search(
+        &transport,
+        query,
+        clock::unix_now(),
+    )
+    .map_err(|error| LookupError {
+        status: if matches!(error, Error::Invalid(_)) { 400 } else { 502 },
+        message: error.to_string(),
+    })?;
+    Ok(serde_json::json!({
+        "route": "adaptive_web_search",
+        "report": report,
+    }))
+}
+
 /// Mobile radar reads exactly the same Termux Wi-Fi cache as the CLI.
 fn web_radar() -> Result<huntsman_recon::wifi_radar::WifiScan, LookupError> {
     super::radar::capture_wifi().map_err(|message| LookupError {
@@ -405,6 +426,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Ok(server) => {
             let server = server
                 .with_lookup(std::sync::Arc::new(web_lookup))
+                .with_research(std::sync::Arc::new(web_research))
                 .with_radar(std::sync::Arc::new(web_radar))
                 .with_radar_cells(std::sync::Arc::new(web_cells))
                 .with_radar_track(std::sync::Arc::new(web_track))
