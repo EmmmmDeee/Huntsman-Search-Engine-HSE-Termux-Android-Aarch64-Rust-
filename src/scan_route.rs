@@ -176,12 +176,7 @@ pub fn infer_kind(selector: &str) -> ScanKind {
 
 /// Whether `selector` is written as an IP address, public or not, a bracketed IPv6 address too.
 fn is_ip_address(selector: &str) -> bool {
-    let raw = selector.trim();
-    let raw = raw
-        .strip_prefix('[')
-        .and_then(|inner| inner.strip_suffix(']'))
-        .unwrap_or(raw);
-    raw.parse::<std::net::IpAddr>().is_ok()
+    crate::canonical::canonical_ip_literal(selector).is_some()
 }
 
 /// Whether `selector` is a public AS number written with its `AS` prefix.
