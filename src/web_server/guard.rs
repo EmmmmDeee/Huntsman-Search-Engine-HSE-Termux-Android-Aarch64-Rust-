@@ -17,6 +17,7 @@ pub(super) fn takes_post(path: &str) -> bool {
         || path == INSPECT_PATH
         || path == TRACK_PATH
         || path == INVESTIGATE_PATH
+        || path == RESEARCH_MISSION_PATH
         || path == OSINT_CASE_PATH
         || path == OSINT_RISK_PATH
 }
