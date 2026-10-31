@@ -9,5 +9,7 @@
   which a source that observes no one read off another value (the address parser, the handle
   variants) now keys no identity relation; the guesses stay in the report as derived leads. An
   address a profile publishes is an observation, though read from its text, and still aliases its
-  account, as does an account a source observed under a guessed handle. A crawl that follows a
-  guessed handle still binds it through that lookup's echo of it, which the crawl keeps.
+  account, as does an account a source observed under a guessed handle. The address or handle the
+  operator asked about is no guess: it keys its handle as before, whether or not a source has
+  observed it yet. A crawl that follows a guessed handle still binds it through that lookup's echo
+  of it, which the crawl keeps.

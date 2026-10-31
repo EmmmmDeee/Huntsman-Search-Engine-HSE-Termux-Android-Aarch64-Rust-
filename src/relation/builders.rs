@@ -1108,6 +1108,34 @@ mod tests {
         assert!(derive_handles(&[account, guessed], "s").is_empty());
     }
 
+    /// The address or handle the operator asked about is that value itself, not a guess read off
+    /// another one, so it keys its handle before any source has observed it, as an observed one
+    /// does: it aliases an account a source found under the same handle.
+    #[test]
+    fn the_operators_own_selector_keys_its_handle_before_any_source_sees_it() {
+        let seed = |kind: EntityKind, value: &str| {
+            let mut entity = ent(kind, value, 0.99);
+            entity.add_evidence(evidence("seed", "the selector the lookup was asked"));
+            entity
+        };
+        let mut account = ent(EntityKind::Username, "alice_w", 0.9);
+        account.add_evidence(evidence("mastodon_user", "the account"));
+        let mut published = ent(EntityKind::Email, "alice_w@proton.me", 0.6);
+        published.add_evidence(evidence("mastodon_user", "the bio"));
+        for (selector, observed) in [
+            (seed(EntityKind::Email, "alice_w@proton.me"), account),
+            (seed(EntityKind::Username, "alice_w"), published),
+        ] {
+            assert!(!selector.is_offline_reading(), "{}", selector.value);
+            assert_eq!(
+                derive_handles(&[selector.clone(), observed], "s").len(),
+                1,
+                "{}",
+                selector.value
+            );
+        }
+    }
+
     /// Every relation that holds only because its entities share a handle rests on that handle:
     /// an alias between addresses with the same local part or username, a subject whose name
     /// gives the handle, and a person whose name is the handle. A relation with evidence of its
