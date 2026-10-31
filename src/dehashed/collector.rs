@@ -23,7 +23,7 @@ use super::query::{Field, Purpose, Selector};
 use super::types::Entry;
 use crate::collector::{
     CollectionBatch, CollectionLimits, CollectionOutcome, CollectorError, CollectorPivot,
-    ObservationReceipt,
+    ObservationReceipt, differs_from_selector, query_text,
 };
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
@@ -82,7 +82,7 @@ pub fn collect_page(
             "max_requests must be at least one".into(),
         ));
     }
-    let query = Selector::new(field, &selector.value)
+    let query = Selector::new(field, &query_text(selector))
         .map_err(|e| CollectorError::InvalidSelector(e.to_string()))?;
     let size = limits
         .max_records_per_response
@@ -221,7 +221,7 @@ fn append_entries(
                 continue;
             }
             // Only a genuinely new, selector-distinct value is a candidate pivot.
-            if (kind != selector.kind || value != selector.value) && pivoted.insert(uid) {
+            if differs_from_selector(&kind, &value, selector) && pivoted.insert(uid) {
                 if batch.pivots.len() < limits.max_pivots {
                     batch.pivots.push(CollectorPivot { kind, value });
                 } else {
