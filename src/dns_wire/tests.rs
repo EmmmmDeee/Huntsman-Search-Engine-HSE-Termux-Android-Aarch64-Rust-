@@ -397,3 +397,18 @@ fn a_corrupted_answer_is_read_or_refused_never_a_panic() {
         }
     }
 }
+
+/// What DNS can carry, one rule for the wire query and the system resolver's callers: at most 253
+/// bytes, labels of 1 to 63, ASCII.
+#[test]
+fn a_name_is_askable_only_within_dns_limits() {
+    assert!(askable_name("2.0.0.127.zen.spamhaus.org"));
+    assert!(askable_name("example.com."));
+    let label = "a".repeat(63);
+    assert!(askable_name(&format!("{label}.example")));
+    assert!(!askable_name(&format!("{label}a.example")));
+    assert!(!askable_name(&format!("{}.com", "a.".repeat(126))));
+    assert!(!askable_name("a..example"));
+    assert!(!askable_name("bücher.example"));
+    assert!(query(1, &format!("{label}a.example"), 1).is_err());
+}
