@@ -120,6 +120,22 @@ impl SourceOutcomeKind {
     }
 }
 
+/// What one of the endpoints a source is asked through (a blocklist zone, a threat feed, a
+/// filtering resolver) said, as [`SourceExecutionOutcome::joined`] counts it into the source's row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointAnswer {
+    /// It answered, finding the subject this many times. `Found(0)` says the subject is absent no
+    /// more than [`Self::Unvouched`] does; an endpoint that says so is [`Self::Absent`].
+    Found(usize),
+    /// It answered that the subject is absent from it.
+    Absent,
+    /// It answered without finding the subject, but cannot say the subject is absent from it now,
+    /// as a list that stopped updating cannot.
+    Unvouched,
+    /// It gave no answer that can be trusted, for this reason.
+    Failed(SourceOutcomeKind),
+}
+
 /// One observed execution result.  `detail` is diagnostic text, not evidence
 /// that a target is present or absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +287,58 @@ impl SourceExecutionOutcome {
             None,
             detail,
         )
+    }
+
+    /// The row of a source asked through several endpoints, from what each said (`answers`, in
+    /// the order asked), with `detail` saying what each said:
+    ///
+    /// - what they found, when any endpoint found the subject;
+    /// - else "nothing found" ([`Self::valid_zero`]) only when every endpoint said the subject is
+    ///   absent from it, as one that did not answer, or cannot vouch for its answer, cannot say so;
+    /// - else, when no endpoint answered, why not: the first failure that is not a refusal, so the
+    ///   row is refused only when every endpoint was;
+    /// - else [`Self::inconclusive`].
+    #[must_use]
+    pub fn joined(
+        module: impl Into<String>,
+        observed_at_unix: u64,
+        answers: &[EndpointAnswer],
+        detail: impl Into<String>,
+    ) -> Self {
+        let found: usize = answers
+            .iter()
+            .map(|answer| match answer {
+                EndpointAnswer::Found(count) => *count,
+                _ => 0,
+            })
+            .sum();
+        if found > 0 {
+            return Self::success(module, observed_at_unix, found).with_detail(detail);
+        }
+        if !answers.is_empty()
+            && answers
+                .iter()
+                .all(|answer| *answer == EndpointAnswer::Absent)
+        {
+            return Self::valid_zero(module, observed_at_unix).with_detail(detail);
+        }
+        let failures: Vec<SourceOutcomeKind> = answers
+            .iter()
+            .filter_map(|answer| match answer {
+                EndpointAnswer::Failed(kind) => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        let why = failures
+            .iter()
+            .find(|kind| **kind != SourceOutcomeKind::RefusedBeforeSending)
+            .or_else(|| failures.first());
+        match why {
+            Some(kind) if failures.len() == answers.len() => {
+                Self::failed(module, observed_at_unix, *kind, None, detail)
+            }
+            _ => Self::inconclusive(module, observed_at_unix, detail),
+        }
     }
 
     /// `module: detail`, without repeating the module when `detail` already starts
@@ -580,6 +648,33 @@ mod tests {
                 .kind
                 .is_accepted()
         );
+    }
+
+    /// A source asked through several endpoints finds what any of them found, says "nothing
+    /// found" only when every one said the subject is absent, says why when none answered, and is
+    /// otherwise inconclusive: one endpoint not answering beside others that found nothing is no
+    /// clean negative.
+    #[test]
+    fn a_source_row_is_a_clean_negative_only_when_every_endpoint_vouched_for_it() {
+        use EndpointAnswer::{Absent, Failed, Found, Unvouched};
+        use SourceOutcomeKind as K;
+        let joined = |answers: &[EndpointAnswer]| {
+            let row = SourceExecutionOutcome::joined("m", 1, answers, "what each said");
+            assert_eq!(row.detail.as_deref(), Some("what each said"), "{answers:?}");
+            (row.kind, row.found)
+        };
+        let dns = Failed(K::DnsFailure);
+        let refused = Failed(K::RefusedBeforeSending);
+        assert_eq!(joined(&[Found(2), dns, Found(1)]), (K::Success, Some(3)));
+        assert_eq!(joined(&[Found(1), Unvouched]), (K::Success, Some(1)));
+        assert_eq!(joined(&[Absent, Absent]), (K::ValidZero, Some(0)));
+        assert_eq!(joined(&[dns, Absent, Absent]), (K::Inconclusive, None));
+        assert_eq!(joined(&[Absent, refused]), (K::Inconclusive, None));
+        assert_eq!(joined(&[Absent, Unvouched]), (K::Inconclusive, None));
+        assert_eq!(joined(&[Found(0), Absent]), (K::Inconclusive, None));
+        assert_eq!(joined(&[refused, dns]), (K::DnsFailure, None));
+        assert_eq!(joined(&[refused, refused]), (K::RefusedBeforeSending, None));
+        assert_eq!(joined(&[]), (K::Inconclusive, None));
     }
 
     #[test]
