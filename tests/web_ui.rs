@@ -1124,3 +1124,17 @@ fn an_inspected_file_names_the_scan_it_was_kept_as() {
         "else kept.textContent='Not kept as a saved scan: this server keeps none (set HOME or HUNTSMAN_HOME).';"
     ));
 }
+
+#[test]
+fn universal_research_mobile_panel_uses_guarded_api_and_preserves_existing_scans() {
+    assert!(PAGE.contains("id=\"uresearch\""));
+    assert!(PAGE.contains("id=\"uresearch-q\""));
+    assert!(PAGE.contains("await api('/api/research?'"));
+    assert!(PAGE.contains("await prefill({name:q,target:result.selector,kind:result.kind,depth:0})"));
+    assert!(PAGE.contains("select Run Scan Now to collect"));
+    assert!(PAGE.contains("id=\"newscan\""));
+    assert!(PAGE.contains("li.textContent=String(h.url)"));
+    assert!(PAGE.contains("link.rel='noopener noreferrer'"));
+    assert!(!PAGE.contains("uresearch-hits').innerHTML"));
+    assert!(PAGE.as_bytes().len() <= PAGE_BUDGET, "phone page exceeds its size budget");
+}
