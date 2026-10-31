@@ -226,6 +226,41 @@ fn an_untrustworthy_zone_says_why_instead_of_not_listed() {
     );
 }
 
+/// A list says "not listed" only when every zone of it asked says so: UCEPROTECT's level 1 not
+/// answering leaves levels 2 and 3, which list the address's network and AS, unable to say the
+/// address is not listed, so the row is inconclusive. A listing on a level that answered is still
+/// the list's finding.
+#[test]
+fn a_list_one_of_whose_zones_did_not_answer_is_no_clean_negative() {
+    let address = Subject::Address(ip("192.0.2.10"));
+    let mut resolver = Resolver::healthy();
+    resolver.down.push("dnsbl-1.uceprotect.net");
+    let (entities, rows) = check(&resolver, address, "s", 1);
+    assert!(entities.is_empty());
+    let uce = row(&rows, "uceprotect");
+    assert_eq!(uce.kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(
+        uce.detail.as_deref(),
+        Some(
+            "dnsbl-1.uceprotect.net: no answer (timed out); dnsbl-2.uceprotect.net: not listed; \
+             dnsbl-3.uceprotect.net: not listed"
+        )
+    );
+    // The lists whose every zone answered stand.
+    assert_eq!(row(&rows, "spamcop").kind, SourceOutcomeKind::ValidZero);
+
+    let mut resolver =
+        Resolver::healthy().with("10.2.0.192.dnsbl-2.uceprotect.net", &["127.0.0.2"]);
+    resolver.down.push("dnsbl-1.uceprotect.net");
+    let (entities, rows) = check(&resolver, address, "s", 1);
+    let uce = row(&rows, "uceprotect");
+    assert_eq!((uce.kind, uce.found), (SourceOutcomeKind::Success, Some(1)));
+    assert_eq!(
+        entities[0].evidence[0].attributes["dnsbl_zone"],
+        "dnsbl-2.uceprotect.net"
+    );
+}
+
 #[test]
 fn a_domain_is_asked_of_the_domain_lists_and_an_undocumented_code_is_kept() {
     let resolver = Resolver::healthy()
