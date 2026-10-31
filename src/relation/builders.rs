@@ -1136,6 +1136,37 @@ mod tests {
         }
     }
 
+    /// A name guessed from another value keys no coreference, as a guessed handle keys no alias;
+    /// the same name observed by a source keys one, and so does a guess some source also observed:
+    /// one observation is enough for the value to be more than a reading of another.
+    #[test]
+    fn a_guessed_name_keys_nothing_and_an_observed_or_corroborated_one_keys() {
+        let with = |kind: EntityKind, value: &str, sources: &[&str]| {
+            let mut entity = ent(kind, value, 0.7);
+            for source in sources {
+                entity.add_evidence(evidence(source, "seen"));
+            }
+            entity
+        };
+        let address = with(EntityKind::Email, "jsmith@gmail.com", &["hibp"]);
+        let guessed = with(EntityKind::Person, "J Smith", &["email_parse"]);
+        assert!(guessed.is_offline_reading());
+        assert!(derive_coreferences(&[guessed, address.clone()], &[], "s").is_empty());
+        for sources in [&["github_user"][..], &["email_parse", "github_user"][..]] {
+            let named = with(EntityKind::Person, "J Smith", sources);
+            assert!(!named.is_offline_reading(), "{sources:?}");
+            let linked = derive_coreferences(&[named, address.clone()], &[], "s");
+            assert_eq!(linked.len(), 1, "{sources:?}: {linked:?}");
+            assert_eq!(linked[0].kind, RelationKind::IdentifiedBy);
+        }
+        let account = with(
+            EntityKind::Username,
+            "jsmith",
+            &["email_parse", "github_user"],
+        );
+        assert_eq!(derive_handles(&[account, address], "s").len(), 1);
+    }
+
     /// Every relation that holds only because its entities share a handle rests on that handle:
     /// an alias between addresses with the same local part or username, a subject whose name
     /// gives the handle, and a person whose name is the handle. A relation with evidence of its
