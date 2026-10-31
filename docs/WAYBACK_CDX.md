@@ -61,9 +61,11 @@ an archived subdomain also produces a conservative `domain` pivot tagged
 `historical_subdomain`. Evidence records contain the canonical original URL,
 archive replay reference, 14-digit UTC capture timestamp, CDX digest and the type the
 index recorded (`capture_mimetype`) when present, source identifier and local observation
-metadata; a historical subdomain lead carries the record of the capture it was found in. Multiple captures of the same
-URL combine through Huntsman's canonical entity merge; they do not become
-independent corroborating sources.
+metadata. A historical subdomain lead carries the records of the captures it was found in,
+merged into one: each of its attributes lists its distinct values, not one value per capture,
+so a type there cannot be paired with a URL (a URL lead's own record can). Multiple captures of
+the same URL combine through Huntsman's canonical entity merge; they do not become independent
+corroborating sources.
 
 The source **does not** prove a page's contents, present-day DNS ownership,
 human identity, website authorization, completeness of an archive, or the actual

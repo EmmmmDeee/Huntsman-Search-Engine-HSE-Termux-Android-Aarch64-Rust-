@@ -470,6 +470,14 @@ mod tests {
             // The index, then the capture it named, both from the archive and nowhere else.
             if request.url.starts_with(API) {
                 assert!(request.url.contains("matchType=domain"));
+                // The fields asked for are the ones the answer's header is held to.
+                assert!(
+                    request
+                        .url
+                        .contains("fl=timestamp%2Coriginal%2Cstatuscode%2Cdigest%2Cmimetype"),
+                    "{}",
+                    request.url
+                );
                 return Ok(response(
                     r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://example.org/a","200","ABC","text/html"]]"#,
                 ));
