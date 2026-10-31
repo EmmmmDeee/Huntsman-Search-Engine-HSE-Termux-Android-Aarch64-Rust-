@@ -1019,7 +1019,10 @@ fn an_unasked_breach_leg_cannot_cover_the_exposure_lookup() {
     passes.record(
         ScanKind::Email,
         "Ada@Example.org",
-        &[SourceExecutionOutcome::valid_zero(crate::exposure_cli::SOURCE, 1)],
+        &[SourceExecutionOutcome::valid_zero(
+            crate::exposure_cli::SOURCE,
+            1,
+        )],
     );
     assert!(passes.covered(ScanKind::Exposure, "ada@example.org"));
 }

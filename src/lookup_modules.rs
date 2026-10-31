@@ -170,16 +170,14 @@ impl BreachPasses {
         selector: &str,
         outcomes: &[crate::source_outcome::SourceExecutionOutcome],
     ) {
-        let ran = outcomes
-            .iter()
-            .any(|outcome| {
-                BREACH.contains(&crate::module::module_of(&outcome.module))
-                    && !matches!(
-                        outcome.kind,
-                        crate::source_outcome::SourceOutcomeKind::NotConfigured
-                            | crate::source_outcome::SourceOutcomeKind::RefusedBeforeSending
-                    )
-            });
+        let ran = outcomes.iter().any(|outcome| {
+            BREACH.contains(&crate::module::module_of(&outcome.module))
+                && !matches!(
+                    outcome.kind,
+                    crate::source_outcome::SourceOutcomeKind::NotConfigured
+                        | crate::source_outcome::SourceOutcomeKind::RefusedBeforeSending
+                )
+        });
         if kind == ScanKind::Email && ran {
             if let Some(address) =
                 crate::scan_route::canonical_selector(ScanKind::Exposure, selector)
