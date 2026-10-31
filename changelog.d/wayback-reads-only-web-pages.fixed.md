@@ -9,4 +9,6 @@
   subdomain leads; a capture recorded as anything but HTML, XHTML or plain text is not read, and
   the row says how many captures the index recorded as no web page. A capture the index recorded
   no type for (`-`, `unk`, `warc/revisit`) can still be read, and the replay's own type decides.
-  Every capture stays a historical URL lead.
+  A type is read by its media type without parameters, so one that only names HTML, as a compiled
+  help file's `application/vnd.ms-htmlhelp` does, is no web page at the index or in a Wayback or
+  Common Crawl replay. Every capture stays a historical URL lead.

@@ -584,11 +584,13 @@ mod tests {
     /// one of the pages read, so the contact page further down the list still is.
     #[test]
     fn only_captures_the_index_recorded_as_web_pages_are_read() {
-        let cdx = r#"[["timestamp","original","statuscode","digest","mimetype"],["20230101000000","https://example.org/about/annual-report-2023.pdf","200","A","application/pdf"],["20220101000000","https://example.org/support/driver.zip","200","B","application/zip"],["20210101000000","https://example.org/team/group.jpg","200","C","image/jpeg"],["20090101000000","https://example.org/contact","200","D","text/html"]]"#;
+        let cdx = r#"[["timestamp","original","statuscode","digest","mimetype"],["20230101000000","https://example.org/about/annual-report-2023.pdf","200","A","application/pdf"],["20220101000000","https://example.org/support/driver.zip","200","B","application/zip"],["20210101000000","https://example.org/team/group.jpg","200","C","image/jpeg"],["20200101000000","https://example.org/support/help.chm","200","E","application/vnd.ms-htmlhelp"],["20090101000000","https://example.org/contact","200","D","text/html"],["20080101000000","https://example.org/about.xhtml","200","F","application/xhtml+xml"],["20070101000000","https://example.org/contact.txt","200","G","text/plain"]]"#;
         let contact = r#"<html><body><a href="mailto:info%40example.org">us</a></body></html>"#;
         let transport = crate::test_support::ScriptedTransport::new(vec![
             Ok(response(cdx)),
             Ok(page(200, "text/html", contact)),
+            Ok(page(200, "application/xhtml+xml", contact)),
+            Ok(page(200, "text/plain", "")),
         ]);
         let report = lookup(&transport, "example.org", "scan", NOW).unwrap();
         let urls: Vec<String> = transport
@@ -599,7 +601,11 @@ mod tests {
             .collect();
         assert_eq!(
             &urls[1..],
-            ["https://web.archive.org/web/20090101000000id_/https://example.org/contact"]
+            [
+                "https://web.archive.org/web/20090101000000id_/https://example.org/contact",
+                "https://web.archive.org/web/20080101000000id_/https://example.org/about.xhtml",
+                "https://web.archive.org/web/20070101000000id_/https://example.org/contact.txt",
+            ]
         );
         assert!(
             report
@@ -616,6 +622,10 @@ mod tests {
             ),
             ("https://example.org/support/driver.zip", "application/zip"),
             ("https://example.org/team/group.jpg", "image/jpeg"),
+            (
+                "https://example.org/support/help.chm",
+                "application/vnd.ms-htmlhelp",
+            ),
         ] {
             let entity = report
                 .entities
@@ -629,11 +639,11 @@ mod tests {
         }
         let detail = report.outcome.detail.as_deref().unwrap_or_default();
         assert!(
-            detail.contains("archived content: 1 of 1 page(s) read"),
+            detail.contains("archived content: 3 of 3 page(s) read"),
             "{detail}"
         );
         assert!(
-            detail.ends_with("; 3 capture(s) the index recorded as no web page, not read"),
+            detail.ends_with("; 4 capture(s) the index recorded as no web page, not read"),
             "{detail}"
         );
     }
