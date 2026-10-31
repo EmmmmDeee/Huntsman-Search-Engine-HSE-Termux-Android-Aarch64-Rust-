@@ -302,19 +302,23 @@ pub(super) fn research_mission_response(
         return refused;
     }
     if parsed.has_body {
-        return json_error(400, "send research parameters in the query string, without a body");
+        return json_error(
+            400,
+            "send research parameters in the query string, without a body",
+        );
     }
     let Some(scans) = scans else {
-        return json_error(404, "saved research missions are not enabled on this server");
+        return json_error(
+            404,
+            "saved research missions are not enabled on this server",
+        );
     };
     let query = match parse_lookup_query(parsed.query) {
         Ok(query) => query,
         Err(message) => return json_error(400, message),
     };
     let (kind, selector) = match crate::research_route::plan(&query.selector) {
-        Ok(crate::research_route::ResearchAction::Targeted { kind, selector }) => {
-            (kind, selector)
-        }
+        Ok(crate::research_route::ResearchAction::Targeted { kind, selector }) => (kind, selector),
         Ok(crate::research_route::ResearchAction::AdaptiveWeb { .. }) => {
             return json_error(
                 422,
