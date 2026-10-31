@@ -491,7 +491,11 @@ where
 }
 
 /// Whether a resolver error says the name has no address, in the words glibc, musl, bionic and
-/// the BSDs use, rather than that no server answered. **Pure.**
+/// the BSDs use, rather than that no server answered. `EAI_FAIL` (glibc's and bionic's
+/// "non-recoverable failure in name resolution") is the server refusing or unable to answer
+/// (REFUSED, FORMERR, NOTIMP; a SERVFAIL is `EAI_AGAIN`, "temporary"), never "no such name", so it
+/// is a failure: read as no address, a blocklist that failed would read as "not listed".
+/// **Pure.**
 pub(crate) fn names_no_address(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     !message.contains("temporary")
@@ -501,7 +505,6 @@ pub(crate) fn names_no_address(message: &str) -> bool {
             "does not resolve",
             "nodename nor servname",
             "no such host",
-            "non-recoverable failure in name resolution",
         ]
         .iter()
         .any(|phrase| message.contains(phrase))

@@ -838,7 +838,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "SORBS address blocklist over the system resolver",
+        description: "SORBS address blocklist, which has shut down: never asked, its row says so",
     },
     ReachableModule {
         name: "surbl",
@@ -1194,7 +1194,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     ReachableModule {
         name: "opencellid",
         command: "network cell:MCC:MNC:AREA:CELL",
-        access: "keyed",
+        access: "operator_key",
         network: true,
         category: ModuleCategory::Infrastructure,
         attack_techniques: &["T1590.005"],
@@ -1489,25 +1489,30 @@ pub fn module_of(label: &str) -> &str {
     }
 }
 
-/// Whether a New Scan use case runs modules of `category`, as Spiderfoot's use-case flags choose
-/// modules. `all` and `passive` run every module: passive is a policy on the lookups (it skips an
-/// email's keyed breach lookup and follows no email it finds), not a module set. `footprint` learns
-/// what the target exposes and leaves out the threat, blocklist and reputation sources.
-/// `investigate` suspects the target: the threat sources with the basic footprint (names and
-/// addresses, infrastructure, breach exposure, the target's own data), without the social, search,
-/// web, people and corporate sources that widen a footprint. **Pure.**
+/// Whether a New Scan use case runs `module`, as Spiderfoot's use-case flags choose modules. `all`
+/// runs every module. `footprint` learns what the target exposes and leaves out the threat,
+/// blocklist and reputation sources. `investigate` suspects the target: the threat sources with the
+/// basic footprint (names and addresses, infrastructure, breach exposure, the target's own data),
+/// without the social, search, web, people and corporate sources that widen a footprint.
+/// `passive` asks no keyed breach source (HIBP, `DeHashed`, `OathNet`, stolen.tax, `SeekNow`): no
+/// paid service is told an address, handle, name or number the scan looks up, in any lookup, and no
+/// quota is spent on one; every other source runs, keyless breach exposure included. A use case is
+/// a module set, so every lookup's legs honour it through the scan's [`Selection`]. **Pure.**
 #[must_use]
-pub fn use_case_runs(usecase: &str, category: ModuleCategory) -> bool {
+pub fn use_case_runs(usecase: &str, module: &ReachableModule) -> bool {
     match usecase {
-        "footprint" => category != ModuleCategory::Threat,
+        "footprint" => module.category != ModuleCategory::Threat,
         "investigate" => !matches!(
-            category,
+            module.category,
             ModuleCategory::Social
                 | ModuleCategory::Search
                 | ModuleCategory::Web
                 | ModuleCategory::People
                 | ModuleCategory::Corporate
         ),
+        "passive" => {
+            !(module.category == ModuleCategory::Breach && module.access == "operator_key")
+        }
         _ => true,
     }
 }
@@ -1519,14 +1524,14 @@ pub fn use_case_runs(usecase: &str, category: ModuleCategory) -> bool {
 pub fn use_case_selection(usecase: &str, chosen: &Selection) -> Selection {
     if REACHABLE_MODULES
         .iter()
-        .all(|module| use_case_runs(usecase, module.category))
+        .all(|module| use_case_runs(usecase, module))
     {
         return chosen.clone();
     }
     Selection::only(
         REACHABLE_MODULES
             .iter()
-            .filter(|module| use_case_runs(usecase, module.category) && chosen.runs(module.name))
+            .filter(|module| use_case_runs(usecase, module) && chosen.runs(module.name))
             .map(|module| module.name),
     )
 }
@@ -1785,14 +1790,47 @@ mod tests {
     }
 
     #[test]
+    fn every_module_names_its_access_in_one_spelling() {
+        // A module that needs the operator's key says `operator_key`, the one spelling the use
+        // cases and the key reports read: a second word for it would escape both.
+        for module in REACHABLE_MODULES {
+            assert!(
+                matches!(
+                    module.access,
+                    "keyless" | "operator_key" | "offline" | "local" | "local_sensor" | "mixed"
+                ),
+                "{}: {}",
+                module.name,
+                module.access
+            );
+        }
+    }
+
+    #[test]
     fn use_cases_choose_modules_by_category() {
         let all = Selection::all();
         assert!(use_case_selection("all", &all).is_all());
-        assert!(use_case_selection("passive", &all).is_all());
         for module in REACHABLE_MODULES {
-            assert!(use_case_runs("all", module.category), "{}", module.name);
-            assert!(use_case_runs("passive", module.category), "{}", module.name);
+            assert!(use_case_runs("all", module), "{}", module.name);
         }
+        // Passive: every source but the keyed breach ones, so no paid service is told the target.
+        let passive = use_case_selection("passive", &all);
+        for skipped in [
+            "hibp",
+            "hibp_account",
+            "dehashed",
+            "oathnet",
+            "stolen_tax",
+            "seeknow",
+        ] {
+            assert!(!passive.runs(skipped), "passive leaves out {skipped}");
+        }
+        for module in REACHABLE_MODULES {
+            let keyed_breach =
+                module.category == ModuleCategory::Breach && module.access == "operator_key";
+            assert_eq!(passive.runs(module.name), !keyed_breach, "{}", module.name);
+        }
+        assert!(passive.runs("xposed_or_not") && passive.runs("rdap") && passive.runs("spamhaus"));
         // Footprint: what the target exposes, without the threat, blocklist and reputation sources.
         let footprint = use_case_selection("footprint", &all);
         for runs in [

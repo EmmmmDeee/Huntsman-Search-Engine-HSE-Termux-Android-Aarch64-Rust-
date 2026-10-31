@@ -331,14 +331,15 @@ fn exposure(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, R
     }
 }
 
-/// Run the keyed exposure legs for `selector`, each built only when its key is configured. With
-/// `only_if_reachable`, `None` when no configured leg can search `selector`, so a lookup with no
-/// keys set sends nothing more and prints what it did before.
+/// Run the keyed exposure legs for `selector`, each built only when its key is configured. When
+/// `folded` into another lookup, `None` when no configured leg can search `selector`, so a lookup
+/// with no keys set sends nothing more and prints what it did before; otherwise every leg's row,
+/// however it ended, as a printed run for [`with_exposure`] to fold.
 fn exposure_legs(
     selector: &str,
     (keys, chosen): (&Keys, &Selection),
     now: u64,
-    only_if_reachable: bool,
+    folded: bool,
 ) -> Option<ExposureRun> {
     let client = crate::cli::credentials::hibp_key_loader(keys)
         .load()
@@ -371,10 +372,28 @@ fn exposure_legs(
         dehashed: dehashed_client.as_ref(),
         selection: Some(chosen),
     };
-    if only_if_reachable && !sources.reach(selector) {
+    if folded {
+        folded_legs(sources, selector, now)
+    } else {
+        Some(exposure_cli::run(sources, selector, now))
+    }
+}
+
+/// The keyed legs `sources` holds for `selector`, as a lookup folds them in: `None` when none can
+/// search it, else every leg's row however it ended.
+fn folded_legs(sources: Sources<'_>, selector: &str, now: u64) -> Option<ExposureRun> {
+    if !sources.reach(selector) {
         return None;
     }
-    Some(exposure_cli::run(sources, selector, now))
+    // Folded into a lookup, every leg's row is kept however it ended, so a refused or silent leg
+    // is reported and saved as its row rather than dropped for one `exposure=unavailable` line.
+    Some(match exposure_cli::collect(sources, selector, now) {
+        Ok(report) => ExposureRun::Printed {
+            text: String::new(),
+            report,
+        },
+        Err(why) => ExposureRun::Failed(why),
+    })
 }
 
 /// An email or username lookup with every configured paid breach leg folded in: a keyed source
@@ -413,8 +432,9 @@ fn username(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, R
     let keys = crate::cli::credentials::lookup_keys();
     // `selector` is the operator's ORIGINAL-case handle. `username_cli::run` case-folds it for the
     // report cohort and every case-insensitive profile source, and queries the case-sensitive
-    // Hacker News leg in this exact case. The SeekNow and breach legs match case-insensitively, so
-    // they take the canonical form — unchanged from before this selector carried original case.
+    // Hacker News and Wikipedia legs in this exact case. The SeekNow and breach legs match
+    // case-insensitively, so they take the canonical form — unchanged from before this selector
+    // carried original case.
     let canonical = huntsman_recon::username_cli::canonical_username(selector)
         .unwrap_or_else(|_| selector.to_owned());
     let (run, (seeknow, exposure)) = concurrent::pair(
@@ -545,16 +565,16 @@ fn domain(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Ref
     Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
 }
 
-/// The `WiGLE` network lookup for a BSSID, coordinate or SSID.
+/// The network lookup for a BSSID, SSID, cell site or coordinate: `WiGLE` and `OpenCelliD`.
 fn network(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
-    // Like the other keyed legs, the WiGLE credentials come from the default file or the
-    // environment. Configured, they always run; a lookup that does not ask `wigle` sends nothing
-    // and leaves no WiGLE row, configured or not.
+    // Like the other keyed legs, the WiGLE credentials and the OpenCelliD key come from the
+    // default file or the environment. Each source whose key is set always runs, the other
+    // configured or not; a lookup that does not ask a source sends it nothing and leaves no row.
     let keys = crate::cli::credentials::lookup_keys();
     let transport = transport(&wigle::transport_config(), chosen);
-    let leg = (wigle::configured(&keys) || !chosen.is_all())
-        .then_some((&transport as &dyn Transport, &keys));
-    let (text, report) = source_report(huntsman_recon::network_cli::run(leg, selector, now))?;
+    let (text, report) = source_report(huntsman_recon::network_cli::run(
+        &transport, &keys, selector, now,
+    ))?;
     Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
 }
 
@@ -988,6 +1008,51 @@ mod tests {
             found.policy.default_source,
             EMAIL_EXPOSURE_POLICY.default_source
         );
+    }
+
+    /// A breach leg folded into a lookup that is refused before it sends is reported as its row,
+    /// never dropped for one `exposure=unavailable` line, so the report and its ledger show the
+    /// source was configured and did not answer.
+    #[test]
+    fn a_folded_breach_leg_that_did_not_answer_is_kept_as_its_row() {
+        struct Refusing;
+        impl Transport for Refusing {
+            fn send(
+                &self,
+                _: &huntsman_recon::http::Request,
+            ) -> Result<huntsman_recon::http::Response, huntsman_recon::http::TransportFailure>
+            {
+                Err(huntsman_recon::http::TransportFailure {
+                    kind: huntsman_recon::source_outcome::SourceOutcomeKind::ConnectFailure,
+                    detail: "egress-policy: destination is not publicly routable".into(),
+                    blocked: true,
+                })
+            }
+        }
+        let keys = Keys::parse(&format!(
+            "{}=st-test-key-0123456789abcdef\n",
+            stolen_tax::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"));
+        let refusing = Refusing;
+        let sources = Sources {
+            stolen_tax: Some((&refusing, &keys)),
+            ..Sources::default()
+        };
+        let exposure = folded_legs(sources, "ada@example.org", 1);
+        let own = EmailRun::Printed {
+            text: String::new(),
+            report: huntsman_recon::email_cli::Report::default(),
+        };
+        let found = compose_email(own, None, exposure)
+            .unwrap_or_else(|refused| panic!("refused: {}", refused.message()));
+        let row = found
+            .outcomes
+            .iter()
+            .find(|o| o.module == exposure_cli::STOLEN_TAX_SOURCE)
+            .unwrap_or_else(|| panic!("the refused leg's row was dropped"));
+        assert!(!row.kind.is_accepted());
+        assert!(!found.text.contains("exposure=unavailable"));
     }
 
     /// With no leg that answered, the lookup is refused as before, with its own reason and status.

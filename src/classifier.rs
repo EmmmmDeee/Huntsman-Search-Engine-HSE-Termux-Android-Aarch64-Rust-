@@ -486,6 +486,13 @@ fn decimal_degree(raw: &str, max_int_digits: usize, limit: f64) -> Option<&str> 
 mod tests {
     use super::*;
 
+    /// A URL on an IPv4 address is a URL, though its host is no domain.
+    #[test]
+    fn a_url_on_an_address_is_a_url() {
+        let classified = classify("http://45.131.135.227/sorry/index");
+        assert_eq!(classified.kind, EntityKind::Url);
+    }
+
     #[test]
     fn extraction_keeps_only_domains_under_a_delegated_tld() {
         let text = "if (navigator.useragent && document.cookie.split) line.trim(); \

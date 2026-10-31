@@ -184,19 +184,80 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
     au_national_key(&compact)
 }
 
+/// The one canonical form of a phone number, which every phone value is read by (an entity, a
+/// classified token, a selector, `phone_intl::canonicalize`): an explicit international number or
+/// a recognised Australian national number in E.164, else `None`. **Pure.**
+///
+/// - The number starts at its first digit or `+`, so `tel:+1…` and `(+44)…` are read as written.
+/// - A `00` or Australian `0011` international prefix is a `+` (`0044 20…`, `0011 44 20…` are
+///   `+4420…`).
+/// - A number with digits after an extension marker (`x12`, `ext 22`, `;ext=12`, `#12`) is
+///   refused: dropping the marker would join the extension onto the number.
+/// - A `+61` number is Australian or none, keeping no trunk zero (`+61 (0)4…` is `+614…`).
+/// - A `+1` number written after an international prefix has the North American plan's ten
+///   digits after the `1`. Any `+` number holds 10 to 15 digits, its country code not starting
+///   with `0`, and one `+` only. The country of a bare non-Australian national number is never
+///   guessed.
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
-    let compact: String = raw
+    let number =
+        raw.trim_start_matches(|character: char| !(character.is_ascii_digit() || character == '+'));
+    if has_digits_after_a_marker(number) {
+        return None;
+    }
+    // Every `+` is kept, so a second one (two numbers run together) is refused below.
+    let dialled: String = number
         .chars()
         .filter(|character| character.is_ascii_digit() || *character == '+')
         .collect();
-    if compact.starts_with("+61") {
-        return normalise_au_phone(&compact);
+    let candidate = if dialled.starts_with('+') {
+        dialled
+    } else if let Some(international) = INTERNATIONAL_PREFIXES
+        .iter()
+        .find_map(|prefix| dialled.strip_prefix(prefix))
+    {
+        let candidate = format!("+{international}");
+        // A run of digits that merely starts `00` (a zero-padded identifier) is no North
+        // American number unless it has that plan's ten digits after the `1`. An explicit `+1`
+        // number is left to the plan's own check, which says what it breaks.
+        if candidate.starts_with("+1") && candidate.len() != NANP_E164_LEN {
+            return None;
+        }
+        candidate
+    } else {
+        return normalise_au_phone(number);
+    };
+    if candidate.starts_with("+61") {
+        return normalise_au_phone(&candidate);
     }
-    if compact.starts_with('+') {
-        return phone_e164_error(&compact).is_none().then_some(compact);
+    phone_e164_error(&candidate).is_none().then_some(candidate)
+}
+
+/// The international dialling prefixes a number may be written after in place of `+`: Australia's
+/// `0011` first, so its `11` is never read as a country code, then the common `00`.
+const INTERNATIONAL_PREFIXES: [&str; 2] = ["0011", "00"];
+
+/// A North American number in E.164: `+`, `1` and ten digits.
+const NANP_E164_LEN: usize = 12;
+
+/// Whether a letter, `#`, `;` or `,` stands between two of `raw`'s digits: an extension, a
+/// dialling pause or a vanity word, after which the remaining digits are not the number's own.
+/// Words after the last digit (`(office)`) are not. **Pure.**
+fn has_digits_after_a_marker(raw: &str) -> bool {
+    let mut seen_digit = false;
+    let mut marker = false;
+    for character in raw.chars() {
+        if character.is_ascii_digit() {
+            if marker {
+                return true;
+            }
+            seen_digit = true;
+        } else if seen_digit && (character.is_alphabetic() || matches!(character, '#' | ';' | ','))
+        {
+            marker = true;
+        }
     }
-    normalise_au_phone(&compact)
+    false
 }
 
 /// Shape defect in an email local part. One rule shared by
@@ -243,6 +304,10 @@ pub fn is_iana_tld(label: &str) -> bool {
     !upper.is_empty() && iana_tlds().binary_search(&upper.as_str()).is_ok()
 }
 
+/// `raw` as a domain name: lower-cased, outer dots trimmed, two or more valid labels. A top-level
+/// label is never all digits (RFC 3696 §2), so a dotted IPv4 address (`93.184.216.34`, a
+/// website's host) is no domain: a domain lookup of it would ask certificate logs, archives and
+/// DNS about an address while the address's own lookup never ran.
 #[must_use]
 pub fn canonical_domain(raw: &str) -> Option<String> {
     let domain = raw.trim().trim_matches('.').to_ascii_lowercase();
@@ -250,7 +315,20 @@ pub fn canonical_domain(raw: &str) -> Option<String> {
         return None;
     }
     let labels: Vec<&str> = domain.split('.').collect();
-    if labels.len() < 2 || !labels.iter().all(|label| is_domain_label(label)) {
+    if labels.len() < 2
+        || !labels.iter().all(|label| is_domain_label(label))
+        || labels
+            .last()
+            .is_some_and(|tld| tld.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    // No top-level domain is all digits, which is how a dotted-quad address is told from a name
+    // (RFC 1123 section 2.1, RFC 3696 section 2): `10.0.0.5` is an address, never a domain.
+    if labels
+        .last()
+        .is_some_and(|tld| tld.bytes().all(|byte| byte.is_ascii_digit()))
+    {
         return None;
     }
     Some(domain)
@@ -405,13 +483,18 @@ pub(crate) fn record_tag(raw: &str) -> Option<(String, &str)> {
 }
 
 /// The mailboxes of a comma-separated report URI list (`rua`, `ruf`, TLS-RPT's `rua`): each
-/// `mailto:` entry without its `!size` limit, kept when it holds an `@` and is at least five
-/// bytes long. Other schemes are skipped.
+/// case-insensitive `mailto:` scheme without its `!size` limit, kept when it holds an `@`
+/// and is at least five bytes long. Other schemes are skipped; mailbox case is preserved.
 pub(crate) fn parse_mailto_list(raw: &str) -> Vec<String> {
     raw.split(',')
         .filter_map(|entry| {
             let trimmed = entry.trim();
-            let addr = trimmed.strip_prefix("mailto:")?;
+            // RFC 3986: only the URI scheme is case-insensitive, not the mailbox.
+            let scheme = trimmed.get(..7)?;
+            if !scheme.eq_ignore_ascii_case("mailto:") {
+                return None;
+            }
+            let addr = trimmed.get(7..)?;
             let addr = addr.split('!').next().unwrap_or(addr).trim();
             if addr.contains('@') && addr.len() >= 5 {
                 Some(addr.to_string())
@@ -497,6 +580,21 @@ mod form_tests {
     }
 
     #[test]
+    fn report_mailto_scheme_is_case_insensitive_without_changing_address_case() {
+        assert_eq!(
+            parse_mailto_list(
+                "MAILTO:Reports@Example.org!10m, MaIlTo:Ops@Example.org, https://example.org/r, mailto:valid@example.org"
+            ),
+            [
+                "Reports@Example.org",
+                "Ops@Example.org",
+                "valid@example.org"
+            ]
+        );
+        assert!(parse_mailto_list("mailtox:wrong@example.org").is_empty());
+    }
+
+    #[test]
     fn record_tag_parser_normalises_name_and_trims_value() {
         assert_eq!(record_tag(" Pct = 75 "), Some(("pct".to_string(), "75")));
         assert_eq!(record_tag("missing"), None);
@@ -549,7 +647,18 @@ mod tests {
         assert!(canonical_domain("bad-.example").is_none());
         assert!(canonical_domain("bad..example").is_none());
         assert!(canonical_domain("bad_example.com").is_none());
+        // A dotted quad, or any name whose last label is all digits, is no domain.
+        assert!(canonical_domain("10.0.0.5").is_none());
+        assert!(canonical_domain("203.0.113.9.").is_none());
+        assert!(canonical_domain("example.123").is_none());
+        assert!(canonical_domain("123.example.com").is_some());
+        assert!(canonical_domain("9.9.9.9.in-addr.arpa").is_some());
         assert!(canonical_domain("example.café").is_none());
+        // A dotted IPv4 address is no domain: no top-level label is all digits.
+        assert!(canonical_domain("93.184.216.34").is_none());
+        assert!(canonical_domain("example.123").is_none());
+        assert!(canonical_domain("1.2.3.example").is_some());
+        assert!(canonical_domain("0412345678.com.au").is_some());
     }
 
     #[test]
@@ -685,11 +794,47 @@ mod au_phone_key_contract {
         assert_eq!(canonical_phone("0412 345 678"), want);
     }
 
+    /// Every way a number reaches a key gives the key a scan of it gives: a `00` prefix is a
+    /// `+`, and an extension is never joined onto the number.
+    #[test]
+    fn a_phone_has_one_key_however_it_is_written() {
+        let want = Some("+442079460958".to_string());
+        for written in [
+            "+44 20 7946 0958",
+            "0044 20 7946 0958",
+            "tel:+44-20-7946-0958",
+        ] {
+            assert_eq!(canonical_phone(written), want, "{written}");
+        }
+        for extended in [
+            "+1 415 555 2671 ext 22",
+            "+44 20 7946 0958 x12",
+            "0044 20 7946 0958;ext=3",
+        ] {
+            assert_eq!(canonical_phone(extended), None, "{extended}");
+        }
+        assert_eq!(
+            canonical_phone("+1 415 555 2671 (office)").as_deref(),
+            Some("+14155552671")
+        );
+        assert_eq!(canonical_phone("0011 44 20 7946 0958"), want);
+        // Two numbers run together, and a zero-padded identifier, are no number.
+        assert_eq!(canonical_phone("+44 +1 415 555 2671"), None);
+        assert_eq!(canonical_phone("001234567890"), None);
+        // An explicit `+1` number of the wrong length is still read, so the `phone` command's
+        // own plan check can say what it breaks.
+        assert_eq!(
+            canonical_phone("+1202555010").as_deref(),
+            Some("+1202555010")
+        );
+    }
+
     #[test]
     fn au_country_code_requires_au_national_length() {
         assert_eq!(normalise_au_phone("+61 4123 4567 8901"), None);
         assert_eq!(normalise_au_phone("+61 9 1234 5678"), None);
         assert_eq!(canonical_phone("+61 4123 4567 8901"), None);
+        assert_eq!(canonical_phone("0061 4123 4567 8901"), None);
         assert_eq!(
             normalise_au_phone("+61 1300 123 456").as_deref(),
             Some("+611300123456")

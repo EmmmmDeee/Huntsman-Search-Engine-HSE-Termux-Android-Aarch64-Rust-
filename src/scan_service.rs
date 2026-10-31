@@ -208,11 +208,6 @@ pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> 
     })
 }
 
-/// The breach sources the `exposure` lookup runs. An email scan runs `exposure` after `email`
-/// unless the `email` lookup already ran one of them, so a keyed breach source is never skipped
-/// and never asked twice.
-const EXPOSURE_SOURCES: [&str; 4] = ["hibp", "stolen_tax", "oathnet", "dehashed"];
-
 fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> {
     let usecase = if options.usecase.trim().is_empty() {
         "all".to_owned()
@@ -333,7 +328,7 @@ struct ScanCollector<'a> {
     text: String,
     ran: usize,
     errors: usize,
-    breach_checked: BTreeSet<String>,
+    breach: lookup_modules::BreachPasses,
     /// How many entities and source outcomes the last checkpoint saved, so a wave that added
     /// nothing writes nothing.
     checkpointed: (usize, usize),
@@ -415,7 +410,7 @@ impl<'a> ScanCollector<'a> {
             text: String::new(),
             ran: 0,
             errors: 0,
-            breach_checked: BTreeSet::new(),
+            breach: lookup_modules::BreachPasses::default(),
             checkpointed: (0, 0),
         }
     }
@@ -425,16 +420,8 @@ impl ScanCollector<'_> {
     /// Reduce a completed lookup identically for sequential and graph dispatch.
     /// This does not modify source error counts, which depend on how the lookup ran.
     fn finish_lookup(&mut self, target: &CrawlTarget, found: LookupOutput) -> Step {
-        if target.kind == ScanKind::Email
-            && found
-                .outcomes
-                .iter()
-                .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
-        {
-            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
-                self.breach_checked.insert(selector);
-            }
-        }
+        self.breach
+            .record(target.kind, &target.selector, &found.outcomes);
         if !found.text.is_empty() {
             if !self.text.is_empty() {
                 self.text.push('\n');
@@ -535,7 +522,7 @@ impl SelectorCollector for ScanCollector<'_> {
             entities: Vec::new(),
             outcomes: Vec::new(),
         };
-        if target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector) {
+        if self.breach.covered(target.kind, &target.selector) {
             return skip;
         }
         if !lookup_modules::asks_any(target.kind, self.chosen) {
@@ -615,7 +602,7 @@ impl SelectorCollector for ScanCollector<'_> {
 
     fn may_batch(&self, selected: &[CrawlTarget], next: &CrawlTarget) -> bool {
         let needs_sequential = |target: &CrawlTarget| {
-            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+            self.breach.covered(target.kind, &target.selector)
                 || !lookup_modules::asks_any(target.kind, self.chosen)
         };
         if needs_sequential(next) || selected.iter().any(needs_sequential) {
@@ -641,7 +628,7 @@ impl SelectorCollector for ScanCollector<'_> {
                 })
         });
         let has_stateful_or_skipped_target = targets.iter().any(|target| {
-            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+            self.breach.covered(target.kind, &target.selector)
                 || !lookup_modules::asks_any(target.kind, self.chosen)
         });
         if targets.len() < 2 || has_email_exposure_pair || has_stateful_or_skipped_target {
@@ -1447,12 +1434,14 @@ impl ScanService {
                 return;
             }
         };
-        let passive = options.usecase == "passive";
+        // An email's breach pass runs when the scan's modules ask a breach source, the one rule
+        // every lookup's own breach legs follow: a passive scan asks none.
+        let exposes = lookup_modules::asks_any(ScanKind::Exposure, &chosen);
         let mut targets = vec![CrawlTarget {
             kind: plan.kind,
             selector: plan.target.clone(),
         }];
-        if plan.kind == ScanKind::Email && !passive {
+        if plan.kind == ScanKind::Email && exposes {
             if let Some(selector) = canonical_selector(ScanKind::Exposure, &plan.target) {
                 targets.push(CrawlTarget {
                     kind: ScanKind::Exposure,
@@ -1462,7 +1451,7 @@ impl ScanService {
         }
         let policy = RecursionPolicy {
             max_generations: options.depth,
-            expose_emails: !passive,
+            expose_emails: exposes,
             ..RecursionPolicy::default()
         };
         let mut collector = ScanCollector::new(self, id, plan, &options, &chosen);
@@ -2469,6 +2458,97 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Passive asks no keyed breach source in any lookup, so no paid service is told the target:
+    /// not by an address's or an email's own lookup, and not by a breach pass beside it.
+    #[test]
+    fn passive_asks_no_keyed_breach_source_in_any_lookup() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "passive",
+            Arc::new(move |kind: ScanKind, selector: &str, chosen: &Selection| {
+                let asked: Vec<&str> = ["rdap", "spamhaus", "github_user", "oathnet"]
+                    .into_iter()
+                    .filter(|module| chosen.runs(module))
+                    .collect();
+                seen.lock().unwrap().push(format!(
+                    "{} {selector} asks {}",
+                    kind.command(),
+                    asked.join(",")
+                ));
+                Ok(found(kind, selector))
+            }),
+        );
+        let scan = |usecase: &str| {
+            service.run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                options: ScanOptions {
+                    usecase: usecase.into(),
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+        };
+        let asked = || {
+            let asked = calls.lock().unwrap().clone();
+            calls.lock().unwrap().clear();
+            asked
+        };
+        // Passive asks no keyed breach source in any lookup: OathNet is never told the target.
+        scan("passive").unwrap();
+        assert_eq!(asked(), ["ip 1.1.1.1 asks rdap,spamhaus,github_user"]);
+        // An email's own lookup asks no breach source under Passive either, and no breach pass
+        // follows it, where All runs both.
+        let email = |usecase: &str| {
+            service.run(&ScanRequest {
+                target: "ada@example.com".into(),
+                options: ScanOptions {
+                    usecase: usecase.into(),
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+        };
+        email("all").unwrap();
+        assert_eq!(
+            asked(),
+            [
+                "email ada@example.com asks rdap,spamhaus,github_user,oathnet",
+                "exposure ada@example.com asks rdap,spamhaus,github_user,oathnet",
+            ]
+        );
+        let passive = email("passive").unwrap();
+        assert_eq!(
+            asked(),
+            ["email ada@example.com asks rdap,spamhaus,github_user"]
+        );
+        // No breach pass is even queued for it, so its log names no breach lookup it skipped.
+        let log = service.store().log(&passive.id).unwrap();
+        assert!(
+            !log.iter().any(|entry| entry
+                .message
+                .starts_with("no chosen module looks up exposure")),
+            "a passive scan queued a breach pass"
+        );
+        // A breach scan under Passive has nothing to ask, so it is refused by name.
+        let refused = service
+            .run(&ScanRequest {
+                target: "ada@example.com".into(),
+                kind: Some("exposure".into()),
+                options: ScanOptions {
+                    usecase: "passive".into(),
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&refused, ServiceError::BadRequest(why) if why.starts_with("the passive use case runs none of the modules the exposure lookup asks")),
+            "{refused:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_scan_asks_only_the_modules_chosen_and_skips_lookups_that_ask_none() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2758,8 +2838,12 @@ mod tests {
                 let seen = Arc::clone(&calls);
                 move |kind: ScanKind, _selector: &str, _: &Selection| {
                     seen.lock().unwrap().push(kind.command());
+                    // The row the HIBP leg writes, `hibp_account`, is the `hibp` module's.
                     Ok(LookupOutput {
-                        outcomes: vec![SourceExecutionOutcome::valid_zero("hibp", 1)],
+                        outcomes: vec![SourceExecutionOutcome::valid_zero(
+                            crate::exposure_cli::SOURCE,
+                            1,
+                        )],
                         ..LookupOutput::default()
                     })
                 }

@@ -396,12 +396,41 @@ pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
     }
 }
 
+/// The lookup a found element of this type is the target of, for New Scan of it: the one
+/// [`scan_kind`] names for a target of the type, else the one for the types Spiderfoot gives the
+/// same values found beside a target (a parent, affiliate, co-hosted, look-alike or unresolved
+/// domain, an affiliate's address, a member block or AS, a role or affiliate e-mail address, a
+/// BSSID). A coordinate pair is the network lookup's area search, as detection routes one. `None`
+/// for a type whose value no lookup takes. **Pure.**
+#[must_use]
+pub fn pivot_kind(element_type: &str) -> Option<ScanKind> {
+    scan_kind(element_type).or(match element_type {
+        "DOMAIN_NAME"
+        | "DOMAIN_NAME_PARENT"
+        | "AFFILIATE_INTERNET_NAME"
+        | "AFFILIATE_DOMAIN_NAME"
+        | "CO_HOSTED_SITE"
+        | "CO_HOSTED_SITE_DOMAIN"
+        | "SIMILARDOMAIN"
+        | "INTERNET_NAME_UNRESOLVED"
+        | "AFFILIATE_INTERNET_NAME_UNRESOLVED" => Some(ScanKind::Domain),
+        "AFFILIATE_IPADDR" | "AFFILIATE_IPV6_ADDRESS" => Some(ScanKind::Ip),
+        "NETBLOCK_MEMBER" | "NETBLOCKV6_MEMBER" => Some(ScanKind::Netblock),
+        "BGP_AS_MEMBER" => Some(ScanKind::Asn),
+        "EMAILADDR_GENERIC" | "AFFILIATE_EMAILADDR" => Some(ScanKind::Email),
+        "HSE_MAC_ADDRESS" | "PHYSICAL_COORDINATES" => Some(ScanKind::Network),
+        _ => None,
+    })
+}
+
 /// The Spiderfoot type of a canonical target of `kind`: the inverse of [`scan_kind`] for every
 /// kind a saved scan can carry.
 #[must_use]
 pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
     match kind {
         ScanKind::People => "HUMAN_NAME",
+        // The breach lookup of a handle (an address takes precedence) is of a username.
+        ScanKind::Exposure if crate::canonical::canonical_email(canonical).is_none() => "USERNAME",
         ScanKind::Email | ScanKind::Exposure => "EMAILADDR",
         ScanKind::Username => "USERNAME",
         ScanKind::Phone => "PHONE_NUMBER",
@@ -899,6 +928,68 @@ mod tests {
             "PHYSICAL_COORDINATES"
         );
         assert_eq!(scan_kind("PHYSICAL_COORDINATES"), None);
+        // The breach lookup of a handle is of a username, as an address's is of an address.
+        assert_eq!(target_type(ScanKind::Exposure, "jane.doe"), "USERNAME");
+        assert_eq!(
+            target_type(ScanKind::Exposure, "jane.doe@example.com"),
+            "EMAILADDR"
+        );
+    }
+
+    #[test]
+    fn a_found_value_is_the_target_of_the_lookup_of_its_kind_of_value() {
+        // Every target type keeps its lookup, and the types Spiderfoot gives the same values found
+        // beside a target name the same lookup: a co-hosted or affiliate domain is a domain, a
+        // member block a block, a member AS an AS, a role address an address.
+        for kind in sf_types::all() {
+            if let Some(scanned) = scan_kind(kind.code) {
+                assert_eq!(pivot_kind(kind.code), Some(scanned), "{}", kind.code);
+            }
+        }
+        for (types, lookup) in [
+            (
+                &[
+                    "DOMAIN_NAME",
+                    "DOMAIN_NAME_PARENT",
+                    "AFFILIATE_INTERNET_NAME",
+                    "AFFILIATE_DOMAIN_NAME",
+                    "CO_HOSTED_SITE",
+                    "CO_HOSTED_SITE_DOMAIN",
+                    "SIMILARDOMAIN",
+                    "INTERNET_NAME_UNRESOLVED",
+                    "AFFILIATE_INTERNET_NAME_UNRESOLVED",
+                ][..],
+                ScanKind::Domain,
+            ),
+            (
+                &["AFFILIATE_IPADDR", "AFFILIATE_IPV6_ADDRESS"][..],
+                ScanKind::Ip,
+            ),
+            (
+                &["NETBLOCK_MEMBER", "NETBLOCKV6_MEMBER"][..],
+                ScanKind::Netblock,
+            ),
+            (&["BGP_AS_MEMBER"][..], ScanKind::Asn),
+            (
+                &["EMAILADDR_GENERIC", "AFFILIATE_EMAILADDR"][..],
+                ScanKind::Email,
+            ),
+            (
+                &["HSE_MAC_ADDRESS", "PHYSICAL_COORDINATES"][..],
+                ScanKind::Network,
+            ),
+        ] {
+            for code in types {
+                assert!(
+                    sf_types::find(code).is_some(),
+                    "{code} is no Spiderfoot type"
+                );
+                assert_eq!(pivot_kind(code), Some(lookup), "{code}");
+            }
+        }
+        for code in ["LINKED_URL_EXTERNAL", "PROVIDER_HOSTING", "HSE_WIFI_SSID"] {
+            assert_eq!(pivot_kind(code), None, "{code}");
+        }
     }
 
     #[test]

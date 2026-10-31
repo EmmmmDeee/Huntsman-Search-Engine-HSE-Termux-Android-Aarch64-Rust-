@@ -68,28 +68,17 @@ fn is_numeric_handle(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
 }
 
+/// Whether a handle (a username, or an address by its local part) names a role rather than
+/// someone: a role mailbox by [`crate::value_syntax::is_role_localpart`], the one list the crawl's
+/// mailbox rule reads too, or a handle that is empty or only digits. Two such handles shared by
+/// unrelated organisations (`abuse@`, `hostmaster@`) are no alias of one persona.
 #[must_use]
 pub fn is_generic_handle(value: &str) -> bool {
-    let canonical = canonical_handle(value)
-        .or_else(|| extract_email_localpart(value).and_then(canonical_handle))
-        .unwrap_or_else(|| value.trim().to_ascii_lowercase());
-    matches!(
-        canonical.as_str(),
-        "admin"
-            | "contact"
-            | "hello"
-            | "help"
-            | "info"
-            | "mail"
-            | "noreply"
-            | "office"
-            | "postmaster"
-            | "sales"
-            | "security"
-            | "support"
-            | "team"
-            | "webmaster"
-    ) || canonical.is_empty()
+    let handle = value.trim().trim_start_matches('@');
+    let local = extract_email_localpart(handle).unwrap_or(handle);
+    let canonical = canonical_handle(local).unwrap_or_else(|| local.to_ascii_lowercase());
+    crate::value_syntax::is_role_localpart(local)
+        || canonical.is_empty()
         || is_numeric_handle(&canonical)
 }
 
@@ -114,12 +103,20 @@ pub fn basis_kind(basis: &str) -> &'static str {
 }
 
 fn persona_key(entity: &Entity) -> Option<String> {
-    match entity.kind {
-        EntityKind::Email => extract_email_localpart(&entity.value).and_then(canonical_handle),
-        EntityKind::Username => canonical_handle(&entity.value),
-        _ => None,
+    // A guess read off another value keys nothing: an alias from it would bind that value to
+    // itself.
+    if entity.is_offline_reading() {
+        return None;
     }
-    .filter(|key| !is_generic_handle(key))
+    let handle = match entity.kind {
+        EntityKind::Email => extract_email_localpart(&entity.value)?,
+        EntityKind::Username => entity.value.as_str(),
+        _ => return None,
+    };
+    if is_generic_handle(handle) {
+        return None;
+    }
+    canonical_handle(handle)
 }
 
 fn person_key(value: &str) -> String {
@@ -154,7 +151,7 @@ fn person_fingerprints(value: &str) -> BTreeSet<String> {
 
 fn coreference_key(entity: &Entity) -> Option<String> {
     match entity.kind {
-        EntityKind::Person => {
+        EntityKind::Person if !entity.is_offline_reading() => {
             let key = person_key(&entity.value);
             (!key.is_empty()).then_some(key)
         }
@@ -872,6 +869,22 @@ mod tests {
         assert_eq!(hosted[0].to_uid, www.uid);
     }
 
+    /// A URL on an address is hosted on that address, as one on a name is on the name: the
+    /// address rule gives both the URL's host and the address entity's value one written form.
+    #[test]
+    fn a_url_on_an_address_is_hosted_on_that_address() {
+        let address = ent(EntityKind::IpAddress, "45.131.135.227", 0.8);
+        let v6 = ent(EntityKind::IpAddress, "2001:DB8::1", 0.8);
+        let url = ent(EntityKind::Url, "http://45.131.135.227/sorry/index", 0.6);
+        let rels = derive_structural(&[address.clone(), v6, url.clone()], "s");
+        let hosted: Vec<_> = rels
+            .iter()
+            .filter(|relation| relation.kind == RelationKind::HostedOn)
+            .map(|relation| (relation.from_uid.as_str(), relation.to_uid.as_str()))
+            .collect();
+        assert_eq!(hosted, [(url.uid.as_str(), address.uid.as_str())]);
+    }
+
     #[test]
     fn resolution_and_registration_link_present_entities_only() {
         let mut domain = ent(EntityKind::Domain, "example.com", 0.92);
@@ -1041,6 +1054,133 @@ mod tests {
             "s",
         );
         assert_eq!(alias.len(), 3);
+    }
+
+    /// Role mailboxes at unrelated organisations share a local part but no persona, whichever
+    /// role they name (the crawl's mailbox rule reads the same list), so no alias joins them or a
+    /// username of the same word; two personal addresses with one local part still alias.
+    #[test]
+    fn role_handles_at_unrelated_organisations_are_no_alias() {
+        for role in [
+            "abuse",
+            "hostmaster",
+            "billing",
+            "noc",
+            "tech",
+            "privacy",
+            "support",
+        ] {
+            let aliases = derive_handles(
+                &[
+                    ent(EntityKind::Email, &format!("{role}@registrar.example"), 0.8),
+                    ent(EntityKind::Email, &format!("{role}@hosting.example"), 0.8),
+                    ent(EntityKind::Username, role, 0.6),
+                ],
+                "s",
+            );
+            assert!(aliases.is_empty(), "{role}: {aliases:?}");
+            assert!(is_generic_handle(role), "{role}");
+        }
+        // A role word a separator sets apart in a local part is a role too, as the crawl's
+        // mailbox rule reads it.
+        let aliases = derive_handles(
+            &[
+                ent(EntityKind::Email, "awsdns-hostmaster@amazon.example", 0.8),
+                ent(
+                    EntityKind::Email,
+                    "awsdns-hostmaster@registrar.example",
+                    0.8,
+                ),
+            ],
+            "s",
+        );
+        assert!(aliases.is_empty(), "{aliases:?}");
+        let personal = derive_handles(
+            &[
+                ent(EntityKind::Email, "ada.l@acme.example", 0.8),
+                ent(EntityKind::Email, "adal@other.example", 0.8),
+            ],
+            "s",
+        );
+        assert_eq!(personal.len(), 1, "{personal:?}");
+        assert!(!is_generic_handle("ada.l@acme.example"));
+    }
+
+    /// An address a profile publishes is something its source observed, though read from free
+    /// text, so it still aliases the account; only a guess read off another value keys nothing.
+    #[test]
+    fn a_published_address_aliases_its_account_and_a_guess_keys_nothing() {
+        let observed = |kind: EntityKind, value: &str, source: &str| {
+            let mut entity = ent(kind, value, 0.6);
+            entity.add_evidence(evidence(source, "seen").inferred());
+            entity
+        };
+        let mut account = ent(EntityKind::Username, "alice_w", 0.9);
+        account.add_evidence(evidence("mastodon_user", "the account"));
+        let published = observed(EntityKind::Email, "alice_w@proton.me", "mastodon_user");
+        assert_eq!(derive_handles(&[account.clone(), published], "s").len(), 1);
+        let guessed = observed(EntityKind::Email, "alice_w@proton.me", "email_parse");
+        assert!(guessed.is_offline_reading());
+        assert!(derive_handles(&[account, guessed], "s").is_empty());
+    }
+
+    /// The address or handle the operator asked about is that value itself, not a guess read off
+    /// another one, so it keys its handle before any source has observed it, as an observed one
+    /// does: it aliases an account a source found under the same handle.
+    #[test]
+    fn the_operators_own_selector_keys_its_handle_before_any_source_sees_it() {
+        let seed = |kind: EntityKind, value: &str| {
+            let mut entity = ent(kind, value, 0.99);
+            entity.add_evidence(evidence("seed", "the selector the lookup was asked"));
+            entity
+        };
+        let mut account = ent(EntityKind::Username, "alice_w", 0.9);
+        account.add_evidence(evidence("mastodon_user", "the account"));
+        let mut published = ent(EntityKind::Email, "alice_w@proton.me", 0.6);
+        published.add_evidence(evidence("mastodon_user", "the bio"));
+        for (selector, observed) in [
+            (seed(EntityKind::Email, "alice_w@proton.me"), account),
+            (seed(EntityKind::Username, "alice_w"), published),
+        ] {
+            assert!(!selector.is_offline_reading(), "{}", selector.value);
+            assert_eq!(
+                derive_handles(&[selector.clone(), observed], "s").len(),
+                1,
+                "{}",
+                selector.value
+            );
+        }
+    }
+
+    /// A name guessed from another value keys no coreference, as a guessed handle keys no alias;
+    /// the same name observed by a source keys one, and so does a guess some source also observed:
+    /// one observation is enough for the value to be more than a reading of another.
+    #[test]
+    fn a_guessed_name_keys_nothing_and_an_observed_or_corroborated_one_keys() {
+        let with = |kind: EntityKind, value: &str, sources: &[&str]| {
+            let mut entity = ent(kind, value, 0.7);
+            for source in sources {
+                entity.add_evidence(evidence(source, "seen"));
+            }
+            entity
+        };
+        let address = with(EntityKind::Email, "jsmith@gmail.com", &["hibp"]);
+        let guessed = with(EntityKind::Person, "J Smith", &["email_parse"]);
+        assert!(guessed.is_offline_reading());
+        assert!(derive_coreferences(&[guessed, address.clone()], &[], "s").is_empty());
+        for sources in [&["github_user"][..], &["email_parse", "github_user"][..]] {
+            let named = with(EntityKind::Person, "J Smith", sources);
+            assert!(!named.is_offline_reading(), "{sources:?}");
+            let linked = derive_coreferences(&[named, address.clone()], &[], "s");
+            assert_eq!(linked.len(), 1, "{sources:?}: {linked:?}");
+            assert_eq!(linked[0].kind, RelationKind::IdentifiedBy);
+        }
+        let account = with(
+            EntityKind::Username,
+            "jsmith",
+            &["email_parse", "github_user"],
+        );
+        assert_eq!(derive_handles(&[account, address], "s").len(), 1);
     }
 
     /// Every relation that holds only because its entities share a handle rests on that handle:

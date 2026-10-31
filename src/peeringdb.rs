@@ -29,13 +29,12 @@ use std::fmt::Write as _;
 
 use serde::Deserialize;
 
-use crate::canonical::{canonical_domain, canonical_ip};
+use crate::canonical::canonical_ip;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{DEFAULT_USER_AGENT, Request, Transport};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::value_syntax::host_only;
 
 pub const SOURCE: &str = "peeringdb";
 const PUBLIC_BASE: &str = "https://www.peeringdb.com/api";
@@ -351,8 +350,8 @@ fn build_net_entities(net: &Net, asn: u32, scan_id: &str, entities: &mut Vec<Ent
     }
 
     if let Some(website) = trimmed(net.website.as_deref()) {
-        if let Some(domain) = canonical_domain(host_only(website)) {
-            let mut entity = Entity::new(EntityKind::Domain, domain, NET_CONF, scan_id);
+        if let Some((kind, host)) = crate::entity::link_host(website) {
+            let mut entity = Entity::new(kind, host, NET_CONF, scan_id);
             entity.tag(SOURCE);
             entity.tag("peeringdb");
             entity.tag("peeringdb-website");

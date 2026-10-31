@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{
-    canonical_coordinates, canonical_domain, canonical_email, canonical_handle, canonical_name,
-    canonical_phone, canonical_provenance_family, canonical_url, canonical_whitespace,
+    canonical_coordinates, canonical_domain, canonical_email, canonical_handle,
+    canonical_ip_literal, canonical_name, canonical_phone, canonical_provenance_family,
+    canonical_url, canonical_whitespace,
 };
 use crate::clock;
 use crate::confidence::{Classification, VerificationMethod, effective};
@@ -49,11 +50,13 @@ pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
     "geo_domain_classifier",
     "geo_normalize",
     "name_intel",
+    "oui",
     "payid",
     "phone_au",
     "phone_geo",
     "phone_intl",
     "phone_nanp",
+    "registry_policy",
     "seed",
     "structured_id",
     "url_extract",
@@ -299,6 +302,14 @@ pub struct Entity {
     pub scan_id: String,
     #[serde(default)]
     pub generation: u32,
+    /// Every spelling sources observed a username under, with the highest confidence each was
+    /// observed at, once merges brought more than its own `raw_value`. A username's identity key
+    /// folds case and separators, so `pg_smith` and `PGSmith` are one entity, while a platform
+    /// that keeps separators sees two handles. Another case of a kept spelling raises that
+    /// spelling's confidence instead of adding one. Empty means the `raw_value` alone, at the
+    /// entity's confidence, when a source observed it ([`Entity::observed_spellings`]).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub spellings: BTreeMap<String, f64>,
 }
 
 pub fn merge_by_uid(entities: &mut Vec<Entity>) {
@@ -356,6 +367,7 @@ impl Entity {
             tags: Vec::new(),
             scan_id: scan_id.into(),
             generation: 0,
+            spellings: BTreeMap::new(),
         }
     }
 
@@ -447,6 +459,22 @@ impl Entity {
             .collect()
     }
 
+    /// Whether every record of this entity is a reading made offline from another value, by a
+    /// source that observes no one ([`is_enrichment_source`]): a handle guessed from an address's
+    /// local part, a name read off it, a handle's variants. Such an entity restates the value it
+    /// was read from, so it binds no identity. A record any other source made, a profile's own
+    /// published address included, is an observation. The operator's own selector
+    /// ([`Evidence::is_operator_seed`]) is no reading of another value either: the `seed` source
+    /// corroborates nothing, but the value it records is the one the lookup was asked about.
+    #[must_use]
+    pub fn is_offline_reading(&self) -> bool {
+        !self.evidence.is_empty()
+            && self.evidence.iter().all(|evidence| {
+                !evidence.is_operator_seed()
+                    && is_enrichment_source(&evidence.provenance.corroboration_key())
+            })
+    }
+
     #[must_use]
     pub fn corroborating_sources(&self) -> BTreeSet<String> {
         self.evidence
@@ -456,10 +484,57 @@ impl Entity {
             .collect()
     }
 
+    /// Whether a source observed this entity, rather than only guessing it from another value
+    /// (an e-mail's local part, a username's variants) or being asked it: some record is neither
+    /// inferred nor an operator's seed ([`Evidence::is_operator_seed`], the query a lookup was
+    /// given, which every lookup a crawl dispatches echoes back), or it has no record to say
+    /// otherwise. **Pure.**
+    #[must_use]
+    pub fn is_observed(&self) -> bool {
+        self.evidence.is_empty()
+            || self
+                .evidence
+                .iter()
+                .any(|evidence| !evidence.is_inferred && !evidence.is_operator_seed())
+    }
+
+    /// Every spelling a source observed this username under, with the highest confidence each was
+    /// observed at: the ones merges kept ([`Self::spellings`]), else its own `raw_value` at its
+    /// confidence when a source observed it. A guess observed nothing, and other kinds have none.
+    #[must_use]
+    pub fn observed_spellings(&self) -> BTreeMap<String, f64> {
+        if !self.spellings.is_empty() {
+            return self.spellings.clone();
+        }
+        let mut spellings = BTreeMap::new();
+        if self.kind == EntityKind::Username && self.is_observed() {
+            spellings.insert(spelling_of(&self.raw_value), self.confidence);
+        }
+        spellings
+    }
+
     pub fn absorb(&mut self, other: Self) {
         if self.uid != other.uid {
             return;
         }
+        // Each spelling a source observed the handle under is kept, as `raw_value` alone cannot
+        // hold them, so a merge never loses a handle a source reported.
+        let spellings = (self.kind == EntityKind::Username).then(|| {
+            let mut spellings = self.observed_spellings();
+            for (spelling, confidence) in other.observed_spellings() {
+                let route = crate::canonical::handle_route_key(&spelling);
+                match spellings
+                    .iter_mut()
+                    .find(|(kept, _)| crate::canonical::handle_route_key(kept) == route)
+                {
+                    Some((_, kept)) => *kept = kept.max(confidence),
+                    None => {
+                        spellings.insert(spelling, confidence);
+                    }
+                }
+            }
+            spellings
+        });
         self.confidence = self.confidence.max(other.confidence);
         self.corroboration = self.corroboration.saturating_add(other.corroboration);
         self.observed_at_unix = self.observed_at_unix.min(other.observed_at_unix);
@@ -478,7 +553,19 @@ impl Entity {
                 self.evidence.push(evidence);
             }
         }
+        if let Some(spellings) = spellings {
+            // Kept only when it says more than the entity's own spelling at its confidence.
+            self.spellings = BTreeMap::new();
+            if spellings != self.observed_spellings() {
+                self.spellings = spellings;
+            }
+        }
     }
+}
+
+/// A handle as a source wrote it, without surrounding space or its leading `@`s.
+fn spelling_of(raw: &str) -> String {
+    raw.trim().trim_start_matches('@').to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -559,9 +646,11 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         EntityKind::Person | EntityKind::Organisation | EntityKind::Address => {
             canonical_name(value)
         }
-        EntityKind::IpAddress | EntityKind::Credential | EntityKind::Document => {
-            value.trim().to_owned()
+        // Every spelling of one address is one entity; what a source wrote stays its `raw_value`.
+        EntityKind::IpAddress => {
+            canonical_ip_literal(value).unwrap_or_else(|| value.trim().to_owned())
         }
+        EntityKind::Credential | EntityKind::Document => value.trim().to_owned(),
         // A Solana address is base58 without a checksum: two spellings that differ only in case
         // are two different keys, so its case is part of its identity.
         EntityKind::CryptoAddress if value.trim().starts_with(crate::canonical::SOLANA_PREFIX) => {
@@ -579,6 +668,22 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         EntityKind::Netblock => crate::netblock::Netblock::parse(value)
             .map_or_else(|| canonical_whitespace(value), |block| block.to_string()),
     }
+}
+
+/// The host a link names, as the entity it is: an IP address as an
+/// [`EntityKind::IpAddress`] in its one written form
+/// ([`crate::canonical::canonical_ip_literal`]), public or not, and a name the domain rule
+/// accepts as a [`EntityKind::Domain`]; `None` for any other host. The link is
+/// the observation, kept as its own URL; this is what a leg derives from it, so a link on an
+/// address is never a domain the crawl can neither look up nor route. **Pure.**
+#[must_use]
+pub fn link_host(link: &str) -> Option<(EntityKind, String)> {
+    let host = crate::domains::host_only(link);
+    if let Some(address) = crate::canonical::canonical_ip_literal(host) {
+        return Some((EntityKind::IpAddress, address));
+    }
+    crate::canonical::canonical_domain(host.trim_end_matches('.'))
+        .map(|domain| (EntityKind::Domain, domain))
 }
 
 #[must_use]
@@ -739,6 +844,39 @@ impl fmt::Display for Entity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host a link names is the entity it is: an address (IPv4 or IPv6, public or not) in its
+    /// one written form, a name the domain rule accepts, and nothing for any other host.
+    #[test]
+    fn a_links_host_is_an_address_or_a_domain_as_it_is() {
+        use EntityKind::{Domain, IpAddress};
+        for (link, host) in [
+            (
+                "http://45.131.135.227/blog",
+                Some((IpAddress, "45.131.135.227")),
+            ),
+            ("http://192.168.1.1/", Some((IpAddress, "192.168.1.1"))),
+            (
+                "https://[2001:DB8::1]:8443/x",
+                Some((IpAddress, "2001:db8::1")),
+            ),
+            (
+                "https://Blog.Example.COM./post",
+                Some((Domain, "blog.example.com")),
+            ),
+            ("https://user@example.org/", Some((Domain, "example.org"))),
+            ("https://my_site.example.com/", None),
+            ("http://localhost:8080/", None),
+        ] {
+            let got = link_host(link);
+            assert_eq!(
+                got.as_ref()
+                    .map(|(kind, value)| (kind.clone(), value.as_str())),
+                host,
+                "{link}"
+            );
+        }
+    }
 
     fn evidence(source: &str, summary: &str) -> Evidence {
         Evidence::new(EvidenceProvenance::for_scan(source, "scan-1"), summary)
@@ -918,6 +1056,84 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_keeps_every_spelling_a_source_observed_a_handle_under() {
+        let handle = |value: &str, source: &str, confidence: f64, inferred: bool| {
+            let mut entity = Entity::new(EntityKind::Username, value, confidence, "s");
+            // One source and summary for every spelling, as Gravatar writes its handles, so the
+            // records fold into one: the spellings are kept on the entity, not on a record.
+            let record = evidence(source, "public profile");
+            entity.add_evidence(if inferred { record.inferred() } else { record });
+            entity
+        };
+        let spellings = |entity: &Entity| -> Vec<(String, f64)> {
+            entity.observed_spellings().into_iter().collect()
+        };
+        // An unmerged handle is its own spelling, and keeps no map.
+        let mut handle_a = handle("pg_smith", "gravatar", 0.9, false);
+        assert_eq!(spellings(&handle_a), [("pg_smith".to_owned(), 0.9)]);
+        assert!(handle_a.spellings.is_empty());
+        // Another spelling of one identity is kept beside it, at its own confidence, and the
+        // entity keeps its own `raw_value`.
+        handle_a.absorb(handle("PGSmith", "gravatar", 0.6, false));
+        assert_eq!(handle_a.evidence.len(), 1, "the records fold");
+        assert_eq!(handle_a.raw_value, "pg_smith");
+        assert_eq!(
+            spellings(&handle_a),
+            [("PGSmith".to_owned(), 0.6), ("pg_smith".to_owned(), 0.9)]
+        );
+        // Another case of a kept spelling raises its confidence instead of adding one.
+        handle_a.absorb(handle("pgsmith", "keybase", 0.8, false));
+        assert_eq!(
+            spellings(&handle_a),
+            [("PGSmith".to_owned(), 0.8), ("pg_smith".to_owned(), 0.9)]
+        );
+        // A guess observed nothing: merged with an observation, only the observation is kept,
+        // and the entity keeps the guess's `raw_value`.
+        let mut guess = handle("pg_smith", "email_parse", 0.7, true);
+        assert!(spellings(&guess).is_empty());
+        guess.absorb(handle("PG_Smith", "gravatar", 0.65, false));
+        assert_eq!(guess.raw_value, "pg_smith");
+        assert_eq!(spellings(&guess), [("PG_Smith".to_owned(), 0.65)]);
+        let mut guesses = handle("pg.smith", "email_parse", 0.7, true);
+        guesses.absorb(handle("pgsmith", "username_variants", 0.7, true));
+        assert!(spellings(&guesses).is_empty() && guesses.spellings.is_empty());
+        // A merge that adds nothing but case keeps no map.
+        let mut cased = handle("pg_smith", "hacker_news", 0.8, false);
+        cased.absorb(handle("PG_Smith", "github_user", 0.9, false));
+        assert!(cased.spellings.is_empty());
+        assert_eq!(spellings(&cased), [("pg_smith".to_owned(), 0.9)]);
+        // A lookup's seed is the query it was given, not an observation: echoed back by the lookup
+        // a crawl dispatched for a guess, it observes nothing, and echoed for an observed spelling,
+        // it does not raise the confidence that spelling was observed at.
+        let asked = |value: &str| {
+            let mut entity = Entity::new(EntityKind::Username, value, 0.99, "s");
+            entity.tag("seed");
+            entity.add_evidence(evidence("seed", "username selector the lookup was asked"));
+            entity
+        };
+        assert!(spellings(&asked("pgsmith")).is_empty());
+        let mut echoed_guess = handle("pg-smith", "email_parse", 0.7, true);
+        echoed_guess.absorb(asked("pgsmith"));
+        assert!(spellings(&echoed_guess).is_empty() && echoed_guess.spellings.is_empty());
+        let mut echoed_observation = handle("PG_Smith", "gravatar", 0.65, false);
+        echoed_observation.absorb(asked("pg_smith"));
+        assert_eq!(
+            spellings(&echoed_observation),
+            [("PG_Smith".to_owned(), 0.65)]
+        );
+        // Other kinds have no spellings.
+        let mut mail = Entity::new(EntityKind::Email, "Pg.Smith@example.com", 0.8, "s");
+        mail.add_evidence(evidence("gravatar", "profile"));
+        mail.absorb(Entity::new(
+            EntityKind::Email,
+            "pg.smith@example.com",
+            0.8,
+            "s",
+        ));
+        assert!(mail.observed_spellings().is_empty() && mail.spellings.is_empty());
+    }
+
+    #[test]
     fn guesses_derived_from_one_input_are_one_observation_however_many_merge() {
         // Four spellings of one username, each a guess from the same email address. They share a
         // uid, so they merge, and the merge must not read as four sources agreeing.
@@ -987,6 +1203,28 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Every spelling a source writes one address in is one entity, whose value is the address's
+    /// one written form; the spelling a source wrote stays its raw value. What is no address
+    /// keeps its own text.
+    #[test]
+    fn every_spelling_of_one_address_is_one_entity() {
+        let address = |raw: &str| Entity::new(EntityKind::IpAddress, raw, 0.6, "s1");
+        let mut entities: Vec<Entity> = ["2001:DB8::1", "2001:db8:0:0::1", "[2001:db8::1]"]
+            .into_iter()
+            .map(address)
+            .collect();
+        merge_by_uid(&mut entities);
+        assert_eq!(entities.len(), 1, "{entities:?}");
+        assert_eq!(entities[0].value, "2001:db8::1");
+        assert_eq!(entities[0].raw_value, "2001:DB8::1");
+
+        let mapped = address("::ffff:192.0.2.7");
+        assert_eq!(mapped.uid, address("192.0.2.7").uid);
+        assert_eq!(mapped.value, "192.0.2.7");
+        assert_eq!(mapped.raw_value, "::ffff:192.0.2.7");
+        assert_eq!(address(" 192.0.2.7:443 ").value, "192.0.2.7:443");
     }
 
     #[test]

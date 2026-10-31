@@ -236,7 +236,7 @@ fn add_seed(email: &str, scan_id: &str, entities: &mut Vec<Entity>) {
     entity.tag("seed");
     entity.add_evidence(Evidence::new(
         EvidenceProvenance::for_scan("seed", scan_id),
-        "operator-supplied email selector",
+        "email selector the lookup was asked",
     ));
     entities.push(entity);
 }
@@ -420,6 +420,38 @@ mod tests {
                 .iter()
                 .any(|entity| entity.kind == EntityKind::Person && entity.value == "jane doe")
         );
+    }
+
+    /// The usernames and the name an address's local part gives are guesses that restate the
+    /// address, so no identity relation binds the address to them, nor a profile link a source
+    /// found to a guessed handle, and no identity rule reads them as a cluster (AU-002, AU-060),
+    /// a gap (AU-063) or any other.
+    #[test]
+    fn an_addresss_own_guesses_bind_it_to_no_identity() {
+        let mut entities = derive_entities("jane.doe@acme.example", "scan");
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == "jdoe")
+        );
+        assert!(entities.iter().any(|e| e.kind == EntityKind::Person));
+        let mut profile = Entity::new(EntityKind::Url, "https://github.com/jdoe", 0.6, "scan");
+        profile.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("gravatar", "scan"),
+            "profile link on the address's Gravatar",
+        ));
+        entities.push(profile);
+        let bound: Vec<_> = crate::relation::derive_all(&entities, "scan")
+            .into_iter()
+            .filter(|relation| relation.kind.binds_identity())
+            .collect();
+        assert!(bound.is_empty(), "{bound:#?}");
+        let identity_rules = ["AU-002", "AU-060", "AU-062", "AU-063", "AU-070", "AU-071"];
+        let fired: Vec<_> = crate::correlator::evaluate_rules(&entities, &[], "scan")
+            .into_iter()
+            .filter(|correlation| identity_rules.contains(&correlation.rule_id.as_str()))
+            .collect();
+        assert!(fired.is_empty(), "{fired:#?}");
     }
 
     #[test]

@@ -85,11 +85,13 @@ impl NetworkArgs {
 
 pub type NetworkRun = SourceRun<Report>;
 
-/// Classify the selector and run each `WiGLE` search it calls for when `wigle` carries a
-/// transport and keys. A transport whose lookup does not ask `wigle`
-/// ([`Transport::runs_module`]) sends no search and leaves no `WiGLE` row.
+/// Classify the selector and run each search it calls for over `transport` with `keys`: `WiGLE`
+/// when its credentials are set, and `OpenCelliD` for a cell site or a point when its key is,
+/// each whether or not the other is configured. A source whose key is not set makes no request
+/// and says so on its row; a transport whose lookup does not ask a source
+/// ([`Transport::runs_module`]) sends it nothing and leaves no row for it.
 #[must_use]
-pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64) -> NetworkRun {
+pub fn run(transport: &dyn Transport, keys: &Keys, selector: &str, now_unix: u64) -> NetworkRun {
     let Some(selector) = NetworkSelector::parse(selector) else {
         return NetworkRun::Failed("invalid network selector".into());
     };
@@ -105,9 +107,11 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
             .push(oui_leg(bssid, &scan_id, now_unix, &mut report.entities));
     }
     for &database in Database::for_selector(&selector) {
-        let outcome = match wigle {
-            Some((transport, _)) if !transport.runs_module(wigle::SOURCE) => continue,
-            Some((transport, keys)) if wigle::configured(keys) => wigle_leg(
+        if !transport.runs_module(wigle::SOURCE) {
+            continue;
+        }
+        let outcome = if wigle::configured(keys) {
+            wigle_leg(
                 transport,
                 keys,
                 database,
@@ -115,8 +119,9 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
                 &scan_id,
                 now_unix,
                 &mut report,
-            ),
-            _ => SourceExecutionOutcome::failed(
+            )
+        } else {
+            SourceExecutionOutcome::failed(
                 database.source(),
                 now_unix,
                 SourceOutcomeKind::NotConfigured,
@@ -126,7 +131,7 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
                     wigle::USER_SLOT,
                     wigle::TOKEN_SLOT
                 ),
-            ),
+            )
         };
         report.outcomes.push(outcome);
     }
@@ -135,9 +140,8 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
     // request and records `NotConfigured`, never a zero.
     if matches!(selector, NetworkSelector::Cell { .. }) {
         let indicator = canonical.strip_prefix(CELL_PREFIX).unwrap_or(&canonical);
-        match wigle {
-            Some((transport, _)) if !transport.runs_module(opencellid::SOURCE) => {}
-            Some((transport, keys)) if keys.get(opencellid::KEY_SLOT).is_some() => {
+        if transport.runs_module(opencellid::SOURCE) {
+            if keys.get(opencellid::KEY_SLOT).is_some() {
                 let legs = indicator_legs::run(
                     transport,
                     keys,
@@ -147,20 +151,21 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
                 );
                 report.entities.extend(legs.entities);
                 report.outcomes.extend(legs.outcomes);
+            } else {
+                report.outcomes.push(opencellid_not_configured(now_unix));
             }
-            _ => report.outcomes.push(opencellid_not_configured(now_unix)),
         }
     }
     // A point is searched for the cell sites OpenCelliD lists around it, under the same key.
     if let NetworkSelector::Area { lat, lon } = selector {
-        match wigle {
-            Some((transport, _)) if !transport.runs_module(opencellid::SOURCE) => {}
-            Some((transport, keys)) if keys.get(opencellid::KEY_SLOT).is_some() => {
+        if transport.runs_module(opencellid::SOURCE) {
+            if keys.get(opencellid::KEY_SLOT).is_some() {
                 let outcome =
                     area_cells_leg(transport, keys, (lat, lon), &scan_id, now_unix, &mut report);
                 report.outcomes.push(outcome);
+            } else {
+                report.outcomes.push(opencellid_not_configured(now_unix));
             }
-            _ => report.outcomes.push(opencellid_not_configured(now_unix)),
         }
     }
     merge_by_uid(&mut report.entities);
@@ -268,13 +273,18 @@ fn area_cells_leg(
 
 fn seed_entity(selector: &NetworkSelector, scan_id: &str) -> Entity {
     let (kind, note) = match selector {
-        NetworkSelector::Bssid(_) => (EntityKind::MacAddress, "operator-supplied BSSID selector"),
-        NetworkSelector::Ssid(_) => (EntityKind::Ssid, "operator-supplied SSID selector"),
+        NetworkSelector::Bssid(_) => (
+            EntityKind::MacAddress,
+            "BSSID selector the lookup was asked",
+        ),
+        NetworkSelector::Ssid(_) => (EntityKind::Ssid, "SSID selector the lookup was asked"),
         NetworkSelector::Area { .. } => (
             EntityKind::Coordinates,
-            "operator-supplied coordinate selector",
+            "coordinate selector the lookup was asked",
         ),
-        NetworkSelector::Cell { .. } => (EntityKind::Other, "operator-supplied cell site selector"),
+        NetworkSelector::Cell { .. } => {
+            (EntityKind::Other, "cell site selector the lookup was asked")
+        }
     };
     let value = match selector {
         NetworkSelector::Ssid(name) => name.clone(),

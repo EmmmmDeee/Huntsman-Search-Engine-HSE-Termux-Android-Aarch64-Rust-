@@ -26,7 +26,9 @@ use serde_json::Value;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
+use crate::fetch::{
+    FetchOptions, Fetched, answer, decode_json, fetch, mediawiki_api_error, whole_response,
+};
 use crate::http::{DEFAULT_USER_AGENT, Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
@@ -274,8 +276,13 @@ fn concept_uri(qid: &str) -> String {
 
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
+    /// Present (any shape) when the Action API did not run the search.
     #[serde(default)]
-    search: Vec<SearchHit>,
+    error: Option<Value>,
+    /// The hits of a search that ran, an explicit empty list when nothing matched. A response
+    /// without it says nothing about whether anything matched.
+    #[serde(default)]
+    search: Option<Vec<SearchHit>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,18 +364,44 @@ fn resolve<T: Transport + ?Sized>(
         Ok(search) => search,
         Err(outcome) => return Ok(Resolved::None(outcome)),
     };
-    match search
-        .search
-        .into_iter()
-        .find(|hit| !hit.id.trim().is_empty())
-    {
+    // An error envelope comes with HTTP 200: the search did not run, so it found nothing only in
+    // the sense that it was never asked.
+    if let Some(error) = search.error {
+        return Ok(Resolved::None(mediawiki_api_error(
+            &error,
+            SOURCE,
+            response.status,
+            now_unix,
+            "Wikidata search",
+        )));
+    }
+    let Some(hits) = search.search else {
+        return Ok(Resolved::None(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::ParserDrift,
+            Some(response.status),
+            "Wikidata search response omitted search",
+        )));
+    };
+    if hits.is_empty() {
+        return Ok(Resolved::None(
+            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
+        ));
+    }
+    // Hits that name no item matched something the search cannot say: no clean negative.
+    match hits.into_iter().find(|hit| !hit.id.trim().is_empty()) {
         Some(hit) => Ok(Resolved::Item {
             qid: hit.id,
             label: hit.label.or(hit.description),
         }),
-        None => Ok(Resolved::None(
-            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
-        )),
+        None => Ok(Resolved::None(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Wikidata search hits carried no item id",
+        ))),
     }
 }
 
@@ -675,9 +708,8 @@ fn collect_pivots(
     match property.pivot {
         Pivot::None => {}
         Pivot::Website => {
-            let host = crate::value_syntax::host_only(value);
-            if let Some(domain) = crate::canonical::canonical_domain(host) {
-                pivots.push((EntityKind::Domain, domain, "Official website".to_owned()));
+            if let Some((kind, host)) = crate::entity::link_host(value) {
+                pivots.push((kind, host, "Official website".to_owned()));
             }
         }
         Pivot::Coordinate => {
@@ -933,6 +965,52 @@ mod tests {
         let report = report_of(r#"{"search":[]}"#, "no such subject anywhere");
         assert!(report.entities.is_empty());
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
+    }
+
+    /// The Action API answers a search it did not run with HTTP 200 and an error envelope, so a
+    /// lagged, rate-limited or failing search, or a reply with no hit list at all, is never read as
+    /// "no Wikidata item".
+    #[test]
+    fn a_search_the_api_did_not_run_is_never_a_clean_negative() {
+        for (body, kind) in [
+            (
+                r#"{"error":{"code":"cirrussearch-too-busy-error","info":"Search is currently too busy. Please try again later."}}"#,
+                SourceOutcomeKind::RateLimited,
+            ),
+            (
+                r#"{"error":{"code":"cirrussearch-backend-error","info":"We could not complete your search"}}"#,
+                SourceOutcomeKind::Inconclusive,
+            ),
+            (
+                r#"{"error":{"code":"ratelimited","info":"slow down"}}"#,
+                SourceOutcomeKind::RateLimited,
+            ),
+            (
+                r#"{"search":[{"label":"Jane Example","description":"x"}]}"#,
+                SourceOutcomeKind::SchemaDrift,
+            ),
+            (
+                r#"{"error":{"code":"internal_api_error_DBQueryError","info":"x"},"search":[]}"#,
+                SourceOutcomeKind::Inconclusive,
+            ),
+            (
+                r#"{"searchinfo":{"search":"x"}}"#,
+                SourceOutcomeKind::ParserDrift,
+            ),
+        ] {
+            let report = report_of(body, "a subject the search never ran for");
+            assert!(report.entities.is_empty(), "{body}");
+            assert_eq!(report.outcome.kind, kind, "{body}: {:?}", report.outcome);
+        }
+        // A code that is not shaped like an API code is not carried into the diagnostic.
+        let report = report_of(
+            r#"{"error":{"code":"<script>alert(1)</script>"}}"#,
+            "a subject the search never ran for",
+        );
+        assert_eq!(
+            report.outcome.detail.as_deref(),
+            Some("Wikidata search API error: unknown")
+        );
     }
 
     #[test]

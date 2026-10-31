@@ -182,7 +182,7 @@ fn an_untrustworthy_zone_says_why_instead_of_not_listed() {
         .with("2.0.0.127.zen.spamhaus.org", &["127.255.255.254"])
         .with("2.0.0.127.bl.spamcop.net", &[])
         .with("1.0.0.127.dnsbl.dronebl.org", &["127.0.0.3"])
-        .with("10.2.0.192.dnsbl.sorbs.net", &["127.0.0.6"]);
+        .with("10.2.0.192.multi.surbl.org", &["127.0.0.16"]);
     resolver.down.push("uceprotect.net");
     let (entities, rows) = check(&resolver, Subject::Address(ip("192.0.2.10")), "s", 1);
 
@@ -212,17 +212,52 @@ fn an_untrustworthy_zone_says_why_instead_of_not_listed() {
     );
     assert_eq!(row(&rows, "uceprotect").kind, SourceOutcomeKind::DnsFailure);
     // The one trustworthy list that lists the address is the only listing.
-    assert_eq!(row(&rows, "sorbs").kind, SourceOutcomeKind::Success);
+    assert_eq!(row(&rows, "surbl").kind, SourceOutcomeKind::Success);
     let sources: Vec<&str> = entities
         .iter()
         .map(|entity| entity.evidence[0].provenance.source.as_str())
         .collect();
-    assert_eq!(sources, ["sorbs"]);
+    assert_eq!(sources, ["surbl"]);
     // A refused test point stops the zone: the address itself is not asked there.
     assert!(
         !resolver
             .asked()
             .contains(&"10.2.0.192.zen.spamhaus.org".to_owned())
+    );
+}
+
+/// A list says "not listed" only when every zone of it asked says so: UCEPROTECT's level 1 not
+/// answering leaves levels 2 and 3, which list the address's network and AS, unable to say the
+/// address is not listed, so the row is inconclusive. A listing on a level that answered is still
+/// the list's finding.
+#[test]
+fn a_list_one_of_whose_zones_did_not_answer_is_no_clean_negative() {
+    let address = Subject::Address(ip("192.0.2.10"));
+    let mut resolver = Resolver::healthy();
+    resolver.down.push("dnsbl-1.uceprotect.net");
+    let (entities, rows) = check(&resolver, address, "s", 1);
+    assert!(entities.is_empty());
+    let uce = row(&rows, "uceprotect");
+    assert_eq!(uce.kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(
+        uce.detail.as_deref(),
+        Some(
+            "dnsbl-1.uceprotect.net: no answer (timed out); dnsbl-2.uceprotect.net: not listed; \
+             dnsbl-3.uceprotect.net: not listed"
+        )
+    );
+    // The lists whose every zone answered stand.
+    assert_eq!(row(&rows, "spamcop").kind, SourceOutcomeKind::ValidZero);
+
+    let mut resolver =
+        Resolver::healthy().with("10.2.0.192.dnsbl-2.uceprotect.net", &["127.0.0.2"]);
+    resolver.down.push("dnsbl-1.uceprotect.net");
+    let (entities, rows) = check(&resolver, address, "s", 1);
+    let uce = row(&rows, "uceprotect");
+    assert_eq!((uce.kind, uce.found), (SourceOutcomeKind::Success, Some(1)));
+    assert_eq!(
+        entities[0].evidence[0].attributes["dnsbl_zone"],
+        "dnsbl-2.uceprotect.net"
     );
 }
 
@@ -289,8 +324,259 @@ fn a_system_resolver_error_that_names_no_address_is_not_a_failure() {
     for failure in [
         "failed to lookup address information: Temporary failure in name resolution",
         "failed to lookup address information: Try again",
+        // EAI_FAIL: the server failed or refused (SERVFAIL, REFUSED), which says nothing of the name.
+        "failed to lookup address information: Non-recoverable failure in name resolution",
         "connection refused",
     ] {
         assert!(!crate::http::names_no_address(failure), "{failure}");
+    }
+}
+
+fn tags_of(entities: &[Entity]) -> Vec<String> {
+    entities
+        .iter()
+        .flat_map(|entity| entity.tags.clone())
+        .collect()
+}
+
+fn element_kinds(entities: &[Entity]) -> Vec<String> {
+    let target = crate::sf_elements::Target {
+        value: "192.0.2.10",
+        kind: "IP_ADDRESS",
+    };
+    crate::sf_elements::elements(target, entities, 1)
+        .into_iter()
+        .map(|element| element.kind)
+        .collect()
+}
+
+/// A listing says what it says of the subject. Spamhaus's PBL lists end-user ranges by policy and
+/// UCEPROTECT's levels 2 and 3 list the address's network and AS: each is kept, with its class, and
+/// is a blacklisting in a saved scan, but neither marks the address malicious. A record of the
+/// address's own abuse does.
+#[test]
+fn a_listing_of_a_range_or_network_is_kept_but_marks_no_one_malicious() {
+    for (name, answer, class) in [
+        ("10.2.0.192.zen.spamhaus.org", "127.0.0.10", "policy"),
+        (
+            "10.2.0.192.dnsbl-3.uceprotect.net",
+            "127.0.0.2",
+            "neighbourhood",
+        ),
+        (
+            "10.2.0.192.dnsbl-2.uceprotect.net",
+            "127.0.0.2",
+            "neighbourhood",
+        ),
+    ] {
+        let resolver = Resolver::healthy().with(name, &[answer]);
+        let (entities, _) = check(&resolver, Subject::Address(ip("192.0.2.10")), "s", 1);
+        assert_eq!(entities.len(), 1, "{name}");
+        let evidence = &entities[0].evidence[0];
+        assert_eq!(
+            evidence.attributes.get(LISTING_CLASS).map(String::as_str),
+            Some(class),
+            "{name}"
+        );
+        assert!(
+            !tags_of(&entities).contains(&tags::MALICIOUS.to_owned()),
+            "{name}"
+        );
+        let kinds = element_kinds(&entities);
+        assert!(
+            kinds.iter().any(|k| k == "BLACKLISTED_IPADDR"),
+            "{name}: {kinds:?}"
+        );
+        assert!(
+            !kinds.iter().any(|k| k == "MALICIOUS_IPADDR"),
+            "{name}: {kinds:?}"
+        );
+    }
+    let abuse = Resolver::healthy().with("10.2.0.192.zen.spamhaus.org", &["127.0.0.4"]);
+    let (entities, _) = check(&abuse, Subject::Address(ip("192.0.2.10")), "s", 1);
+    assert_eq!(
+        entities[0].evidence[0]
+            .attributes
+            .get(LISTING_CLASS)
+            .map(String::as_str),
+        Some("abuse")
+    );
+    assert!(tags_of(&entities).contains(&tags::MALICIOUS.to_owned()));
+    assert!(
+        element_kinds(&entities)
+            .iter()
+            .any(|k| k == "MALICIOUS_IPADDR")
+    );
+}
+
+/// Spamhaus's DBL answers `127.0.1.255` to a question about an IP address, which it does not
+/// list: a refusal, never a listing of the "domain".
+#[test]
+fn a_dbl_refusal_is_no_listing() {
+    let resolver = Resolver::healthy().with("example.com.dbl.spamhaus.org", &["127.0.1.255"]);
+    let (entities, rows) = check(&resolver, Subject::Domain("example.com"), "s", 1);
+    assert!(entities.is_empty(), "{entities:#?}");
+    let spamhaus = row(&rows, "spamhaus");
+    assert_eq!(spamhaus.kind, SourceOutcomeKind::EntitlementDenied);
+    assert!(
+        spamhaus
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("refuses IP-address queries")),
+        "{spamhaus:?}"
+    );
+}
+
+/// A list that has shut down is never asked: nothing is sent under its zone, and its row says it
+/// is dead rather than that it does not list the subject.
+#[test]
+fn a_retired_list_is_never_asked() {
+    let resolver = Resolver::healthy();
+    let (_, rows) = check(&resolver, Subject::Address(ip("192.0.2.10")), "s", 1);
+    assert!(
+        resolver
+            .asked()
+            .iter()
+            .all(|name| !name.ends_with("sorbs.net")),
+        "{:?}",
+        resolver.asked()
+    );
+    let sorbs = row(&rows, "sorbs");
+    assert_eq!(sorbs.kind, SourceOutcomeKind::ConfirmedDead);
+    assert!(
+        sorbs
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("shut down")),
+        "{sorbs:?}"
+    );
+}
+
+/// A name DNS cannot carry (over 253 bytes, or a label over 63) cannot be asked: the system
+/// resolver refuses it before any query, so a "no such name" for it would be no answer at all.
+#[test]
+fn a_name_dns_cannot_carry_is_never_read_as_not_listed() {
+    let label = "a".repeat(60);
+    let long = format!("{label}.{label}.{label}.{label}.example.com");
+    let resolver = Resolver::healthy();
+    let (entities, rows) = check(&resolver, Subject::Domain(&long), "s", 1);
+    assert!(entities.is_empty());
+    for source in ["spamhaus", "surbl"] {
+        let row = row(&rows, source);
+        assert!(!row.kind.is_accepted(), "{source}: {row:?}");
+        assert!(
+            row.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("cannot be asked")),
+            "{source}: {row:?}"
+        );
+    }
+    assert!(resolver.asked().iter().all(|name| !name.starts_with(&long)));
+}
+
+/// SURBL's DM and CT bits name disposable-mail providers and mail click trackers: policy listings
+/// that mark nothing malicious, unless an abuse bit is set beside them.
+#[test]
+fn surbl_policy_bits_are_named_and_mark_nothing_malicious() {
+    let surbl = ZONES
+        .iter()
+        .find(|zone| zone.source == "surbl")
+        .expect("SURBL");
+    let read = |answer: &str| {
+        listed(surbl, &[answer.parse().expect("an address")])
+            .into_iter()
+            .map(|(_, reason, class)| (reason, class))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        read("127.0.0.4"),
+        [("Disposable mail provider".to_owned(), Class::Policy)]
+    );
+    assert_eq!(
+        read("127.0.0.32"),
+        [("Mail click tracker".to_owned(), Class::Policy)]
+    );
+    assert_eq!(
+        read("127.0.0.36"),
+        [(
+            "Disposable mail provider, Mail click tracker".to_owned(),
+            Class::Policy
+        )]
+    );
+    assert_eq!(
+        read("127.0.0.68"),
+        [("Disposable mail provider, Abuse".to_owned(), Class::Abuse)]
+    );
+    assert_eq!(
+        read("127.0.0.2"),
+        [("undocumented answer 127.0.0.2".to_owned(), Class::Abuse)]
+    );
+}
+
+/// A policy or neighbourhood listing is an observation, not evidence that the address abused
+/// anyone. The shipped `SpiderFoot` rule must not turn two such listings (or one abuse source plus
+/// one policy listing) into a HIGH claim. Two independent abuse sources still must trigger it.
+/// The same verdict must survive serialization of saved scan elements.
+#[test]
+fn policy_listings_never_create_a_multiple_malicious_finding() {
+    use crate::sf_correlate::{run, shipped};
+    use crate::sf_elements::{DataElement, Target, elements};
+
+    for (zen, uce1, uce2, uce3, expected_high) in [
+        (
+            Some("127.0.0.10"),
+            None,
+            Some("127.0.0.2"),
+            Some("127.0.0.2"),
+            false,
+        ),
+        (Some("127.0.0.4"), None, Some("127.0.0.2"), None, false),
+        (Some("127.0.0.4"), Some("127.0.0.2"), None, None, true),
+    ] {
+        let mut resolver = Resolver::healthy();
+        for (name, answer) in [
+            ("10.2.0.192.zen.spamhaus.org", zen),
+            ("10.2.0.192.dnsbl-1.uceprotect.net", uce1),
+            ("10.2.0.192.dnsbl-2.uceprotect.net", uce2),
+            ("10.2.0.192.dnsbl-3.uceprotect.net", uce3),
+        ] {
+            if let Some(answer) = answer {
+                resolver = resolver.with(name, &[answer]);
+            }
+        }
+        let (entities, _) = check(&resolver, Subject::Address(ip("192.0.2.10")), "s", 1);
+        let elements = elements(
+            Target {
+                value: "192.0.2.10",
+                kind: "IP_ADDRESS",
+            },
+            &entities,
+            1,
+        );
+        let listed = elements
+            .iter()
+            .filter(|element| element.kind == "BLACKLISTED_IPADDR")
+            .count();
+        let expected_listings = [zen, uce1, uce2, uce3]
+            .iter()
+            .filter(|answer| answer.is_some())
+            .count();
+        assert_eq!(
+            listed, expected_listings,
+            "all observations must remain visible"
+        );
+        let check = |elements: &[DataElement]| {
+            let found = run(shipped(), elements);
+            let high = found.iter().any(|finding| {
+                finding.rule == "multiple_malicious"
+                    && finding.risk == crate::sf_correlate::Risk::High
+            });
+            assert_eq!(high, expected_high, "{found:#?}");
+        };
+        check(&elements);
+        let saved = serde_json::to_vec(&elements).expect("serialize saved scan elements");
+        let restored: Vec<DataElement> =
+            serde_json::from_slice(&saved).expect("reload saved scan elements");
+        check(&restored);
     }
 }

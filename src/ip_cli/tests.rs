@@ -148,7 +148,11 @@ fn keyless() -> Routes {
             200,
             r#"{"ip":{"number":"1.1.1.1","count":null,"attacks":null}}"#,
         ),
-        ("https://api.maltiverse.com/", 404, "{}"),
+        (
+            "https://api.maltiverse.com/",
+            200,
+            r#"{"classification":"neutral","ip_addr":"1.1.1.1","blacklist":[],"is_cnc":false}"#,
+        ),
         ("https://api.phishstats.info/", 200, "[]"),
         ("https://api.shodan.io/", 200, SHODAN),
         (
@@ -250,12 +254,13 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "otx"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "urlscan"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "ipinfo"), SourceOutcomeKind::Success);
+    // Maltiverse answers an address it had no record of with the neutral record it makes for it.
+    assert_eq!(outcome(&report, "maltiverse"), SourceOutcomeKind::Success);
     for source in [
         "robtex",
         "hackertarget",
         "stopforumspam",
         "isc",
-        "maltiverse",
         "phishstats",
     ] {
         assert_eq!(outcome(&report, source), SourceOutcomeKind::ValidZero);
@@ -264,20 +269,15 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "rdap"), SourceOutcomeKind::Success);
     assert_eq!(outcome(&report, "mnemonic"), SourceOutcomeKind::ValidZero);
     // The DNS blocklists are keyless and always asked; this transport has no system resolver.
-    for source in [
-        "spamhaus",
-        "spamcop",
-        "uceprotect",
-        "dronebl",
-        "sorbs",
-        "surbl",
-    ] {
+    for source in ["spamhaus", "spamcop", "uceprotect", "dronebl", "surbl"] {
         assert_eq!(
             outcome(&report, source),
             SourceOutcomeKind::DnsFailure,
             "{source}"
         );
     }
+    // SORBS has shut down: it is not asked, and its row says so.
+    assert_eq!(outcome(&report, "sorbs"), SourceOutcomeKind::ConfirmedDead);
     // The keyed legs with no key sent nothing (no host above is theirs), and each leaves the row
     // saying it was not configured, as every other keyed leg does.
     let unkeyed = keyed_ip_sources_without_a_key();
@@ -414,6 +414,29 @@ fn a_refused_key_is_reported_and_the_other_legs_still_answer() {
     assert_eq!(mnemonic.len(), 1, "{mnemonic:?}");
     assert_eq!(mnemonic[0].kind, SourceOutcomeKind::ConnectFailure);
     assert!(!text.contains(ABUSE_KEY) && !text.contains(VT_KEY));
+}
+
+/// An IPv4 address written IPv4-mapped (`::ffff:1.1.1.1`) is that IPv4 address: every source is
+/// sent exactly what `1.1.1.1` sends it, never a form a source may not index and so answer as an
+/// address it holds nothing about.
+#[test]
+fn an_ipv4_mapped_address_is_looked_up_as_its_ipv4_address() {
+    let asked = |address: &str| {
+        let transport = keyless();
+        let (_, report) = printed(run(&transport, &Keys::default(), address, 1));
+        let urls: Vec<String> = transport.sent().into_iter().map(|r| r.url).collect();
+        (urls, report)
+    };
+    let (plain, _) = asked("1.1.1.1");
+    let (mapped, report) = asked("::ffff:1.1.1.1");
+    assert!(!mapped.is_empty());
+    assert_eq!(mapped, plain);
+    assert!(
+        report
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::IpAddress && e.value == "1.1.1.1")
+    );
 }
 
 #[test]

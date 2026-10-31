@@ -67,6 +67,36 @@ fn values<'a>(entity: &'a Entity, key: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// An AS's registration names its abuse desk and its operator's role contact, which name a
+/// function, not a person: each mailbox and telephone carries the kind its jCard gives it, and the
+/// lookup's own entities raise no identity cluster.
+#[test]
+fn an_as_registrations_role_contacts_are_no_identity_cluster() {
+    let report = printed(run(&registry((200, NEIGHBOURS)), "as13335", 1));
+    let contacts: Vec<&Entity> = report
+        .entities
+        .iter()
+        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
+        .collect();
+    assert_eq!(contacts.len(), 3, "{contacts:#?}");
+    for contact in &contacts {
+        let kinds: std::collections::BTreeSet<&str> =
+            values(contact, "contact_kind").into_iter().collect();
+        assert_eq!(
+            kinds,
+            std::collections::BTreeSet::from(["group"]),
+            "{contact:#?}"
+        );
+    }
+    let correlations = crate::correlator::evaluate_rules(&report.entities, &[], "scan");
+    assert!(
+        correlations
+            .iter()
+            .all(|correlation| correlation.rule_id != "AU-002"),
+        "{correlations:#?}"
+    );
+}
+
 /// An AS is its registration, its holder and registry block, every prefix it announces with
 /// every window it was seen, and every neighbour with its side.
 #[test]
@@ -296,6 +326,31 @@ fn the_ripestat_row_is_refused_only_when_every_call_was_refused() {
     routing_entities(&mut report, "AS13335", "scan", &mixed, 1);
     assert_eq!(report.outcomes.len(), 1);
     assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Upstream5xx);
+}
+
+/// The one `ripestat` row says the AS has nothing only when every call answered so: an AS that
+/// announces no prefix and has no neighbour, with its overview unanswered, is inconclusive, since
+/// the overview may name a holder the others do not; with every call answered it is a clean zero.
+#[test]
+fn the_ripestat_row_is_no_clean_zero_while_a_call_went_unanswered() {
+    let routing = |overview| Routing {
+        overview,
+        prefixes: Ok(Prefixes::default()),
+        neighbours: Ok(Neighbours::default()),
+    };
+    let mut report = Report::default();
+    let unanswered = routing(Err(crate::api_leg::LegError::Server(503)));
+    routing_entities(&mut report, "AS64496", "scan", &unanswered, 1);
+    assert_eq!(report.outcomes.len(), 1);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+    let detail = report.outcomes[0].detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("as-overview failed: "), "{detail}");
+
+    let mut report = Report::default();
+    let answered = routing(Ok(AsOverview::default()));
+    routing_entities(&mut report, "AS64496", "scan", &answered, 1);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    assert_eq!(report.outcomes[0].http_status, Some(200));
 }
 
 /// When no call answered, the lookup ends from its one ripestat row (and the RDAP row) through

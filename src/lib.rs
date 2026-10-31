@@ -194,6 +194,7 @@ pub mod recon;
 pub mod recursion;
 pub mod redact;
 pub mod relation;
+pub mod research_route;
 pub mod resolve;
 pub mod retrieval_artifact;
 pub mod rf;
