@@ -22,7 +22,6 @@
 use serde::Deserialize;
 
 use crate::canonical::canonical_url;
-use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
@@ -375,17 +374,18 @@ fn build_entities(
             evidence.clone(),
             &["docker-hub"],
         );
-        let host = host_only(website).to_ascii_lowercase();
-        if host.contains('.') && !CODE_FORGES.contains(&host.as_str()) {
-            push_entity(
-                &mut entities,
-                EntityKind::Domain,
-                &host,
-                DOMAIN_CONF,
-                scan_id,
-                evidence,
-                &["docker-hub", crate::tags::DERIVED],
-            );
+        if let Some((kind, host)) = crate::domains::link_host(website) {
+            if !CODE_FORGES.contains(&host.as_str()) {
+                push_entity(
+                    &mut entities,
+                    kind,
+                    &host,
+                    DOMAIN_CONF,
+                    scan_id,
+                    evidence,
+                    &["docker-hub", crate::tags::DERIVED],
+                );
+            }
         }
     }
     entities

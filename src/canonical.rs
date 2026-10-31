@@ -391,8 +391,10 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     Some(out)
 }
 
-/// One selector, one stored form. Email, phone, URL, IP address, domain, handle and
-/// coordinates win before a name. Empty after normalisation is `None`.
+/// One selector, one stored form. Email, IP address, phone, URL, domain, handle and
+/// coordinates win before a name; an address is read before a phone number, whose rule would take
+/// one whose digits spell a national number (`203.12.16.35`) for that number. Empty after
+/// normalisation is `None`.
 #[must_use]
 pub fn canonicalise_selector(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
@@ -400,9 +402,9 @@ pub fn canonicalise_selector(raw: &str) -> Option<String> {
         return None;
     }
     canonical_email(trimmed)
+        .or_else(|| canonical_ip_literal(trimmed))
         .or_else(|| canonical_phone(trimmed))
         .or_else(|| canonical_url(trimmed))
-        .or_else(|| canonical_ip_literal(trimmed))
         .or_else(|| canonical_domain(trimmed))
         .or_else(|| canonical_handle(trimmed))
         .or_else(|| canonical_coordinates(trimmed))
@@ -787,6 +789,28 @@ mod tests {
         assert_eq!(
             canonicalise_selector("::ffff:8.8.8.8").as_deref(),
             Some("8.8.8.8")
+        );
+    }
+
+    /// An address whose digits spell a national phone number stays the address it is, and a
+    /// number is still a number.
+    #[test]
+    fn an_address_is_read_before_a_phone_number() {
+        for address in [
+            "203.12.16.35",
+            "180.0.123.145",
+            "220.245.6.78",
+            "61.212.134.156",
+        ] {
+            assert_eq!(
+                canonicalise_selector(address).as_deref(),
+                Some(address),
+                "{address}"
+            );
+        }
+        assert_eq!(
+            canonicalise_selector("+61 7 3858 3100").as_deref(),
+            Some("+61738583100")
         );
     }
 }

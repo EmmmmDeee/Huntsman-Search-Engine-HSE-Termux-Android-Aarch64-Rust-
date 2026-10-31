@@ -25,7 +25,6 @@ use serde_json::{Map, Value};
 
 use crate::address_au;
 use crate::au_id::is_valid_abn;
-use crate::canonical::canonical_domain;
 use crate::ckan::{self, field};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
@@ -34,7 +33,6 @@ use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 use crate::textnorm::name_tokens;
-use crate::value_syntax::host_only;
 
 pub const SRC: &str = "acnc";
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
@@ -303,8 +301,8 @@ fn emit_charity(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
     }
 
     if let Some(website) = field(rec, "Charity_Website") {
-        if let Some(domain) = canonical_domain(host_only(&website)) {
-            let mut entity = Entity::new(EntityKind::Domain, &domain, CONF_DOMAIN, scan_id);
+        if let Some((kind, host)) = crate::domains::link_host(&website) {
+            let mut entity = Entity::new(kind, &host, CONF_DOMAIN, scan_id);
             entity.tag("au");
             entity.tag("acnc");
             entity.tag("charity-website");

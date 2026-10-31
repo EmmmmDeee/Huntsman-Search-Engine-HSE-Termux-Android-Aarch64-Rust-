@@ -25,7 +25,6 @@ use std::collections::HashSet;
 use serde::Deserialize;
 
 use crate::canonical::{canonical_email, canonical_url};
-use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
@@ -420,20 +419,18 @@ fn add_package_links(
                 &["npm", "code"],
             );
         }
-        let host = host_only(link).to_ascii_lowercase();
-        if host.contains('.')
-            && !CODE_FORGES.contains(&host.as_str())
-            && seen.domains.insert(host.clone())
-        {
-            push_entity(
-                entities,
-                EntityKind::Domain,
-                &host,
-                DOMAIN_CONF,
-                scan_id,
-                package_evidence(scan_id, format!("npm package link domain ({pkg})"), pkg),
-                &["npm", crate::tags::DERIVED],
-            );
+        if let Some((kind, host)) = crate::domains::link_host(link) {
+            if !CODE_FORGES.contains(&host.as_str()) && seen.domains.insert(host.clone()) {
+                push_entity(
+                    entities,
+                    kind,
+                    &host,
+                    DOMAIN_CONF,
+                    scan_id,
+                    package_evidence(scan_id, format!("npm package link domain ({pkg})"), pkg),
+                    &["npm", crate::tags::DERIVED],
+                );
+            }
         }
     }
 }

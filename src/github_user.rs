@@ -6,7 +6,6 @@ use serde::Deserialize;
 
 use crate::canonical::{canonical_email, canonical_url};
 use crate::credential_origin::AuthenticationAuthority;
-use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{
@@ -411,17 +410,18 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
         profile_evidence.clone(),
         &["personal-site", "github"],
     );
-    let host = host_only(blog).to_ascii_lowercase();
-    if host.contains('.') && !matches!(host.as_str(), "github.com" | "github.io") {
-        push_entity(
-            entities,
-            EntityKind::Domain,
-            &host,
-            DOMAIN_CONF,
-            scan_id,
-            profile_evidence.clone().with_attr("blog_url", blog),
-            &["personal-site", crate::tags::DERIVED],
-        );
+    if let Some((kind, host)) = crate::domains::link_host(blog) {
+        if !matches!(host.as_str(), "github.com" | "github.io") {
+            push_entity(
+                entities,
+                kind,
+                &host,
+                DOMAIN_CONF,
+                scan_id,
+                profile_evidence.clone().with_attr("blog_url", blog),
+                &["personal-site", crate::tags::DERIVED],
+            );
+        }
     }
 }
 
@@ -662,6 +662,36 @@ mod tests {
                 mona(RelationKind::EmployedBy, "github"),
             ],
             "the X handle a profile names is its claim, not the person's"
+        );
+    }
+
+    /// A blog on an address is that address, which a crawl looks up as one, never a domain it
+    /// could neither look up nor route; the blog URL is kept as published either way.
+    #[test]
+    fn a_blog_on_an_address_is_that_address_not_a_domain() {
+        let got = lookup(
+            &OneResponse::json(
+                200,
+                r#"{"login":"octocat","id":1,"blog":"http://45.131.135.227/"}"#,
+            ),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        let kinds: Vec<_> = got
+            .entities
+            .iter()
+            .filter(|e| e.value.contains("45.131.135.227"))
+            .map(|e| (e.kind.clone(), e.value.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (EntityKind::Url, "http://45.131.135.227"),
+                (EntityKind::IpAddress, "45.131.135.227"),
+            ]
         );
     }
 

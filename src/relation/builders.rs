@@ -872,6 +872,22 @@ mod tests {
         assert_eq!(hosted[0].to_uid, www.uid);
     }
 
+    /// A URL on an address is hosted on that address, as one on a name is on the name: the
+    /// address rule gives both the URL's host and the address entity's value one written form.
+    #[test]
+    fn a_url_on_an_address_is_hosted_on_that_address() {
+        let address = ent(EntityKind::IpAddress, "45.131.135.227", 0.8);
+        let v6 = ent(EntityKind::IpAddress, "2001:DB8::1", 0.8);
+        let url = ent(EntityKind::Url, "http://45.131.135.227/sorry/index", 0.6);
+        let rels = derive_structural(&[address.clone(), v6, url.clone()], "s");
+        let hosted: Vec<_> = rels
+            .iter()
+            .filter(|relation| relation.kind == RelationKind::HostedOn)
+            .map(|relation| (relation.from_uid.as_str(), relation.to_uid.as_str()))
+            .collect();
+        assert_eq!(hosted, [(url.uid.as_str(), address.uid.as_str())]);
+    }
+
     #[test]
     fn resolution_and_registration_link_present_entities_only() {
         let mut domain = ent(EntityKind::Domain, "example.com", 0.92);

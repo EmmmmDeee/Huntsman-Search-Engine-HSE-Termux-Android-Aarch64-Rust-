@@ -1,7 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::canonical::{
-    canonical_coordinates, canonical_domain, canonical_domain_host, canonical_url,
+    canonical_coordinates, canonical_domain, canonical_domain_host, canonical_ip_literal,
+    canonical_url,
 };
 use crate::domains::is_proxy_registrant;
 use crate::entity::{Entity, EntityKind, normalise};
@@ -14,16 +15,10 @@ use super::{
 
 const COLLOCATION_RADIUS_KM: f64 = 1.0;
 
-/// Domain keys a URL may be hosted on, most specific first: the exact host
-/// under the same `domain_key` Domain entities use, then its `www.`-stripped
-/// alias. An exact `www.` Domain entity therefore wins over the apex.
-fn url_host_keys(url: &str) -> Vec<String> {
-    let Some(canonical) = canonical_url(url) else {
-        return Vec::new();
-    };
-    let Some((_, rest)) = canonical.split_once("://") else {
-        return Vec::new();
-    };
+/// The host a URL names, as its canonical form writes it, without the port. **Pure.**
+fn url_host(url: &str) -> Option<String> {
+    let canonical = canonical_url(url)?;
+    let (_, rest) = canonical.split_once("://")?;
     let authority = rest.split(['/', '?']).next().unwrap_or(rest);
     let host = authority
         .rsplit_once(':')
@@ -34,6 +29,17 @@ fn url_host_keys(url: &str) -> Vec<String> {
                 authority
             }
         });
+    Some(host.to_owned())
+}
+
+/// Domain keys a URL may be hosted on, most specific first: the exact host
+/// under the same `domain_key` Domain entities use, then its `www.`-stripped
+/// alias. An exact `www.` Domain entity therefore wins over the apex.
+fn url_host_keys(url: &str) -> Vec<String> {
+    let Some(host) = url_host(url) else {
+        return Vec::new();
+    };
+    let host = host.as_str();
     let mut keys = Vec::with_capacity(2);
     if let Some(exact) = canonical_domain(host) {
         keys.push(domain_key(&exact));
@@ -53,6 +59,12 @@ pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         .iter()
         .filter(|entity| entity.kind == EntityKind::Domain)
         .map(|entity| (entity.value.clone(), entity))
+        .collect::<HashMap<_, _>>();
+    // A URL on an address is hosted on that address, as one on a name is on the name.
+    let addresses = entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::IpAddress)
+        .map(|entity| (entity.value.as_str(), entity))
         .collect::<HashMap<_, _>>();
     for entity in entities {
         match entity.kind {
@@ -88,9 +100,14 @@ pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
                 }
             }
             EntityKind::Url => {
+                let address = url_host(&entity.value)
+                    .and_then(|host| canonical_ip_literal(&host))
+                    .and_then(|address| addresses.get(address.as_str()).copied());
                 if let Some(domain_entity) = url_host_keys(&entity.value)
                     .iter()
                     .find_map(|key| domains.get(key.as_str()))
+                    .copied()
+                    .or(address)
                 {
                     push_edge(
                         &mut edges,
