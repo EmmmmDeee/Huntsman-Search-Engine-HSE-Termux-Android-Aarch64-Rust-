@@ -11,5 +11,6 @@
   address a profile publishes is an observation, though read from its text, and still aliases its
   account, as does an account a source observed under a guessed handle. The address or handle the
   operator asked about is no guess: it keys its handle as before, whether or not a source has
-  observed it yet. A crawl that follows a guessed handle still binds it through that lookup's echo
-  of it, which the crawl keeps.
+  observed it yet. A crawl that follows a guessed handle binds it only once a source the crawl
+  asks observes an account under it: the pivot lookup's own echo of the handle, which the crawl
+  forgets, binds nothing.
