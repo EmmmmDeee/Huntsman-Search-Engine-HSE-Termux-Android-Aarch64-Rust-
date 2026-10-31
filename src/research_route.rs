@@ -37,6 +37,18 @@ pub fn plan(input: &str) -> Result<ResearchAction, &'static str> {
     }
 
     let inferred = infer_kind(query);
+    // The shared scan inference recognises *public* addresses and blocks. Without this guard a
+    // private literal may instead be classified as a domain, or an excluded CIDR as free text,
+    // sending the address to unrelated search providers. Fail closed before any network work.
+    let is_ip_literal = query.parse::<std::net::IpAddr>().is_ok();
+    let is_ip_block = query
+        .split_once('/')
+        .is_some_and(|(address, _)| address.parse::<std::net::IpAddr>().is_ok());
+    if (is_ip_literal && inferred != ScanKind::Ip)
+        || (is_ip_block && inferred != ScanKind::Netblock)
+    {
+        return Err("invalid or non-public IP address or network block");
+    }
     let kind = match inferred {
         // A free-text name is an interpretation, not an observed identity.
         ScanKind::People => {
@@ -133,6 +145,39 @@ mod tests {
                 selector: "PG_Smith".into(),
             })
         );
+    }
+
+    #[test]
+    fn ip_syntax_never_falls_through_to_domain_or_adaptive_search() {
+        for input in [
+            "10.0.0.5",
+            "192.168.1.20",
+            "127.0.0.1",
+            "169.254.1.1",
+            "::1",
+            "fc00::1",
+            "10.0.0.0/8",
+            "192.168.1.0/24",
+            "fc00::/7",
+            "1.1.1.1/33",
+            "10.0.0.5/not-a-prefix",
+        ] {
+            assert!(plan(input).is_err(), "{input} must not reach a provider");
+        }
+        assert!(matches!(
+            plan("1.1.1.1"),
+            Ok(ResearchAction::Targeted {
+                kind: ScanKind::Ip,
+                ..
+            })
+        ));
+        assert!(matches!(
+            plan("1.1.1.0/24"),
+            Ok(ResearchAction::Targeted {
+                kind: ScanKind::Netblock,
+                ..
+            })
+        ));
     }
 
     #[test]
