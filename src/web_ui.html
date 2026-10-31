@@ -257,7 +257,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <button class="btn btn-primary" id="uresearch-go" type="submit">Research</button>
 </form>
 <div class="toolbar"><button class="btn" id="uresearch-mission" type="button" disabled>Start bounded autonomous mission</button></div>
-<p class="help">General terms use keyless discovery. For recognised identifiers, preview a scan or start a saved passive mission with one recursive hop. Configured sources may make external requests. Progress, evidence and Stop are in Scans.</p>
+<p class="help">Phrases search keylessly. One-hop saved missions may contact configured sources; manage them under Scans.</p>
 <p class="help" id="uresearch-status" role="status"></p>
 <div id="uresearch-hits" class="help"></div>
 </div></div>
@@ -890,12 +890,12 @@ $('uresearch-q').oninput=()=>{missionSeed=null;$('uresearch-mission').disabled=t
 $('uresearch-mission').onclick=async()=>{
   const q=$('uresearch-q').value.trim();if(!missionSeed||missionSeed!==q)return;
   const b=$('uresearch-mission');b.disabled=true;
-  $('uresearch-status').textContent='Starting mission…';
+  $('uresearch-status').textContent='Starting…';
   try{
     const result=await api('/api/research/mission?'+new URLSearchParams({q}),{method:'POST'});
     if(!result.scan)throw new Error('Missing scan ID');
     location.hash='#/scan/'+enc(result.scan)+'/summary';
-  }catch(e){$('uresearch-status').textContent='Mission failed: '+e.message;b.disabled=false}
+  }catch(e){$('uresearch-status').textContent='Error: '+e.message;b.disabled=false}
 };
 $('uresearch').onsubmit=async ev=>{
   ev.preventDefault();
