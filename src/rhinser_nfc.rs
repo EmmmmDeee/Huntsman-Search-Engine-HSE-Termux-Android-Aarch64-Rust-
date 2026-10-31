@@ -231,7 +231,7 @@ mod tests {
         ] {
             let missing_type = [0xD0 | tnf, 0x00, 0x00];
             assert!(inspect_ndef(&missing_type).is_err(), "TNF={tnf}");
-            let mut typed_record = vec![0xD0 | tnf, type_name.len() as u8, 0x00];
+            let mut typed_record = vec![0xD0 | tnf, u8::try_from(type_name.len()).unwrap(), 0x00];
             typed_record.extend_from_slice(type_name.as_bytes());
             assert_eq!(inspect_ndef(&typed_record).unwrap().records, 1);
         }
