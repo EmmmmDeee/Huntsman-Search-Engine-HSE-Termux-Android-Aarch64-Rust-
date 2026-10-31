@@ -122,8 +122,10 @@ pub enum CrtShError {
 struct CrtEntry {
     #[serde(default)]
     id: Option<u64>,
+    /// crt.sh's id for the issuing CA. It writes `-1`, and names the issuer "Issuer Not Found",
+    /// for a CA it has no record of; that is no id, but the row is a certificate like any other.
     #[serde(default)]
-    issuer_ca_id: Option<u64>,
+    issuer_ca_id: Option<i64>,
     #[serde(default)]
     entry_timestamp: Option<String>,
     #[serde(default)]
@@ -370,7 +372,11 @@ fn certificates_evidence(certs: &[&CrtEntry], summary: &str, scan_id: &str) -> E
         ids.push(cert.id.map(|id| id.to_string()));
         serials.push(cert.serial_number.clone());
         issuers.push(cert.issuer_name.clone());
-        ca_ids.push(cert.issuer_ca_id.map(|id| id.to_string()));
+        ca_ids.push(
+            cert.issuer_ca_id
+                .filter(|id| *id >= 0)
+                .map(|id| id.to_string()),
+        );
         common.push(cert.common_name.as_deref().map(str::to_lowercase));
     }
     let count = if ids.values.is_empty() {
