@@ -67,6 +67,36 @@ fn values<'a>(entity: &'a Entity, key: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// An AS's registration names its abuse desk and its operator's role contact, which name a
+/// function, not a person: each mailbox and telephone carries the kind its jCard gives it, and the
+/// lookup's own entities raise no identity cluster.
+#[test]
+fn an_as_registrations_role_contacts_are_no_identity_cluster() {
+    let report = printed(run(&registry((200, NEIGHBOURS)), "as13335", 1));
+    let contacts: Vec<&Entity> = report
+        .entities
+        .iter()
+        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
+        .collect();
+    assert_eq!(contacts.len(), 3, "{contacts:#?}");
+    for contact in &contacts {
+        let kinds: std::collections::BTreeSet<&str> =
+            values(contact, "contact_kind").into_iter().collect();
+        assert_eq!(
+            kinds,
+            std::collections::BTreeSet::from(["group"]),
+            "{contact:#?}"
+        );
+    }
+    let correlations = crate::correlator::evaluate_rules(&report.entities, &[], "scan");
+    assert!(
+        correlations
+            .iter()
+            .all(|correlation| correlation.rule_id != "AU-002"),
+        "{correlations:#?}"
+    );
+}
+
 /// An AS is its registration, its holder and registry block, every prefix it announces with
 /// every window it was seen, and every neighbour with its side.
 #[test]

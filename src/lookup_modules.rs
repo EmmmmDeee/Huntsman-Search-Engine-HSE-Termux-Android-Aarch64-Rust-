@@ -151,6 +151,49 @@ pub fn asks_any(kind: ScanKind, selection: &Selection) -> bool {
     modules(kind).iter().any(|module| selection.runs(module))
 }
 
+/// The addresses a crawl's e-mail lookups already ran the keyed breach legs for. An e-mail lookup
+/// folds every configured breach leg in, so the separate breach pass of the same address would ask
+/// each paid source again: every collector keeps one of these and skips that pass.
+#[derive(Debug, Default)]
+pub struct BreachPasses {
+    checked: std::collections::BTreeSet<String>,
+}
+
+impl BreachPasses {
+    /// Note what `kind`'s lookup of `selector` returned: an e-mail lookup with a row of any breach
+    /// source (a label such as `hibp_account` read as its module) ran the breach legs for its
+    /// address. A no-key or refused-before-send row proves no request occurred and never covers
+    /// the later exposure pass.
+    pub fn record(
+        &mut self,
+        kind: ScanKind,
+        selector: &str,
+        outcomes: &[crate::source_outcome::SourceExecutionOutcome],
+    ) {
+        let ran = outcomes.iter().any(|outcome| {
+            BREACH.contains(&crate::module::module_of(&outcome.module))
+                && !matches!(
+                    outcome.kind,
+                    crate::source_outcome::SourceOutcomeKind::NotConfigured
+                        | crate::source_outcome::SourceOutcomeKind::RefusedBeforeSending
+                )
+        });
+        if kind == ScanKind::Email && ran {
+            if let Some(address) =
+                crate::scan_route::canonical_selector(ScanKind::Exposure, selector)
+            {
+                self.checked.insert(address);
+            }
+        }
+    }
+
+    /// Whether a lookup of `kind` for `selector` is a breach pass an e-mail lookup already ran.
+    #[must_use]
+    pub fn covered(&self, kind: ScanKind, selector: &str) -> bool {
+        kind == ScanKind::Exposure && self.checked.contains(selector)
+    }
+}
+
 /// The lookup kinds that ask `module`, by their commands (`ip`, `domain`), in [`ScanKind`]'s
 /// order: what a New Scan page shows each module looks up. `module` may be a label a Sources
 /// table shows (`hibp_account`, `wigle_bluetooth`, `asic_persons.banned`), which names its
