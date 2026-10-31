@@ -134,7 +134,7 @@ fn an_unset_outcome_reads_as_unknown_and_a_missing_log_has_no_section() {
     );
     assert!(
         run.output.status.success(),
-        "xtask issue-fix report exited with {}\\nstdout:\\n{}\\nstderr:\\n{}",
+        "xtask issue-fix report exited with {}\nstdout:\n{}\nstderr:\n{}",
         run.output.status,
         String::from_utf8_lossy(&run.output.stdout),
         String::from_utf8_lossy(&run.output.stderr)
