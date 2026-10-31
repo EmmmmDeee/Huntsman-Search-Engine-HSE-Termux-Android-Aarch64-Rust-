@@ -573,7 +573,7 @@ fn push_website(submission: &Submission, name: &str, scan_id: &str, entities: &m
     url.add_evidence(website_evidence(name, website, scan_id));
     entities.push(url);
 
-    if let Some((kind, host)) = crate::domains::link_host(website) {
+    if let Some((kind, host)) = crate::entity::link_host(website) {
         let mut entity = Entity::new(kind, &host, WEBSITE_CONF, scan_id);
         entity.tag(SOURCE);
         entity.tag("sec-edgar");

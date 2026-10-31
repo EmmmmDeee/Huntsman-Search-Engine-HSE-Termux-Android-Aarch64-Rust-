@@ -350,7 +350,7 @@ fn build_net_entities(net: &Net, asn: u32, scan_id: &str, entities: &mut Vec<Ent
     }
 
     if let Some(website) = trimmed(net.website.as_deref()) {
-        if let Some((kind, host)) = crate::domains::link_host(website) {
+        if let Some((kind, host)) = crate::entity::link_host(website) {
             let mut entity = Entity::new(kind, host, NET_CONF, scan_id);
             entity.tag(SOURCE);
             entity.tag("peeringdb");

@@ -277,7 +277,7 @@ fn add_bio_links(user: &HnUser, scan_id: &str, entities: &mut Vec<Entity>) {
             evidence.clone(),
             &["hacker-news", "self-reported"],
         );
-        if let Some((kind, host)) = crate::domains::link_host(&link) {
+        if let Some((kind, host)) = crate::entity::link_host(&link) {
             if !NOISE_HOSTS.contains(&host.as_str()) && seen_domains.insert(host.clone()) {
                 push_entity(
                     entities,

@@ -246,22 +246,6 @@ pub fn looks_like_domain(s: &str) -> bool {
             .is_some_and(|tld| tld.len() >= 2 && tld.chars().any(|c| c.is_ascii_alphabetic()))
 }
 
-/// The host a link names, as the entity it is: an IP address as an
-/// [`crate::entity::EntityKind::IpAddress`] in its one written form
-/// ([`crate::canonical::canonical_ip_literal`]), public or not, and a name the domain rule
-/// accepts as a [`crate::entity::EntityKind::Domain`]; `None` for any other host. The link is
-/// the observation, kept as its own URL; this is what a leg derives from it, so a link on an
-/// address is never a domain the crawl can neither look up nor route. **Pure.**
-#[must_use]
-pub fn link_host(link: &str) -> Option<(crate::entity::EntityKind, String)> {
-    let host = host_only(link);
-    if let Some(address) = crate::canonical::canonical_ip_literal(host) {
-        return Some((crate::entity::EntityKind::IpAddress, address));
-    }
-    crate::canonical::canonical_domain(host.trim_end_matches('.'))
-        .map(|domain| (crate::entity::EntityKind::Domain, domain))
-}
-
 #[must_use]
 pub fn is_or_subdomain_of(host: &str, domain: &str) -> bool {
     host == domain || is_proper_subdomain_of(host, domain)
@@ -379,39 +363,6 @@ pub fn vn_domain_registrant(domain: &str) -> Option<(&'static str, &'static str)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The host a link names is the entity it is: an address (IPv4 or IPv6, public or not) in its
-    /// one written form, a name the domain rule accepts, and nothing for any other host.
-    #[test]
-    fn a_links_host_is_an_address_or_a_domain_as_it_is() {
-        use crate::entity::EntityKind::{Domain, IpAddress};
-        for (link, host) in [
-            (
-                "http://45.131.135.227/blog",
-                Some((IpAddress, "45.131.135.227")),
-            ),
-            ("http://192.168.1.1/", Some((IpAddress, "192.168.1.1"))),
-            (
-                "https://[2001:DB8::1]:8443/x",
-                Some((IpAddress, "2001:db8::1")),
-            ),
-            (
-                "https://Blog.Example.COM./post",
-                Some((Domain, "blog.example.com")),
-            ),
-            ("https://user@example.org/", Some((Domain, "example.org"))),
-            ("https://my_site.example.com/", None),
-            ("http://localhost:8080/", None),
-        ] {
-            let got = link_host(link);
-            assert_eq!(
-                got.as_ref()
-                    .map(|(kind, value)| (kind.clone(), value.as_str())),
-                host,
-                "{link}"
-            );
-        }
-    }
 
     #[test]
     fn url_helpers_match_contract() {

@@ -374,7 +374,7 @@ fn build_entities(
             evidence.clone(),
             &["docker-hub"],
         );
-        if let Some((kind, host)) = crate::domains::link_host(website) {
+        if let Some((kind, host)) = crate::entity::link_host(website) {
             if !CODE_FORGES.contains(&host.as_str()) {
                 push_entity(
                     &mut entities,

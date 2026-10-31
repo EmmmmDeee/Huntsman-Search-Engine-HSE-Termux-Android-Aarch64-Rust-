@@ -584,6 +584,22 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
     }
 }
 
+/// The host a link names, as the entity it is: an IP address as an
+/// [`EntityKind::IpAddress`] in its one written form
+/// ([`crate::canonical::canonical_ip_literal`]), public or not, and a name the domain rule
+/// accepts as a [`EntityKind::Domain`]; `None` for any other host. The link is
+/// the observation, kept as its own URL; this is what a leg derives from it, so a link on an
+/// address is never a domain the crawl can neither look up nor route. **Pure.**
+#[must_use]
+pub fn link_host(link: &str) -> Option<(EntityKind, String)> {
+    let host = crate::domains::host_only(link);
+    if let Some(address) = crate::canonical::canonical_ip_literal(host) {
+        return Some((EntityKind::IpAddress, address));
+    }
+    crate::canonical::canonical_domain(host.trim_end_matches('.'))
+        .map(|domain| (EntityKind::Domain, domain))
+}
+
 #[must_use]
 pub fn evidence_sources(entities: &[Entity]) -> BTreeSet<String> {
     entities
@@ -742,6 +758,39 @@ impl fmt::Display for Entity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host a link names is the entity it is: an address (IPv4 or IPv6, public or not) in its
+    /// one written form, a name the domain rule accepts, and nothing for any other host.
+    #[test]
+    fn a_links_host_is_an_address_or_a_domain_as_it_is() {
+        use EntityKind::{Domain, IpAddress};
+        for (link, host) in [
+            (
+                "http://45.131.135.227/blog",
+                Some((IpAddress, "45.131.135.227")),
+            ),
+            ("http://192.168.1.1/", Some((IpAddress, "192.168.1.1"))),
+            (
+                "https://[2001:DB8::1]:8443/x",
+                Some((IpAddress, "2001:db8::1")),
+            ),
+            (
+                "https://Blog.Example.COM./post",
+                Some((Domain, "blog.example.com")),
+            ),
+            ("https://user@example.org/", Some((Domain, "example.org"))),
+            ("https://my_site.example.com/", None),
+            ("http://localhost:8080/", None),
+        ] {
+            let got = link_host(link);
+            assert_eq!(
+                got.as_ref()
+                    .map(|(kind, value)| (kind.clone(), value.as_str())),
+                host,
+                "{link}"
+            );
+        }
+    }
 
     fn evidence(source: &str, summary: &str) -> Evidence {
         Evidence::new(EvidenceProvenance::for_scan(source, "scan-1"), summary)

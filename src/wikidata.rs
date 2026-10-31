@@ -708,7 +708,7 @@ fn collect_pivots(
     match property.pivot {
         Pivot::None => {}
         Pivot::Website => {
-            if let Some((kind, host)) = crate::domains::link_host(value) {
+            if let Some((kind, host)) = crate::entity::link_host(value) {
                 pivots.push((kind, host, "Official website".to_owned()));
             }
         }

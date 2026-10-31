@@ -444,7 +444,7 @@ fn add_one_link(
             &["crates-io", "code"],
         );
     }
-    if let Some((kind, host)) = crate::domains::link_host(link) {
+    if let Some((kind, host)) = crate::entity::link_host(link) {
         if !CODE_FORGES.contains(&host.as_str()) && seen_domains.insert(host.clone()) {
             push_entity(
                 entities,

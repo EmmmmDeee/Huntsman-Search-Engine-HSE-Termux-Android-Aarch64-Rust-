@@ -301,7 +301,7 @@ fn emit_charity(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
     }
 
     if let Some(website) = field(rec, "Charity_Website") {
-        if let Some((kind, host)) = crate::domains::link_host(&website) {
+        if let Some((kind, host)) = crate::entity::link_host(&website) {
             let mut entity = Entity::new(kind, &host, CONF_DOMAIN, scan_id);
             entity.tag("au");
             entity.tag("acnc");

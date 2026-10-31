@@ -410,7 +410,7 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
         profile_evidence.clone(),
         &["personal-site", "github"],
     );
-    if let Some((kind, host)) = crate::domains::link_host(blog) {
+    if let Some((kind, host)) = crate::entity::link_host(blog) {
         if !matches!(host.as_str(), "github.com" | "github.io") {
             push_entity(
                 entities,
