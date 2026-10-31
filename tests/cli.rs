@@ -1928,3 +1928,40 @@ fn correlate_history_pivots_a_saved_scan_across_earlier_saved_scans() {
         .unwrap();
     assert_eq!(usage.status.code(), Some(64));
 }
+
+#[test]
+fn universal_research_preview_is_subject_neutral_and_offline() {
+    for (args, expected) in [
+        (
+            &["research", "--plan", "unclassified", "historical", "term"][..],
+            "route=adaptive_web_search\tkeyless=true\n",
+        ),
+        (
+            &["research", "--plan", "example.org"][..],
+            "route=scan\tkind=domain\n",
+        ),
+        (
+            &["research", "--plan", "@MixedCase"][..],
+            "route=scan\tkind=username\n",
+        ),
+        (
+            &["research", "--plan", "-27.4705,153.0260"][..],
+            "route=scan\tkind=geocode\n",
+        ),
+    ] {
+        let out = bin().args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), expected, "{args:?}");
+    }
+    for args in [
+        &["research", "--plan"][..],
+        &["research", "--plan", ""][..],
+        &["research", "--plan", "127.0.0.1"][..],
+        &["research", "--plan", "192.168.1.0/24"][..],
+        &["research", "--plan", "1.1.1.1/33"][..],
+    ] {
+        let out = bin().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(64), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
+}
