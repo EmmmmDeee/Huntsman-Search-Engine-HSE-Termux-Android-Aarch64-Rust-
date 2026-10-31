@@ -456,6 +456,17 @@ impl Tree {
         let mut roots = Vec::new();
         tree.walk(&main_path, 0, "huntsman_recon", &mut roots);
         tree.main_deps = tree.resolve(&roots, "main");
+        // Walk every standalone binary as well, including its out-of-line modules.
+        // This keeps the stray-file check meaningful when src/bin/ exists.
+        let bin_dir = src.join("bin");
+        if bin_dir.is_dir() {
+            for entry in fs::read_dir(bin_dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|ext| ext == "rs") {
+                    tree.walk(&path, 0, "huntsman_recon", &mut Vec::new());
+                }
+            }
+        }
         tree
     }
 
@@ -654,14 +665,21 @@ fn module_map_matches_the_compiled_tree() {
         uncompiled.is_empty(),
         "layer rows name modules src/lib.rs does not declare: {uncompiled:?}"
     );
+    let mut compiled_binaries = BTreeSet::from(["main".to_owned()]);
+    let bin_dir = root().join("src/bin");
+    if bin_dir.is_dir() {
+        for entry in fs::read_dir(bin_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "rs") {
+                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                compiled_binaries.insert(name);
+            }
+        }
+    }
+    let documented_binaries: BTreeSet<String> = map.binary.iter().cloned().collect();
     assert_eq!(
-        map.binary,
-        ["main"],
-        "the Binary row must name every executable entry point"
-    );
-    assert!(
-        !root().join("src/bin").exists(),
-        "src/bin holds a second executable; the Binary row and the release name only `main`"
+        documented_binaries, compiled_binaries,
+        "the Binary row must name every executable entry point in src/main.rs and src/bin/"
     );
 
     let src = root().join("src");

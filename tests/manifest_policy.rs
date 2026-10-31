@@ -71,9 +71,18 @@ fn crate_roots_set_no_lint_level_outside_the_manifests() {
         "src/main.rs".to_string(),
         "xtask/src/main.rs".to_string(),
     ];
-    // Any further executable under src/bin is a crate root too; today there is none.
+    // Cargo recognises src/bin/*.rs and src/bin/*/main.rs as binary crate roots.
+    // Other files in a binary's module directory are not crate roots.
     for entry in fs::read_dir("src/bin").into_iter().flatten() {
-        roots.push(entry.expect("src/bin entry").path().display().to_string());
+        let path = entry.expect("src/bin entry").path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+            roots.push(path.display().to_string());
+        } else if path.is_dir() {
+            let main = path.join("main.rs");
+            if main.is_file() {
+                roots.push(main.display().to_string());
+            }
+        }
     }
     for path in &roots {
         let source = fs::read_to_string(path).expect(path);
