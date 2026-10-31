@@ -11,6 +11,27 @@ use crate::entity::{Entity, EntityKind};
 use crate::graph::EntityRelation;
 use crate::source_outcome::SourceExecutionOutcome;
 
+/// What a provider is asked for `selector`: a handle as it was written, without its leading `@`s,
+/// because its identity key folds case and separators (`john.doe_99` and `johndoe99` are one
+/// entity but two handles, and a provider asked the key answers for the other); every other kind's
+/// canonical value, which keeps everything a provider reads (an address in lower case, a number in
+/// E.164, a name with its spaces collapsed). **Pure.**
+#[must_use]
+pub fn query_text(selector: &Entity) -> String {
+    match selector.kind {
+        EntityKind::Username => selector.raw_value.trim().trim_start_matches('@').to_owned(),
+        _ => selector.value.clone(),
+    }
+}
+
+/// Whether a provider's `value` of `kind` names something other than `selector`: another kind, or
+/// another identity of its kind. The selector's own value in another spelling or case is the
+/// selector, never a pivot from it. **Pure.**
+#[must_use]
+pub fn differs_from_selector(kind: &EntityKind, value: &str, selector: &Entity) -> bool {
+    *kind != selector.kind || crate::entity::normalise(kind, value) != selector.value
+}
+
 /// Hard work limits supplied to one collector invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CollectionLimits {
