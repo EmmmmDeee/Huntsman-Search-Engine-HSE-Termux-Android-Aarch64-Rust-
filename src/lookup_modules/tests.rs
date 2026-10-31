@@ -997,3 +997,29 @@ fn an_email_lookup_that_ran_the_breach_legs_covers_its_breach_pass() {
         );
     }
 }
+
+/// A source row saying no request was made is not evidence that the e-mail lookup ran the breach
+/// leg. The separate exposure lookup must remain eligible, rather than being falsely covered.
+#[test]
+fn an_unasked_breach_leg_cannot_cover_the_exposure_lookup() {
+    use crate::source_outcome::SourceExecutionOutcome;
+    for outcome in [
+        SourceExecutionOutcome::not_configured(crate::exposure_cli::SOURCE, 1),
+        SourceExecutionOutcome::refused_before_sending(
+            crate::exposure_cli::SOURCE,
+            1,
+            "the request was blocked before sending",
+        ),
+    ] {
+        let mut passes = BreachPasses::default();
+        passes.record(ScanKind::Email, "Ada@Example.org", &[outcome]);
+        assert!(!passes.covered(ScanKind::Exposure, "ada@example.org"));
+    }
+    let mut passes = BreachPasses::default();
+    passes.record(
+        ScanKind::Email,
+        "Ada@Example.org",
+        &[SourceExecutionOutcome::valid_zero(crate::exposure_cli::SOURCE, 1)],
+    );
+    assert!(passes.covered(ScanKind::Exposure, "ada@example.org"));
+}
