@@ -586,6 +586,27 @@ mod collector_tests {
     }
 
     #[test]
+    fn a_handle_is_searched_as_it_was_written_never_by_its_identity_key() {
+        // `John.Doe_99` and `johndoe99` share one identity key but are two handles: the search
+        // asks for the one given, and the handle echoed back in another case is no pivot.
+        let body = r#"{"entries": [{"username": "john.doe_99", "database_name": "ExampleBreach"}],
+            "total": 1}"#;
+        let fake = Fake::with(200, body, &[]);
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Username, "John.Doe_99"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        let sent = String::from_utf8_lossy(&fake.requests.lock().unwrap()[0].body).into_owned();
+        assert!(sent.contains("John.Doe_99"), "{sent}");
+        assert!(!sent.contains("johndoe99"), "{sent}");
+        assert!(batch.pivots.is_empty(), "{:?}", batch.pivots);
+    }
+
+    #[test]
     fn dropping_an_entity_at_the_cap_marks_the_batch_truncated_not_complete() {
         // total is absent and two distinct emails arrive, but max_entities == 1.
         // The dropped entity must surface as Partial + receipt.truncated, never
