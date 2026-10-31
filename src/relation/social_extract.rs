@@ -45,7 +45,8 @@ fn extract_username_from_profile_url(url: &str) -> Option<String> {
 pub fn derive_profile_links(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let usernames = entities
         .iter()
-        .filter(|entity| entity.kind == EntityKind::Username)
+        // A handle guessed from another value is no account a profile link could be.
+        .filter(|entity| entity.kind == EntityKind::Username && !entity.is_offline_reading())
         .filter_map(|entity| canonical_handle(&entity.value).map(|key| (key, entity)))
         .collect::<HashMap<_, _>>();
     let mut out = Vec::new();

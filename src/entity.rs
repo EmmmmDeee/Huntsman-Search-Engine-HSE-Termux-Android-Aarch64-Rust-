@@ -447,6 +447,20 @@ impl Entity {
             .collect()
     }
 
+    /// Whether every record of this entity is a reading made offline from another value, by a
+    /// source that observes no one ([`is_enrichment_source`]): a handle guessed from an address's
+    /// local part, a name read off it, a handle's variants. Such an entity restates the value it
+    /// was read from, so it binds no identity. A record any other source made, a profile's own
+    /// published address included, is an observation.
+    #[must_use]
+    pub fn is_offline_reading(&self) -> bool {
+        !self.evidence.is_empty()
+            && self
+                .evidence
+                .iter()
+                .all(|evidence| is_enrichment_source(&evidence.provenance.corroboration_key()))
+    }
+
     #[must_use]
     pub fn corroborating_sources(&self) -> BTreeSet<String> {
         self.evidence

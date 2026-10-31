@@ -103,6 +103,11 @@ pub fn basis_kind(basis: &str) -> &'static str {
 }
 
 fn persona_key(entity: &Entity) -> Option<String> {
+    // A guess read off another value keys nothing: an alias from it would bind that value to
+    // itself.
+    if entity.is_offline_reading() {
+        return None;
+    }
     let handle = match entity.kind {
         EntityKind::Email => extract_email_localpart(&entity.value)?,
         EntityKind::Username => entity.value.as_str(),
@@ -146,7 +151,7 @@ fn person_fingerprints(value: &str) -> BTreeSet<String> {
 
 fn coreference_key(entity: &Entity) -> Option<String> {
     match entity.kind {
-        EntityKind::Person => {
+        EntityKind::Person if !entity.is_offline_reading() => {
             let key = person_key(&entity.value);
             (!key.is_empty()).then_some(key)
         }
@@ -1083,6 +1088,24 @@ mod tests {
         );
         assert_eq!(personal.len(), 1, "{personal:?}");
         assert!(!is_generic_handle("ada.l@acme.example"));
+    }
+
+    /// An address a profile publishes is something its source observed, though read from free
+    /// text, so it still aliases the account; only a guess read off another value keys nothing.
+    #[test]
+    fn a_published_address_aliases_its_account_and_a_guess_keys_nothing() {
+        let observed = |kind: EntityKind, value: &str, source: &str| {
+            let mut entity = ent(kind, value, 0.6);
+            entity.add_evidence(evidence(source, "seen").inferred());
+            entity
+        };
+        let mut account = ent(EntityKind::Username, "alice_w", 0.9);
+        account.add_evidence(evidence("mastodon_user", "the account"));
+        let published = observed(EntityKind::Email, "alice_w@proton.me", "mastodon_user");
+        assert_eq!(derive_handles(&[account.clone(), published], "s").len(), 1);
+        let guessed = observed(EntityKind::Email, "alice_w@proton.me", "email_parse");
+        assert!(guessed.is_offline_reading());
+        assert!(derive_handles(&[account, guessed], "s").is_empty());
     }
 
     /// Every relation that holds only because its entities share a handle rests on that handle:
