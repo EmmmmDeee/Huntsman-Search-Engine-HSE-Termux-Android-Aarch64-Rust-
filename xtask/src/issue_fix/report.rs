@@ -228,9 +228,9 @@ mod tests {
 
     #[test]
     fn a_log_without_a_final_newline_still_ends_its_last_line() {
-        assert_eq!(gate_tail(b"a\nb").unwrap(), b"a\nb\n");
-        assert_eq!(gate_tail(b"a\n").unwrap(), b"a\n");
-        assert_eq!(gate_tail(b"\n").unwrap(), b"\n");
+        assert_eq!(gate_tail(&b"a\nb"[..]).unwrap(), b"a\nb\n");
+        assert_eq!(gate_tail(&b"a\n"[..]).unwrap(), b"a\n");
+        assert_eq!(gate_tail(&b"\n"[..]).unwrap(), b"\n");
     }
 
     #[test]
