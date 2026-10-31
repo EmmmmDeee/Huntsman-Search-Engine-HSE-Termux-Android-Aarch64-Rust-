@@ -68,28 +68,17 @@ fn is_numeric_handle(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
 }
 
+/// Whether a handle (a username, or an address by its local part) names a role rather than
+/// someone: a role mailbox by [`crate::value_syntax::is_role_localpart`], the one list the crawl's
+/// mailbox rule reads too, or a handle that is empty or only digits. Two such handles shared by
+/// unrelated organisations (`abuse@`, `hostmaster@`) are no alias of one persona.
 #[must_use]
 pub fn is_generic_handle(value: &str) -> bool {
-    let canonical = canonical_handle(value)
-        .or_else(|| extract_email_localpart(value).and_then(canonical_handle))
-        .unwrap_or_else(|| value.trim().to_ascii_lowercase());
-    matches!(
-        canonical.as_str(),
-        "admin"
-            | "contact"
-            | "hello"
-            | "help"
-            | "info"
-            | "mail"
-            | "noreply"
-            | "office"
-            | "postmaster"
-            | "sales"
-            | "security"
-            | "support"
-            | "team"
-            | "webmaster"
-    ) || canonical.is_empty()
+    let handle = value.trim().trim_start_matches('@');
+    let local = extract_email_localpart(handle).unwrap_or(handle);
+    let canonical = canonical_handle(local).unwrap_or_else(|| local.to_ascii_lowercase());
+    crate::value_syntax::is_role_localpart(local)
+        || canonical.is_empty()
         || is_numeric_handle(&canonical)
 }
 
@@ -114,12 +103,15 @@ pub fn basis_kind(basis: &str) -> &'static str {
 }
 
 fn persona_key(entity: &Entity) -> Option<String> {
-    match entity.kind {
-        EntityKind::Email => extract_email_localpart(&entity.value).and_then(canonical_handle),
-        EntityKind::Username => canonical_handle(&entity.value),
-        _ => None,
+    let handle = match entity.kind {
+        EntityKind::Email => extract_email_localpart(&entity.value)?,
+        EntityKind::Username => entity.value.as_str(),
+        _ => return None,
+    };
+    if is_generic_handle(handle) {
+        return None;
     }
-    .filter(|key| !is_generic_handle(key))
+    canonical_handle(handle)
 }
 
 fn person_key(value: &str) -> String {
@@ -1057,6 +1049,56 @@ mod tests {
             "s",
         );
         assert_eq!(alias.len(), 3);
+    }
+
+    /// Role mailboxes at unrelated organisations share a local part but no persona, whichever
+    /// role they name (the crawl's mailbox rule reads the same list), so no alias joins them or a
+    /// username of the same word; two personal addresses with one local part still alias.
+    #[test]
+    fn role_handles_at_unrelated_organisations_are_no_alias() {
+        for role in [
+            "abuse",
+            "hostmaster",
+            "billing",
+            "noc",
+            "tech",
+            "privacy",
+            "support",
+        ] {
+            let aliases = derive_handles(
+                &[
+                    ent(EntityKind::Email, &format!("{role}@registrar.example"), 0.8),
+                    ent(EntityKind::Email, &format!("{role}@hosting.example"), 0.8),
+                    ent(EntityKind::Username, role, 0.6),
+                ],
+                "s",
+            );
+            assert!(aliases.is_empty(), "{role}: {aliases:?}");
+            assert!(is_generic_handle(role), "{role}");
+        }
+        // A role word a separator sets apart in a local part is a role too, as the crawl's
+        // mailbox rule reads it.
+        let aliases = derive_handles(
+            &[
+                ent(EntityKind::Email, "awsdns-hostmaster@amazon.example", 0.8),
+                ent(
+                    EntityKind::Email,
+                    "awsdns-hostmaster@registrar.example",
+                    0.8,
+                ),
+            ],
+            "s",
+        );
+        assert!(aliases.is_empty(), "{aliases:?}");
+        let personal = derive_handles(
+            &[
+                ent(EntityKind::Email, "ada.l@acme.example", 0.8),
+                ent(EntityKind::Email, "adal@other.example", 0.8),
+            ],
+            "s",
+        );
+        assert_eq!(personal.len(), 1, "{personal:?}");
+        assert!(!is_generic_handle("ada.l@acme.example"));
     }
 
     /// Every relation that holds only because its entities share a handle rests on that handle:
