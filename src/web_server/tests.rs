@@ -3575,3 +3575,73 @@ fn universal_research_api_is_bounded_guarded_and_uses_canonical_rust_routes() {
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn autonomous_research_mission_reuses_durable_scan_and_rejects_untrusted_dispatch() {
+    let (routes, _, dir) = scan_routes("autonomous-research");
+    let ask = |head: &str| scans_request(&routes, None, head);
+    let submitted = ask(
+        "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+    );
+    assert!(submitted.starts_with("HTTP/1.1 202 Accepted"), "{submitted}");
+    let body: serde_json::Value =
+        serde_json::from_str(submitted.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(body["kind"], "domain");
+    assert_eq!(body["selector"], "example.org");
+    assert_eq!(body["recursion_depth"], 1);
+    assert_eq!(body["usecase"], "passive");
+    let id = body["scan"].as_str().unwrap();
+    let api = routes.scans.as_ref().unwrap();
+    let completed = api
+        .service()
+        .wait(id, Instant::now() + Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(completed.id, id);
+    assert_eq!(completed.target, "example.org");
+    assert_eq!(completed.options.usecase, "passive");
+    assert_eq!(completed.options.depth, 1);
+    assert!(!completed.status.is_active(), "mission must have finished in fixture");
+
+    for (request, code) in [
+        (
+            "GET /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            405,
+        ),
+        (
+            "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            403,
+        ),
+        (
+            "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: cross-site\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            403,
+        ),
+        (
+            "POST /api/research/mission?q=hello+world HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            422,
+        ),
+        (
+            "POST /api/research/mission?q=127.0.0.1 HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            400,
+        ),
+        (
+            "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\nContent-Length: 2\r\n\r\n",
+            400,
+        ),
+    ] {
+        let response = ask(request);
+        assert!(response.starts_with(&format!("HTTP/1.1 {code}")), "{response}");
+    }
+    let no_store = text(respond(
+        "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+        &test_config(loopback_bind(), None),
+        &Routes::default(),
+    ));
+    assert!(no_store.starts_with("HTTP/1.1 404"), "{no_store}");
+    let no_token = scans_request(
+        &routes,
+        Some("secret"),
+        "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+    );
+    assert!(no_token.starts_with("HTTP/1.1 401"), "{no_token}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
