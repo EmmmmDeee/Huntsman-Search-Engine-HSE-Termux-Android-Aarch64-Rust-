@@ -251,6 +251,17 @@ pub fn rcode_name(rcode: u8) -> String {
     }
 }
 
+/// Whether DNS can carry `name`: ASCII, at most 253 bytes without its root dot, and every label 1
+/// to 63 bytes (RFC 1035, 2.3.4). A name past that is never sent, by the wire query or the system
+/// resolver, so no answer can be read for it. **Pure.**
+#[must_use]
+pub fn askable_name(name: &str) -> bool {
+    let bare = name.strip_suffix('.').unwrap_or(name);
+    bare.len() <= 253
+        && bare.is_ascii()
+        && bare.split('.').all(|label| (1..=63).contains(&label.len()))
+}
+
 /// A recursive query for `name` and `kind` with id `id`, offering EDNS0. **Pure.**
 ///
 /// # Errors
@@ -259,7 +270,7 @@ pub fn rcode_name(rcode: u8) -> String {
 pub fn query(id: u16, name: &str, kind: u16) -> Result<Vec<u8>, WireError> {
     let bare = name.strip_suffix('.').unwrap_or(name);
     let bad = || WireError::BadQuery(name.to_owned());
-    if bare.len() > 253 || !bare.is_ascii() {
+    if !askable_name(name) {
         return Err(bad());
     }
     let mut out = Vec::with_capacity(bare.len() + 30);

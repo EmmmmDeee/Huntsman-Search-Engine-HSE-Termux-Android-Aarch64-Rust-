@@ -683,13 +683,17 @@ fn reputation_descriptors(
     let host = entity.raw_value.as_str();
     let attr = |key: &str| attr(evidence, key);
     // A blocklist's listing names the list and its reason, as Spiderfoot's DNSBL modules write
-    // both the blacklisted and the malicious element.
+    // both the blacklisted and the malicious element. A listing that records no abuse of the
+    // subject itself (a policy listing of its range, a listing of its network or AS) is
+    // blacklisted only; one saved before listings carried a class is read as abuse, as it was.
     if let Some(listing) = attr("dnsbl") {
         let data = format!("{listing} [{host}]");
         if let Some(kind) = blacklisted_type(&entity.kind) {
             out.push((kind, data.clone()));
         }
-        if let Some(kind) = malicious_type(&entity.kind) {
+        let abuse = attr(crate::dnsbl::LISTING_CLASS)
+            .is_none_or(|class| class == crate::dnsbl::Class::Abuse.as_str());
+        if let Some(kind) = malicious_type(&entity.kind).filter(|_| abuse) {
             out.push((kind, data));
         }
     } else if let Some(reason) = attr("dns_filter") {
@@ -1047,6 +1051,17 @@ impl<'a> Walk<'a> {
                     continue;
                 }
                 said_malicious |= kind.starts_with("MALICIOUS_");
+                // Keep the DNSBL classification on its typed blacklist descriptor as well as
+                // the parent evidence. Correlation rules consume descriptors, and the target
+                // parent can hold records from several providers with different classes.
+                let descriptor_raw = if kind.starts_with("BLACKLISTED_") {
+                    evidence
+                        .attr_values(crate::dnsbl::LISTING_CLASS)
+                        .next()
+                        .map_or(Value::Null, |class| json!({ "dnsbl_class": class }))
+                } else {
+                    Value::Null
+                };
                 self.builder.push(
                     kind,
                     data,
@@ -1055,7 +1070,7 @@ impl<'a> Walk<'a> {
                     confidence(entity),
                     created,
                     Some(&entity.uid),
-                    Value::Null,
+                    descriptor_raw,
                 );
             }
         }

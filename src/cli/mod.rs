@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION]|HASH | coarsen LAT,LON | case-check CASE-JSON ORIGINAL-ADVERT-TEXT | blueprint [--json] [--docx FILE|-] | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE] | crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS|sol:ADDRESS [--save FILE] | itunes KEYWORD | wikidata QUERY | gleif LEI|NAME | geocode PLACE|LAT,LON [--save FILE] | exif IMAGE-FILE | docmeta FILE | apk FILE [--json] | apk diff OLD NEW [--json] | mitm audit [--file FILE] [--baseline FILE] [--json] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar survey-lte|survey-nr|survey-wifi|survey-bluetooth --file NETWORK_SURVEY_CSV [--json] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | osint SUBCOMMAND [ARGS] | public-osint news|notices|web|dossier QUERY... | query [--adaptive|--exa] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION]|HASH | coarsen LAT,LON | case-check CASE-JSON ORIGINAL-ADVERT-TEXT | blueprint [--json] [--docx FILE|-] | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE] | crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS|sol:ADDRESS [--save FILE] | itunes KEYWORD | wikidata QUERY | gleif LEI|NAME | geocode PLACE|LAT,LON [--save FILE] | exif IMAGE-FILE | docmeta FILE | apk FILE [--json] | apk diff OLD NEW [--json] | mitm audit [--file FILE] [--baseline FILE] [--json] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar survey-lte|survey-nr|survey-wifi|survey-bluetooth --file NETWORK_SURVEY_CSV [--json] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR] | investigate TEXT...|--file FILE | research [--plan] TERM... | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | osint SUBCOMMAND [ARGS] | public-osint news|notices|web|dossier QUERY... | query [--adaptive|--exa] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -58,6 +58,7 @@ Commands:
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
   plan                  Plan an offline investigation from seeds; save or reload it as a session
+  research              Research any term using existing typed or keyless adaptive capabilities
   query                 Keyless web search; --adaptive aggregates leads; --exa uses optional search credits
   public-osint          Independent GDELT news, FBI notices and multi-engine public dossiers
   sf                    SpiderFoot-compatible sf.py front end over saved scans
@@ -99,6 +100,7 @@ mod osint;
 mod public_osint;
 mod radar;
 mod report;
+mod research;
 mod scans;
 mod selfcheck;
 mod service;
@@ -177,6 +179,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("scan") => lookup::scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => lookup::investigate_cmd(&remaining.collect::<Vec<_>>()),
         Some("plan") => lookup::plan_cmd(&remaining.collect::<Vec<_>>()),
+        Some("research") => research::research_cmd(&remaining.collect::<Vec<_>>()),
         Some("osint") => osint::osint_cmd(&remaining.collect::<Vec<_>>()),
         Some("query") => lookup::query_cmd(&remaining.collect::<Vec<_>>()),
         Some("sf") => lookup::sf_cmd(&remaining.collect::<Vec<_>>()),

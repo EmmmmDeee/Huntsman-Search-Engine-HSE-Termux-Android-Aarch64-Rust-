@@ -505,9 +505,13 @@ mod tests {
         }
     }
 
+    /// A block page a CDN serves at 404 (a custom rule may use any 4xx).
+    const CHALLENGE_404: &str = "<!doctype html><html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked<script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>";
+
     /// One contract for every leg, so each provider client is held to the same reading of a
-    /// refusal: a rejected key, a rate limit, a server error or a body that is not the provider's
-    /// document is never an answer and never an entity, and a rate limit is named as one.
+    /// refusal: a rejected key, a rate limit, a server error, a block page or HTML page at 404, or a
+    /// body that is not the provider's document is never an answer and never an entity, and a rate
+    /// limit is named as one.
     #[test]
     fn every_leg_reads_a_refusal_as_a_failure_never_an_answer() {
         let keys = all_keys();
@@ -521,6 +525,11 @@ mod tests {
                     (429, r#"{"error":"slow down"}"#),
                     (500, r#"{"error":"boom"}"#),
                     (200, "<html>not the provider's document</html>"),
+                    (404, CHALLENGE_404),
+                    (
+                        404,
+                        "<!doctype html><title>404 Not Found</title><h1>Not Found</h1>",
+                    ),
                 ] {
                     let legs = run(&Fixed(status, body), &keys, indicator, "s", 1);
                     let name = source.api.source;
@@ -544,10 +553,39 @@ mod tests {
                     if status == 429 && outcome.kind != SourceOutcomeKind::RateLimited {
                         broken.push(format!("{name}: HTTP 429 read as {:?}", outcome.kind));
                     }
+                    if body == CHALLENGE_404 && outcome.kind != SourceOutcomeKind::BotWaf {
+                        broken.push(format!(
+                            "{name}: a 404 block page read as {:?}",
+                            outcome.kind
+                        ));
+                    }
                 }
             }
         }
         assert!(broken.is_empty(), "{}", broken.join("\n"));
+    }
+
+    /// ISC and Maltiverse answer an address they have no record of with a `200` (ISC with null
+    /// fields, Maltiverse with the neutral record it makes as it answers), and Spiderfoot's
+    /// `sfp_isc` and `sfp_maltiverse` read a `404` as an error ("API endpoint not found"): a 404
+    /// from either is never "checked, nothing known".
+    #[test]
+    fn a_404_from_a_source_that_answers_nothing_known_with_200_is_no_clean_negative() {
+        let keys = all_keys();
+        let legs = run(
+            &Fixed(404, r#"{"detail":"Not Found"}"#),
+            &keys,
+            Indicator::Ip("1.1.1.1"),
+            "s",
+            1,
+        );
+        for name in [crate::isc::API.source, crate::maltiverse::API.source] {
+            let Some(outcome) = legs.outcomes.iter().find(|o| o.module == name) else {
+                panic!("{name}: no outcome");
+            };
+            assert_eq!(outcome.kind, SourceOutcomeKind::Upstream4xx, "{name}");
+            assert_eq!(outcome.http_status, Some(404), "{name}");
+        }
     }
 
     #[test]

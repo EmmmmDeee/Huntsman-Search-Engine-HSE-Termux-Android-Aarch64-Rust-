@@ -683,3 +683,43 @@ fn a_domain_lookups_own_records_are_its_unfiltered_answer() {
         Unfiltered::Unanswered("timed out".into())
     );
 }
+
+/// A zone that publishes the block address itself (a parked or sinkholed name answering
+/// `0.0.0.0`) gives every resolver that answer: the unfiltered resolvers do too, so it is the
+/// zone's own record, not a filter's block, and no threat filter marks the name malicious.
+#[test]
+fn a_zones_own_block_address_is_no_filters_block() {
+    let net = Net::healthy(&[("parked.example", &["0.0.0.0"])])
+        .with(
+            SECURITY,
+            "parked.example",
+            Reply::Addresses(vec!["0.0.0.0"]),
+        )
+        .with(FAMILY, "parked.example", Reply::Addresses(vec!["0.0.0.0"]))
+        .with(ADGUARD, "parked.example", Reply::Addresses(vec!["0.0.0.0"]));
+    let (entities, rows) = run(&net, "parked.example");
+    assert!(entities.is_empty(), "{entities:#?}");
+    let cloudflare = row(&rows, "cloudflaredns");
+    assert!(
+        !cloudflare.kind.is_accepted() || cloudflare.found == Some(0),
+        "{cloudflare:?}"
+    );
+    assert!(
+        detail(&rows, "cloudflaredns").contains("the zone's own record"),
+        "{rows:#?}"
+    );
+    // The same answer for a name the unfiltered resolvers resolve elsewhere is a block.
+    let blocked = Net::healthy(&[("bad.example", &["192.0.2.7"])]).with(
+        SECURITY,
+        "bad.example",
+        Reply::Addresses(vec!["0.0.0.0"]),
+    );
+    let (entities, _) = run(&blocked, "bad.example");
+    assert!(
+        entities.iter().any(|e| e
+            .evidence
+            .iter()
+            .any(|ev| ev.provenance.source == "cloudflaredns")),
+        "{entities:#?}"
+    );
+}

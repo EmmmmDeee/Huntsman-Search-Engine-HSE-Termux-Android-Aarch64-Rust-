@@ -18,7 +18,7 @@ The same domain lookup feeds saved scans and the existing local web UI/API. The
 ## Exact method
 
 One GET to `https://web.archive.org/cdx/search/cdx` with `url`, `matchType=domain`,
-`output=json`, `fl=timestamp,original,statuscode,digest`,
+`output=json`, `fl=timestamp,original,statuscode,digest,mimetype`,
 `filter=statuscode:200`, `collapse=urlkey` and `limit=32`.
 
 The collector validates the CDX field header, complete JSON, domain boundary,
@@ -30,7 +30,11 @@ discovered URL is executed, and no page is fetched from its own site.
 ## Archived content
 
 After a successful index answer, at most three of its captures are read for the
-contact details they published: pages whose path names contact, about, team, staff,
+contact details they published. A capture the index recorded as something other than a web
+page (HTML, XHTML or plain text), such as a PDF, an archive or an image, is not read and
+stays a historical URL lead, with the type the index recorded kept as `capture_mimetype`. A
+capture the index recorded no type for (`-`, `unk`, or a revisit record's `warc/revisit`) can
+be read, and the replay's own type decides. The pages read come in this order: pages whose path names contact, about, team, staff,
 people, impressum, imprint or support first, then the site root, then the rest, each
 group newest first. Each is one GET to the archive's raw replay
 `https://web.archive.org/web/TIMESTAMP` + `id_/URL` (the bytes as captured, without
@@ -44,8 +48,9 @@ phone numbers are kept from one page, each tagged `historical_content`, with
 confidence capped at 0.6. Each carries the capture timestamp, the original URL and
 the archive snapshot URL, and its summary says it is historical and not proof it is
 current. The outcome's detail names how many pages were read and why any was not
-(an HTTP status, a refused class, not a web page, over 1 MiB); a page not read is
-never treated as one with no contacts.
+(an HTTP status, a refused class, not a web page, over 1 MiB), and how many captures
+the index recorded as no web page; a page not read is never treated as one with no
+contacts.
 
 The capture choice, page bound and contact reading live in one shared module,
 `archived_page`, which the Common Crawl source ([COMMON_CRAWL.md](COMMON_CRAWL.md))
@@ -54,10 +59,13 @@ uses too, so a page is read the same way whichever archive holds it.
 Each retained record produces an `url` entity tagged `historical_capture`;
 an archived subdomain also produces a conservative `domain` pivot tagged
 `historical_subdomain`. Evidence records contain the canonical original URL,
-archive replay reference, 14-digit UTC capture timestamp, CDX digest when present,
-source identifier and local observation metadata. Multiple captures of the same
-URL combine through Huntsman's canonical entity merge; they do not become
-independent corroborating sources.
+archive replay reference, 14-digit UTC capture timestamp, CDX digest and the type the
+index recorded (`capture_mimetype`) when present, source identifier and local observation
+metadata. A historical subdomain lead carries the records of the captures it was found in,
+merged into one: each of its attributes lists its distinct values, not one value per capture,
+so a type there cannot be paired with a URL (a URL lead's own record can). Multiple captures of
+the same URL combine through Huntsman's canonical entity merge; they do not become independent
+corroborating sources.
 
 The source **does not** prove a page's contents, present-day DNS ownership,
 human identity, website authorization, completeness of an archive, or the actual
@@ -80,8 +88,9 @@ the particular bounded index query returned no matches.
 
 `cargo test --locked wayback_cdx` exercises offline fixtures for ordinary captures,
 historic subdomains, empty results, schema/semantic drift, sensitive query suppression,
-source-bound request construction, the order and bound of archived pages read, the
-contacts one archived page yields with their capture provenance, and that script,
+source-bound request construction, the order and bound of archived pages read, that a
+capture the index recorded as no web page is counted and never read while one it recorded no
+type for is, the contacts one archived page yields with their capture provenance, and that script,
 comment and image text is not taken as a contact. Full acceptance requires the existing
 `cargo run --locked -p xtask -- gate full`, Android aarch64 CI, Web UI/browser
 checks, and exact-head GitHub-hosted results. Live Internet Archive reachability

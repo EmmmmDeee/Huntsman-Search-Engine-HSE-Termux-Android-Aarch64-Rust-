@@ -290,3 +290,15 @@ fn a_saved_scan_lists_each_certificate_under_the_domain() {
             .any(|e| e.kind == "GEOINFO" && e.data == "Lehi, Utah, US")
     );
 }
+
+/// Cert Spotter answers a domain with no logged certificate `[]` at 200, and `sfp_certspotter`
+/// reads any status but 200 and 429 as an error: a 404 is a failure, never "no certificates".
+#[test]
+fn a_404_is_no_empty_page() {
+    let report = lookup(&script(vec![status(404)]), &Keys::default(), DOMAIN, "s", 1);
+    assert_eq!(report.outcome.kind, SourceOutcomeKind::Upstream4xx);
+    assert_eq!(report.outcome.http_status, Some(404));
+    assert!(report.entities.is_empty());
+    let none = lookup(&script(vec![page(&[])]), &Keys::default(), DOMAIN, "s", 1);
+    assert_eq!(none.outcome.kind, SourceOutcomeKind::ValidZero);
+}
