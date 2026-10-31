@@ -138,6 +138,12 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configu
     );
     assert_eq!(report.wigle, None, "no answer is not a zero");
     assert_eq!(report.entities.len(), 1, "seed and OUI evidence merge");
+    // The registry is read for the address's own prefix: nothing has observed the address.
+    assert!(
+        report.entities[0].corroborating_sources().is_empty(),
+        "{:?}",
+        report.entities[0]
+    );
     let vendor = report.entities[0]
         .evidence
         .iter()
@@ -153,6 +159,50 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configu
         "{text}"
     );
     assert!(text.contains(wigle::USER_SLOT), "{text}");
+}
+
+/// A BSSID `WiGLE` recorded is observed by `WiGLE` alone: the OUI registry's reading of its prefix is
+/// no second source of it.
+#[test]
+fn a_bssids_manufacturer_is_no_source_of_it() {
+    let wifi = cafe().to_string();
+    let transport = crate::test_support::RoutedTransport::new(&[
+        (wigle::API_URL, 200, wifi.leak()),
+        (
+            wigle::BLUETOOTH_URL,
+            200,
+            r#"{"success": true, "totalResults": 0, "results": []}"#,
+        ),
+    ]);
+    let keys = keys();
+    let (text, report) = printed(run(&transport, &keys, "3C:5A:B4:01:02:03", 7));
+    let bssid = report
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress && e.value == "3c:5a:b4:01:02:03")
+        .unwrap_or_else(|| panic!("no BSSID entity: {text}"));
+    let sources = bssid.evidence_sources();
+    assert!(
+        sources.contains(OUI_SOURCE) && sources.contains(wigle::SOURCE),
+        "{sources:?}"
+    );
+    let corroborating = bssid.corroborating_sources();
+    assert!(!corroborating.contains(OUI_SOURCE), "{corroborating:?}");
+    assert!(corroborating.contains(wigle::SOURCE), "{corroborating:?}");
+    assert_eq!(
+        bssid.source_count(),
+        u32::try_from(corroborating.len()).unwrap(),
+        "{bssid:?}"
+    );
+    // So no correlation holds it as corroborated by independent sources.
+    let correlations = crate::correlator::evaluate_rules(&report.entities, &[], "scan");
+    assert!(
+        correlations
+            .iter()
+            .all(|correlation| !(correlation.rule_id == "AU-003"
+                && correlation.entity_uids.contains(&bssid.uid))),
+        "{correlations:#?}"
+    );
 }
 
 #[test]
