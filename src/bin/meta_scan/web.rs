@@ -114,9 +114,15 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
         // Ambiguous singleton fields must be refused before routing. Downstream handlers
         // read one value via HttpRequest::header; accepting another value would let
         // different HTTP clients disagree about the Host, origin, or request semantics.
-        let singleton = ["host", "origin", "content-type", "x-meta-scan", "content-length"]
-            .iter()
-            .any(|field| name.eq_ignore_ascii_case(field));
+        let singleton = [
+            "host",
+            "origin",
+            "content-type",
+            "x-meta-scan",
+            "content-length",
+        ]
+        .iter()
+        .any(|field| name.eq_ignore_ascii_case(field));
         if singleton
             && headers
                 .iter()
@@ -851,7 +857,13 @@ mod tests {
 
     #[test]
     fn duplicate_singleton_headers_are_refused_before_routing() {
-        for header in ["Host", "Origin", "Content-Type", "X-Meta-Scan", "Content-Length"] {
+        for header in [
+            "Host",
+            "Origin",
+            "Content-Type",
+            "X-Meta-Scan",
+            "Content-Length",
+        ] {
             let request = format!(
                 "POST /api/scan HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n{header}: first\r\n{}: second\r\n\r\n",
                 header.to_ascii_lowercase()
