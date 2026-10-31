@@ -5,15 +5,21 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A directory that is removed when the test ends.
 struct Scratch(PathBuf);
 
+static NEXT_SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
+
 impl Scratch {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("report-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("the scratch directory can be made");
+        let sequence = NEXT_SCRATCH_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "report-{name}-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).expect("the scratch directory must be new");
         Self(dir)
     }
 
