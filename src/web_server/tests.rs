@@ -221,6 +221,7 @@ fn a_loopback_server_needs_no_token_even_when_one_is_supplied() {
             assert!(!config.needs_token(), "{bind} {token:?}");
             let routes = Routes {
                 lookups: Some(lookups.clone()),
+                research: None,
                 radar: None,
                 cells: None,
                 track: None,
@@ -1269,6 +1270,7 @@ fn echo_lookups() -> Lookups {
 fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> String {
     let routes = Routes {
         lookups: lookups.cloned(),
+        research: None,
         radar: None,
         cells: None,
         track: None,
@@ -1445,6 +1447,7 @@ fn saved_lookup_routes(
             wait,
             ..echo_lookups()
         }),
+        research: None,
         radar: None,
         cells: None,
         track: None,
@@ -3120,6 +3123,7 @@ fn every_page_route_refuses_other_sites_through_one_guard() {
     let home = key_home("guard");
     let routes = Routes {
         lookups: Some(echo_lookups()),
+        research: None,
         radar: Some(unused_sensor()),
         cells: Some(unused_sensor()),
         track: Some(unused_sensor()),
