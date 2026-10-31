@@ -1,5 +1,5 @@
 //! The `network` lookup end to end through the binary, with a scratch `$HOME` and no `WiGLE`
-//! credentials so no request is made: `network`, `scan` inference and `scan -k network` reach the
+//! credentials or `OpenCelliD` key so no request is made: `network`, `scan` inference and `scan -k network` reach the
 //! same front-end, the offline OUI classification runs, the `WiGLE` leg reports `not_configured`
 //! rather than a zero, and `--save` writes a ledger that `verify` reloads.
 
@@ -24,7 +24,9 @@ fn bin() -> Command {
         .env_remove("HUNTSMAN_HOME")
         .env_remove("HUNTSMAN_ENV_FILE")
         .env_remove("HUNTSMAN_WIGLE_USER")
-        .env_remove("HUNTSMAN_WIGLE_TOKEN");
+        .env_remove("HUNTSMAN_WIGLE_TOKEN")
+        // OpenCelliD runs on its own key, so a key the caller exported must not reach these runs.
+        .env_remove("HUNTSMAN_OPENCELLID_KEY");
     command
 }
 
