@@ -1950,7 +1950,11 @@ fn universal_research_preview_is_subject_neutral_and_offline() {
         ),
     ] {
         let out = bin().args(args).output().unwrap();
-        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(String::from_utf8(out.stdout).unwrap(), expected, "{args:?}");
     }
     for args in [
