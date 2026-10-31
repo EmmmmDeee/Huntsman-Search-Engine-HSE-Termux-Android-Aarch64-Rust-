@@ -203,6 +203,7 @@ cargo run -- radar --help                 # no root, explain Termux:API Wi-Fi ca
 cargo run -- mitm audit --file docs/mitm-example.json --json  # synthetic offline Wi-Fi replay; advisory only
 cargo run -- mitm baseline --ssid LabNet --bssid 02:11:22:33:44:55 --minimum-security WPA2 --output trusted-wifi.json --confirmed  # explicit operator-supplied inventory; never auto-trust a scan
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
+cargo run -- research --plan "example.org"  # offline route preview; no network request
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
 cargo run -- osint plan example.com  # offline osint planning graph; nothing fetched
