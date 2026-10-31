@@ -7,7 +7,7 @@ use std::net::IpAddr;
 
 use crate::collector::{
     CollectionBatch, CollectionLimits, CollectionOutcome, CollectorError, CollectorPivot,
-    ObservationReceipt,
+    ObservationReceipt, differs_from_selector, query_text,
 };
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
@@ -59,7 +59,8 @@ impl SeekNowCollector {
     }
 }
 
-/// Convert a canonical selector into a bounded `SeekNow` query without touching transport.
+/// Convert a selector into a bounded `SeekNow` query, asking for its [`query_text`] (a handle as it
+/// was written), without touching transport.
 pub fn plan_selector(
     selector: &Entity,
     limits: &CollectionLimits,
@@ -87,7 +88,7 @@ pub fn plan_selector(
     };
     let limit = effective_limit(u16::try_from(limits.max_records_per_response).unwrap_or(u16::MAX));
     Ok(SeekNowSearch {
-        query: selector.value.clone(),
+        query: query_text(selector),
         query_type,
         limit,
     })
@@ -296,7 +297,8 @@ pub fn collect_for_lookup<T: Transport + ?Sized>(
 }
 
 fn validate_selector(selector: &Entity) -> Result<(), CollectorError> {
-    let value = selector.value.trim();
+    let query = query_text(selector);
+    let value = query.trim();
     if value.is_empty() {
         return Err(CollectorError::InvalidSelector("empty selector".into()));
     }
@@ -404,8 +406,7 @@ fn append_row(
         } else {
             continue;
         }
-        if batch.pivots.len() < limits.max_pivots
-            && entity_differs_from_selector(&kind, &value, selector)
+        if batch.pivots.len() < limits.max_pivots && differs_from_selector(&kind, &value, selector)
         {
             batch.pivots.push(CollectorPivot { kind, value });
         }
@@ -517,10 +518,6 @@ fn single_dataset(rows: &[SeekNowRow]) -> Option<String> {
     });
     let first = values.next()?.clone();
     values.all(|value| value == &first).then_some(first)
-}
-
-fn entity_differs_from_selector(kind: &EntityKind, value: &str, selector: &Entity) -> bool {
-    kind != &selector.kind || value != selector.value
 }
 
 fn outcome_from_single(receipt: &ObservationReceipt) -> CollectionOutcome {
