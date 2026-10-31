@@ -3583,7 +3583,10 @@ fn autonomous_research_mission_reuses_durable_scan_and_rejects_untrusted_dispatc
     let submitted = ask(
         "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
     );
-    assert!(submitted.starts_with("HTTP/1.1 202 Accepted"), "{submitted}");
+    assert!(
+        submitted.starts_with("HTTP/1.1 202 Accepted"),
+        "{submitted}"
+    );
     let body: serde_json::Value =
         serde_json::from_str(submitted.split_once("\r\n\r\n").unwrap().1).unwrap();
     assert_eq!(body["kind"], "domain");
@@ -3600,7 +3603,10 @@ fn autonomous_research_mission_reuses_durable_scan_and_rejects_untrusted_dispatc
     assert_eq!(completed.target, "example.org");
     assert_eq!(completed.options.usecase, "passive");
     assert_eq!(completed.options.depth, 1);
-    assert!(!completed.status.is_active(), "mission must have finished in fixture");
+    assert!(
+        !completed.status.is_active(),
+        "mission must have finished in fixture"
+    );
 
     for (request, code) in [
         (
@@ -3629,7 +3635,10 @@ fn autonomous_research_mission_reuses_durable_scan_and_rejects_untrusted_dispatc
         ),
     ] {
         let response = ask(request);
-        assert!(response.starts_with(&format!("HTTP/1.1 {code}")), "{response}");
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {code}")),
+            "{response}"
+        );
     }
     let no_store = text(respond(
         "POST /api/research/mission?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
