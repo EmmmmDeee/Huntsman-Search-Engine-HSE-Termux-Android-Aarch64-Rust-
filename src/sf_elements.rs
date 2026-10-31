@@ -1058,9 +1058,7 @@ impl<'a> Walk<'a> {
                     evidence
                         .attr_values(crate::dnsbl::LISTING_CLASS)
                         .next()
-                        .map_or(Value::Null, |class| {
-                            json!({ "dnsbl_class": class })
-                        })
+                        .map_or(Value::Null, |class| json!({ "dnsbl_class": class }))
                 } else {
                     Value::Null
                 };
