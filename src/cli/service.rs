@@ -226,18 +226,17 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
 /// /api/research uses the same bounded, keyless adaptive search as `query --adaptive`.
 /// The server handles capacity and same-origin controls; this adapter owns the transport.
 fn web_research(query: &str) -> Result<serde_json::Value, LookupError> {
-    let transport = huntsman_recon::http::UreqTransport::new(
-        &huntsman_recon::http::TransportConfig::default(),
-    );
-    let report = huntsman_recon::web_query::adaptive_search(
-        &transport,
-        query,
-        clock::unix_now(),
-    )
-    .map_err(|error| LookupError {
-        status: if matches!(error, Error::Invalid(_)) { 400 } else { 502 },
-        message: error.to_string(),
-    })?;
+    let transport =
+        huntsman_recon::http::UreqTransport::new(&huntsman_recon::http::TransportConfig::default());
+    let report = huntsman_recon::web_query::adaptive_search(&transport, query, clock::unix_now())
+        .map_err(|error| LookupError {
+            status: if matches!(error, Error::Invalid(_)) {
+                400
+            } else {
+                502
+            },
+            message: error.to_string(),
+        })?;
     Ok(serde_json::json!({
         "route": "adaptive_web_search",
         "report": report,
