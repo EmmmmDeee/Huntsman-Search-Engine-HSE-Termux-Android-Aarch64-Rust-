@@ -443,7 +443,7 @@ mod tests {
             (429, "Too Many Requests", SourceOutcomeKind::RateLimited),
             (403, challenge, SourceOutcomeKind::BotWaf),
             (404, challenge, SourceOutcomeKind::BotWaf),
-            (403, "forbidden", SourceOutcomeKind::AuthRejected),
+            (403, "forbidden", SourceOutcomeKind::Upstream4xx),
             (401, "", SourceOutcomeKind::AuthRequired),
             (410, "gone", SourceOutcomeKind::Upstream4xx),
         ] {

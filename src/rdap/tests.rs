@@ -418,8 +418,9 @@ fn every_lookup_counts_a_dated_retry_after_from_the_scan_clock() {
     }
 }
 
-/// A status is typed as fetch types it: a 403 without a challenge page is a rejection, and a
-/// 429 is a rate limit with its delay even when its body reads as a challenge.
+/// A status is typed as fetch types it: a 403 without a challenge page is the registry refusing a
+/// request that carried no credential, and a 429 is a rate limit with its delay even when its body
+/// reads as a challenge.
 #[test]
 fn a_registry_status_is_typed_as_fetch_types_it() {
     let refused = |status: u16, headers: &[(&str, &str)], body: &str| {
@@ -429,10 +430,7 @@ fn a_registry_status_is_typed_as_fetch_types_it() {
         ]);
         lookup_domain(&registry, "github.com", 1).expect_err("a refusal is no answer")
     };
-    assert_eq!(
-        refused(403, &[], "{}").kind,
-        SourceOutcomeKind::AuthRejected
-    );
+    assert_eq!(refused(403, &[], "{}").kind, SourceOutcomeKind::Upstream4xx);
     let challenged = refused(
         429,
         &[("Retry-After", "30")],

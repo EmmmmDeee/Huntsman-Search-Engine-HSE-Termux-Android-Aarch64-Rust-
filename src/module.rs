@@ -838,7 +838,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "SORBS address blocklist over the system resolver",
+        description: "SORBS address blocklist, which has shut down: never asked, its row says so",
     },
     ReachableModule {
         name: "surbl",

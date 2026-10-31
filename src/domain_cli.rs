@@ -1676,6 +1676,21 @@ mod tests {
             "{}",
             policy.summary
         );
+        // What the namespace requires observes no one: the resolvers alone found the name, so no
+        // correlation holds it as corroborated by independent sources.
+        assert_eq!(
+            apex.corroborating_sources(),
+            std::collections::BTreeSet::from(["dns".to_owned()]),
+            "{apex:?}"
+        );
+        let correlations = crate::correlator::evaluate_rules(&report.entities, &[], "scan");
+        assert!(
+            correlations
+                .iter()
+                .all(|correlation| !(correlation.rule_id == "AU-003"
+                    && correlation.entity_uids.contains(&apex.uid))),
+            "{correlations:#?}"
+        );
 
         let domain = "example.edu.vn";
         let report = printed(&Zone::new(&[(domain, "A", IPV4)]), domain);

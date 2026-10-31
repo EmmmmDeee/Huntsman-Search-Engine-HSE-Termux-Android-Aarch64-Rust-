@@ -41,20 +41,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// process-wide to prevent concurrent exports multiplying peak memory on phones.
 static MULTI_EXPORT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-struct MultiExportPermit;
+/// The one multi-export a flag admits: while it is held, a second export, on any thread, is
+/// refused with 503. Released when dropped, on every return and during unwinding.
+struct MultiExportPermit(&'static AtomicBool);
 
 impl MultiExportPermit {
-    fn try_acquire() -> Option<Self> {
-        MULTI_EXPORT_ACTIVE
+    fn try_acquire(active: &'static AtomicBool) -> Option<Self> {
+        active
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| Self)
+            .map(|_| Self(active))
     }
 }
 
 impl Drop for MultiExportPermit {
     fn drop(&mut self) {
-        MULTI_EXPORT_ACTIVE.store(false, Ordering::Release);
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -255,6 +257,8 @@ pub struct ScanApi {
     /// Admission slots for memory-intensive embedded-server scan responses. Shared across
     /// cloned HTTP routes and released when response construction has completed.
     web_request_slots: Arc<AtomicUsize>,
+    /// Whether a multi-export holds its permit: [`MULTI_EXPORT_ACTIVE`], one for the process.
+    multi_export: &'static AtomicBool,
 }
 
 impl ScanApi {
@@ -265,7 +269,17 @@ impl ScanApi {
             slots,
             globals: Vec::new(),
             web_request_slots: Arc::new(AtomicUsize::new(0)),
+            multi_export: &MULTI_EXPORT_ACTIVE,
         }
+    }
+
+    /// This API with a multi-export permit of its own, as each unit test's: the tests of one
+    /// binary run in parallel, and an export one of them runs must not refuse another's.
+    #[cfg(test)]
+    #[must_use]
+    fn with_own_multi_export(mut self) -> Self {
+        self.multi_export = Box::leak(Box::new(AtomicBool::new(false)));
+        self
     }
 
     /// Adds one entry to the Settings page's Global Settings: `key` names it in the API, the page
@@ -1173,7 +1187,7 @@ impl ScanApi {
         }
         // Validate the request before acquiring the process-wide export permit.
         // RAII releases on every return and during unwinding.
-        let Some(_permit) = MultiExportPermit::try_acquire() else {
+        let Some(_permit) = MultiExportPermit::try_acquire(self.multi_export) else {
             return error(503, "another multi-scan export is already running");
         };
         // Reserve only the bounded number of scan slots, avoiding incremental
@@ -1537,7 +1551,10 @@ mod tests {
         });
         let service = ScanService::new(ScanStore::open(&dir).unwrap(), lookup);
         let slots: SlotCheck = Arc::new(move |slot: &str| held.contains(&slot));
-        (ScanApi::new(service, Some(slots)), dir)
+        (
+            ScanApi::new(service, Some(slots)).with_own_multi_export(),
+            dir,
+        )
     }
 
     fn body(response: &ApiResponse) -> Value {
@@ -1826,6 +1843,42 @@ mod tests {
         assert_eq!(accepted.body, normal.body);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One multi-export runs at a time, whichever thread runs it: a second is refused with 503
+    /// while another thread holds the permit, as a request served beside it would, and admitted
+    /// once it is released. Another API's permit, as another test's, refuses none.
+    #[test]
+    fn a_second_multi_export_is_refused_while_one_runs() {
+        let (other_api, other_dir) = api("multi-export-permit-other");
+        let (api, dir) = api("multi-export-permit");
+        // The served API's permit is the process's one; this test's API has its own.
+        assert!(std::ptr::eq(
+            ScanApi::new(Arc::clone(&api.service), None).multi_export,
+            std::ptr::addr_of!(MULTI_EXPORT_ACTIVE)
+        ));
+        let id = finished(&api);
+        let export = || api.handle("GET", "/api/scans/export", &format!("ids={id}"));
+        let flag = api.multi_export;
+        let (took, taken) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            let permit = MultiExportPermit::try_acquire(flag);
+            took.send(permit.is_some()).unwrap();
+            released.recv().unwrap();
+            drop(permit);
+        });
+        assert!(taken.recv().unwrap(), "no export was running");
+        let refused = export();
+        assert_eq!(refused.status, 503, "{}", refused.text());
+        release.send(()).unwrap();
+        other.join().unwrap();
+        assert_eq!(export().status, 200);
+        let held = MultiExportPermit::try_acquire(other_api.multi_export).expect("its own permit");
+        assert_eq!(export().status, 200);
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     #[test]
