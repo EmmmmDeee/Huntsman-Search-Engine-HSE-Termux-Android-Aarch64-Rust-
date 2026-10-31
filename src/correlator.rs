@@ -235,7 +235,7 @@ static AU_002: FnRule = FnRule {
     id: "AU-002",
     name: "identity_cluster",
     severity: Severity::Critical,
-    description: "Identities of at least two kinds (email, username, phone, name) that plausibly belong to one person. A handle or name only guessed from an address, a role mailbox other than the operator's own, and a registration record's abuse, role or organisation contact no other source observed are not counted, and more of a kind than one person holds is no cluster.",
+    description: "Identities of at least two kinds (email, username, phone, name) that plausibly belong to one person. Not counted: a handle any record of which was guessed from an address, a name every record of which was, a role mailbox other than the operator's own, and a contact a registration record publishes as a group or an organisation, or as an abuse desk it does not call an individual, that no other source observed. More of a kind than one person holds is no cluster.",
     runner: rule_au_002_identity_cluster,
 };
 static AU_003: FnRule = FnRule {
