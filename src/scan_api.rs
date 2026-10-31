@@ -3013,7 +3013,7 @@ mod tests {
         );
         let keyed: BTreeSet<String> = reachable_modules()
             .iter()
-            .filter(|module| matches!(module.access, "keyed" | "operator_key"))
+            .filter(|module| module.access == "operator_key")
             .map(|module| module.name.to_owned())
             .chain(from_source)
             .collect();
