@@ -217,6 +217,75 @@ fn saved_lookup(service: &Arc<ScanService>, query: &LookupQuery, until: Instant)
     }
 }
 
+/// Universal research selection is the same pure Rust plan as the CLI. A recognised
+/// selector opens the existing scan form without spending keys. Arbitrary text is dispatched
+/// to the binary's keyless adaptive web search, with the same header, origin and resource
+/// protections as an ordinary lookup. Search-engine URLs are leads, not verified claims.
+pub(super) fn research_response(
+    parsed: &ParsedRequest<'_>,
+    research: Option<&super::Research>,
+) -> String {
+    if parsed.method != Method::Get {
+        return json_error(405, "research needs GET");
+    }
+    if let Some(refused) = page_refusal(parsed, "research", true) {
+        return refused;
+    }
+    if parsed.has_body {
+        return json_error(400, "research takes no request body");
+    }
+    let query = match parse_lookup_query(parsed.query) {
+        Ok(query) => query,
+        Err(message) => return json_error(400, message),
+    };
+    let route = match crate::research_route::plan(&query.selector) {
+        Ok(route) => route,
+        Err(message) => return json_error(400, message),
+    };
+    match route {
+        crate::research_route::ResearchAction::Targeted { kind, selector } => {
+            let body = serde_json::json!({
+                "route": "scan",
+                "kind": kind.command(),
+                "selector": selector,
+                "execution": "review_scan_options_before_collection",
+            });
+            json_ok(&body.to_string(), false)
+        }
+        crate::research_route::ResearchAction::AdaptiveWeb { query } => {
+            let Some(research) = research else {
+                return json_error(404, "adaptive research is not enabled on this server");
+            };
+            let Some(slot) = Slot::take_of(&research.live, MAX_LOOKUPS) else {
+                return json_error(503, "research capacity in use; retry shortly");
+            };
+            let handler = Arc::clone(&research.handler);
+            let (sender, receiver) = sync_channel(1);
+            let worker = thread::Builder::new()
+                .name("serve-research".into())
+                .stack_size(LOOKUP_STACK_BYTES)
+                .spawn(move || {
+                    let outcome = catch_unwind(AssertUnwindSafe(|| handler(&query)));
+                    drop(slot);
+                    let _ = sender.send(outcome);
+                });
+            if worker.is_err() {
+                return json_error(503, "could not start a research worker");
+            }
+            match receiver.recv_timeout(super::LOOKUP_WAIT) {
+                Ok(Ok(Ok(report))) => json_ok(&report.to_string(), false),
+                Ok(Ok(Err(error))) => json_error(error.status, &error.message),
+                Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+                    json_error(500, "research failed unexpectedly")
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    json_error(504, "research timed out; no completed report was saved")
+                }
+            }
+        }
+    }
+}
+
 /// The saved scans: Spiderfoot's scan list, scan views, exports and state changes, answered by the
 /// binary's [`ScanApi`]. A scan makes network requests and spends keys, and its results are the
 /// operator's, so every call is guarded as a lookup is: refused cross-site or same-site, it needs

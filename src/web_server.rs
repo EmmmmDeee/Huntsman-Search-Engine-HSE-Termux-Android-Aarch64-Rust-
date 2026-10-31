@@ -191,9 +191,19 @@ pub struct LookupError {
     pub message: String,
 }
 
+/// Runs a keyless adaptive search for arbitrary text. The binary owns network transport.
+pub type ResearchHandler =
+    Arc<dyn Fn(&str) -> Result<serde_json::Value, LookupError> + Send + Sync>;
+
 /// Runs one lookup. Installed by the binary, which owns transport construction.
 pub type LookupHandler =
     Arc<dyn Fn(&LookupQuery) -> Result<LookupReport, LookupError> + Send + Sync>;
+
+#[derive(Clone)]
+struct Research {
+    handler: ResearchHandler,
+    live: Arc<AtomicUsize>,
+}
 
 #[derive(Clone)]
 struct Lookups {
@@ -264,6 +274,7 @@ type Radar = Sensor<WifiScan>;
 #[derive(Clone, Default)]
 struct Routes {
     lookups: Option<Lookups>,
+    research: Option<Research>,
     radar: Option<Radar>,
     cells: Option<Sensor<CellScan>>,
     track: Option<Sensor<TrackReport>>,
@@ -363,6 +374,16 @@ impl Server {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
             wait: LOOKUP_WAIT,
+        });
+        self
+    }
+
+    /// Serve `GET /api/research` using the canonical Rust research route and adaptive search.
+    #[must_use]
+    pub fn with_research(mut self, handler: ResearchHandler) -> Self {
+        self.routes.research = Some(Research {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
         });
         self
     }
@@ -1406,6 +1427,7 @@ fn route(
         "/api/modules"
             | "/api/command"
             | "/api/lookup"
+            | "/api/research"
             | "/api/analyze"
             | "/api/evidence"
             | "/evidence"
@@ -1452,6 +1474,7 @@ fn route(
             ),
         },
         "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
+        "/api/research" => lookup::research_response(parsed, routes.research.as_ref()),
         "/api/radar/wifi" => {
             sensor_response(parsed, routes.radar.as_ref(), "Wi-Fi radar", Method::Get)
         }

@@ -250,6 +250,16 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 </section>
 <section id="view-newscan" hidden>
 <h1>New Scan</h1>
+<div class="panel"><div class="panel-body">
+<form id="uresearch" class="row">
+<label class="fl" for="uresearch-q">Universal Research</label>
+<input id="uresearch-q" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Any term, phrase, domain or public identifier">
+<button class="btn btn-primary" id="uresearch-go" type="submit">Research</button>
+</form>
+<p class="help">General terms run bounded keyless web discovery. Recognised identifiers fill the scan form below for review; they do not start a scan or spend configured provider keys.</p>
+<p class="help" id="uresearch-status" role="status"></p>
+<div id="uresearch-hits" class="help"></div>
+</div></div>
 <form id="newscan" novalidate>
 <div class="grid2">
 <div class="panel"><div class="panel-body">
@@ -874,6 +884,33 @@ $('nattackapply').onclick=()=>{
 };
 function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))if(!i.disabled)i.checked=on}
 $('nall').onclick=()=>setAll(true);$('nnone').onclick=()=>setAll(false);
+// Universal research: one typed Rust router for both CLI and mobile UI.
+$('uresearch').onsubmit=async ev=>{
+  ev.preventDefault();
+  const q=$('uresearch-q').value.trim();if(!q)return;
+  const b=$('uresearch-go');b.disabled=true;
+  $('uresearch-status').textContent='Researching…';$('uresearch-hits').replaceChildren();
+  try{
+    const result=await api('/api/research?'+new URLSearchParams({q}));
+    if(result.route==='scan'){
+      $('uresearch-status').textContent='Recognised '+result.kind+'. Review the scan options and select Run Scan Now to collect.';
+      await prefill({name:q,target:result.selector,kind:result.kind,depth:0});
+      $('starget').focus();
+    }else{
+      const report=result.report||{},hits=report.hits||[],items=el('ul');
+      for(const h of hits.slice(0,40)){
+        const li=el('li');
+        try{const url=new URL(h.url);if(!['https:','http:'].includes(url.protocol))throw Error('scheme');
+          const link=el('a','link',h.url);link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';li.append(link);
+        }catch(_){li.textContent=String(h.url)}
+        items.append(li);
+      }
+      $('uresearch-hits').replaceChildren(items);
+      $('uresearch-status').textContent=hits.length+' discovery leads · '+(report.stop_reason||'')+'. Links are not verified claims; inspect source outcomes before relying on them. First 40 displayed.';
+    }
+  }catch(e){$('uresearch-status').textContent='Research unavailable: '+e.message}
+  finally{b.disabled=false}
+};
 $('newscan').onsubmit=async ev=>{
   ev.preventDefault();
   const target=$('starget').value.trim();

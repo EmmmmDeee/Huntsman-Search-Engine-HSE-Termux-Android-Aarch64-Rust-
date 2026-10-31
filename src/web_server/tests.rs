@@ -221,6 +221,7 @@ fn a_loopback_server_needs_no_token_even_when_one_is_supplied() {
             assert!(!config.needs_token(), "{bind} {token:?}");
             let routes = Routes {
                 lookups: Some(lookups.clone()),
+                research: None,
                 radar: None,
                 cells: None,
                 track: None,
@@ -1269,6 +1270,7 @@ fn echo_lookups() -> Lookups {
 fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> String {
     let routes = Routes {
         lookups: lookups.cloned(),
+        research: None,
         radar: None,
         cells: None,
         track: None,
@@ -1445,6 +1447,7 @@ fn saved_lookup_routes(
             wait,
             ..echo_lookups()
         }),
+        research: None,
         radar: None,
         cells: None,
         track: None,
@@ -1745,6 +1748,7 @@ fn analyses(
 ) -> Routes {
     Routes {
         lookups: None,
+        research: None,
         radar: None,
         cells: None,
         track: None,
@@ -3120,6 +3124,7 @@ fn every_page_route_refuses_other_sites_through_one_guard() {
     let home = key_home("guard");
     let routes = Routes {
         lookups: Some(echo_lookups()),
+        research: None,
         radar: Some(unused_sensor()),
         cells: Some(unused_sensor()),
         track: Some(unused_sensor()),
@@ -3492,4 +3497,81 @@ fn the_blueprint_downloads_as_a_word_document() {
     let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(value["count"], crate::osint_blueprint::ENTRIES.len());
     assert!(ask("?format=pdf").0.starts_with("HTTP/1.1 400"));
+}
+
+/// The mobile universal research API cannot dispatch unrecognised text as a person; it
+/// sends it to the injected keyless research adapter. Typed selectors only produce a scan
+/// preview, so the page can show the existing New Scan source choices before any egress.
+#[test]
+fn universal_research_api_is_bounded_guarded_and_uses_canonical_rust_routes() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&calls);
+    let routes = Routes {
+        research: Some(Research {
+            handler: Arc::new(move |query| {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "route": "adaptive_web_search",
+                    "report": {
+                        "input": query,
+                        "hits": [{"url": "https://example.org", "evidence_status": "lead_only"}],
+                        "stop_reason": "bounded_test",
+                    },
+                }))
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
+        }),
+        ..Routes::default()
+    };
+    let config = ServeConfig::parse(DEFAULT_BIND, None).unwrap();
+    let ask = |request: &str| text(respond(request, &config, &routes));
+    let typed = ask(
+        "GET /api/research?q=example.org HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+    );
+    assert!(typed.starts_with("HTTP/1.1 200"), "{typed}");
+    assert!(typed.contains("\"route\":\"scan\""), "{typed}");
+    assert!(typed.contains("\"kind\":\"domain\""), "{typed}");
+    assert!(typed.contains("review_scan_options_before_collection"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let plain = ask(
+        "GET /api/research?q=any+research+phrase HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+    );
+    assert!(plain.starts_with("HTTP/1.1 200"), "{plain}");
+    assert!(
+        plain.contains("\"input\":\"any research phrase\""),
+        "{plain}"
+    );
+    assert!(plain.contains("lead_only"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    for (request, status) in [
+        (
+            "GET /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            403,
+        ),
+        (
+            "GET /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: cross-site\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            403,
+        ),
+        (
+            "POST /api/research?q=hello HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            405,
+        ),
+        (
+            "GET /api/research?q=127.0.0.1 HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            400,
+        ),
+        (
+            "GET /api/research?q=1.1.1.1%2F33 HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            400,
+        ),
+    ] {
+        let answer = ask(request);
+        assert!(
+            answer.starts_with(&format!("HTTP/1.1 {status}")),
+            "{answer}"
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
