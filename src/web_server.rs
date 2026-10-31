@@ -1408,7 +1408,7 @@ fn protected_path(path: &str) -> bool {
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
-    ) || ScanApi::handles(path);
+    ) || ScanApi::handles(path)
 }
 
 /// The answer to a parsed request: the guards every route shares, then the route's own.
