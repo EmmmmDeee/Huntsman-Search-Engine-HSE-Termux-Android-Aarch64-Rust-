@@ -1,4 +1,4 @@
-use super::{EntityKind, SourceOutcomeKind, Transport, lookup};
+use super::{EntityKind, SourceOutcomeKind, Transport, account_name, lookup};
 use crate::test_support::OneResponse;
 
 /// A transport that must never be touched: it proves a path short-circuits before any request.
@@ -51,20 +51,18 @@ fn an_empty_contributions_list_is_valid_zero() {
     assert!(got.entities.is_empty());
 }
 
+/// A name `MediaWiki` cannot read as a user can be no account, as current `MediaWiki` (`baduser`)
+/// and releases before 1.35 (`baduser_ucuser`) say it.
 #[test]
 fn an_api_error_is_a_clean_negative() {
-    let got = lookup(
-        &OneResponse::json(
-            200,
-            r#"{"error":{"code":"baduser_ucuser","info":"Invalid value for user parameter."}}"#,
-        ),
-        "bad|name",
-        "scan",
-        1,
-    )
-    .unwrap();
-    assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
-    assert!(got.entities.is_empty());
+    for code in ["baduser", "baduser_ucuser"] {
+        let body = format!(
+            r#"{{"error":{{"code":"{code}","info":"Invalid value for user parameter."}}}}"#
+        );
+        let got = lookup(&OneResponse::json(200, &body), "bad|name", "scan", 1).unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero, "{code}");
+        assert!(got.entities.is_empty());
+    }
 }
 
 #[test]
@@ -98,9 +96,10 @@ fn api_rate_limit_is_retryable_and_not_a_clean_negative() {
 
 #[test]
 fn edits_become_tagged_revision_urls_with_a_contributions_anchor() {
+    // `MediaWiki` reads `Jane_Citizen` as the account `Jane Citizen` that made these edits.
     let got = lookup(
         &OneResponse::json(200, TWO_EDITS),
-        "jane_citizen",
+        "Jane_Citizen",
         "scan",
         1,
     )
@@ -194,4 +193,46 @@ fn a_body_that_is_not_json_is_parser_drift() {
     )
     .unwrap();
     assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
+}
+
+#[test]
+fn a_name_is_read_as_mediawiki_reads_an_account_name() {
+    // Only the first letter is capitalised and underscores are spaces; every other letter keeps
+    // its case, so a case-folded handle names another account.
+    assert_eq!(account_name("JohnDoe"), "JohnDoe");
+    assert_eq!(account_name("johnDoe"), "JohnDoe");
+    assert_eq!(account_name("johndoe"), "Johndoe");
+    assert_eq!(account_name("jane_citizen"), "Jane citizen");
+    assert_eq!(account_name(" Jane__Citizen "), "Jane Citizen");
+    assert_eq!(account_name("93.184.216.34"), "93.184.216.34");
+    // An editor without an account is its address, sanitised as `MediaWiki` stores it.
+    assert_eq!(account_name("093.184.216.034"), "93.184.216.34");
+    assert_eq!(account_name("000.1.2.3"), "0.1.2.3");
+    assert_eq!(account_name("1.2.3.256"), "1.2.3.256");
+}
+
+#[test]
+fn an_address_editor_is_found_however_its_parts_are_padded() {
+    let edit = r#"{"query":{"usercontribs":[
+      {"user":"93.184.216.34","revid":555003,"title":"T","timestamp":"2024-01-01T00:00:00Z","comment":""}
+    ]}}"#;
+    let got = lookup(&OneResponse::json(200, edit), "093.184.216.34", "scan", 1).unwrap();
+    assert_eq!(got.outcome.kind, SourceOutcomeKind::Success);
+}
+
+#[test]
+fn edits_of_another_account_are_never_credited_to_the_queried_name() {
+    // `jane_citizen` is the account `Jane citizen`; edits the API credits to `Jane Citizen` are
+    // another account's, so none is reported, and the answer is no clean negative either.
+    let got = lookup(
+        &OneResponse::json(200, TWO_EDITS),
+        "jane_citizen",
+        "scan",
+        1,
+    )
+    .unwrap();
+    assert_eq!(got.outcome.kind, SourceOutcomeKind::SemanticDrift);
+    assert!(got.entities.is_empty(), "{:?}", got.entities);
+    let detail = got.outcome.detail.unwrap_or_default();
+    assert!(!detail.contains("Jane Citizen"), "{detail}");
 }

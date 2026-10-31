@@ -30,14 +30,12 @@
 
 use serde::Deserialize;
 
-use crate::canonical::canonical_domain;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::{name_tokens, whole_word_token_match};
-use crate::value_syntax::host_only;
 
 pub const SOURCE: &str = "sec_edgar";
 const EFTS_BASE: &str = "https://efts.sec.gov/LATEST/search-index";
@@ -76,6 +74,11 @@ fn validated_user_agent(value: Option<&str>) -> Option<&str> {
             return false;
         };
         !local.is_empty()
+            // RFC 5321 dot-atom: a dot cannot begin/end the local part or repeat.
+            && local.len() <= 64
+            && !local.starts_with('.')
+            && !local.ends_with('.')
+            && !local.contains("..")
             && local
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+/=?^`{|}~_-".contains(&byte))
@@ -570,8 +573,8 @@ fn push_website(submission: &Submission, name: &str, scan_id: &str, entities: &m
     url.add_evidence(website_evidence(name, website, scan_id));
     entities.push(url);
 
-    if let Some(domain) = canonical_domain(host_only(website)) {
-        let mut entity = Entity::new(EntityKind::Domain, &domain, WEBSITE_CONF, scan_id);
+    if let Some((kind, host)) = crate::entity::link_host(website) {
+        let mut entity = Entity::new(kind, &host, WEBSITE_CONF, scan_id);
         entity.tag(SOURCE);
         entity.tag("sec-edgar");
         entity.tag("official-website");
@@ -938,6 +941,12 @@ mod tests {
             Some("Huntsman project-only https://github.com/repo"),
             Some("Huntsman none@domain"),
             Some("Huntsman admin@example..com"),
+            Some("Huntsman .admin@example.com"),
+            Some("Huntsman admin.@example.com"),
+            Some("Huntsman admin..ops@example.com"),
+            Some(
+                "Huntsman aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+            ),
             Some("Huntsman admin@example.123"),
             Some("Huntsman admin@example.c"),
             Some("Huntsman contact@example.com\r\nX-Injected: yes"),

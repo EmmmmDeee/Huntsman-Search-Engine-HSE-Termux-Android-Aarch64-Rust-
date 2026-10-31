@@ -25,7 +25,6 @@ use serde_json::{Map, Value};
 
 use crate::address_au;
 use crate::au_id::is_valid_abn;
-use crate::canonical::canonical_domain;
 use crate::ckan::{self, field};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
@@ -34,7 +33,6 @@ use crate::http::{self, Request, Transport};
 use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 use crate::textnorm::name_tokens;
-use crate::value_syntax::host_only;
 
 pub const SRC: &str = "acnc";
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
@@ -303,8 +301,8 @@ fn emit_charity(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
     }
 
     if let Some(website) = field(rec, "Charity_Website") {
-        if let Some(domain) = canonical_domain(host_only(&website)) {
-            let mut entity = Entity::new(EntityKind::Domain, &domain, CONF_DOMAIN, scan_id);
+        if let Some((kind, host)) = crate::entity::link_host(&website) {
+            let mut entity = Entity::new(kind, &host, CONF_DOMAIN, scan_id);
             entity.tag("au");
             entity.tag("acnc");
             entity.tag("charity-website");
@@ -496,6 +494,30 @@ mod tests {
             domain.has_tag(crate::tags::NAME_SEARCH_LEAD),
             "the charity website must be tagged a name-search lead: {:?}",
             domain.tags
+        );
+    }
+
+    #[test]
+    fn a_website_on_an_address_is_kept_on_the_charity_but_is_no_domain() {
+        // A dotted IPv4 address is no domain, so a website hosted on one gives no Domain pivot,
+        // while the register's website field stays on the charity, verbatim.
+        let on_an_address = SMITH.replace("thesmithfamily.com.au", "http://93.184.216.34/");
+        let report = report_of(&on_an_address, "smith family");
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Domain),
+            "{:#?}",
+            report.entities
+        );
+        assert!(
+            org(&report).evidence.iter().any(|evidence| evidence
+                .attributes
+                .get("Charity_Website")
+                .is_some_and(|website| website == "http://93.184.216.34/")),
+            "{:#?}",
+            org(&report).evidence
         );
     }
 

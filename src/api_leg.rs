@@ -7,11 +7,15 @@
 //! redirects are not followed, so a key cannot leave its origin; a key is only built from an
 //! operator-configured slot; any provider text kept in a diagnostic has the key scrubbed first.
 //!
-//! The status decides before the body: a refused key, a plan or quota refusal, a rate limit and a
-//! server error are errors, never a zero. A `404` is returned as [`Answer::NotFound`] because for
-//! several providers it is the documented "nothing known about this selector" answer, and only
-//! the provider module knows whether it is. A `200` body is only an answer when it is not a
-//! challenge page and was not cut at the body limit.
+//! What `fetch` read the response as decides first: a challenge or block page is a wall and a rate
+//! limit is a rate limit at any status, never the provider's answer or its refusal of the key.
+//! Then the status decides before the body: a refused key, a plan or quota refusal and a server
+//! error are errors, never a zero, and a `401` or `403` to a request that carried no key rejected
+//! none. A `404` is returned as [`Answer::NotFound`] because for several providers it is the
+//! documented "nothing known about this selector" answer, and only the provider module knows
+//! whether it is; it is one only when it was read whole and is not a page, since no API answers
+//! "nothing known" with an HTML page (a moved endpoint, a CDN's or a proxy's own 404). A `200` body
+//! is only an answer when it is not a challenge page and was not cut at the body limit.
 //!
 //! A keyed leg runs only when its key is configured (see [`Api::wanted`]): a lookup without the
 //! key makes no request to that provider, and `credential-status` names the slot.
@@ -114,22 +118,34 @@ pub enum LegError {
     MissingKey(&'static str),
     #[error("request refused before sending: {0}")]
     Refused(String),
-    #[error("no response ({0:?})")]
-    Transport(SourceOutcomeKind),
+    /// No response: the transport failure `fetch` typed, with its diagnostic.
+    #[error("no response ({kind:?}){detail}", kind = .0, detail = describe_detail(.1))]
+    Transport(SourceOutcomeKind, String),
     #[error("bad request (HTTP {0})")]
     BadRequest(u16),
     #[error("unauthorised (HTTP 401): the key was rejected")]
     Unauthorized,
     #[error("forbidden (HTTP 403): the key, plan or quota does not allow it")]
     Forbidden,
-    #[error("rate or quota limit reached (HTTP 429){}", describe_retry(*.retry_after))]
-    RateLimited { retry_after: Option<u64> },
+    /// A `401` or `403` to a request that carried no key: nothing was rejected. A `401` asks for
+    /// authentication; a `403` is the provider refusing the request (a block, a policy, a plan).
+    #[error("{}", describe_keyless_refusal(*.0))]
+    RefusedWithoutKey(u16),
+    /// A rate or quota limit, at the status it came with (`429`, a `403` with `Retry-After`, an
+    /// exhausted quota or a rate-limit message), or in a provider's own answer.
+    #[error("rate or quota limit reached (HTTP {status}){}", describe_retry(*.retry_after))]
+    RateLimited {
+        status: u16,
+        retry_after: Option<u64>,
+    },
     #[error("server error (HTTP {0})")]
     Server(u16),
     #[error("unexpected HTTP {0}")]
     Unexpected(u16),
-    #[error("response is not an API answer ({0:?})")]
-    NotAnAnswer(SourceOutcomeKind),
+    /// A response that is no answer (a challenge or block page, or a refusal `fetch` typed), at
+    /// the status it came with.
+    #[error("response is not an API answer ({kind:?}, HTTP {status})", kind = .0, status = .1)]
+    NotAnAnswer(SourceOutcomeKind, u16),
     #[error("{0}")]
     Decode(String),
     /// The answer was longer than the transport's body limit, so it was not read whole.
@@ -141,6 +157,23 @@ fn describe_retry(retry_after: Option<u64>) -> String {
     retry_after.map_or_else(String::new, |secs| format!(", retry after {secs}s"))
 }
 
+fn describe_detail(detail: &str) -> String {
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
+    }
+}
+
+fn describe_keyless_refusal(status: u16) -> String {
+    if status == 401 {
+        "authentication required (HTTP 401): the provider answers this request only with a key"
+            .to_owned()
+    } else {
+        format!("forbidden (HTTP {status}): the provider refused a request that carried no key")
+    }
+}
+
 impl LegError {
     /// The outcome a failed leg records.
     #[must_use]
@@ -149,10 +182,13 @@ impl LegError {
             Self::MissingKey(_) => SourceOutcomeKind::NotConfigured,
             Self::Unauthorized => SourceOutcomeKind::AuthRejected,
             Self::Forbidden => SourceOutcomeKind::EntitlementDenied,
+            Self::RefusedWithoutKey(401) => SourceOutcomeKind::AuthRequired,
             Self::RateLimited { .. } => SourceOutcomeKind::RateLimited,
-            Self::BadRequest(_) | Self::Unexpected(_) => SourceOutcomeKind::Upstream4xx,
+            Self::BadRequest(_) | Self::Unexpected(_) | Self::RefusedWithoutKey(_) => {
+                SourceOutcomeKind::Upstream4xx
+            }
             Self::Server(_) => SourceOutcomeKind::Upstream5xx,
-            Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
+            Self::Transport(kind, _) | Self::NotAnAnswer(kind, _) => *kind,
             Self::Decode(_) | Self::TooLarge => SourceOutcomeKind::SchemaDrift,
             Self::Refused(_) => SourceOutcomeKind::RefusedBeforeSending,
         }
@@ -162,12 +198,14 @@ impl LegError {
     #[must_use]
     pub const fn http_status(&self) -> Option<u16> {
         match self {
-            Self::BadRequest(status) | Self::Server(status) | Self::Unexpected(status) => {
-                Some(*status)
-            }
+            Self::BadRequest(status)
+            | Self::Server(status)
+            | Self::Unexpected(status)
+            | Self::RefusedWithoutKey(status)
+            | Self::NotAnAnswer(_, status)
+            | Self::RateLimited { status, .. } => Some(*status),
             Self::Unauthorized => Some(401),
             Self::Forbidden => Some(403),
-            Self::RateLimited { .. } => Some(429),
             _ => None,
         }
     }
@@ -185,6 +223,7 @@ impl LegError {
         match self {
             Self::RateLimited {
                 retry_after: Some(secs),
+                ..
             } => outcome.with_retry_after(*secs),
             _ => outcome,
         }
@@ -292,20 +331,50 @@ fn send<T: Transport + ?Sized>(
         now_unix,
     )
     .map_err(|e| LegError::Refused(scrub_secrets(&e.to_string(), &scrub)))?;
+    let outcome = fetched.outcome;
     let Some(response) = fetched.response else {
-        return Err(LegError::Transport(fetched.outcome.kind));
+        let detail = outcome.detail.as_deref().unwrap_or_default();
+        return Err(LegError::Transport(
+            outcome.kind,
+            scrub_secrets(detail, &scrub),
+        ));
     };
-    if response.status == 404 {
-        return Ok(Answer::NotFound(response.body));
+    match outcome.kind {
+        SourceOutcomeKind::BotWaf => {
+            return Err(LegError::NotAnAnswer(outcome.kind, response.status));
+        }
+        SourceOutcomeKind::RateLimited => {
+            return Err(LegError::RateLimited {
+                status: response.status,
+                retry_after: outcome.retry_after_secs,
+            });
+        }
+        _ => {}
     }
-    status_error(&response, fetched.outcome.retry_after_secs)?;
-    if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
-        return Err(LegError::NotAnAnswer(fetched.outcome.kind));
+    if response.status == 404 {
+        return not_found(response);
+    }
+    status_error(&response, credential.is_some(), outcome.retry_after_secs)?;
+    if outcome.kind != SourceOutcomeKind::Inconclusive {
+        return Err(LegError::NotAnAnswer(outcome.kind, response.status));
     }
     if response.truncated {
         return Err(LegError::TooLarge);
     }
     Ok(Answer::Body(response.body))
+}
+
+/// A `404` as the provider module reads it, when it is one: read whole, and not a page. No API
+/// answers "nothing known" with an HTML page, so a page at that status (a moved endpoint, a CDN's
+/// or a proxy's own 404) is a 404 no module may read as a clean negative. **Pure.**
+fn not_found(response: Response) -> Result<Answer, LegError> {
+    if response.truncated {
+        return Err(LegError::TooLarge);
+    }
+    if response.body.trim_ascii_start().starts_with(b"<") {
+        return Err(LegError::Unexpected(404));
+    }
+    Ok(Answer::NotFound(response.body))
 }
 
 fn credential(
@@ -322,16 +391,25 @@ fn credential(
         .map_err(|e| LegError::Refused(e.to_string()))
 }
 
-/// The error a non-2xx, non-404 status means. A rate limit carries `retry_after`, the pause
-/// [`fetch`] read from the response's `Retry-After` (delta-seconds or an HTTP-date, capped at an
-/// hour). **Pure.**
-fn status_error(response: &Response, retry_after: Option<u64>) -> Result<(), LegError> {
+/// The error a non-2xx, non-404 status means. A `401` or `403` rejects the key only when
+/// `keyed`, a request that carried one; a `429` carries `retry_after`, the pause [`fetch`] read from
+/// the response's `Retry-After` (delta-seconds or an HTTP-date, capped at an hour). **Pure.**
+fn status_error(
+    response: &Response,
+    keyed: bool,
+    retry_after: Option<u64>,
+) -> Result<(), LegError> {
     match response.status {
         200..=299 => Ok(()),
         400 | 422 => Err(LegError::BadRequest(response.status)),
-        401 => Err(LegError::Unauthorized),
-        402 | 403 => Err(LegError::Forbidden),
-        429 => Err(LegError::RateLimited { retry_after }),
+        401 if keyed => Err(LegError::Unauthorized),
+        402 => Err(LegError::Forbidden),
+        403 if keyed => Err(LegError::Forbidden),
+        status @ (401 | 403) => Err(LegError::RefusedWithoutKey(status)),
+        429 => Err(LegError::RateLimited {
+            status: 429,
+            retry_after,
+        }),
         status @ 500..=599 => Err(LegError::Server(status)),
         status => Err(LegError::Unexpected(status)),
     }
@@ -652,7 +730,13 @@ mod tests {
             (401, LegError::Unauthorized),
             (402, LegError::Forbidden),
             (403, LegError::Forbidden),
-            (429, LegError::RateLimited { retry_after: None }),
+            (
+                429,
+                LegError::RateLimited {
+                    status: 429,
+                    retry_after: None,
+                },
+            ),
             (503, LegError::Server(503)),
             (418, LegError::Unexpected(418)),
         ];
@@ -696,6 +780,7 @@ mod tests {
             assert_eq!(
                 err,
                 LegError::RateLimited {
+                    status: 429,
                     retry_after: expected
                 },
                 "{value}"
@@ -714,6 +799,128 @@ mod tests {
                 b"{\"detail\":\"No information available\"}".to_vec()
             ))
         );
+    }
+
+    /// What `fetch` read the response as decides before the status: a challenge or block page is
+    /// a wall and a rate limit is a rate limit at any status, so neither is ever "nothing known",
+    /// a refused key or an outage, and a rate limit keeps the status and pause it came with.
+    #[test]
+    fn a_wall_or_a_rate_limit_at_any_status_is_never_an_answer_or_a_refused_key() {
+        const WALL: &str = "<!doctype html><html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked<script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></body></html>";
+        for status in [404, 403, 503] {
+            let transport = Recorder::new(status, WALL);
+            let got = get(&transport, &KEYED, &keys(), URL, 1);
+            assert_eq!(
+                got,
+                Err(LegError::NotAnAnswer(SourceOutcomeKind::BotWaf, status)),
+                "HTTP {status}"
+            );
+        }
+        for headers in [
+            vec![("Retry-After".to_owned(), "60".to_owned())],
+            vec![
+                ("x-ratelimit-remaining".to_owned(), "0".to_owned()),
+                ("x-ratelimit-reset".to_owned(), "601".to_owned()),
+            ],
+        ] {
+            let mut transport = Recorder::new(403, "{}");
+            transport.headers = headers;
+            let err = get(&transport, &KEYED, &keys(), URL, 1).expect_err("a rate limit");
+            assert!(
+                matches!(err, LegError::RateLimited { status: 403, retry_after: Some(secs) } if secs >= 60),
+                "{err:?}"
+            );
+            let outcome = err.outcome(&KEYED, 1);
+            assert_eq!(outcome.kind, SourceOutcomeKind::RateLimited);
+            assert_eq!(outcome.http_status, Some(403));
+            assert!(outcome.retry_after_secs.is_some_and(|secs| secs >= 60));
+        }
+    }
+
+    /// A 404 is the provider's to read only when it was read whole and is not a page: no API
+    /// answers "nothing known" with an HTML page, so a moved endpoint's or a proxy's 404 page is
+    /// no clean negative, while an empty or JSON 404 still goes to the provider module.
+    #[test]
+    fn a_404_page_is_no_answer_and_a_404_document_is() {
+        let page = Recorder::new(
+            404,
+            "\n<!DOCTYPE html><html><body><h1>Not Found</h1></body></html>",
+        );
+        assert_eq!(
+            get(&page, &KEYLESS, &Keys::default(), URL, 1),
+            Err(LegError::Unexpected(404))
+        );
+        let empty = Recorder::new(404, "");
+        assert_eq!(
+            get(&empty, &KEYLESS, &Keys::default(), URL, 1),
+            Ok(Answer::NotFound(Vec::new()))
+        );
+        struct Cut;
+        impl Transport for Cut {
+            fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+                Ok(Response {
+                    status: 404,
+                    headers: Vec::new(),
+                    body: br#"{"detail":"No inform"#.to_vec(),
+                    truncated: true,
+                })
+            }
+        }
+        assert_eq!(
+            get(&Cut, &KEYLESS, &Keys::default(), URL, 1),
+            Err(LegError::TooLarge)
+        );
+    }
+
+    /// Only a sent key can be rejected. A 401 or 403 to a request that carried none, a keyless
+    /// provider's or a key-optional one's without its key, rejected no key: a 401 asks for one,
+    /// a 403 is the provider refusing the request. With the key sent they stay its rejection.
+    #[test]
+    fn a_401_or_403_without_a_key_rejects_no_key() {
+        for (api, keys, status, expected, kind) in [
+            (
+                KEYLESS,
+                Keys::default(),
+                403,
+                LegError::RefusedWithoutKey(403),
+                SourceOutcomeKind::Upstream4xx,
+            ),
+            (
+                KEYLESS,
+                Keys::default(),
+                401,
+                LegError::RefusedWithoutKey(401),
+                SourceOutcomeKind::AuthRequired,
+            ),
+            (
+                OPTIONAL,
+                Keys::default(),
+                403,
+                LegError::RefusedWithoutKey(403),
+                SourceOutcomeKind::Upstream4xx,
+            ),
+            (
+                OPTIONAL,
+                keys(),
+                403,
+                LegError::Forbidden,
+                SourceOutcomeKind::EntitlementDenied,
+            ),
+            (
+                KEYED,
+                keys(),
+                401,
+                LegError::Unauthorized,
+                SourceOutcomeKind::AuthRejected,
+            ),
+        ] {
+            let transport = Recorder::new(status, r#"{"message":"Forbidden"}"#);
+            let err = get(&transport, &api, &keys, URL, 1).expect_err("a refusal");
+            assert_eq!(err, expected, "HTTP {status}");
+            let outcome = err.outcome(&api, 1);
+            assert_eq!(outcome.kind, kind, "HTTP {status}");
+            assert_eq!(outcome.http_status, Some(status));
+        }
     }
 
     #[test]
@@ -774,7 +981,7 @@ mod tests {
         );
         assert!(matches!(
             get(&transport, &KEYLESS, &Keys::default(), URL, 1),
-            Err(LegError::NotAnAnswer(_))
+            Err(LegError::NotAnAnswer(..))
         ));
     }
 

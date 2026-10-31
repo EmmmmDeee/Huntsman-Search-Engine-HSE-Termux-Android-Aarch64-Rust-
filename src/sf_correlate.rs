@@ -703,12 +703,42 @@ fn in_subnet(value: &str, network: &str) -> bool {
     }
 }
 
+/// The typed blacklist descriptor of a DNSBL observation carries the class from its underlying
+/// evidence. Every classified DNSBL abuse record also emits a MALICIOUS descriptor; counting its
+/// BLACKLISTED descriptor as a second source would make a single observation count twice. Policy
+/// and neighbourhood listings emit no MALICIOUS descriptor and must not count as abuse at all.
+/// Old saved descriptors without this metadata keep their historical interpretation.
+fn classified_dnsbl_blacklist(raw: &Value) -> bool {
+    match raw {
+        Value::Array(records) => {
+            !records.is_empty() && records.iter().all(classified_dnsbl_blacklist)
+        }
+        Value::Object(_) => raw
+            .get(crate::dnsbl::LISTING_CLASS)
+            .and_then(Value::as_str)
+            .is_some_and(|class| matches!(class, "abuse" | "policy" | "neighbourhood")),
+        _ => false,
+    }
+}
+
 impl Scan<'_> {
     fn collect(&self, rule: &Rule) -> Vec<Hit> {
         let mut hits = Vec::new();
+        // Keep the shipped SpiderFoot YAML and all typed blacklist observations unchanged.
+        // Only its three "multiple malicious sources" rules need classification-aware input.
+        // A user-supplied rule replacing one of these retains its own selection semantics.
+        let multiple_malicious = rule.origin == "spiderfoot"
+            && matches!(
+                rule.id.as_str(),
+                "multiple_malicious" | "multiple_malicious_affiliate" | "multiple_malicious_cohost"
+            );
         for (collection, matchers) in rule.collections.iter().enumerate() {
             for (index, element) in self.elements.iter().enumerate() {
-                if element.fp {
+                if element.fp
+                    || (multiple_malicious
+                        && element.kind.starts_with("BLACKLISTED_")
+                        && classified_dnsbl_blacklist(&element.raw))
+                {
                     continue;
                 }
                 let hit = self.hit(index, collection);

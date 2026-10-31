@@ -425,8 +425,39 @@ pub fn canonical_selector(raw: &str) -> Option<String> {
 /// in [`breach_hybrid::exposure_order`].
 #[must_use]
 pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
+    let report = match collect(sources, selector, now_unix) {
+        Ok(report) => report,
+        Err(why) => return ExposureRun::Failed(why),
+    };
+    let value = canonical_selector(selector).unwrap_or_default();
+
+    // No breach source answered: the lookup ends from its rows. A request refused before sending
+    // is a refusal (exit 77); a source reached but silent is no usable response (exit 69); a
+    // source that answered with an error still prints, as does the seed alone.
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).stopped(&format!("no source answered for {value}"))
+    {
+        return run;
+    }
+    match lookup_report::render(&report.entities, &report.outcomes) {
+        Ok(mut text) => {
+            text.push_str(&render_incidents(report.incidents.as_deref()));
+            text.push_str(&render_oathnet(report.oathnet.as_deref()));
+            text.push_str(&render_dehashed(report.dehashed.as_deref()));
+            ExposureRun::Printed { text, report }
+        }
+        Err(msg) => ExposureRun::Failed(msg),
+    }
+}
+
+/// Run every leg [`run`] runs and return what they gave, every row kept, however the legs ended:
+/// a lookup that folds the legs in reports a refused or silent leg as its row, never drops it.
+///
+/// # Errors
+/// `selector` is neither an email address nor a username.
+pub fn collect(sources: Sources<'_>, selector: &str, now_unix: u64) -> Result<Report, String> {
     let Some(value) = canonical_selector(selector) else {
-        return ExposureRun::Failed("not an email address or username".into());
+        return Err("not an email address or username".into());
     };
     let kind = if canonical_email(&value).is_some() {
         EntityKind::Email
@@ -462,24 +493,7 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
         report.outcomes.push(outcome);
     }
     merge_by_uid(&mut report.entities);
-
-    // No breach source answered: the lookup ends from its rows. A request refused before sending
-    // is a refusal (exit 77); a source reached but silent is no usable response (exit 69); a
-    // source that answered with an error still prints, as does the seed alone.
-    if let Some(run) =
-        SourceReach::of(&report.outcomes).stopped(&format!("no source answered for {value}"))
-    {
-        return run;
-    }
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(mut text) => {
-            text.push_str(&render_incidents(report.incidents.as_deref()));
-            text.push_str(&render_oathnet(report.oathnet.as_deref()));
-            text.push_str(&render_dehashed(report.dehashed.as_deref()));
-            ExposureRun::Printed { text, report }
-        }
-        Err(msg) => ExposureRun::Failed(msg),
-    }
+    Ok(report)
 }
 
 /// What one leg gave: its outcome row, and what it found (entities and its own section). How the
@@ -1054,9 +1068,9 @@ fn seed_entity(kind: &EntityKind, value: &str, scan_id: &str) -> Entity {
     let mut entity = Entity::new(kind.clone(), value, 0.99, scan_id);
     entity.tag("seed");
     let what = if *kind == EntityKind::Email {
-        "operator-supplied email selector"
+        "email selector the lookup was asked"
     } else {
-        "operator-supplied username selector"
+        "username selector the lookup was asked"
     };
     entity.add_evidence(Evidence::new(
         EvidenceProvenance::for_scan("seed", scan_id),

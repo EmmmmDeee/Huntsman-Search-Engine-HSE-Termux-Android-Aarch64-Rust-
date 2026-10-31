@@ -9,7 +9,11 @@ use crate::http::{Response, TransportFailure};
 #[derive(Debug, Clone)]
 enum Reply {
     Body(String),
+    /// A body with the `Last-Modified` date its publisher sent.
+    Dated(String, String),
     Status(u16),
+    /// A status with a body, as a server's own error page.
+    Page(u16, String),
     Truncated,
     Down,
 }
@@ -70,7 +74,12 @@ impl Transport for Shared {
         };
         match reply {
             Reply::Body(body) => Ok(response(200, &body, false)),
+            Reply::Dated(body, date) => Ok(Response {
+                headers: vec![("Last-Modified".into(), date)],
+                ..response(200, &body, false)
+            }),
             Reply::Status(status) => Ok(response(status, "", false)),
+            Reply::Page(status, body) => Ok(response(status, &body, false)),
             Reply::Truncated => Ok(response(200, "192.0.2.1\n", true)),
             Reply::Down => Err(TransportFailure {
                 kind: SourceOutcomeKind::ConnectFailure,
@@ -91,12 +100,6 @@ fn sample(id: &str) -> &'static str {
              162.243.103.246\n\
              198.51.100.20\n"
         }
-        "urlhaus" => {
-            "################################################################\n\
-             # id,dateadded,url,url_status,last_online,threat,tags,urlhaus_link,reporter\n\
-             \"3001\",\"2026-10-15 19:00:01\",\"http://198.51.100.20:8080/bins/x86\",\"online\",\"2026-10-15 19:00:01\",\"malware_download\",\"elf,mirai\",\"https://urlhaus.abuse.ch/url/3001/\",\"r\"\n\
-             \"3002\",\"2026-10-15 19:00:02\",\"https://evil.example/drop.exe\",\"online\",\"\",\"malware_download\",\"exe\",\"https://urlhaus.abuse.ch/url/3002/\",\"r\"\n"
-        }
         "alienvaultiprep" => {
             "###\n# Alienvault IP Reputation Database\n###\n\
              198.51.100.20 # Malicious Host NL,Amsterdam,52.37,4.89\n\
@@ -110,7 +113,6 @@ fn sample(id: &str) -> &'static str {
         }
         "cinsscore" => "1.12.229.231\n198.51.100.20\n",
         "cleantalk" => "#\n# cleantalk_7d\n#\n# ipv4 hash:ip ipset\n#\n2.56.10.21\n198.51.100.20\n",
-        "coinblocker" => "# CoinBlocker\nminer.evil.example\npool.example\n",
         "cybercrimetracker" => {
             "5.182.86.32/auth/login\nevil.example/wp-content/plugins/x/mail.php\n"
         }
@@ -148,6 +150,26 @@ fn now() -> u64 {
         .as_secs()
 }
 
+/// `unix` as the IMF-fixdate a `Last-Modified` header carries (the weekday is never read).
+fn http_date(unix: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let iso = crate::timefmt::format_unix(i64::try_from(unix).expect("a date"));
+    let month = MONTHS[iso[5..7].parse::<usize>().expect("a month") - 1];
+    format!(
+        "Mon, {} {month} {} {} GMT",
+        &iso[8..10],
+        &iso[..4],
+        &iso[11..19]
+    )
+}
+
+/// The feed with `id`.
+fn feed(id: &str) -> &'static Feed {
+    FEEDS.iter().find(|feed| feed.id == id).expect("a feed")
+}
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("hse-feeds-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -176,7 +198,7 @@ fn listings(entities: &[Entity], value: &str) -> Vec<(String, String, String)> {
         .flat_map(|entity| &entity.evidence)
         .map(|evidence| {
             let attr = |key: &str| evidence.attributes.get(key).cloned().unwrap_or_default();
-            let (feed, entries) = if attr("tor") == "true" {
+            let (feed, entries) = if evidence.attributes.contains_key("tor_relays") {
                 ("tor".to_owned(), attr("tor_relays"))
             } else {
                 (attr("threat_feed"), attr("threat_feed_entries"))
@@ -202,13 +224,11 @@ fn every_published_form_reads_as_its_entries() {
         counts,
         [
             ("feodotracker", 2),
-            ("urlhaus", 2),
             ("alienvaultiprep", 2),
             ("blocklistde", 3),
             ("botvrij", 2),
             ("cinsscore", 2),
             ("cleantalk", 2),
-            ("coinblocker", 2),
             ("cybercrimetracker", 2),
             ("emergingthreats", 1),
             ("greensnow", 1),
@@ -231,7 +251,6 @@ fn every_published_form_reads_as_its_entries() {
         read("openphish").lookup(&address("2001:db8::66")),
         ["http://[2001:db8::66]:8080/x"]
     );
-    assert_eq!(read("urlhaus").lookup(&address("198.51.100.20")).len(), 1);
     assert_eq!(
         read("cybercrimetracker").lookup(&address("5.182.86.32")),
         ["5.182.86.32/auth/login"]
@@ -301,7 +320,6 @@ fn a_lookup_checks_every_subject_and_keeps_each_entry_whole() {
         sources,
         [
             ("abusech", "abuse.ch Feodo Tracker"),
-            ("abusech", "abuse.ch URLhaus"),
             ("alienvaultiprep", "AlienVault IP Reputation"),
             ("blocklistde", "blocklist.de"),
             ("cinsscore", "CINS Army"),
@@ -309,19 +327,15 @@ fn a_lookup_checks_every_subject_and_keeps_each_entry_whole() {
             ("torexits", "tor"),
         ]
     );
-    assert!(address_listings[1].2.contains("\"elf,mirai\""));
     assert_eq!(
-        address_listings[2].2,
+        address_listings[1].2,
         "198.51.100.20 # Malicious Host NL,Amsterdam,52.37,4.89"
     );
     let name_sources: Vec<String> = listings(&entities, "evil.example")
         .into_iter()
         .map(|(source, _, _)| source)
         .collect();
-    assert_eq!(
-        name_sources,
-        ["abusech", "botvrij", "cybercrimetracker", "vxvault"]
-    );
+    assert_eq!(name_sources, ["botvrij", "cybercrimetracker", "vxvault"]);
     // A block holds the listed addresses and blocks inside it, every entry kept.
     assert_eq!(
         listings(&entities, "203.0.113.0/24"),
@@ -351,13 +365,12 @@ fn a_lookup_checks_every_subject_and_keeps_each_entry_whole() {
             .any(|entity| entity.value == "198.51.100.20" && entity.has_tag(tags::TOR_EXIT))
     );
     // One row per source, saying what each of its feeds listed.
-    assert_eq!(rows.len(), 16);
+    assert_eq!(rows.len(), 15);
     assert_eq!(row(&rows, "abusech").kind, SourceOutcomeKind::Success);
-    assert_eq!(row(&rows, "abusech").found, Some(3));
+    assert_eq!(row(&rows, "abusech").found, Some(1));
     assert_eq!(
         detail(&rows, "abusech"),
-        "abuse.ch Feodo Tracker: lists 198.51.100.20 (2 entries, downloaded now); abuse.ch URLhaus: \
-         lists 198.51.100.20, evil.example (2 entries, downloaded now)"
+        "abuse.ch Feodo Tracker: lists 198.51.100.20 (2 entries, downloaded now)"
     );
     assert_eq!(row(&rows, "greensnow").kind, SourceOutcomeKind::ValidZero);
     assert_eq!(
@@ -426,7 +439,8 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
     net.asked();
     // A feed down keeps answering from its old copy, and says how old that is.
     net.set("cinsscore", Reply::Down);
-    // A list that turns into a page of HTML, as Talos's did, is no list.
+    // A list that turns into a page of HTML, as Talos's did, is no list: it is not kept, and the
+    // copy kept before it still answers, saying the list could not be downloaded again.
     let page = "<!DOCTYPE html><html><head><title>Terms</title></head></html>";
     net.set("greensnow", Reply::Body(page.into()));
     let later = start + 19 * 3_600;
@@ -443,24 +457,40 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
             .iter()
             .any(|(source, _, _)| source == "cinsscore")
     );
-    assert_eq!(
-        row(&rows, "greensnow").kind,
-        SourceOutcomeKind::ProtocolDrift
+    assert_eq!(row(&rows, "greensnow").kind, SourceOutcomeKind::Success);
+    let green = detail(&rows, "greensnow");
+    assert!(
+        green.starts_with("GreenSnow: lists 194.180.49.70 (1 entries, copy from ")
+            && green.ends_with(&format!(
+                ", could not be downloaded again (an HTML page of {} bytes in place of the list))",
+                page.len()
+            )),
+        "{green}"
     );
     assert_eq!(
-        detail(&rows, "greensnow"),
-        format!(
-            "GreenSnow: no entry it could read in {} bytes; the feed may have changed form",
-            page.len()
-        )
+        std::fs::read_to_string(dir.join("greensnow")).expect("copy"),
+        sample("greensnow")
     );
-    assert!(listings(&entities, "194.180.49.70").is_empty());
+    assert!(
+        listings(&entities, "194.180.49.70")
+            .iter()
+            .any(|(source, _, _)| source == "greensnow")
+    );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 
-    // With no copy, a feed that is down, refuses or is larger than the limit is a failed row.
+    // With no copy, a feed that is down, refuses, is larger than the limit or is a page is a
+    // failed row.
     let net = Net::serving();
+    net.set("greensnow", Reply::Body(page.into()));
     net.set("cinsscore", Reply::Down);
     net.set("emergingthreats", Reply::Status(503));
+    net.set(
+        "botvrij",
+        Reply::Page(
+            404,
+            "<!DOCTYPE html><html><body>Not Found</body></html>".into(),
+        ),
+    );
     net.set("phishtank", Reply::Truncated);
     let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), None);
     let (_, rows) = check(&feeds, &subjects, "s", start);
@@ -472,6 +502,8 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
         detail(&rows, "emergingthreats"),
         "Emerging Threats: HTTP 503"
     );
+    // A server's error page is its status, not a page in the list's place.
+    assert_eq!(detail(&rows, "botvrij"), "botvrij.eu: HTTP 404");
     assert_eq!(
         row(&rows, "phishtank").kind,
         SourceOutcomeKind::ProtocolDrift
@@ -480,6 +512,148 @@ fn a_feed_that_cannot_be_read_says_so_instead_of_not_listed() {
         detail(&rows, "phishtank"),
         format!("PhishTank: larger than {MAX_FEED_BYTES} bytes")
     );
+    assert_eq!(
+        row(&rows, "greensnow").kind,
+        SourceOutcomeKind::ProtocolDrift
+    );
+    assert_eq!(
+        detail(&rows, "greensnow"),
+        format!(
+            "GreenSnow: an HTML page of {} bytes in place of the list",
+            page.len()
+        )
+    );
+}
+
+/// A page served in a list's place (a "feed has moved" page whose markup holds URLs, a refresh
+/// stub, a challenge page) is no download: it is never kept over the list, and never reads as "not
+/// listed". A challenge is a challenge, as the fetch reads it, and Tor's list is no exception.
+#[test]
+fn a_page_served_in_a_lists_place_never_reads_as_not_listed() {
+    let moved = "<html><head><link rel=\"stylesheet\" href=\"https://openphish.com/static/main.css\">\
+                 </head>\n<body><a href=\"https://openphish.com/\">The feed has moved</a></body></html>\n";
+    let challenge = "<html><title>Just a moment...</title>Cloudflare</html>";
+    let stub = "<meta http-equiv=\"refresh\" content=\"0; url=https://new.example/feed.txt\">\n\
+                https://new.example/feed.txt\n";
+    let subjects = [Subject::Name("login.evil.example".into())];
+    for (page, kind) in [
+        (moved, SourceOutcomeKind::ProtocolDrift),
+        (challenge, SourceOutcomeKind::BotWaf),
+        (stub, SourceOutcomeKind::ProtocolDrift),
+    ] {
+        let net = Net::serving();
+        net.set("openphish", Reply::Body(page.into()));
+        let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), None);
+        let (entities, rows) = check(&feeds, &subjects, "s", now());
+        assert_eq!(row(&rows, "openphish").kind, kind, "{page}");
+        assert!(
+            listings(&entities, "login.evil.example")
+                .iter()
+                .all(|(source, _, _)| source != "openphish")
+        );
+    }
+    // With a copy, the page is not kept and the copy still answers.
+    let dir = scratch("pages");
+    let net = Net::serving();
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let start = now();
+    let _ = check(&feeds, &subjects, "s", start);
+    for page in [moved, challenge, stub] {
+        net.set("openphish", Reply::Body(page.into()));
+        let (entities, rows) = check(&feeds, &subjects, "s", start + 19 * 3_600);
+        assert_eq!(row(&rows, "openphish").kind, SourceOutcomeKind::Success);
+        assert!(
+            detail(&rows, "openphish").contains("could not be downloaded again ("),
+            "{}",
+            detail(&rows, "openphish")
+        );
+        assert!(
+            listings(&entities, "login.evil.example")
+                .iter()
+                .any(|(source, _, _)| source == "openphish")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("openphish")).expect("copy"),
+            sample("openphish")
+        );
+    }
+    // Tor's relay list, JSON, is replaced by no page either.
+    let relay = [address("204.8.96.141")];
+    let _ = check(&feeds, &relay, "s", start);
+    net.set("torexits", Reply::Body(challenge.into()));
+    let (entities, rows) = check(&feeds, &relay, "s", start + 2 * 3_600);
+    assert_eq!(row(&rows, "torexits").kind, SourceOutcomeKind::Success);
+    assert!(
+        listings(&entities, "204.8.96.141")
+            .iter()
+            .any(|(source, _, _)| source == "torexits")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("torexits")).expect("copy"),
+        sample("torexits")
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A body is a page by how it opens, never by what its entries spell: a tag after any byte-order
+/// mark, white space, XML declaration and comments, other than the `<pre>` VX Vault wraps its list
+/// in.
+#[test]
+fn a_body_is_a_page_by_how_it_opens() {
+    let padding = " ".repeat(2_048);
+    for page in [
+        "<!DOCTYPE html><html></html>".to_owned(),
+        "\u{feff}<?xml version=\"1.0\"?>\n<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\">"
+            .to_owned(),
+        "<meta http-equiv=\"refresh\" content=\"0; url=https://new.example/feed.txt\">".to_owned(),
+        "<script>location = 'https://new.example/feed.txt'</script>".to_owned(),
+        "<br />\n<b>Warning</b>: feed.php on line 3<br />\n198.51.100.20\n".to_owned(),
+        format!("{padding}<!-- generated -->\n<html><body>moved</body></html>"),
+        "<!-- never closed".to_owned(),
+        "<?php echo 1;".to_owned(),
+        "<prefix>".to_owned(),
+    ] {
+        assert!(is_page(page.as_bytes()), "{page}");
+    }
+    for list in [
+        sample("vxvault").to_owned(),
+        "<PRE>\nhttp://203.0.113.5/<header><body>.exe\n</PRE>\n".to_owned(),
+        sample("torexits").to_owned(),
+        "# <html> is no entry\n198.51.100.20\n".to_owned(),
+        "\u{feff}http://evil.example/<body>\n".to_owned(),
+        "<203.0.113.5>\n".to_owned(),
+        "<!-- generated -->\n198.51.100.20\n".to_owned(),
+        "<!-- x -->\n<pre class=\"l\">\nhttp://e.example/a\n".to_owned(),
+        String::new(),
+    ] {
+        assert!(!is_page(list.as_bytes()), "{list}");
+    }
+}
+
+/// An entry is read by its host however a `://` falls in it: after its scheme, in its query (the
+/// entry is read without a scheme) or in markup (no host); and a list's byte-order mark is no part
+/// of its first entry.
+#[test]
+fn an_entry_is_read_by_its_host_wherever_a_scheme_falls_in_it() {
+    let host = |entry: &str| match url_key(entry) {
+        Some(Key::Name(name)) => Some(name),
+        _ => None,
+    };
+    assert_eq!(
+        host("https://login.evil.example/x").as_deref(),
+        Some("login.evil.example")
+    );
+    assert_eq!(
+        host("evil.example/g.php?u=http://x.example/").as_deref(),
+        Some("evil.example")
+    );
+    assert_eq!(host("<link href=\"https://cdn.example/main.css\">"), None);
+    let listed = index(
+        Format::Urls,
+        "\u{feff}http://first.example/a\nhttp://second.example/b\n",
+    );
+    assert_eq!(listed.entries, 2);
+    assert!(listed.names.contains_key("first.example"));
 }
 
 #[test]
@@ -580,4 +754,408 @@ fn a_saved_scan_lists_threats_as_malicious_and_tor_exits_as_tor_exit_nodes() {
         ["Steven Black Hosts [tracker.example]"]
     );
     assert!(of("MALICIOUS_INTERNET_NAME").is_empty());
+}
+
+/// 30 October 2026, noon UTC, as the stale-list tests read it.
+fn stale_now() -> u64 {
+    crate::timefmt::parse_http_date("Fri, 30 Oct 2026 12:00:00 GMT", 0)
+        .and_then(|now| u64::try_from(now).ok())
+        .expect("now")
+}
+
+/// Every feed serving its sample, as published at `now`: `AlienVault`'s reputation list last on 12
+/// November 2021 (it still downloads), Tor's relays four days before, CINS Army an hour before
+/// (its date returned), `CleanTalk`'s seven-day list ten days before and blocklist.de's 48-hour
+/// list three days before.
+fn stale_feeds(now: u64) -> (Feeds, String) {
+    let net = Net::serving();
+    net.set(
+        "alienvaultiprep",
+        Reply::Dated(
+            sample("alienvaultiprep").into(),
+            "Fri, 12 Nov 2021 14:10:50 GMT".to_owned(),
+        ),
+    );
+    net.set(
+        "torexits",
+        Reply::Dated(sample("torexits").into(), http_date(now - 4 * 86_400)),
+    );
+    let fresh = http_date(now - 3_600);
+    net.set(
+        "cinsscore",
+        Reply::Dated(sample("cinsscore").into(), fresh.clone()),
+    );
+    // A list of the last seven days, or 48 hours, is stale once older than that.
+    net.set(
+        "cleantalk",
+        Reply::Dated(sample("cleantalk").into(), http_date(now - 10 * 86_400)),
+    );
+    net.set(
+        "blocklistde",
+        Reply::Dated(sample("blocklistde").into(), http_date(now - 3 * 86_400)),
+    );
+    (Feeds::new(Box::new(Shared(net)), None), fresh)
+}
+
+#[test]
+fn a_list_its_publisher_stopped_updating_cannot_say_a_subject_is_not_listed() {
+    let now = stale_now();
+    let (feeds, fresh) = stale_feeds(now);
+    // Absent from a list that stopped updating is not "not listed".
+    let (entities, rows) = check(&feeds, &[address("192.0.2.200")], "s", now);
+    assert!(entities.is_empty());
+    assert_eq!(
+        row(&rows, "alienvaultiprep").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    assert!(!row(&rows, "alienvaultiprep").kind.is_accepted());
+    assert_eq!(
+        detail(&rows, "alienvaultiprep"),
+        "AlienVault IP Reputation: not listed (2 entries, downloaded now, a list last updated \
+         2021-11-12T14:10:50Z, too old to say what is listed now)"
+    );
+    assert_eq!(row(&rows, "torexits").kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(
+        row(&rows, "cleantalk").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    assert_eq!(
+        row(&rows, "blocklistde").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    // A current list still answers, saying when it was published; an undated one as before.
+    assert_eq!(row(&rows, "cinsscore").kind, SourceOutcomeKind::ValidZero);
+    let updated =
+        crate::timefmt::format_unix(crate::timefmt::parse_http_date(&fresh, now).expect("a date"));
+    assert_eq!(
+        detail(&rows, "cinsscore"),
+        format!("CINS Army: not listed (2 entries, downloaded now, list updated {updated})")
+    );
+    assert_eq!(row(&rows, "greensnow").kind, SourceOutcomeKind::ValidZero);
+    assert_eq!(
+        detail(&rows, "greensnow"),
+        "GreenSnow: not listed (1 entries, downloaded now)"
+    );
+}
+
+#[test]
+fn what_a_stale_list_holds_is_kept_but_never_a_current_verdict() {
+    let now = stale_now();
+    let (feeds, _) = stale_feeds(now);
+    // What such a list holds is kept whole, as an entry on an old list, never a current threat.
+    let subjects = [address("203.0.113.50"), address("204.8.96.141")];
+    let (entities, rows) = check(&feeds, &subjects, "s", now);
+    assert_eq!(
+        row(&rows, "alienvaultiprep").kind,
+        SourceOutcomeKind::Success
+    );
+    let listed = entities
+        .iter()
+        .find(|entity| entity.value == "203.0.113.50")
+        .expect("the listing");
+    assert!(!listed.has_tag(tags::MALICIOUS));
+    let evidence = &listed.evidence[0];
+    let attr = |key: &str| evidence.attributes.get(key).map(String::as_str);
+    assert_eq!(
+        evidence.summary,
+        "203.0.113.50 is listed by AlienVault IP Reputation (on a list last updated \
+         2021-11-12T14:10:50Z)"
+    );
+    assert_eq!(
+        attr("threat_feed_entries"),
+        Some("203.0.113.50 # Scanning Host US,,37.75,-97.82")
+    );
+    assert_eq!(attr("threat_feed_threat"), Some("false"));
+    assert_eq!(attr("threat_feed_updated"), Some("2021-11-12T14:10:50Z"));
+    assert_eq!(attr("threat_feed_stale"), Some("true"));
+    assert_eq!(attr("blocklists"), None);
+    let relay = entities
+        .iter()
+        .find(|entity| entity.value == "204.8.96.141")
+        .expect("the relay");
+    assert!(!relay.has_tag(tags::TOR_EXIT));
+    assert!(
+        relay.evidence[0]
+            .summary
+            .starts_with("204.8.96.141 is listed as a Tor exit relay (on a list last updated "),
+        "{}",
+        relay.evidence[0].summary
+    );
+    let attr = |key: &str| relay.evidence[0].attributes.get(key).map(String::as_str);
+    assert_eq!(attr("tor"), None, "never said not to be a Tor exit either");
+    assert_eq!(attr("tor_relays_stale"), Some("true"));
+    assert!(attr("tor_relays").is_some_and(|relays| relays.contains("Quintex152")));
+
+    // A saved scan names it neither blacklisted nor malicious, which Spiderfoot's correlations
+    // would read as a current verdict, nor a Tor exit node.
+    let target = crate::sf_elements::Target {
+        value: "203.0.113.50",
+        kind: "IP_ADDRESS",
+    };
+    let found = crate::sf_elements::elements(target, &entities, 1);
+    let of = |kind: &str| -> Vec<&str> {
+        found
+            .iter()
+            .filter(|element| element.kind == kind)
+            .map(|element| element.data.as_str())
+            .collect()
+    };
+    assert!(of("BLACKLISTED_IPADDR").is_empty());
+    assert!(of("MALICIOUS_IPADDR").is_empty());
+    assert!(of("TOR_EXIT_NODE").is_empty());
+}
+
+#[test]
+fn a_kept_copy_is_read_with_its_own_publishers_date() {
+    let dir = scratch("dated");
+    let net = Net::serving();
+    let start = now();
+    net.set(
+        "alienvaultiprep",
+        Reply::Dated(
+            sample("alienvaultiprep").into(),
+            http_date(start - 400 * 86_400),
+        ),
+    );
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let subjects = [address("192.0.2.200")];
+    let _ = check(&feeds, &subjects, "s", start);
+    assert_eq!(net.asked().len(), FEEDS.len());
+    let kept = |id: &str| read_updated(&dir.join(id), sample(id).as_bytes());
+    assert_eq!(
+        kept("alienvaultiprep"),
+        KeptDate::Kept(Some(start - 400 * 86_400))
+    );
+    assert_eq!(kept("greensnow"), KeptDate::Kept(None));
+    // Read from its copy, the old list is still too old to answer.
+    let (_, rows) = check(&feeds, &subjects, "s", start + 60);
+    assert!(net.asked().is_empty());
+    assert_eq!(
+        row(&rows, "alienvaultiprep").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    assert!(detail(&rows, "alienvaultiprep").contains(", copy from "));
+    assert_eq!(row(&rows, "greensnow").kind, SourceOutcomeKind::ValidZero);
+    // A copy with no date beside it, as an earlier version kept them, is downloaded again, and so
+    // is one rewritten since its date was kept (by an earlier version, or another process).
+    std::fs::remove_file(dir.join("cinsscore.updated")).expect("remove the date");
+    std::fs::write(dir.join("greensnow"), "194.180.49.70\n198.51.100.99\n").expect("rewrite");
+    let _ = check(&feeds, &subjects, "s", start + 120);
+    let mut asked = net.asked();
+    asked.sort();
+    let mut again = [feed("cinsscore").url, feed("greensnow").url];
+    again.sort_unstable();
+    assert_eq!(asked, again);
+    // A later download without a date never keeps the old one.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(dir.join("alienvaultiprep"))
+        .expect("copy")
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(start)),
+        )
+        .expect("pin the copy's time");
+    net.set(
+        "alienvaultiprep",
+        Reply::Body(sample("alienvaultiprep").into()),
+    );
+    let (_, rows) = check(&feeds, &subjects, "s", start + 19 * 3_600);
+    assert_eq!(
+        row(&rows, "alienvaultiprep").kind,
+        SourceOutcomeKind::ValidZero
+    );
+    assert_eq!(kept("alienvaultiprep"), KeptDate::Kept(None));
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn a_source_says_not_listed_only_when_every_one_of_its_lists_answered_for_now() {
+    // Two lists under one source, as abuse.ch's Feodo Tracker and URLhaus once were: one that
+    // cannot be read, or one too old, leaves "not listed" unsaid.
+    let first = Feed {
+        id: "first",
+        source: "both",
+        name: "First",
+        ..*feed("feodotracker")
+    };
+    let second = Feed {
+        id: "second",
+        source: "both",
+        name: "Second",
+        ..*feed("feodotracker")
+    };
+    let read = |stale| -> Result<Read, Failure> {
+        Ok(Read {
+            matches: Vec::new(),
+            entries: 2,
+            fetched: 0,
+            updated: Some(0),
+            as_of: Some(0),
+            stale,
+            downloaded: true,
+            note: None,
+        })
+    };
+    let kind = |said: &[(&Feed, Result<Read, Failure>)]| rows(said, 1)[0].kind;
+    assert_eq!(
+        kind(&[(&first, read(false)), (&second, read(false))]),
+        SourceOutcomeKind::ValidZero
+    );
+    let gone = Err((SourceOutcomeKind::ConfirmedDead, "HTTP 410".to_owned()));
+    assert_eq!(
+        kind(&[(&first, read(false)), (&second, gone.clone())]),
+        SourceOutcomeKind::Inconclusive
+    );
+    assert_eq!(
+        kind(&[(&first, read(false)), (&second, read(true))]),
+        SourceOutcomeKind::Inconclusive
+    );
+    assert_eq!(
+        kind(&[(&first, gone.clone()), (&second, gone)]),
+        SourceOutcomeKind::ConfirmedDead
+    );
+}
+
+#[test]
+fn a_copy_that_cannot_be_refreshed_answers_only_for_when_it_was_downloaded() {
+    let dir = scratch("unrefreshed");
+    let start = now();
+    let net = Net::serving();
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let subjects = [address("194.180.49.70"), address("192.0.2.200")];
+    let _ = check(&feeds, &subjects, "s", start);
+    // Every copy was downloaded 40 days ago, the network is now down, and the date kept beside
+    // blocklist.de's copy is gone.
+    let old = start - 40 * 86_400;
+    for feed in FEEDS {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(feed.id))
+            .expect("copy")
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(old)),
+            )
+            .expect("age the copy");
+    }
+    std::fs::remove_file(dir.join("blocklistde.updated")).expect("remove the date");
+    let down = Feeds::new(
+        Box::new(Shared(Arc::new(Net::default()))),
+        Some(dir.clone()),
+    );
+    let (entities, rows) = check(&down, &subjects, "s", start);
+    // GreenSnow publishes no date, so its copy answers for when it was downloaded: 40 days ago.
+    assert_eq!(row(&rows, "greensnow").kind, SourceOutcomeKind::Success);
+    let listing = entities
+        .iter()
+        .find(|entity| entity.value == "194.180.49.70")
+        .expect("the listing");
+    assert!(!listing.has_tag(tags::MALICIOUS));
+    let copy = crate::timefmt::format_unix(i64::try_from(old).expect("a date"));
+    assert_eq!(
+        listing.evidence[0].summary,
+        format!("194.180.49.70 is listed by GreenSnow (on a copy downloaded {copy})")
+    );
+    let greensnow = detail(&rows, "greensnow");
+    assert!(
+        greensnow.contains(&format!(
+            "(1 entries, copy from {copy}, too old to say what is listed now, could not be \
+             downloaded again"
+        )),
+        "{greensnow}"
+    );
+    assert_eq!(
+        row(&rows, "cinsscore").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    // A copy whose date is unknown cannot say either.
+    assert_eq!(
+        row(&rows, "blocklistde").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    assert!(
+        detail(&rows, "blocklistde")
+            .contains(", a copy of unknown date, which cannot say what is listed now"),
+        "{}",
+        detail(&rows, "blocklistde")
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+/// A list is read as the list whatever its entries spell, a listed URL the fetch reads as a
+/// challenge's marker included; a list that empties replaces its copy rather than leaving the old one answering; and a
+/// page an earlier version kept in a list's place, with its date beside it, is downloaded again.
+#[test]
+fn a_list_is_the_list_however_it_reads_and_a_kept_page_is_no_copy() {
+    let net = Net::serving();
+    let vxvault = format!(
+        "{}http://45.131.135.227/sorry/index\nhttp://203.0.113.5/<header><body>.exe\n",
+        sample("vxvault").replace("</pre>\n", "")
+    );
+    net.set("vxvault", Reply::Body(vxvault));
+    let dir = scratch("emptied");
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let start = now();
+    let feodo = address("162.243.103.246");
+    let (entities, rows) = check(
+        &feeds,
+        &[
+            address("45.131.135.227"),
+            address("203.0.113.5"),
+            feodo.clone(),
+        ],
+        "s",
+        start,
+    );
+    assert_eq!(row(&rows, "vxvault").kind, SourceOutcomeKind::Success);
+    for listed in ["45.131.135.227", "203.0.113.5"] {
+        assert!(
+            listings(&entities, listed)
+                .iter()
+                .any(|(source, _, _)| source == "vxvault"),
+            "{listed}"
+        );
+    }
+    assert!(
+        listings(&entities, "162.243.103.246")
+            .iter()
+            .any(|(source, _, _)| source == "abusech")
+    );
+
+    let emptied = "# abuse.ch Feodo Tracker Botnet C2 IP Blocklist\n# END 0 entries\n";
+    net.set("feodotracker", Reply::Body(emptied.into()));
+    let (entities, rows) = check(&feeds, &[feodo], "s", start + 19 * 3_600);
+    assert_eq!(row(&rows, "abusech").kind, SourceOutcomeKind::ProtocolDrift);
+    assert!(listings(&entities, "162.243.103.246").is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("feodotracker")).expect("copy"),
+        emptied
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+
+    let dir = scratch("kept-page");
+    let net = Net::serving();
+    let page =
+        "<!DOCTYPE html><html><body><a href=\"https://openphish.com/\">moved</a></body></html>";
+    keep(&dir.join("openphish"), page.as_bytes(), None).expect("keep a page");
+    let feeds = Feeds::new(Box::new(Shared(Arc::clone(&net))), Some(dir.clone()));
+    let (entities, rows) = check(
+        &feeds,
+        &[Subject::Name("login.evil.example".into())],
+        "s",
+        now(),
+    );
+    let openphish = FEEDS
+        .iter()
+        .find(|feed| feed.id == "openphish")
+        .expect("openphish");
+    assert!(net.asked().contains(&openphish.url.to_owned()));
+    assert_eq!(row(&rows, "openphish").kind, SourceOutcomeKind::Success);
+    assert!(
+        listings(&entities, "login.evil.example")
+            .iter()
+            .any(|(source, _, _)| source == "openphish")
+    );
+    std::fs::remove_dir_all(&dir).expect("cleanup");
 }

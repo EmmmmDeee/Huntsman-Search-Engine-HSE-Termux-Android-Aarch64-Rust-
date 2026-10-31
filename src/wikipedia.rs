@@ -12,7 +12,10 @@ use serde::Deserialize;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
+use crate::fetch::{
+    FetchOptions, Fetched, answer, decode_json, fetch, mediawiki_api_error, mediawiki_error_code,
+    whole_response,
+};
 use crate::http::{Request, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
@@ -46,7 +49,7 @@ pub struct Report {
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
-    /// Present (any shape) when `MediaWiki` rejects the query, for example `baduser_ucuser`.
+    /// Present (any shape) when `MediaWiki` rejects the query, for example `baduser`.
     #[serde(default)]
     error: Option<serde_json::Value>,
     #[serde(default)]
@@ -115,6 +118,41 @@ pub fn lookup<T: Transport + ?Sized>(
     Ok(interpret(&fetched, selector, scan_id, now_unix).unwrap_or_else(miss))
 }
 
+/// The account name `MediaWiki` reads `selector` as: an underscore is a space, a run of spaces one,
+/// surrounding space none, and the first letter a capital (English Wikipedia capitalises a title's
+/// first letter). Every other letter keeps its case, so `JohnDoe` and `Johndoe` are two accounts.
+/// An IPv4 editor is its address with no leading zero in a part, as `MediaWiki` sanitises it.
+/// **Pure.**
+fn account_name(selector: &str) -> String {
+    let spaced = selector.replace('_', " ");
+    let name = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(address) = ipv4_editor(&name) {
+        return address;
+    }
+    let mut letters = name.chars();
+    letters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(letters).collect()
+    })
+}
+
+/// `name` as the IPv4 address of an editor without an account, each of its four parts one to three
+/// digits written without leading zeros, or `None` for any other name. **Pure.**
+fn ipv4_editor(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() != 4
+        || !parts
+            .iter()
+            .all(|part| (1..=3).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    let octets = parts
+        .iter()
+        .map(|part| part.parse::<u8>().ok().map(|octet| octet.to_string()))
+        .collect::<Option<Vec<_>>>()?;
+    Some(octets.join("."))
+}
+
 /// A report that found nothing, carrying only its outcome. **Pure.**
 fn miss(outcome: SourceExecutionOutcome) -> Report {
     Report {
@@ -138,26 +176,19 @@ fn interpret(
     // Only a rejected account selector is a clean negative. Other API errors must not
     // masquerade as evidence that an account has no public contributions.
     if let Some(error) = parsed.error {
-        let code = error
-            .get("code")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        if code == "baduser_ucuser" {
+        // A name `MediaWiki` cannot read as a user (`baduser`, `baduser_ucuser` before 1.35) can
+        // be no account: the one error that answers the query.
+        if matches!(mediawiki_error_code(&error), "baduser" | "baduser_ucuser") {
             return Err(
                 SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
             );
         }
-        let kind = if matches!(code, "ratelimited" | "maxlag") {
-            SourceOutcomeKind::RateLimited
-        } else {
-            SourceOutcomeKind::Inconclusive
-        };
-        return Err(SourceExecutionOutcome::failed(
+        return Err(mediawiki_api_error(
+            &error,
             SRC,
+            response.status,
             now_unix,
-            kind,
-            Some(response.status),
-            format!("Wikipedia API error: {code}"),
+            "Wikipedia",
         ));
     }
     let Some(query) = parsed.query else {
@@ -171,7 +202,24 @@ fn interpret(
     };
     let contribs = query.usercontribs;
 
-    let mut entities = build_entities(selector, &contribs, scan_id);
+    // `MediaWiki` answers for the account it reads the name as; edits credited to any other account
+    // are not this name's, so none is reported.
+    let account = account_name(selector);
+    if contribs
+        .iter()
+        .map(|contrib| contrib.user.trim())
+        .any(|user| !user.is_empty() && user != account)
+    {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            Some(response.status),
+            "Wikipedia returned edits of another account than the queried name",
+        ));
+    }
+
+    let mut entities = build_entities(&account, &contribs, scan_id);
     if entities.is_empty() {
         return Err(
             SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)

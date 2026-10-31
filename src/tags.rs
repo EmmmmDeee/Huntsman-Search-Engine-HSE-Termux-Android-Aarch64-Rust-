@@ -36,11 +36,13 @@ pub const TOR_EXIT: &str = "tor-exit";
 pub const VULNERABLE: &str = "vulnerable";
 pub const SOCIAL_PROFILE: &str = "social-profile";
 pub const CANDIDATE: &str = "candidate";
-/// A pivot that matched only by a name search — a knowledge-base or charity-register hit resolved
-/// from a name alone — is a lead to review, not an identity match. [`crate::recursion`] never
-/// dispatches an entity carrying this tag, whatever its confidence and whatever the operator's
-/// expansion floor, because a name-only match is not corroborated enough to pursue a potentially
-/// unrelated third party on its own; it still appears in the report as a lead.
+/// A pivot that matched only by a name search — a Wikidata knowledge-base, ACNC charity-register
+/// or SEC EDGAR filer hit resolved from a name alone — is a lead to review, not an identity match.
+/// It is the one tag every name-search leg uses, so a report, the Web UI or an export filtered on
+/// it finds every such lead. [`crate::recursion`] never dispatches an entity carrying this tag,
+/// whatever its confidence and whatever the operator's expansion floor, because a name-only match
+/// is not corroborated enough to pursue a potentially unrelated third party on its own; it still
+/// appears in the report as a lead.
 pub const NAME_SEARCH_LEAD: &str = "name-search-lead";
 
 pub const DERIVED: &str = "derived";

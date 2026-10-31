@@ -10,6 +10,8 @@
 //! - a credential is only built from an `AuthenticationAuthority`, so a secret found
 //!   in breach data cannot authenticate a request;
 //! - a 401 after a credential was sent is `AuthRejected`, not `AuthRequired`;
+//! - a 403 to a request that carried no credential is `Upstream4xx`, never `AuthRejected`:
+//!   only a sent credential can be rejected;
 //! - diagnostic text has the credential scrubbed before it is stored.
 
 use std::fmt::Write as _;
@@ -393,6 +395,62 @@ pub fn json_error_detail(error: &serde_json::Error) -> String {
     )
 }
 
+/// The outcome of a `MediaWiki` Action API answer that carries an `error` envelope
+/// (`{"error":{"code":…,"info":…}}`) instead of its result. The Action API sends an error with
+/// HTTP 200, so [`answer`] passes it: the envelope says only that the API did not run the query,
+/// never that the query found nothing. A search backend too busy to run it
+/// (`cirrussearch-too-busy-error`) and a throttle or lag refusal (`ratelimited`, `maxlag`) ask the
+/// client to come back later; any other code (`cirrussearch-backend-error`, an
+/// `internal_api_error_…`) is inconclusive. A source whose query one code does answer (Wikipedia's
+/// `baduser`: the name can be no account) checks for that code first, with
+/// [`mediawiki_error_code`]. `what` names the provider in the diagnostic. **Pure.**
+#[must_use]
+pub fn mediawiki_api_error(
+    error: &serde_json::Value,
+    module: &str,
+    status: u16,
+    now_unix: u64,
+    what: &str,
+) -> SourceExecutionOutcome {
+    let code = mediawiki_error_code(error);
+    let kind = if matches!(
+        code,
+        "cirrussearch-too-busy-error" | "ratelimited" | "maxlag"
+    ) {
+        SourceOutcomeKind::RateLimited
+    } else {
+        SourceOutcomeKind::Inconclusive
+    };
+    SourceExecutionOutcome::failed(
+        module,
+        now_unix,
+        kind,
+        Some(status),
+        format!("{what} API error: {code}"),
+    )
+}
+
+/// The code of a `MediaWiki` Action API error envelope, or `unknown` when it has none or it is not
+/// shaped like one (ASCII letters, digits, `_`, `-` and the `\` of a namespaced exception's
+/// `internal_api_error_…`, at most [`MEDIAWIKI_CODE_MAX`] of them), so a diagnostic never carries
+/// arbitrary upstream text. **Pure.**
+#[must_use]
+pub fn mediawiki_error_code(error: &serde_json::Value) -> &str {
+    error
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .filter(|code| {
+            (1..=MEDIAWIKI_CODE_MAX).contains(&code.len())
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'\\'))
+        })
+        .unwrap_or("unknown")
+}
+
+/// The longest `MediaWiki` error code a diagnostic carries.
+pub const MEDIAWIKI_CODE_MAX: usize = 128;
+
 fn fetch_hops<T: Transport + ?Sized>(
     transport: &T,
     request: Request,
@@ -602,8 +660,15 @@ fn finish(
         kind = SourceOutcomeKind::AuthRejected;
     }
     let throttle = Throttle::of(&response, now_unix);
-    if response.status == 403 && kind != SourceOutcomeKind::BotWaf && throttle.limited() {
+    if response.status == 403
+        && kind != SourceOutcomeKind::BotWaf
+        && (throttle.limited() || says_rate_limited(&response.text_view()))
+    {
         kind = SourceOutcomeKind::RateLimited;
+    } else if response.status == 403 && kind == SourceOutcomeKind::Upstream4xx && sent.is_some() {
+        // Only a sent credential can be rejected: the same 403 to a request that carried none is
+        // the provider refusing the request (a block, a policy, a plan), and stays `Upstream4xx`.
+        kind = SourceOutcomeKind::AuthRejected;
     }
     let mut detail = format!("bytes={}", response.body.len());
     if response.truncated {
@@ -679,6 +744,24 @@ impl Throttle {
         self.retry_after
             .or_else(|| self.exhausted.then_some(self.reset_in).flatten())
     }
+}
+
+/// Largest refusal body read for a rate-limit message: an API's error document is a few hundred
+/// bytes, and a page is no such message.
+const RATE_LIMIT_MESSAGE_MAX_BYTES: usize = 4 * 1024;
+
+/// Whether a refusal's JSON body says, in its `message`, that a rate limit was hit, as GitHub's
+/// documented secondary limit does with no `retry-after` and quota left ("You have exceeded a
+/// secondary rate limit"). **Pure.**
+fn says_rate_limited(body: &str) -> bool {
+    body.len() <= RATE_LIMIT_MESSAGE_MAX_BYTES
+        && crate::classify::is_json_body(body)
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .as_ref()
+            .and_then(|document| document.get("message"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| message.to_ascii_lowercase().contains("rate limit"))
 }
 
 /// The result for hop `redirects + 1` when `deadline` was spent before it was sent.
@@ -857,6 +940,39 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+
+    /// A `MediaWiki` error code is carried only in its own shape: letters, digits, `_`, `-` and the
+    /// `\` of a namespaced exception, one to [`MEDIAWIKI_CODE_MAX`] of them.
+    #[test]
+    fn a_mediawiki_error_code_is_carried_only_in_its_own_shape() {
+        let code = |raw: &str| mediawiki_error_code(&serde_json::json!({ "code": raw })).to_owned();
+        for kept in [
+            "baduser",
+            "cirrussearch-too-busy-error",
+            "internal_api_error_DBQueryError",
+            "internal_api_error_MediaWiki\\Revision\\RevisionAccessException",
+            "a2",
+        ] {
+            assert_eq!(code(kept), kept);
+        }
+        let longest = "x".repeat(MEDIAWIKI_CODE_MAX);
+        assert_eq!(code(&longest), longest);
+        for refused in [
+            String::new(),
+            "x".repeat(MEDIAWIKI_CODE_MAX + 1),
+            "<script>".to_owned(),
+            "bad user".to_owned(),
+            "bad\nuser".to_owned(),
+            "baduser\u{e9}".to_owned(),
+        ] {
+            assert_eq!(code(&refused), "unknown", "{refused:?}");
+        }
+        assert_eq!(mediawiki_error_code(&serde_json::json!({})), "unknown");
+        assert_eq!(
+            mediawiki_error_code(&serde_json::json!({ "code": 7 })),
+            "unknown"
+        );
+    }
     use crate::circuit::BreakerState;
     use crate::credential_origin::OperatorCredentialRef;
     use crate::http::TransportFailure;
@@ -1027,13 +1143,29 @@ mod tests {
             at(403, &[("x-ratelimit-remaining", "0")], "{}"),
             (K::RateLimited, None)
         );
-        // Quota left, or no rate-limit header at all, is the refusal it always was.
+        // Quota left, or no rate-limit header at all, is a refusal: of the request, since it
+        // carried no credential to reject.
         let left = [
             ("x-ratelimit-remaining", "12"),
             ("x-ratelimit-reset", "1120"),
         ];
-        assert_eq!(at(403, &left, "{}"), (K::AuthRejected, None));
-        assert_eq!(at(403, &[], "{}"), (K::AuthRejected, None));
+        assert_eq!(at(403, &left, "{}"), (K::Upstream4xx, None));
+        assert_eq!(at(403, &[], "{}"), (K::Upstream4xx, None));
+        // GitHub's secondary limit says so only in its message, with quota left and no pause.
+        let secondary = r#"{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}"#;
+        assert_eq!(at(403, &left, secondary), (K::RateLimited, None));
+        assert_eq!(
+            at(
+                403,
+                &[],
+                r#"{"message":"API rate limit exceeded for 192.0.2.1."}"#
+            ),
+            (K::RateLimited, None)
+        );
+        assert_eq!(
+            at(403, &[], r#"{"message":"Resource not accessible"}"#),
+            (K::Upstream4xx, None)
+        );
         // A challenge page is a wall whatever its headers say.
         let challenge = "<html><title>Just a moment...</title>Cloudflare</html>";
         assert_eq!(at(403, &exhausted, challenge), (K::BotWaf, None));
@@ -1044,6 +1176,27 @@ mod tests {
             (K::Upstream5xx, Some(30))
         );
         assert_eq!(at(404, &exhausted, "{}"), (K::Upstream4xx, None));
+    }
+
+    /// Only a sent credential can be rejected. A 403 to a request that carried one is
+    /// `AuthRejected`; the same 403 to a request that carried none is the provider refusing the
+    /// request (a geo-block, an address ban, a proxy's policy), never a rejected key that does
+    /// not exist.
+    #[test]
+    fn a_403_rejects_a_credential_only_when_one_was_sent() {
+        let policy = r#"{"message":"This API path is not available: sessions are bound to their configured repositories"}"#;
+        let refused = |credential: Option<&Credential>| {
+            let f = Fake::new(vec![Ok(resp(403, &[], policy))]);
+            let fetched =
+                run(&f, "https://api.example.com/users/octocat", credential, 0).expect("fetch");
+            (fetched.outcome.kind, fetched.outcome.http_status)
+        };
+        assert_eq!(refused(None), (SourceOutcomeKind::Upstream4xx, Some(403)));
+        let key = cred("sk_live_0123456789abcdef", AuthStyle::Bearer);
+        assert_eq!(
+            refused(Some(&key)),
+            (SourceOutcomeKind::AuthRejected, Some(403))
+        );
     }
 
     /// A paced fetch that meets an exhausted quota stops every caller sending to that host until
@@ -1495,6 +1648,11 @@ mod tests {
             // lossy text, but for a rejected key.
             let own = match classify_fetch(response.status, &response.text()) {
                 SourceOutcomeKind::AuthRequired if credential.is_some() => {
+                    SourceOutcomeKind::AuthRejected
+                }
+                SourceOutcomeKind::Upstream4xx
+                    if response.status == 403 && credential.is_some() =>
+                {
                     SourceOutcomeKind::AuthRejected
                 }
                 own => own,

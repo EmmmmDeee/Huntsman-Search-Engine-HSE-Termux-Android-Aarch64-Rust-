@@ -278,7 +278,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <tr><td><label class="cb"><input type="radio" name="usecase" value="all" id="uc-all" checked></label></td><td><label for="uc-all"><b>All</b>Run every eligible module for the selected scan type. Results depend on provider availability, credentials, quotas and coverage; review the recorded source outcomes for gaps.</label></td></tr>
 <tr><td><label class="cb"><input type="radio" name="usecase" value="footprint" id="uc-footprint"></label></td><td><label for="uc-footprint"><b>Footprint</b>Understand what information this target exposes to the Internet: its network perimeter, associated identities and other information found through web crawling and search engines. Every source but the threat, blocklist and reputation ones.</label></td></tr>
 <tr><td><label class="cb"><input type="radio" name="usecase" value="investigate" id="uc-investigate"></label></td><td><label for="uc-investigate"><b>Investigate</b>Best for when you suspect the target to be malicious but need more information. Some basic footprinting is done, and blacklists and other sources that may know of the target's maliciousness are queried. The threat sources with names, addresses, infrastructure and breach exposure; no social, search, people or corporate sources.</label></td></tr>
-<tr><td><label class="cb"><input type="radio" name="usecase" value="passive" id="uc-passive"></label></td><td><label for="uc-passive"><b>Passive</b>Select modules classified as passive. Third-party requests may still be observable; this mode cannot guarantee that the target or its affiliates will not learn of a lookup.</label></td></tr>
+<tr><td><label class="cb"><input type="radio" name="usecase" value="passive" id="uc-passive"></label></td><td><label for="uc-passive"><b>Passive</b>Every source but the keyed breach ones (HIBP, DeHashed, OathNet, stolen.tax, SeekNow), so no paid service is told what the scan looks up. Third-party requests may still be observable; this mode cannot guarantee that the target or its affiliates will not learn of a lookup.</label></td></tr>
 </tbody></table></div>
 <div class="panel" id="np-types" role="tabpanel" aria-labelledby="nt-types" hidden><div class="panel-body"><div class="checks" id="typelist"></div></div></div>
 <div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><div class="panel-body"><label class="fl" for="nattackfocus">ATT&amp;CK Reconnaissance source focus</label><div class="toolbar"><select id="nattackfocus" aria-label="Reconnaissance technique"><option value="">Choose a mapped technique</option></select><button type="button" class="btn" id="nattackapply">Select Matching Sources</button></div><p class="help" id="nattackstatus" role="status">Select a technique to narrow the modules this scan will actually run; no scan is started until Run Scan Now.</p></div><p class="help pad">Choose the modules the scan asks, as Spiderfoot's By Module scan does. A module is asked only by the lookups listed under it, for the target and for what the scan follows; one that no scan lookup asks runs as its own command and cannot be chosen here.</p><table class="uc"><tbody id="modlist"></tbody></table></div>
@@ -994,7 +994,7 @@ $('rawdownload').onclick=async()=>{
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
   !s.total?'No recorded source executions; coverage is unknown.':
   s.accepted+' of '+s.total+' recorded executions accepted ('+s.success+' with results, '+s.valid_zero+' confirmed zero); '+
-  s.not_configured+' not configured; '+s.unresolved+' unresolved. Scan completion does not establish exhaustive source coverage.';
+  s.not_configured+' not configured; '+(s.refused_before_sending||0)+' refused before sending; '+s.unresolved+' unresolved. Scan completion does not establish exhaustive source coverage.';
 async function summary(){
   const types=await get('summary',base()+'/summary');
   let total=0,unique=0;for(const t of types){total+=t.total;unique+=t.unique}
@@ -1040,7 +1040,7 @@ function rawView(x){
   if(x.confidence!=null)meta.push('confidence '+x.confidence);
   if(x.entity)meta.push('entity '+show(x.entity));
   b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
-  if(PIVOT.has(x.type))b.append(button('New Scan of this',()=>pivot(x),'pivot'));
+  if(x.scan_kind)b.append(button('New Scan of this',()=>pivot(x),'pivot'));
   if(x.entity){const a=button('Source attribution',async()=>{a.disabled=true;try{await assess(x,b)}catch(e){a.disabled=false;fail('scerror',e.message)}});b.append(a)}
   return b;
 }
@@ -1350,7 +1350,7 @@ async function openCompare(ids){
     $('cmpcoverage').textContent=ex?
       'Earlier: '+coverage(ex.earlier)+' Later: '+coverage(ex.later)+
       ((ex.changed_modules||[]).length?' Changed provider outcomes: '+ex.changed_modules.join(', ')+'.':'')+
-      ((ex.later.not_configured||ex.later.unresolved)?' Missing later findings may reflect unqueried or unresolved sources, not disappearance.':''):
+      ((ex.later.not_configured||ex.later.refused_before_sending||ex.later.unresolved)?' Missing later findings may reflect unqueried, refused or unresolved sources, not disappearance.':''):
       'Execution coverage comparison unavailable; compare recorded source outcomes manually.';
     fill('cmptypes',c.types,t=>[t.description||t.type,t.base,t.other,t.added,t.removed,t.kept]);
     const cs=c.correlations.added.map(x=>['Added',x]).concat(c.correlations.removed.map(x=>['Removed',x]));
@@ -1398,9 +1398,9 @@ async function prefill(f){
   $('nerror').hidden=true;location.hash='#/newscan';
 }
 const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
-// Launch a follow-up scan from a typed pivot, preserving depth/use case.
-const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS','HSE_CRYPTO_ADDRESS','PHYSICAL_ADDRESS','PHYSICAL_COORDINATES']);
-const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.type==='PHYSICAL_ADDRESS'?'geocode':(x.type==='BITCOIN_ADDRESS'||x.type==='HSE_CRYPTO_ADDRESS')?'crypto':'auto',usecase:o.usecase,depth:o.depth})};
+// Launch a follow-up scan of an element with the lookup the server names for it (the row's
+// scan_kind), preserving depth/use case.
+const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.scan_kind,usecase:o.usecase,depth:o.depth})};
 // Spiderfoot has no offline analysis of a saved scan; this is Huntsman's /analyze over the saved
 // entities, shown whole: every count, every stated limitation, and the report as returned. Not
 // cached: a false-positive flag set since must turn it into the server's refusal.

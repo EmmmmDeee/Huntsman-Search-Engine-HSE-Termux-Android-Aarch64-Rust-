@@ -567,3 +567,45 @@ fn collect_for_lookup_runs_person_scan_selector() {
         "keyed SeekNow records at least one source outcome"
     );
 }
+
+#[test]
+fn a_handle_is_asked_for_as_it_was_written_never_by_its_identity_key() {
+    // `john.doe_99` and `johndoe99` are one entity but two handles: the leg asks for the one the
+    // lookup was given, never the separator-free identity key, which names another account.
+    let limits = CollectionLimits::default();
+    let plan = plan_selector(&selector(EntityKind::Username, "@John.Doe_99"), &limits).unwrap();
+    assert_eq!(plan.query, "John.Doe_99");
+    // Every other kind is asked for by its canonical value, which loses nothing SeekNow reads.
+    let plan = plan_selector(&selector(EntityKind::Email, "Alice@Example.COM"), &limits).unwrap();
+    assert_eq!(plan.query, "alice@example.com");
+    // The lookup leg sends that spelling in every request it makes, and an answer that echoes the
+    // handle in another case is the handle itself, not a pivot from it.
+    let transport = ScriptedTransport::new(vec![
+        response(200, r#"{"success":true,"data":[]}"#),
+        response(
+            200,
+            r#"{"success":true,"data":[{"username":"JOHN.DOE_99","breach":"Breach C"}]}"#,
+        ),
+    ]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "john.doe_99"),
+        &transport,
+        &credential(),
+        &limits,
+        SeekNowCollectionMode::Adaptive,
+        22,
+    )
+    .unwrap();
+    let sent: Vec<String> = transport
+        .seen
+        .borrow()
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .collect();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    for body in &sent {
+        assert!(body.contains(r#""query":"john.doe_99""#), "{body}");
+        assert!(!body.contains("johndoe99"), "{body}");
+    }
+    assert!(batch.pivots.is_empty(), "{:?}", batch.pivots);
+}

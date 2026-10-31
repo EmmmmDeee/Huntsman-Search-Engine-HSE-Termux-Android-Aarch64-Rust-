@@ -418,6 +418,11 @@ fn an_untrustworthy_filter_says_why_instead_of_not_blocked() {
         )),
         "{adguard}"
     );
+    // Its family filter not blocking the name says nothing of its default filter.
+    assert_eq!(
+        row(&rows, "adguard_dns").kind,
+        SourceOutcomeKind::Inconclusive
+    );
     assert_eq!(
         detail(&rows, "cloudflaredns"),
         format!("{SECURITY}: answered SERVFAIL; {FAMILY}: HTTP 503")
@@ -451,6 +456,30 @@ fn an_untrustworthy_filter_says_why_instead_of_not_blocked() {
         net.asked()
             .iter()
             .any(|(at, asked, _)| at == "8.20.247.20" && asked == name)
+    );
+}
+
+/// A source says "not blocked" only when every filter of it asked says so: Cloudflare's family
+/// filter not blocking a name says nothing of its malware filter, which did not answer, so the
+/// row is inconclusive, not a clean negative.
+#[test]
+fn a_source_one_of_whose_filters_did_not_answer_is_no_clean_negative() {
+    let name = "example.org";
+    let net = Net::healthy(&[(name, &["192.0.2.9"])]).with(SECURITY, name, Reply::Http(503));
+    let (entities, rows) = run(&net, name);
+    assert!(entities.is_empty());
+    assert_eq!(
+        row(&rows, "cloudflaredns").kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    assert_eq!(
+        detail(&rows, "cloudflaredns"),
+        format!("{SECURITY}: HTTP 503; {FAMILY}: not blocked (192.0.2.9)")
+    );
+    // The sources whose every filter answered stand.
+    assert_eq!(
+        row(&rows, "cleanbrowsing").kind,
+        SourceOutcomeKind::ValidZero
     );
 }
 
@@ -652,5 +681,45 @@ fn a_domain_lookups_own_records_are_its_unfiltered_answer() {
     assert_eq!(
         Unfiltered::from_records(&down),
         Unfiltered::Unanswered("timed out".into())
+    );
+}
+
+/// A zone that publishes the block address itself (a parked or sinkholed name answering
+/// `0.0.0.0`) gives every resolver that answer: the unfiltered resolvers do too, so it is the
+/// zone's own record, not a filter's block, and no threat filter marks the name malicious.
+#[test]
+fn a_zones_own_block_address_is_no_filters_block() {
+    let net = Net::healthy(&[("parked.example", &["0.0.0.0"])])
+        .with(
+            SECURITY,
+            "parked.example",
+            Reply::Addresses(vec!["0.0.0.0"]),
+        )
+        .with(FAMILY, "parked.example", Reply::Addresses(vec!["0.0.0.0"]))
+        .with(ADGUARD, "parked.example", Reply::Addresses(vec!["0.0.0.0"]));
+    let (entities, rows) = run(&net, "parked.example");
+    assert!(entities.is_empty(), "{entities:#?}");
+    let cloudflare = row(&rows, "cloudflaredns");
+    assert!(
+        !cloudflare.kind.is_accepted() || cloudflare.found == Some(0),
+        "{cloudflare:?}"
+    );
+    assert!(
+        detail(&rows, "cloudflaredns").contains("the zone's own record"),
+        "{rows:#?}"
+    );
+    // The same answer for a name the unfiltered resolvers resolve elsewhere is a block.
+    let blocked = Net::healthy(&[("bad.example", &["192.0.2.7"])]).with(
+        SECURITY,
+        "bad.example",
+        Reply::Addresses(vec!["0.0.0.0"]),
+    );
+    let (entities, _) = run(&blocked, "bad.example");
+    assert!(
+        entities.iter().any(|e| e
+            .evidence
+            .iter()
+            .any(|ev| ev.provenance.source == "cloudflaredns")),
+        "{entities:#?}"
     );
 }

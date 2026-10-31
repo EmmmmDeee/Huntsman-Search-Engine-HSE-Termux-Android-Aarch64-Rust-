@@ -58,7 +58,7 @@ dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
 dns_filter	adapter	filtering-resolver checks (AdGuard, CleanBrowsing, Cloudflare, Comodo, DNS for Family, OpenDNS, Quad9, Yandex) reached through domain_cli from domain, scan and /api/lookup
 dns_wire	leaf	RFC 1035 wire-form DNS query writer and answer reader behind dns_filter
-dnsbl	adapter	DNS blocklist checks (Spamhaus, SpamCop, UCEPROTECT, DroneBL, SORBS, SURBL) reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
+dnsbl	adapter	DNS blocklist checks (Spamhaus, SpamCop, UCEPROTECT, DroneBL, SURBL; retired SORBS is never asked) reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
 doctor	diagnostic	doctor and fix checks and reversible repairs called by src/cli/doctor.rs
 domain_cli	diagnostic	domain recon command front-end over crtsh and dns
 domain_lifecycle	diagnostic	offline imported domain-observation comparison
@@ -199,6 +199,7 @@ scan_coverage	runtime	read-only selected people-source coverage reached through 
 scan_export	exporter	Spiderfoot-layout CSV, TSV, Excel, JSON and GEXF exports of saved scans through scans export and the scan API
 scan_retention	runtime	which ended scans a retention pass may delete, reached through scans prune
 scan_route	runtime	deterministic lookup-front-end selector routing
+research_route	runtime	subject-neutral offline research routing reached by the shipped research CLI and delegating to existing scan or adaptive keyless query paths
 scan_search	runtime	Spiderfoot's search over one or every saved scan, reached through scans search, the scan API and the console
 scan_service	runtime	saved-scan runner reached through scans run and the scan API
 scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
@@ -234,7 +235,7 @@ store	exporter	bounded atomic session persistence
 tags	leaf	entity tag constants
 termination	runtime	explicit bounded termination semantics
 textnorm	leaf	text normalization
-threat_feeds	adapter	downloaded threat feeds (abuse.ch, AlienVault, blocklist.de, botvrij, CINS, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black, Tor exits, VoIPBL, VXVault) kept in the state directory and reached through ip_cli, domain_cli and netblock_cli from ip, domain, netblock, scan and /api/lookup
+threat_feeds	adapter	downloaded threat feeds (abuse.ch, AlienVault, blocklist.de, botvrij, CINS, CleanTalk, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black, Tor exits, VoIPBL, VXVault) kept in the state directory and reached through ip_cli, domain_cli and netblock_cli from ip, domain, netblock, scan and /api/lookup
 threatfox	adapter	ThreatFox IOC leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 timefmt	leaf	timestamp parsing
 timeline	runtime	timeline reconstruction through intelligence report

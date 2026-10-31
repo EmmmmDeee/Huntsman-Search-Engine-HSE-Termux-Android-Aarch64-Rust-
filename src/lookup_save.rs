@@ -25,7 +25,17 @@ pub struct SavePolicy {
     pub entity_provenance: ProvenanceFn,
 }
 
+/// The provenance of the `SeekNow` leg, which runs beside the email, username and people sources and
+/// is saved with each of their reports, so each names it as itself. **Pure.**
+fn seeknow_provenance(source: &str) -> Option<(&str, &'static str)> {
+    (source == crate::seeknow_collector::COLLECTOR_ID)
+        .then_some((source, "src/seeknow_collector.rs"))
+}
+
 fn email_provenance(source: &str) -> (&str, &'static str) {
+    if let Some(leg) = seeknow_provenance(source) {
+        return leg;
+    }
     match source {
         "gravatar" => ("gravatar", "src/gravatar.rs"),
         "duolingo" => ("duolingo", "src/duolingo.rs"),
@@ -35,12 +45,28 @@ fn email_provenance(source: &str) -> (&str, &'static str) {
 }
 
 fn username_provenance(source: &str) -> (&str, &'static str) {
-    match source {
-        "github_user" => ("github_user", "src/github_user.rs"),
-        "bluesky_user" => ("bluesky_user", "src/bluesky_user.rs"),
-        "mastodon_user" => ("mastodon_user", "src/mastodon_user.rs"),
-        _ => (source, "src/username_cli.rs"),
+    if let Some(leg) = seeknow_provenance(source) {
+        return leg;
     }
+    // Keep the observed source label; the component is the Rust collector that made it,
+    // not the shared lookup front-end that assembled the result.
+    let component = match source {
+        crate::github_user::SRC => "src/github_user.rs",
+        crate::github_repos::SRC => "src/github_repos.rs",
+        crate::gitlab_user::SRC => "src/gitlab_user.rs",
+        crate::bluesky_user::SRC => "src/bluesky_user.rs",
+        crate::keybase::SRC => "src/keybase.rs",
+        crate::wikipedia::SRC => "src/wikipedia.rs",
+        crate::mastodon_user::SRC => "src/mastodon_user.rs",
+        crate::tiktok_public_contact::SRC => "src/tiktok_public_contact.rs",
+        crate::npm_author::SRC => "src/npm_author.rs",
+        crate::crates_io::SRC => "src/crates_io.rs",
+        crate::hacker_news::SRC => "src/hacker_news.rs",
+        crate::lobsters::SRC => "src/lobsters.rs",
+        crate::docker_hub_user::SRC => "src/docker_hub_user.rs",
+        _ => "src/username_cli.rs",
+    };
+    (source, component)
 }
 
 fn phone_provenance(source: &str) -> (&str, &'static str) {
@@ -66,13 +92,20 @@ pub const USERNAME_POLICY: SavePolicy = SavePolicy {
     entity_provenance: username_provenance,
 };
 
+/// A people source's own name and component. A source not named here keeps its own name, as every
+/// other policy keeps one: a row is never saved as another source's. **Pure.**
 fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
-    match label.split('.').next().unwrap_or(label) {
+    let module = label.split('.').next().unwrap_or(label);
+    if let Some(leg) = seeknow_provenance(module) {
+        return leg;
+    }
+    match module {
+        "asic_persons" => ("asic_persons", "src/asic_persons.rs"),
         "asic_director" => ("asic_director", "src/asic_director.rs"),
         "wikidata" => ("wikidata", "src/wikidata.rs"),
         "acnc" => ("acnc", "src/acnc.rs"),
         "sec_edgar" => ("sec_edgar", "src/sec_edgar.rs"),
-        _ => ("asic_persons", "src/asic_persons.rs"),
+        _ => (module, "src/people_cli.rs"),
     }
 }
 
@@ -95,13 +128,23 @@ pub const PHONE_POLICY: SavePolicy = SavePolicy {
     entity_provenance: phone_provenance,
 };
 
-fn exposure_provenance(source: &str) -> (&str, &'static str) {
+/// One authority for the components that execute the keyed exposure legs.
+/// A folded email/username lookup must not reclassify these rows as its own.
+fn exposure_component(source: &str) -> Option<&'static str> {
     match source {
-        "hibp_account" => ("hibp_account", "src/exposure_cli.rs"),
-        "stolen_tax" => ("stolen_tax", "src/stolen_tax.rs"),
-        "oathnet" => ("oathnet", "src/oathnet.rs"),
-        _ => (source, "src/exposure_cli.rs"),
+        "hibp_account" => Some("src/exposure_cli.rs"),
+        "stolen_tax" => Some("src/stolen_tax.rs"),
+        "oathnet" => Some("src/oathnet.rs"),
+        crate::dehashed::COLLECTOR_ID => Some("src/dehashed/exposure.rs"),
+        _ => None,
     }
+}
+
+fn exposure_provenance(source: &str) -> (&str, &'static str) {
+    (
+        source,
+        exposure_component(source).unwrap_or("src/exposure_cli.rs"),
+    )
 }
 
 pub const EXPOSURE_POLICY: SavePolicy = SavePolicy {
@@ -117,9 +160,10 @@ fn with_exposure<'a>(
     source: &'a str,
     other: fn(&'a str) -> (&'a str, &'static str),
 ) -> (&'a str, &'static str) {
-    match source {
-        "hibp_account" | "stolen_tax" | "oathnet" => exposure_provenance(source),
-        _ => other(source),
+    if let Some(component) = exposure_component(source) {
+        (source, component)
+    } else {
+        other(source)
     }
 }
 
@@ -152,6 +196,8 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
         "certspotter" => ("certspotter", "src/certspotter.rs"),
         "dns" => ("dns", "src/dns.rs"),
+        crate::wayback_cdx::SOURCE => (source, "src/wayback_cdx.rs"),
+        crate::common_crawl::SOURCE => (source, "src/common_crawl.rs"),
         "virustotal" => ("virustotal", "src/virustotal.rs"),
         "hunter" => ("hunter", "src/hunter.rs"),
         other => indicator_provenance(other).unwrap_or((source, "src/domain_cli.rs")),
@@ -180,6 +226,7 @@ fn ip_provenance(source: &str) -> (&str, &'static str) {
 fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
     Some(match source {
         "shodan" => ("shodan", "src/shodan.rs"),
+        "censys" => ("censys", "src/censys.rs"),
         "pulsedive" => ("pulsedive", "src/pulsedive.rs"),
         "leakix" => ("leakix", "src/leakix.rs"),
         "threatfox" => ("threatfox", "src/threatfox.rs"),
@@ -195,11 +242,14 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "kickbox" => ("kickbox", "src/kickbox.rs"),
         "robtex" => ("robtex", "src/robtex.rs"),
         "hackertarget" => ("hackertarget", "src/hackertarget.rs"),
+        "submd" => ("submd", "src/submd.rs"),
+        "opencellid" => ("opencellid", "src/opencellid.rs"),
         "stopforumspam" => ("stopforumspam", "src/stopforumspam.rs"),
         "isc" => ("isc", "src/isc.rs"),
         "maltiverse" => ("maltiverse", "src/maltiverse.rs"),
         "phishstats" => ("phishstats", "src/phishstats.rs"),
         "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
+        "hudsonrock" => ("hudsonrock", "src/hudsonrock.rs"),
         "rdap" => ("rdap", "src/rdap.rs"),
         "mnemonic" => ("mnemonic", "src/mnemonic.rs"),
         "dnsresolve" => ("dnsresolve", "src/dns.rs"),
@@ -209,9 +259,9 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         filter @ ("adguard_dns" | "cleanbrowsing" | "cloudflaredns" | "comodo"
         | "dns_for_family" | "opendns" | "quad9" | "yandexdns") => (filter, "src/dns_filter.rs"),
         feed @ ("abusech" | "alienvaultiprep" | "blocklistde" | "botvrij" | "cinsscore"
-        | "cleantalk" | "coinblocker" | "cybercrimetracker" | "emergingthreats"
-        | "greensnow" | "openphish" | "phishtank" | "stevenblack_hosts" | "torexits"
-        | "voipbl" | "vxvault") => (feed, "src/threat_feeds.rs"),
+        | "cleantalk" | "cybercrimetracker" | "emergingthreats" | "greensnow"
+        | "openphish" | "phishtank" | "stevenblack_hosts" | "torexits" | "voipbl"
+        | "vxvault") => (feed, "src/threat_feeds.rs"),
         _ => return None,
     })
 }
@@ -257,7 +307,7 @@ fn network_provenance(source: &str) -> (&str, &'static str) {
         "wigle" => ("wigle", "src/wigle.rs"),
         "wigle_bluetooth" => ("wigle_bluetooth", "src/wigle.rs"),
         "oui" => ("oui", "src/oui.rs"),
-        _ => (source, "src/network_cli.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/network_cli.rs")),
     }
 }
 
@@ -286,10 +336,13 @@ pub const CRYPTO_POLICY: SavePolicy = SavePolicy {
 };
 
 fn place_provenance(source: &str) -> (&str, &'static str) {
-    match source {
-        "nominatim" => ("nominatim", "src/nominatim.rs"),
-        _ => (source, "src/nominatim_cli.rs"),
-    }
+    let component = match source {
+        crate::nominatim::SOURCE => "src/nominatim.rs",
+        crate::stac::SOURCE => "src/stac.rs",
+        crate::opensky::SOURCE => "src/opensky.rs",
+        _ => "src/nominatim_cli.rs",
+    };
+    (source, component)
 }
 
 pub const PLACE_POLICY: SavePolicy = SavePolicy {
@@ -460,6 +513,29 @@ mod tests {
     use crate::confidence::VerificationMethod;
     use crate::entity::EvidenceProvenance;
     use crate::source_outcome::SourceOutcomeKind;
+
+    /// Every indicator source a lookup runs is saved under its own module, never under the front
+    /// end that ran it.
+    #[test]
+    fn every_indicator_source_is_saved_under_its_own_module() {
+        for source in crate::indicator_legs::SOURCES {
+            let label = source.api.source;
+            let (module, file) = indicator_provenance(label)
+                .unwrap_or_else(|| panic!("{label} is saved under no module of its own"));
+            assert_eq!(module, label);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(
+                text.contains(&format!("\"{label}\"")),
+                "{label}: {file} does not define it"
+            );
+        }
+        // A network lookup's cell and place legs ask OpenCelliD, an indicator source too.
+        assert_eq!(
+            network_provenance("opencellid"),
+            ("opencellid", "src/opencellid.rs")
+        );
+    }
 
     fn provenance(source: &str) -> (&str, &'static str) {
         (source, "test")
@@ -686,6 +762,173 @@ mod tests {
                 "refused_before_sending",
                 "inconclusive",
             ]
+        );
+    }
+
+    #[test]
+    fn the_seeknow_leg_is_saved_as_itself_in_every_report_it_joins() {
+        // The SeekNow leg runs beside the email, username and people sources and is saved with
+        // each of their reports: each names it `seeknow`, from its own component.
+        let seeknow = ("seeknow", "src/seeknow_collector.rs");
+        for policy in [EMAIL_POLICY, USERNAME_POLICY, PEOPLE_POLICY] {
+            assert_eq!((policy.outcome_provenance)("seeknow"), seeknow);
+            assert_eq!((policy.entity_provenance)("seeknow"), seeknow);
+        }
+        let saved = chain(
+            &[],
+            &[SourceExecutionOutcome::valid_zero("seeknow", 1)],
+            PEOPLE_POLICY,
+        )
+        .unwrap();
+        assert_eq!(
+            saved
+                .iter()
+                .map(|entry| (entry.claim.source.as_str(), entry.claim.component.as_str()))
+                .collect::<Vec<_>>(),
+            [seeknow]
+        );
+        // A people source the policy does not name keeps its own name; none is saved as another
+        // source's, and the register's own rows stay the register's.
+        assert_eq!(
+            (PEOPLE_POLICY.outcome_provenance)("people_new_source"),
+            ("people_new_source", "src/people_cli.rs")
+        );
+        assert_eq!(
+            (PEOPLE_POLICY.outcome_provenance)("asic_persons.banned"),
+            ("asic_persons", "src/asic_persons.rs")
+        );
+    }
+
+    #[test]
+    fn domain_archive_sources_keep_their_collector_component_in_saved_claims() {
+        for (source, component) in [
+            (crate::wayback_cdx::SOURCE, "src/wayback_cdx.rs"),
+            (crate::common_crawl::SOURCE, "src/common_crawl.rs"),
+        ] {
+            let entity = entity_with([scanned(source, "archived URL observation")]);
+            let outcome = SourceExecutionOutcome::success(source, 1, 1);
+            let entries = chain(&[entity], &[outcome], DOMAIN_POLICY).unwrap();
+            assert_eq!(entries.len(), 3, "outcome, entity, evidence for {source}");
+            for entry in entries {
+                assert_eq!(entry.claim.source, source);
+                assert_eq!(entry.claim.component, component, "{source}");
+            }
+        }
+        assert_eq!(
+            (DOMAIN_POLICY.outcome_provenance)("unrecognised_archive"),
+            ("unrecognised_archive", "src/domain_cli.rs")
+        );
+    }
+
+    #[test]
+    fn dehashed_exposure_ledgers_keep_the_dehashed_component() {
+        // The DeHashed exposure leg runs both directly and folded beside email/username lookups.
+        // Its source label must retain its own executing component in every saved ledger claim.
+        let source = crate::dehashed::COLLECTOR_ID;
+        let component = "src/dehashed/exposure.rs";
+        for policy in [
+            EXPOSURE_POLICY,
+            EMAIL_EXPOSURE_POLICY,
+            USERNAME_EXPOSURE_POLICY,
+        ] {
+            assert_eq!((policy.outcome_provenance)(source), (source, component));
+            assert_eq!((policy.entity_provenance)(source), (source, component));
+            let entity = entity_with([scanned(source, "breach metadata only")]);
+            let outcome = SourceExecutionOutcome::not_configured(source, 1);
+            let entries = chain(&[entity], &[outcome], policy).unwrap();
+            assert_eq!(entries.len(), 3, "outcome, entity, evidence");
+            for entry in entries {
+                assert_eq!(entry.claim.source, source);
+                assert_eq!(entry.claim.component, component);
+            }
+        }
+
+        // Routing a breach leg must not change another lookup's own source mapping.
+        assert_eq!(
+            (EMAIL_EXPOSURE_POLICY.outcome_provenance)("duolingo"),
+            ("duolingo", "src/duolingo.rs")
+        );
+        assert_eq!(
+            (USERNAME_EXPOSURE_POLICY.outcome_provenance)("github_user"),
+            ("github_user", "src/github_user.rs")
+        );
+        assert_eq!(
+            (EXPOSURE_POLICY.outcome_provenance)("new_breach_source"),
+            ("new_breach_source", "src/exposure_cli.rs")
+        );
+    }
+
+    #[test]
+    fn username_legs_keep_collector_provenance_in_direct_and_folded_ledgers() {
+        let sources = [
+            (crate::github_user::SRC, "src/github_user.rs"),
+            (crate::github_repos::SRC, "src/github_repos.rs"),
+            (crate::gitlab_user::SRC, "src/gitlab_user.rs"),
+            (crate::bluesky_user::SRC, "src/bluesky_user.rs"),
+            (crate::keybase::SRC, "src/keybase.rs"),
+            (crate::wikipedia::SRC, "src/wikipedia.rs"),
+            (crate::mastodon_user::SRC, "src/mastodon_user.rs"),
+            (
+                crate::tiktok_public_contact::SRC,
+                "src/tiktok_public_contact.rs",
+            ),
+            (crate::npm_author::SRC, "src/npm_author.rs"),
+            (crate::crates_io::SRC, "src/crates_io.rs"),
+            (crate::hacker_news::SRC, "src/hacker_news.rs"),
+            (crate::lobsters::SRC, "src/lobsters.rs"),
+            (crate::docker_hub_user::SRC, "src/docker_hub_user.rs"),
+            (
+                crate::seeknow_collector::COLLECTOR_ID,
+                "src/seeknow_collector.rs",
+            ),
+        ];
+        for policy in [USERNAME_POLICY, USERNAME_EXPOSURE_POLICY] {
+            for (source, component) in sources {
+                let entity = entity_with([scanned(source, "observed username leg")]);
+                let outcome = SourceExecutionOutcome::success(source, 1, 1);
+                let entries = chain(&[entity], &[outcome], policy).unwrap();
+                assert_eq!(entries.len(), 3, "outcome, entity, evidence for {source}");
+                for entry in entries {
+                    assert_eq!(entry.claim.source, source);
+                    assert_eq!(entry.claim.component, component, "{source}");
+                }
+            }
+        }
+        for policy in [USERNAME_POLICY, USERNAME_EXPOSURE_POLICY] {
+            assert_eq!(
+                (policy.outcome_provenance)("username_variants"),
+                ("username_variants", "src/username_cli.rs")
+            );
+            assert_eq!(
+                (policy.outcome_provenance)("unknown_username_module"),
+                ("unknown_username_module", "src/username_cli.rs")
+            );
+        }
+        assert_eq!(
+            (USERNAME_EXPOSURE_POLICY.outcome_provenance)(crate::dehashed::COLLECTOR_ID),
+            (crate::dehashed::COLLECTOR_ID, "src/dehashed/exposure.rs")
+        );
+    }
+
+    #[test]
+    fn place_legs_keep_their_own_provenance_in_every_ledger_claim() {
+        for (source, component) in [
+            (crate::nominatim::SOURCE, "src/nominatim.rs"),
+            (crate::stac::SOURCE, "src/stac.rs"),
+            (crate::opensky::SOURCE, "src/opensky.rs"),
+        ] {
+            let entity = entity_with([scanned(source, "observed place leg")]);
+            let outcome = SourceExecutionOutcome::success(source, 1, 1);
+            let entries = chain(&[entity], &[outcome], PLACE_POLICY).unwrap();
+            assert_eq!(entries.len(), 3, "outcome, entity, evidence for {source}");
+            for entry in entries {
+                assert_eq!(entry.claim.source, source);
+                assert_eq!(entry.claim.component, component, "{source}");
+            }
+        }
+        assert_eq!(
+            (PLACE_POLICY.outcome_provenance)("unrecognised_geocoder"),
+            ("unrecognised_geocoder", "src/nominatim_cli.rs")
         );
     }
 }

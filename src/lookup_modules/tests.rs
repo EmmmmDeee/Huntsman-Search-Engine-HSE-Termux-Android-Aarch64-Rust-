@@ -19,6 +19,57 @@ use crate::{
 
 const NOW: u64 = 1_760_000_000;
 
+/// Every record a lookup writes on what it found is a module's it asks, or a reading of a value
+/// that observes no one (an e-mail's parts, a number's plan, an address's manufacturer, what a
+/// namespace's registry requires): a reading counted as a source would make what it only describes
+/// look observed. The domain lookup is asked a `.gov.au` name, whose registry policy it reads.
+#[test]
+fn every_record_a_lookup_writes_is_a_module_it_asks_or_observes_no_one() {
+    for kind in ScanKind::ALL {
+        let net = Everywhere::default();
+        let selector = if kind == ScanKind::Domain {
+            "health.nsw.gov.au"
+        } else {
+            target(kind)
+        };
+        let Verdict::Printed(_, entities) = verdict(kind, selector, &Selection::all(), &net, NOW)
+        else {
+            panic!("{kind:?} printed no report");
+        };
+        let asked = modules(kind);
+        for entity in &entities {
+            for evidence in &entity.evidence {
+                let source = evidence.provenance.source.as_str();
+                assert!(
+                    asked.contains(&module_of(source))
+                        || crate::entity::is_non_corroborating_source(
+                            &evidence.provenance.corroboration_key()
+                        ),
+                    "{kind:?} wrote a {source} record on {} that counts as a source, from no \
+                     module it asks",
+                    entity.value
+                );
+            }
+        }
+    }
+}
+
+/// What a lookup runs offline over its own target reads the value itself (an e-mail's parts, a
+/// handle's variants, a number's plan, an address's manufacturer) and observes no one, so none of
+/// it corroborates what it describes.
+#[test]
+fn every_offline_module_is_enrichment_only() {
+    for kind in ScanKind::ALL {
+        for module in offline_runs(kind) {
+            assert!(
+                crate::entity::is_enrichment_source(module),
+                "{module}, which {} runs offline, counts as a source",
+                kind.command()
+            );
+        }
+    }
+}
+
 /// A `RIPEstat` answer every data call reads as knowing nothing.
 const RIPESTAT: &[u8] =
     br#"{"status":"ok","data":{"announced":false,"prefixes":[],"neighbours":[],"resources":[]}}"#;
@@ -82,6 +133,9 @@ impl Transport for Everywhere {
                 200,
                 br#"[{"jsonrpc":"2.0","id":1,"result":"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"},{"jsonrpc":"2.0","id":2,"result":{"context":{"slot":1},"value":null}},{"jsonrpc":"2.0","id":3,"result":[]},{"jsonrpc":"2.0","id":4,"result":1}]"#,
             )
+        } else if url.contains("api.certspotter.com") {
+            // A domain with no logged certificate, as Cert Spotter answers it: `[]` at 200.
+            (200, b"[]")
         } else if url.contains("wbsearchentities") {
             // Wikidata search with no hit: a clean valid-zero, so a people scan that chose
             // wikidata still produces its row without an item fetch.
@@ -162,8 +216,8 @@ fn keys() -> Keys {
 /// How a lookup ended, as `profiles::source_report` maps it to an exit status.
 #[derive(Debug)]
 enum Verdict {
-    /// It printed its report (exit 0), with every row it left.
-    Printed(Vec<SourceExecutionOutcome>),
+    /// It printed its report (exit 0), with every row it left and every entity it found.
+    Printed(Vec<SourceExecutionOutcome>, Vec<crate::entity::Entity>),
     /// A network refusal (`SourceRun::Network`, exit 77), with its reason.
     Refused(String),
     /// No usable response (`SourceRun::Failed`, exit 69), with its reason.
@@ -171,9 +225,15 @@ enum Verdict {
 }
 
 /// The verdict of a lookup that ends as a [`SourceRun`], reading its report's rows with `rows`.
-fn ended<R>(run: SourceRun<R>, rows: impl FnOnce(R) -> Vec<SourceExecutionOutcome>) -> Verdict {
+fn ended<R>(
+    run: SourceRun<R>,
+    found: impl FnOnce(R) -> (Vec<SourceExecutionOutcome>, Vec<crate::entity::Entity>),
+) -> Verdict {
     match run {
-        SourceRun::Printed { report, .. } => Verdict::Printed(rows(report)),
+        SourceRun::Printed { report, .. } => {
+            let (rows, entities) = found(report);
+            Verdict::Printed(rows, entities)
+        }
         SourceRun::Network(why) => Verdict::Refused(why),
         SourceRun::Failed(why) => Verdict::Unavailable(why),
     }
@@ -194,45 +254,52 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
     match kind {
         ScanKind::Ip => ended(
             ip_cli::run(&transport, &keys, &feeds, target, now),
-            |report| report.outcomes,
+            |report| (report.outcomes, report.entities),
         ),
         ScanKind::Domain => ended(
             domain_cli::run(&transport, &keys, &feeds, target, now),
-            |report| report.outcomes,
+            |report| (report.outcomes, report.entities),
         ),
         ScanKind::Netblock => ended(
             netblock_cli::run(&transport, &feeds, target, now),
-            |report| report.outcomes,
+            |report| (report.outcomes, report.entities),
         ),
         ScanKind::Asn => ended(asn_cli::run(&transport, target, now), |report| {
-            report.outcomes
+            (report.outcomes, report.entities)
         }),
-        ScanKind::Network => ended(
-            network_cli::run(Some((&transport, &keys)), target, now),
-            |report| report.outcomes,
-        ),
+        ScanKind::Network => ended(network_cli::run(&transport, &keys, target, now), |report| {
+            (report.outcomes, report.entities)
+        }),
         ScanKind::CryptoAddress => ended(crypto_cli::run(&transport, target, now), |report| {
-            report.outcomes
+            (report.outcomes, report.entities)
         }),
         ScanKind::Place => ended(nominatim_cli::run(&transport, target, now), |report| {
-            report.outcomes
+            (report.outcomes, report.entities)
         }),
         ScanKind::Email => match email_cli::run_keyed(&transport, &keys, target, now) {
-            email_cli::EmailRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            email_cli::EmailRun::Printed { report, .. } => {
+                Verdict::Printed(report.outcomes, report.entities)
+            }
             email_cli::EmailRun::Network(why) => Verdict::Refused(why),
             email_cli::EmailRun::Failed(why) => Verdict::Unavailable(why),
         },
         ScanKind::Username => match username_cli::run(&transport, &keys, target, now) {
-            username_cli::UsernameRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            username_cli::UsernameRun::Printed { report, .. } => {
+                Verdict::Printed(report.outcomes, report.entities)
+            }
             username_cli::UsernameRun::Network(why) => Verdict::Refused(why),
             username_cli::UsernameRun::Failed(why) => Verdict::Unavailable(why),
         },
         ScanKind::Phone => match phone_cli::run_keyed(&transport, &keys, target, now) {
-            phone_cli::PhoneRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            phone_cli::PhoneRun::Printed { report, .. } => {
+                Verdict::Printed(report.outcomes, report.entities)
+            }
             phone_cli::PhoneRun::Failed(why) => Verdict::Unavailable(why),
         },
         ScanKind::People => match people_cli::run(&transport, target, now) {
-            people_cli::PeopleRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            people_cli::PeopleRun::Printed { report, .. } => {
+                Verdict::Printed(report.outcomes, report.entities)
+            }
             people_cli::PeopleRun::Network(why) => Verdict::Refused(why),
             people_cli::PeopleRun::Failed(why) => Verdict::Unavailable(why),
         },
@@ -268,7 +335,9 @@ fn exposure<N: Transport + Clone + Send + Sync + 'static>(
         selection: Some(chosen),
     };
     match exposure_cli::run(sources, target, now) {
-        exposure_cli::ExposureRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+        exposure_cli::ExposureRun::Printed { report, .. } => {
+            Verdict::Printed(report.outcomes, report.entities)
+        }
         exposure_cli::ExposureRun::Network(why) => Verdict::Refused(why),
         exposure_cli::ExposureRun::Failed(why) => Verdict::Unavailable(why),
     }
@@ -282,7 +351,7 @@ fn rows(
     net: &Everywhere,
 ) -> Result<Vec<SourceExecutionOutcome>, String> {
     match verdict(kind, target(kind), chosen, net, NOW) {
-        Verdict::Printed(rows) => Ok(rows),
+        Verdict::Printed(rows, _) => Ok(rows),
         Verdict::Refused(why) | Verdict::Unavailable(why) => Err(why),
     }
 }
@@ -401,7 +470,7 @@ fn a_lookup_asks_only_the_chosen_modules() {
                 target(kind)
             };
             let rows = match verdict(kind, address, &Selection::only(chosen.clone()), &net, NOW) {
-                Verdict::Printed(rows) => rows,
+                Verdict::Printed(rows, _) => rows,
                 Verdict::Refused(why) | Verdict::Unavailable(why) => {
                     panic!("{kind:?} with {chosen:?} printed no report: {why}")
                 }
@@ -454,6 +523,14 @@ fn a_spiderfoot_name_chooses_every_module_that_does_its_work() {
         );
     }
     assert!(!chosen.runs("shodan"));
+    // A retired module, which a scan saved before may name, chooses nothing and refuses nothing.
+    let retired = selection(&[
+        "coinblocker".to_owned(),
+        "SFP_CoinBlocker".to_owned(),
+        "cinsscore".to_owned(),
+    ])
+    .expect("a retired module's name is accepted");
+    assert!(retired.runs("cinsscore") && !retired.runs("coinblocker"));
     let resolve = selection(&["sfp_dnsresolve".to_owned()]).expect("a Spiderfoot name");
     assert!(resolve.runs("dns") && resolve.runs("dnsresolve"));
     assert!(selection(&[]).expect("no name").is_all());
@@ -467,19 +544,22 @@ fn a_spiderfoot_name_chooses_every_module_that_does_its_work() {
 }
 
 /// Each use case leaves every lookup a module to ask, so no target is refused for its use case
-/// alone, and Footprint and Investigate are each narrower than All.
+/// alone, but for the breach lookup under Passive, which asks only the keyed breach sources Passive
+/// leaves out (a breach scan under Passive is refused by name before it is saved). Footprint,
+/// Investigate and Passive are each narrower than All.
 #[test]
 fn every_use_case_leaves_each_lookup_a_module_to_ask() {
     for usecase in crate::scan_service::USE_CASES {
         let chosen = crate::module::use_case_selection(usecase, &Selection::all());
         for kind in ScanKind::ALL {
-            assert!(
+            assert_eq!(
                 asks_any(kind, &chosen),
-                "{usecase} leaves the {kind:?} lookup nothing to ask"
+                !(usecase == "passive" && kind == ScanKind::Exposure),
+                "{usecase} and the {kind:?} lookup"
             );
         }
     }
-    for usecase in ["footprint", "investigate"] {
+    for usecase in ["footprint", "investigate", "passive"] {
         let chosen = crate::module::use_case_selection(usecase, &Selection::all());
         assert!(
             ScanKind::ALL
@@ -621,6 +701,8 @@ const BROKEN: &[(ScanKind, &str, Net)] = &[];
 /// silent (a renamed key slot, a `runs_module` name that no longer matches, a pacing hold) fails
 /// instead of passing with nothing to hold it to.
 const ASKS_NOTHING: &[(ScanKind, &str, &str)] = &[
+    // SORBS has shut down: its zone is never asked, and its row is `confirmed_dead`.
+    (ScanKind::Ip, "sorbs", "93.184.216.34"),
     (ScanKind::Domain, "dnsresolve", "huntsman-shop.net"),
     (ScanKind::Email, "seeknow", "ada@huntsman-shop.net"),
     (ScanKind::Email, "hibp", "ada@huntsman-shop.net"),
@@ -939,4 +1021,79 @@ fn every_module_listed_under_people_is_one_it_asks() {
     {
         assert_eq!(lookups_asking(module.name), ["people"], "{}", module.name);
     }
+}
+
+/// An e-mail lookup that ran the keyed breach legs covers its address's breach pass, whatever
+/// label each leg's row carries (`hibp_account` is the `hibp` module's); a lookup without a
+/// breach row, or of another kind, covers nothing.
+#[test]
+fn an_email_lookup_that_ran_the_breach_legs_covers_its_breach_pass() {
+    use crate::source_outcome::SourceExecutionOutcome;
+    let mut passes = BreachPasses::default();
+    passes.record(
+        ScanKind::Email,
+        "Ada@Example.org",
+        &[SourceExecutionOutcome::valid_zero("gravatar", 1)],
+    );
+    assert!(!passes.covered(ScanKind::Exposure, "ada@example.org"));
+    passes.record(
+        ScanKind::Username,
+        "ada@example.org",
+        &[SourceExecutionOutcome::valid_zero(
+            crate::exposure_cli::SOURCE,
+            1,
+        )],
+    );
+    assert!(!passes.covered(ScanKind::Exposure, "ada@example.org"));
+    passes.record(
+        ScanKind::Email,
+        "Ada@Example.org",
+        &[SourceExecutionOutcome::valid_zero(
+            crate::exposure_cli::SOURCE,
+            1,
+        )],
+    );
+    assert!(passes.covered(ScanKind::Exposure, "ada@example.org"));
+    assert!(!passes.covered(ScanKind::Email, "ada@example.org"));
+    for label in ["stolen_tax", "oathnet", "dehashed"] {
+        let mut passes = BreachPasses::default();
+        passes.record(
+            ScanKind::Email,
+            "bob@example.org",
+            &[SourceExecutionOutcome::valid_zero(label, 1)],
+        );
+        assert!(
+            passes.covered(ScanKind::Exposure, "bob@example.org"),
+            "{label}"
+        );
+    }
+}
+
+/// A source row saying no request was made is not evidence that the e-mail lookup ran the breach
+/// leg. The separate exposure lookup must remain eligible, rather than being falsely covered.
+#[test]
+fn an_unasked_breach_leg_cannot_cover_the_exposure_lookup() {
+    use crate::source_outcome::SourceExecutionOutcome;
+    for outcome in [
+        SourceExecutionOutcome::not_configured(crate::exposure_cli::SOURCE, 1),
+        SourceExecutionOutcome::refused_before_sending(
+            crate::exposure_cli::SOURCE,
+            1,
+            "the request was blocked before sending",
+        ),
+    ] {
+        let mut passes = BreachPasses::default();
+        passes.record(ScanKind::Email, "Ada@Example.org", &[outcome]);
+        assert!(!passes.covered(ScanKind::Exposure, "ada@example.org"));
+    }
+    let mut passes = BreachPasses::default();
+    passes.record(
+        ScanKind::Email,
+        "Ada@Example.org",
+        &[SourceExecutionOutcome::valid_zero(
+            crate::exposure_cli::SOURCE,
+            1,
+        )],
+    );
+    assert!(passes.covered(ScanKind::Exposure, "ada@example.org"));
 }

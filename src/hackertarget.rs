@@ -97,7 +97,10 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         return Ok(None);
     }
     if first.starts_with("api count exceeded") {
-        return Err(LegError::RateLimited { retry_after: None });
+        return Err(LegError::RateLimited {
+            status: 200,
+            retry_after: None,
+        });
     }
     // Every error text is "error" and a space; a host line has no space, and its name may
     // begin with "error" (`errorception.com`).
