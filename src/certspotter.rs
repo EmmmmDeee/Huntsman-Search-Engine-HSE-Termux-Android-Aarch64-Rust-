@@ -157,7 +157,9 @@ pub fn lookup<T: Transport + ?Sized>(
         let url = issuances_url(domain, after);
         let page = match api_leg::get(transport, &API, keys, &url, now_unix) {
             Ok(Answer::Body(body)) => api_leg::decode::<Vec<Issuance>>(&body),
-            Ok(Answer::NotFound(_)) => Ok(Vec::new()),
+            // Cert Spotter answers a domain with no certificates `[]` at 200, and `sfp_certspotter`
+            // reads any status but 200 and 429 as an error: a 404 is no empty page.
+            Ok(Answer::NotFound(_)) => Err(LegError::Unexpected(404)),
             Err(error) => Err(error),
         };
         match page {

@@ -148,7 +148,11 @@ fn keyless() -> Routes {
             200,
             r#"{"ip":{"number":"1.1.1.1","count":null,"attacks":null}}"#,
         ),
-        ("https://api.maltiverse.com/", 404, "{}"),
+        (
+            "https://api.maltiverse.com/",
+            200,
+            r#"{"classification":"neutral","ip_addr":"1.1.1.1","blacklist":[],"is_cnc":false}"#,
+        ),
         ("https://api.phishstats.info/", 200, "[]"),
         ("https://api.shodan.io/", 200, SHODAN),
         (
@@ -250,12 +254,13 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "otx"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "urlscan"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "ipinfo"), SourceOutcomeKind::Success);
+    // Maltiverse answers an address it had no record of with the neutral record it makes for it.
+    assert_eq!(outcome(&report, "maltiverse"), SourceOutcomeKind::Success);
     for source in [
         "robtex",
         "hackertarget",
         "stopforumspam",
         "isc",
-        "maltiverse",
         "phishstats",
     ] {
         assert_eq!(outcome(&report, source), SourceOutcomeKind::ValidZero);
