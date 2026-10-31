@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Compile standalone mapper
         run: rustc --edition=2024 -D warnings tools/agent_repo_map.rs -o /tmp/agent-repo-map
       - name: Compile and run mapper tests
