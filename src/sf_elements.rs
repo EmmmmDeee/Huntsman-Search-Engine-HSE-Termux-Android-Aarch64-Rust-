@@ -305,9 +305,14 @@ fn says_malicious(evidence: &Evidence) -> bool {
 }
 
 /// The child elements one evidence record's attributes describe, as `(type, data)`.
-fn descriptors(entity: &Entity, evidence: &Evidence, now_unix: u64) -> Vec<(&'static str, String)> {
+fn descriptors(
+    entity: &Entity,
+    evidence: &Evidence,
+    cve_scores: &BTreeMap<String, f64>,
+    now_unix: u64,
+) -> Vec<(&'static str, String)> {
     let mut out = Vec::new();
-    host_descriptors(entity, evidence, now_unix, &mut out);
+    host_descriptors(entity, evidence, cve_scores, now_unix, &mut out);
     identity_descriptors(entity, evidence, &mut out);
     out
 }
@@ -340,6 +345,48 @@ fn generic_contact_emails(evidence: &Evidence, out: &mut Vec<(&'static str, Stri
     }
 }
 
+/// The CVSS score of every CVE any record of the scan scores, by upper-cased CVE id, the highest
+/// when records disagree: Shodan writes each scored CVE in `cve_scores` as `CVE-ID SCORE`. A
+/// score belongs to the CVE, not the host, so one scan types a CVE alike wherever it is listed.
+/// **Pure.**
+fn cvss_scores(entities: &[Entity]) -> BTreeMap<String, f64> {
+    let mut scores = BTreeMap::new();
+    let entries = entities
+        .iter()
+        .flat_map(|entity| &entity.evidence)
+        .filter_map(|evidence| attr(evidence, "cve_scores"))
+        .flat_map(items);
+    for entry in entries {
+        let Some((id, score)) = entry.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(score) = score.trim().parse::<f64>() else {
+            continue;
+        };
+        if !(0.0..=10.0).contains(&score) {
+            continue;
+        }
+        let best = scores.entry(id.to_ascii_uppercase()).or_insert(score);
+        if score > *best {
+            *best = score;
+        }
+    }
+    scores
+}
+
+/// A vulnerability's type by its CVSS score, as Spiderfoot's `cveInfo` rates one: CRITICAL from
+/// 9.0, HIGH from 7.0, MEDIUM from 4.0, LOW below, and GENERAL when nothing scores it. The
+/// CRITICAL, HIGH and MEDIUM/LOW correlation rules read these types. **Pure.**
+fn vulnerability_type(score: Option<f64>) -> &'static str {
+    match score {
+        Some(score) if score >= 9.0 => "VULNERABILITY_CVE_CRITICAL",
+        Some(score) if score >= 7.0 => "VULNERABILITY_CVE_HIGH",
+        Some(score) if score >= 4.0 => "VULNERABILITY_CVE_MEDIUM",
+        Some(_) => "VULNERABILITY_CVE_LOW",
+        None => "VULNERABILITY_GENERAL",
+    }
+}
+
 /// An HTTP status line code is exactly three ASCII digits naming a 1xx-5xx class. Validate the
 /// saved value so a malformed or non-status field cannot be surfaced as an `HTTP_CODE`.
 fn valid_http_status(value: &str) -> bool {
@@ -355,6 +402,7 @@ fn valid_http_status(value: &str) -> bool {
 fn host_descriptors(
     entity: &Entity,
     evidence: &Evidence,
+    cve_scores: &BTreeMap<String, f64>,
     now_unix: u64,
     out: &mut Vec<(&'static str, String)>,
 ) {
@@ -367,7 +415,8 @@ fn host_descriptors(
     }
     if let Some(vulns) = attr("vulns") {
         for cve in items(vulns) {
-            out.push(("VULNERABILITY_GENERAL", cve.to_owned()));
+            let score = cve_scores.get(&cve.to_ascii_uppercase()).copied();
+            out.push((vulnerability_type(score), cve.to_owned()));
         }
     }
     for key in ["software", "cpes"] {
@@ -777,7 +826,8 @@ pub fn elements(target: Target<'_>, entities: &[Entity], now_unix: u64) -> Vec<D
 }
 
 /// Where a scan that followed its findings found each entity: an entity's lowercased value to
-/// the lowercased selector of the first lookup that found it. That selector's element becomes the
+/// the lowercased identity ([`PivotEdge::from_identity`]) of the first lookup that found it, the
+/// key the source entity's own value carries whichever spelling the lookup ran under. That selector's element becomes the
 /// entity's source, as a Spiderfoot event's source is the event its module was handed.
 pub type Lineage = BTreeMap<String, String>;
 
@@ -790,7 +840,7 @@ pub fn lineage(edges: &[PivotEdge]) -> Lineage {
     let mut out = Lineage::new();
     for edge in sorted {
         let child = edge.to_value.to_ascii_lowercase();
-        let parent = edge.from_selector.to_ascii_lowercase();
+        let parent = edge.from_identity().to_ascii_lowercase();
         if child != parent {
             out.entry(child).or_insert(parent);
         }
@@ -827,6 +877,8 @@ struct Walk<'a> {
     target: Target<'a>,
     target_id: String,
     by_value: BTreeMap<String, String>,
+    /// Every CVE any record of the scan scores (see [`cvss_scores`]).
+    cve_scores: BTreeMap<String, f64>,
     now_unix: u64,
 }
 
@@ -878,11 +930,25 @@ impl<'a> Walk<'a> {
         );
         let mut by_value = BTreeMap::new();
         by_value.insert(target.value.trim().to_ascii_lowercase(), target_id.clone());
+        // A crawl's lineage names a lookup by the identity it ran under (`PivotEdge::from_identity`).
+        // A username target is also known by its identity key, so what a lookup of the target found
+        // stays under the target, never under another element that spells the same handle.
+        if target.kind == "USERNAME" {
+            by_value.insert(
+                crate::recursion::selector_identity(
+                    crate::scan_route::ScanKind::Username,
+                    target.value.trim(),
+                )
+                .to_ascii_lowercase(),
+                target_id.clone(),
+            );
+        }
         Self {
             builder,
             target,
             target_id,
             by_value,
+            cve_scores: cvss_scores(entities),
             now_unix,
         }
     }
@@ -976,7 +1042,7 @@ impl<'a> Walk<'a> {
                 continue;
             };
             let created = evidence.provenance.recorded_at_unix.saturating_mul(1000);
-            for (kind, data) in descriptors(entity, evidence, self.now_unix) {
+            for (kind, data) in descriptors(entity, evidence, &self.cve_scores, self.now_unix) {
                 if kind == "BGP_AS_MEMBER" && self.target.is_as(&data) {
                     continue;
                 }
@@ -1188,6 +1254,84 @@ mod tests {
         value: "example.com",
         kind: "INTERNET_NAME",
     };
+
+    /// A lookup of a username target records its edges under the target's identity key. An echo of
+    /// the handle under another separator is its own element with that key, but what the target's
+    /// lookup found stays under the target.
+    #[test]
+    fn findings_of_a_username_target_stay_under_the_target_beside_a_respelled_echo() {
+        let echo = entity(EntityKind::Username, "PG-Smith", "github_user", &[]);
+        let site = entity(EntityKind::Domain, "pg-smith.example", "github_user", &[]);
+        let edges: Vec<PivotEdge> = [&echo, &site]
+            .into_iter()
+            .map(|to| PivotEdge {
+                from_kind: "username".to_owned(),
+                from_selector: "PG_Smith".to_owned(),
+                to_kind: to.kind.as_str().to_owned(),
+                to_value: to.value.clone(),
+                generation: 0,
+            })
+            .collect();
+        let target = Target {
+            value: "PG_Smith",
+            kind: "USERNAME",
+        };
+        let found = elements_with_lineage(target, &[echo, site], &lineage(&edges), 1_700_000_200);
+        let target_element = of_type(&found, "USERNAME")
+            .into_iter()
+            .find(|element| element.data == "PG_Smith")
+            .expect("target element")
+            .id
+            .clone();
+        let site_element = of_type(&found, "INTERNET_NAME")
+            .into_iter()
+            .find(|element| element.data == "pg-smith.example")
+            .expect("site element");
+        assert_eq!(
+            site_element.source.as_deref(),
+            Some(target_element.as_str())
+        );
+    }
+
+    /// A crawl follows a handle by the spelling it was observed with (`PG_Smith`), while the handle
+    /// entity's value is its identity key (`pgsmith`). The discovery tree still places what that
+    /// lookup found under the handle's element, not under the scan target.
+    #[test]
+    fn findings_of_a_handle_followed_by_its_observed_spelling_stay_under_that_handle() {
+        let handle = entity(EntityKind::Username, "PG_Smith", "email_cli", &[]);
+        let mut site = entity(EntityKind::Domain, "pg-smith.example", "github_user", &[]);
+        site.generation = 1;
+        let edge = |from_kind: &str, from_selector: &str, to: &Entity, generation| PivotEdge {
+            from_kind: from_kind.to_owned(),
+            from_selector: from_selector.to_owned(),
+            to_kind: to.kind.as_str().to_owned(),
+            to_value: to.value.clone(),
+            generation,
+        };
+        let edges = [
+            edge("email", "person@example.com", &handle, 0),
+            edge("username", "PG_Smith", &site, 1),
+        ];
+        let lineage = lineage(&edges);
+        assert_eq!(
+            lineage.get("pg-smith.example").map(String::as_str),
+            Some("pgsmith")
+        );
+        let target = Target {
+            value: "person@example.com",
+            kind: "EMAILADDR",
+        };
+        let found = elements_with_lineage(target, &[handle, site], &lineage, 1_700_000_200);
+        let handle_element = of_type(&found, "USERNAME")[0].id.clone();
+        let site_element = of_type(&found, "INTERNET_NAME")
+            .into_iter()
+            .find(|element| element.data == "pg-smith.example")
+            .expect("site element");
+        assert_eq!(
+            site_element.source.as_deref(),
+            Some(handle_element.as_str())
+        );
+    }
 
     /// Two records from one source about one host are one element, as Spiderfoot keys an event,
     /// but both stay readable: the element's raw lists each record, and the element is created
@@ -1511,6 +1655,159 @@ mod tests {
             raw.contains("unmapped_detail") && raw.contains("kept in raw"),
             "{raw}"
         );
+    }
+
+    /// A CVE a record scores is typed by its CVSS score, as Spiderfoot types one, so the
+    /// CRITICAL and HIGH vulnerability rules can fire; a score on any record of the scan types
+    /// the CVE wherever it is listed, on any host, and one nothing scores stays GENERAL.
+    /// The bands meet where Spiderfoot's `cveInfo` puts them, each lower edge in its own band:
+    /// 9.0 CRITICAL, 7.0 HIGH, 4.0 MEDIUM, and just below each the band under it. Records that
+    /// score one CVE differently type it by the highest, whichever comes first, its id read in
+    /// any case; a score outside 0 to 10, or no number, is no score.
+    #[test]
+    fn a_cves_type_takes_its_band_edges_and_its_highest_valid_score() {
+        for (score, typed) in [
+            (10.0, "VULNERABILITY_CVE_CRITICAL"),
+            (9.0, "VULNERABILITY_CVE_CRITICAL"),
+            (8.9, "VULNERABILITY_CVE_HIGH"),
+            (7.0, "VULNERABILITY_CVE_HIGH"),
+            (6.9, "VULNERABILITY_CVE_MEDIUM"),
+            (4.0, "VULNERABILITY_CVE_MEDIUM"),
+            (3.9, "VULNERABILITY_CVE_LOW"),
+            (0.0, "VULNERABILITY_CVE_LOW"),
+        ] {
+            assert_eq!(vulnerability_type(Some(score)), typed, "{score}");
+        }
+        assert_eq!(vulnerability_type(None), "VULNERABILITY_GENERAL");
+
+        let listing = |scores: &str| {
+            entity(
+                EntityKind::IpAddress,
+                "198.51.100.7",
+                "shodan",
+                &[("cve_scores", scores)],
+            )
+        };
+        for (first, second) in [
+            ("CVE-2024-0001 5.0", "cve-2024-0001 9.8"),
+            ("cve-2024-0001 9.8", "CVE-2024-0001 5.0"),
+        ] {
+            let scores = cvss_scores(&[listing(first), listing(second)]);
+            assert_eq!(
+                scores.get("CVE-2024-0001"),
+                Some(&9.8),
+                "{first} then {second}"
+            );
+        }
+        let scores = cvss_scores(&[listing(
+            "CVE-2024-0002 10.5,CVE-2024-0003 -1,CVE-2024-0004 NaN,CVE-2024-0005 inf,\
+             CVE-2024-0006 high,CVE-2024-0007 7.5",
+        )]);
+        assert_eq!(
+            scores.into_iter().collect::<Vec<_>>(),
+            [("CVE-2024-0007".to_owned(), 7.5)]
+        );
+    }
+
+    #[test]
+    fn a_scored_vulnerability_is_typed_by_its_cvss_score() {
+        let mut ip = entity(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            "shodan",
+            &[
+                (
+                    "vulns",
+                    "CVE-2021-44228,CVE-2014-0160,CVE-2020-0001,CVE-2019-0002,CVE-2018-0003",
+                ),
+                (
+                    "cve_scores",
+                    "CVE-2021-44228 10.0,CVE-2014-0160 7.5,CVE-2020-0001 5.0,CVE-2019-0002 2.6",
+                ),
+            ],
+        );
+        ip.absorb(entity(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            "internetdb",
+            &[("vulns", "CVE-2021-44228")],
+        ));
+        // Another host that only InternetDB lists the CVE on: a score belongs to the CVE, so the
+        // scan types it alike there.
+        let other = entity(
+            EntityKind::IpAddress,
+            "198.51.100.8",
+            "internetdb",
+            &[("vulns", "cve-2021-44228")],
+        );
+        let found = elements(
+            Target {
+                value: "198.51.100.7",
+                kind: "IP_ADDRESS",
+            },
+            &[ip, other],
+            1_700_000_000,
+        );
+        let typed = |kind: &str| -> Vec<(String, String)> {
+            of_type(&found, kind)
+                .iter()
+                .map(|element| (element.module.clone(), element.data.clone()))
+                .collect()
+        };
+        assert_eq!(
+            typed("VULNERABILITY_CVE_CRITICAL"),
+            [
+                ("shodan".to_owned(), "CVE-2021-44228".to_owned()),
+                ("internetdb".to_owned(), "CVE-2021-44228".to_owned()),
+                ("internetdb".to_owned(), "cve-2021-44228".to_owned()),
+            ]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_CVE_HIGH"),
+            [("shodan".to_owned(), "CVE-2014-0160".to_owned())]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_CVE_MEDIUM"),
+            [("shodan".to_owned(), "CVE-2020-0001".to_owned())]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_CVE_LOW"),
+            [("shodan".to_owned(), "CVE-2019-0002".to_owned())]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_GENERAL"),
+            [("shodan".to_owned(), "CVE-2018-0003".to_owned())]
+        );
+        // So the shipped CRITICAL and HIGH rules fire on the host; with every CVE GENERAL, neither
+        // could.
+        let rules: Vec<_> = crate::sf_correlate::shipped()
+            .iter()
+            .filter(|rule| {
+                matches!(
+                    rule.id.as_str(),
+                    "vulnerability_critical" | "vulnerability_high"
+                )
+            })
+            .cloned()
+            .collect();
+        let mut fired: Vec<String> = crate::sf_correlate::run(&rules, &found)
+            .into_iter()
+            .map(|finding| finding.title)
+            .collect();
+        fired.sort();
+        assert_eq!(
+            fired,
+            [
+                "Critical-rated vulnerability found on 198.51.100.7",
+                "Critical-rated vulnerability found on 198.51.100.8",
+                "High-rated vulnerability found on 198.51.100.7",
+            ]
+        );
+        assert_eq!(vulnerability_type(Some(9.0)), "VULNERABILITY_CVE_CRITICAL");
+        assert_eq!(vulnerability_type(Some(8.9)), "VULNERABILITY_CVE_HIGH");
+        assert_eq!(vulnerability_type(Some(6.9)), "VULNERABILITY_CVE_MEDIUM");
+        assert_eq!(vulnerability_type(Some(3.9)), "VULNERABILITY_CVE_LOW");
+        assert_eq!(vulnerability_type(Some(0.0)), "VULNERABILITY_CVE_LOW");
     }
 
     #[test]

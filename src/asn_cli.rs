@@ -34,7 +34,9 @@ use crate::lookup_report;
 use crate::peeringdb;
 use crate::rdap_legs;
 use crate::ripestat::{self, AsOverview, Neighbours, Prefixes};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
+use crate::source_outcome::{
+    EndpointAnswer, Joined, SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun,
+};
 
 pub const ASN_USAGE: &str = "usage: huntsman-recon asn AS-NUMBER [--save FILE]";
 pub const ASN_HELP: &str = "\
@@ -202,10 +204,12 @@ fn routing_entities(
             summary,
         )
     };
-    let mut found = 0;
+    // How many entities each call that answered gave, in the order the row lists them:
+    // as-overview, announced-prefixes, asn-neighbours.
+    let mut counts = [0; 3];
     let mut said = Vec::new();
     if let Ok(overview) = &routing.overview {
-        found += overview_entities(report, asn, scan_id, overview);
+        counts[0] = overview_entities(report, asn, scan_id, overview);
         said.push(match &overview.holder {
             Some(holder) => format!("as-overview: held by {holder}"),
             None => "as-overview: no holder".to_owned(),
@@ -233,7 +237,7 @@ fn routing_entities(
                 &[],
             );
         }
-        found += prefixes.prefixes.len();
+        counts[1] = prefixes.prefixes.len();
         let mut line = format!("announced-prefixes: {v4} IPv4 and {v6} IPv6");
         if let (Some(start), Some(end)) = (&prefixes.query_start, &prefixes.query_end) {
             let _ = write!(line, " from {start} to {end}");
@@ -241,7 +245,7 @@ fn routing_entities(
         said.push(line);
     }
     if let Ok(neighbours) = &routing.neighbours {
-        found += neighbour_entities(report, asn, scan_id, neighbours);
+        counts[2] = neighbour_entities(report, asn, scan_id, neighbours);
         let side = |relation: &str| {
             neighbours
                 .neighbours
@@ -260,35 +264,41 @@ fn routing_entities(
         }
         said.push(line);
     }
-    let failures: Vec<(&str, &LegError)> = [
+    let errors = [
         ("as-overview", routing.overview.as_ref().err()),
         ("announced-prefixes", routing.prefixes.as_ref().err()),
         ("asn-neighbours", routing.neighbours.as_ref().err()),
-    ]
-    .into_iter()
-    .filter_map(|(call, error)| Some((call, error?)))
-    .collect();
-    for (call, error) in &failures {
-        said.push(format!("{call} failed: {error}"));
+    ];
+    for (call, error) in &errors {
+        if let Some(error) = error {
+            said.push(format!("{call} failed: {error}"));
+        }
     }
     let detail = said.join("; ");
-    let outcome = match failures.first() {
-        Some(first) if failures.len() == 3 => {
-            // Every call failed: this one row is refused only when all three were refused, so it
-            // takes the first failure that was not a refusal, else the first. Reading the kind (not
-            // the `LegError` variant) is what the phase-5 token rule relies on.
-            let &(_, error) = failures
-                .iter()
-                .find(|(_, error)| error.outcome_kind() != SourceOutcomeKind::RefusedBeforeSending)
-                .unwrap_or(first);
-            error.outcome(&ripestat::API, now_unix).with_detail(detail)
+    let answers: [EndpointAnswer; 3] = std::array::from_fn(|call| match errors[call].1 {
+        Some(error) => EndpointAnswer::Failed(error.outcome_kind()),
+        None if counts[call] > 0 => EndpointAnswer::Found(counts[call]),
+        None => EndpointAnswer::Absent,
+    });
+    let outcome = match Joined::of(&answers) {
+        Joined::Found(found) => SourceExecutionOutcome::success(ripestat::SOURCE, now_unix, found)
+            .with_http_status(200)
+            .with_detail(detail),
+        Joined::Absent => SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix)
+            .with_http_status(200)
+            .with_detail(detail),
+        // Every call failed: the row takes the failure the join chose, as its `LegError` reads,
+        // so a rate limit keeps its retry time. Reading the kind (not the `LegError` variant) is
+        // what the phase-5 token rule relies on.
+        Joined::Unanswered { index, .. } => match errors[index].1 {
+            Some(error) => error.outcome(&ripestat::API, now_unix).with_detail(detail),
+            None => SourceExecutionOutcome::inconclusive(ripestat::SOURCE, now_unix, detail),
+        },
+        // A call found nothing beside one that failed: the failed call may hold what the others
+        // do not, so the AS is not shown to have none.
+        Joined::Inconclusive => {
+            SourceExecutionOutcome::inconclusive(ripestat::SOURCE, now_unix, detail)
         }
-        _ if found == 0 => SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix)
-            .with_http_status(200)
-            .with_detail(detail),
-        _ => SourceExecutionOutcome::success(ripestat::SOURCE, now_unix, found)
-            .with_http_status(200)
-            .with_detail(detail),
     };
     report.outcomes.push(outcome);
 }

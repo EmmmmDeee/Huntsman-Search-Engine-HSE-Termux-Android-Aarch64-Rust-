@@ -899,7 +899,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         await page.click('#bbody details.raw[open] .pivot');
         await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 }).catch(() => {});
         const pivoted = await page.evaluate(() => ({ target: document.getElementById('starget').value, kind: document.getElementById('skind').value, depth: document.getElementById('sdepth').value }));
-        check('an element opens New Scan on its value', !!found && pivoted.target === String(found.data) && pivoted.kind === 'auto' && pivoted.depth === '1', { found: found && found.data, pivoted });
+        check('an element opens New Scan on its value with its type\'s lookup', !!found && found.scan_kind === 'phone' && pivoted.target === String(found.data) && pivoted.kind === 'phone' && pivoted.depth === '1', { found: found && found.data, scan_kind: found && found.scan_kind, pivoted });
         await page.goto(base + '/#/scan/' + encodeURIComponent(id) + '/summary', { waitUntil: 'networkidle' });
         await page.click('#screrun');
         await page.waitForFunction(was => location.hash.split('/')[2] && decodeURIComponent(location.hash.split('/')[2]) !== was, id, { timeout: 10000 }).catch(() => {});

@@ -726,29 +726,29 @@ fn new_scan_by_module_sends_the_ticked_modules_by_the_names_the_api_takes() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// The Spiderfoot types whose elements open New Scan on their value. Each is a type the catalogue
-/// knows; every type a scan target can be is one of them; and so is the type of every entity a
-/// deeper scan follows (an email, username, domain, phone, IP address or BSSID), so any value the
-/// engine would look up in turn can be scanned on its own from the page.
+/// The types whose elements open New Scan on their value. The server names the lookup for each
+/// element row (`scan_kind`, `sf_compat::pivot_kind` checked against the value), and the page
+/// offers New Scan exactly when it does, with that lookup: it keeps no list of its own. Every type
+/// a scan target can be keeps its lookup, so does the type of every entity a deeper scan follows
+/// (an email, username, domain, phone, IP address or BSSID), and so does every type the page
+/// offered New Scan for when it kept its own list, so any value the engine would look up in turn
+/// can be scanned on its own from the page.
 #[test]
 fn every_value_a_scan_could_follow_can_start_a_scan_of_its_own() {
     let script = inline("script");
-    let set = script
-        .split("const PIVOT=new Set([")
-        .nth(1)
-        .and_then(|rest| rest.split("]);").next())
-        .expect("the page lists the types it scans from");
-    let offered: Vec<&str> = set.split(',').map(|code| code.trim_matches('\'')).collect();
-    for code in &offered {
-        assert!(
-            sf_types::find(code).is_some(),
-            "{code} is not a Spiderfoot type"
-        );
-    }
+    assert!(
+        !script.contains("PIVOT"),
+        "the page keeps its own list of pivot types"
+    );
+    assert!(script.contains("if(x.scan_kind)b.append(button('New Scan of this'"));
+    // An element's New Scan runs the lookup the server named, never a guess: detection reads a
+    // bare handle as a domain, an AS or a name, and a bare Bitcoin address as a name.
+    assert!(script.contains("kind:x.scan_kind,"));
     for kind in sf_types::all() {
-        if sf_compat::scan_kind(kind.code).is_some() {
-            assert!(
-                offered.contains(&kind.code),
+        if let Some(scanned) = sf_compat::scan_kind(kind.code) {
+            assert_eq!(
+                sf_compat::pivot_kind(kind.code),
+                Some(scanned),
                 "a {} target cannot be scanned from an element",
                 kind.code
             );
@@ -764,18 +764,50 @@ fn every_value_a_scan_could_follow_can_start_a_scan_of_its_own() {
     ] {
         let code = sf_types::base_type(&kind);
         assert!(
-            offered.contains(&code),
+            sf_compat::pivot_kind(code).is_some(),
             "a {code} element cannot start a scan"
         );
     }
-    assert!(script.contains("if(PIVOT.has(x.type))b.append(button('New Scan of this'"));
-    // A crypto element names its chain only by its value, so its scan is the crypto lookup, never
-    // a guess that would read a bare Bitcoin address as a name.
-    assert!(
-        script.contains(
-            "(x.type==='BITCOIN_ADDRESS'||x.type==='HSE_CRYPTO_ADDRESS')?'crypto':'auto'"
-        )
-    );
+    for code in [
+        "INTERNET_NAME",
+        "DOMAIN_NAME",
+        "DOMAIN_NAME_PARENT",
+        "AFFILIATE_INTERNET_NAME",
+        "AFFILIATE_DOMAIN_NAME",
+        "CO_HOSTED_SITE",
+        "CO_HOSTED_SITE_DOMAIN",
+        "SIMILARDOMAIN",
+        "IP_ADDRESS",
+        "IPV6_ADDRESS",
+        "AFFILIATE_IPADDR",
+        "AFFILIATE_IPV6_ADDRESS",
+        "NETBLOCK_OWNER",
+        "NETBLOCKV6_OWNER",
+        "NETBLOCK_MEMBER",
+        "NETBLOCKV6_MEMBER",
+        "BGP_AS_OWNER",
+        "BGP_AS_MEMBER",
+        "EMAILADDR",
+        "EMAILADDR_GENERIC",
+        "AFFILIATE_EMAILADDR",
+        "PHONE_NUMBER",
+        "USERNAME",
+        "HUMAN_NAME",
+        "HSE_MAC_ADDRESS",
+        "BITCOIN_ADDRESS",
+        "HSE_CRYPTO_ADDRESS",
+        "PHYSICAL_ADDRESS",
+        "PHYSICAL_COORDINATES",
+    ] {
+        assert!(
+            sf_types::find(code).is_some(),
+            "{code} is not a Spiderfoot type"
+        );
+        assert!(
+            sf_compat::pivot_kind(code).is_some(),
+            "a {code} element no longer starts a scan"
+        );
+    }
 }
 
 #[test]

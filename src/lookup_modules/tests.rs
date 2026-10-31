@@ -264,10 +264,9 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
         ScanKind::Asn => ended(asn_cli::run(&transport, target, now), |report| {
             (report.outcomes, report.entities)
         }),
-        ScanKind::Network => ended(
-            network_cli::run(Some((&transport, &keys)), target, now),
-            |report| (report.outcomes, report.entities),
-        ),
+        ScanKind::Network => ended(network_cli::run(&transport, &keys, target, now), |report| {
+            (report.outcomes, report.entities)
+        }),
         ScanKind::CryptoAddress => ended(crypto_cli::run(&transport, target, now), |report| {
             (report.outcomes, report.entities)
         }),

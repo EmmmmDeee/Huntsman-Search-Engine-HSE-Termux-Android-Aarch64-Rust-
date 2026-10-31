@@ -117,7 +117,12 @@ fn selectors_parse_and_their_canonical_form_reads_back() {
 
 #[test]
 fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configured() {
-    let (text, report) = printed(run(None, "3C:5A:B4:01:02:03", 7));
+    let (text, report) = printed(run(
+        &crate::test_support::Refusing,
+        &Keys::default(),
+        "3C:5A:B4:01:02:03",
+        7,
+    ));
     let legs: Vec<_> = report
         .outcomes
         .iter()
@@ -170,7 +175,7 @@ fn a_bssids_manufacturer_is_no_source_of_it() {
         ),
     ]);
     let keys = keys();
-    let (text, report) = printed(run(Some((&transport, &keys)), "3C:5A:B4:01:02:03", 7));
+    let (text, report) = printed(run(&transport, &keys, "3C:5A:B4:01:02:03", 7));
     let bssid = report
         .entities
         .iter()
@@ -204,7 +209,12 @@ fn a_bssids_manufacturer_is_no_source_of_it() {
 fn a_prefix_no_manufacturer_is_registered_for_reports_none() {
     // 10:10:10 has no IEEE MA-L assignment: the registry names no manufacturer, so the OUI row
     // is a validated zero and no "Unknown" manufacturer is recorded as found.
-    let (text, report) = printed(run(None, "10:10:10:01:02:03", 7));
+    let (text, report) = printed(run(
+        &crate::test_support::Refusing,
+        &Keys::default(),
+        "10:10:10:01:02:03",
+        7,
+    ));
     assert_eq!(report.outcomes[0].module, OUI_SOURCE);
     assert_eq!(
         report.outcomes[0].kind,
@@ -228,7 +238,7 @@ fn a_half_configured_account_makes_no_request() {
         Ok(keys) => keys,
         Err(error) => panic!("keys parse: {error}"),
     };
-    let (_, report) = printed(run(Some((&transport, &only_user)), "Cafe Guest", 7));
+    let (_, report) = printed(run(&transport, &only_user, "Cafe Guest", 7));
     assert!(transport.urls().is_empty());
     assert_eq!(
         report.outcomes.last().map(|o| o.kind),
@@ -240,7 +250,7 @@ fn a_half_configured_account_makes_no_request() {
 fn wigle_networks_become_bssid_entities_with_ssid_and_position_pivots() {
     let transport = Canned::json(&cafe());
     let keys = keys();
-    let (text, report) = printed(run(Some((&transport, &keys)), "ssid:Cafe Guest", 7));
+    let (text, report) = printed(run(&transport, &keys, "ssid:Cafe Guest", 7));
     let urls = transport.urls();
     assert_eq!(urls.len(), 1, "{urls:?}");
     assert!(urls[0].contains("ssid=Cafe+Guest"), "{urls:?}");
@@ -313,7 +323,7 @@ fn a_coordinate_selector_searches_the_box_around_it() {
     let transport =
         Canned::json(&serde_json::json!({"success": true, "totalResults": 0, "results": []}));
     let keys = keys();
-    let (text, report) = printed(run(Some((&transport, &keys)), "-27.4698,153.0251", 7));
+    let (text, report) = printed(run(&transport, &keys, "-27.4698,153.0251", 7));
     let urls = transport.urls();
     assert!(urls[0].contains("latrange1=-27.471800"), "{urls:?}");
     let row = |source: &str| {
@@ -352,7 +362,7 @@ fn a_request_wigle_answered_with_an_error_is_a_row_of_the_report() {
         urls: Mutex::default(),
     };
     let keys = keys();
-    let (text, report) = printed(run(Some((&limited, &keys)), "Cafe Guest", 7));
+    let (text, report) = printed(run(&limited, &keys, "Cafe Guest", 7));
     assert_eq!(
         report.outcomes.last().map(|o| o.kind),
         Some(SourceOutcomeKind::RateLimited)
@@ -377,21 +387,21 @@ fn failing(blocked: bool) -> Canned {
 #[test]
 fn with_nothing_answered_no_response_is_unavailable_and_a_refusal_is_refused() {
     let keys = keys();
-    match run(Some((&failing(false), &keys)), "Cafe Guest", 7) {
+    match run(&failing(false), &keys, "Cafe Guest", 7) {
         NetworkRun::Failed(why) => assert!(
             why.starts_with("no source answered the network lookup: wigle: no response"),
             "{why}"
         ),
         other => panic!("a search that got no response is unavailable, got {other:?}"),
     }
-    match run(Some((&failing(true), &keys)), "Cafe Guest", 7) {
+    match run(&failing(true), &keys, "Cafe Guest", 7) {
         NetworkRun::Network(why) => assert!(why.starts_with("wigle: request refused"), "{why}"),
         other => panic!("a search the egress policy refused is a refusal, got {other:?}"),
     }
     // A BSSID still has its offline classification, so it prints either way.
     for blocked in [false, true] {
         assert!(matches!(
-            run(Some((&failing(blocked), &keys)), "3c:5a:b4:01:02:03", 7),
+            run(&failing(blocked), &keys, "3c:5a:b4:01:02:03", 7),
             NetworkRun::Printed { .. }
         ));
     }
@@ -405,7 +415,7 @@ fn a_mac_found_as_a_bluetooth_device_is_reported_with_its_class() {
     ]});
     let transport = Canned::json(&body);
     let keys = keys();
-    let (text, report) = printed(run(Some((&transport, &keys)), "00:1a:7d:da:71:13", 7));
+    let (text, report) = printed(run(&transport, &keys, "00:1a:7d:da:71:13", 7));
     assert_eq!(transport.urls().len(), 2, "WiFi then Bluetooth");
     let bluetooth = report
         .outcomes
@@ -490,8 +500,8 @@ fn a_cell_site_selector_parses_canonically_and_is_inferred() {
 #[test]
 fn without_its_key_a_cell_lookup_reports_opencellid_not_configured() {
     let transport = Canned::json(&serde_json::json!({}));
-    for wigle in [None, Some((&transport as &dyn Transport, &keys()))] {
-        let (text, report) = printed(run(wigle, "cell:505:01:17:91", 7));
+    for keys in [Keys::default(), keys()] {
+        let (text, report) = printed(run(&transport, &keys, "cell:505:01:17:91", 7));
         let legs: Vec<_> = report
             .outcomes
             .iter()
@@ -519,11 +529,7 @@ fn a_cell_site_is_looked_up_in_opencellid() {
     let transport = Canned::json(&serde_json::json!({
         "lat": -27.4698, "lon": 153.0251, "range": 1200, "samples": 40
     }));
-    let (text, report) = printed(run(
-        Some((&transport, &keys)),
-        "cell:505:01:20:68719476735",
-        7,
-    ));
+    let (text, report) = printed(run(&transport, &keys, "cell:505:01:20:68719476735", 7));
     let urls = transport.urls();
     assert_eq!(urls.len(), 1, "{urls:?}");
     assert!(
@@ -560,7 +566,7 @@ fn a_point_lists_the_cell_sites_opencellid_places_around_it() {
         {"lat": -27.4690, "lon": 153.0260, "mcc": 505, "mnc": 2, "lac": 7, "cellid": 17811,
          "radio": "LTE"}
     ]}));
-    let (_, report) = printed(run(Some((&transport, &keys)), "-27.4698,153.0251", 7));
+    let (_, report) = printed(run(&transport, &keys, "-27.4698,153.0251", 7));
     let urls = transport.urls();
     assert_eq!(urls.len(), 1, "only OpenCelliD has a key: {urls:?}");
     assert!(

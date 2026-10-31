@@ -5,7 +5,8 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Output, Stdio};
+use std::sync::{PoisonError, RwLock};
 
 const RELEASE: &str = ".github/workflows/release.yml";
 const SCAN: &str = ".github/scripts/scan-for-keys.sh";
@@ -735,7 +736,7 @@ fn scratch(name: &str) -> PathBuf {
 fn tool(name: &str) -> Option<PathBuf> {
     let out = Command::new("bash")
         .args(["-c", &format!("command -v {name}")])
-        .output()
+        .guarded_output()
         .ok()?;
     let path = String::from_utf8(out.stdout).ok()?.trim().to_owned();
     (out.status.success() && path.starts_with('/')).then(|| PathBuf::from(path))
@@ -780,7 +781,7 @@ fn run_script_with(
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("bash must run");
+    let out = cmd.guarded_output().expect("bash must run");
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.code(), text)
@@ -1308,10 +1309,48 @@ fn scanner_flags_a_high_entropy_string_in_text_without_printing_it() {
 // ---------------------------------------------------------------------------
 // install-termux.sh: run it offline against a fake `curl` and `uname`.
 
+/// Writing an executable while another test thread starts a process races running it: the new
+/// child holds a copy of the write descriptor from fork until it execs, and running the file
+/// meanwhile fails with ETXTBSY ("Text file busy"), as `fakes/gh` did under the gate's parallel
+/// tests. Every executable is written holding this lock exclusively, and every process is started
+/// holding it shared until the child has exec'd ([`GuardedSpawn`]), so no child ever holds a file
+/// that is being written.
+static EXEC_GUARD: RwLock<()> = RwLock::new(());
+
 fn write_exec(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
+    let _writing = EXEC_GUARD.write().unwrap_or_else(PoisonError::into_inner);
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// `Command::output` and `Command::status`, starting the process under [`EXEC_GUARD`]: `spawn`
+/// returns once the child has exec'd, so the guard is held only while a child could still hold a
+/// copy of a descriptor, and is released before waiting for it.
+trait GuardedSpawn {
+    fn guarded_output(&mut self) -> std::io::Result<Output>;
+    fn guarded_status(&mut self) -> std::io::Result<ExitStatus>;
+}
+
+impl GuardedSpawn for Command {
+    fn guarded_output(&mut self) -> std::io::Result<Output> {
+        let child = {
+            let _spawning = EXEC_GUARD.read().unwrap_or_else(PoisonError::into_inner);
+            self.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?
+        };
+        child.wait_with_output()
+    }
+
+    fn guarded_status(&mut self) -> std::io::Result<ExitStatus> {
+        let mut child = {
+            let _spawning = EXEC_GUARD.read().unwrap_or_else(PoisonError::into_inner);
+            self.spawn()?
+        };
+        child.wait()
+    }
 }
 
 /// Runs the installer for the recon channel with the given release assets.
@@ -1393,7 +1432,7 @@ fn run_installer_with(
             "HUNTSMAN_TEST_BUILD_SHA",
             "0a1b2c3000000000000000000000000000000000",
         )
-        .output()
+        .guarded_output()
         .expect("bash must run");
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
@@ -1401,7 +1440,10 @@ fn run_installer_with(
 }
 
 fn sha256_hex(path: &Path) -> String {
-    let out = Command::new("sha256sum").arg(path).output().unwrap();
+    let out = Command::new("sha256sum")
+        .arg(path)
+        .guarded_output()
+        .unwrap();
     String::from_utf8(out.stdout).unwrap()[..64].to_owned()
 }
 
@@ -1682,7 +1724,7 @@ fn installer_rejects_an_unknown_channel_before_any_download_and_names_the_real_d
         .arg(INSTALL)
         .env("HUNTSMAN_CHANNEL", "recn")
         .env_remove("PREFIX")
-        .output()
+        .guarded_output()
         .expect("bash must run");
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{err}");
@@ -1773,7 +1815,7 @@ fn run_tag_resolving_installer(
         .env("HUNTSMAN_CHANNEL", "recon")
         .env("HUNTSMAN_TEST_BUILD_SHA", expected_sha)
         .env_remove("HUNTSMAN_RELEASE_TAG")
-        .output()
+        .guarded_output()
         .expect("bash must run");
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
@@ -2389,7 +2431,7 @@ fn each_known_hex_value_is_needed_and_unset_only_makes_the_scan_stricter() {
         let mut cmd = Command::new(bash);
         cmd.arg(SCAN).arg(&dir);
         with_known_hex(&mut cmd).env_remove(name);
-        let out = cmd.output().unwrap();
+        let out = cmd.guarded_output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout).into_owned()
             + &String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "without {name}:\n{text}");
@@ -2571,7 +2613,9 @@ fn run_script_with_timeout(script: &Path, arg: &Path) -> (Option<i32>, String) {
     let bash = tool("bash").expect("bash must be available");
     let mut cmd = Command::new(timeout);
     cmd.args(["-k", "2", "10"]).arg(bash).arg(script).arg(arg);
-    let out = with_known_hex(&mut cmd).output().expect("timeout must run");
+    let out = with_known_hex(&mut cmd)
+        .guarded_output()
+        .expect("timeout must run");
     let text =
         String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     (out.status.code(), text)
@@ -2757,7 +2801,10 @@ fn symlink_cases() -> Vec<SymlinkCase> {
         (
             "fifo",
             |_, d, _| {
-                let ok = Command::new("mkfifo").arg(d.join("pipe")).status().unwrap();
+                let ok = Command::new("mkfifo")
+                    .arg(d.join("pipe"))
+                    .guarded_status()
+                    .unwrap();
                 assert!(ok.success());
                 d.to_owned()
             },
@@ -2886,7 +2933,9 @@ fn scanner_treats_a_dash_leading_root_as_a_path() {
                 .arg(&script)
                 .arg(name)
                 .current_dir(&cwd);
-            let out = with_known_hex(&mut cmd).output().expect("timeout must run");
+            let out = with_known_hex(&mut cmd)
+                .guarded_output()
+                .expect("timeout must run");
             let text = String::from_utf8_lossy(&out.stdout).into_owned()
                 + &String::from_utf8_lossy(&out.stderr);
             assert!(
@@ -3170,7 +3219,7 @@ fn run_step_with(
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd.output().expect("bash must run");
+    let out = cmd.guarded_output().expect("bash must run");
     let run = StepRun {
         code: out.status.code(),
         text: String::from_utf8_lossy(&out.stdout).into_owned()
@@ -3973,7 +4022,7 @@ fn every_publishing_write_is_gated_on_no_existing_release() {
 fn promoting_latest_takes_the_published_bytes_offline() {
     let out = Command::new("bash")
         .arg("scripts/release-promote-self-check.sh")
-        .output()
+        .guarded_output()
         .expect("bash must run the promotion self-check");
     assert!(
         out.status.success(),
