@@ -512,3 +512,50 @@ fn surbl_policy_bits_are_named_and_mark_nothing_malicious() {
         [("undocumented answer 127.0.0.2".to_owned(), Class::Abuse)]
     );
 }
+
+
+/// A policy or neighbourhood listing is an observation, not evidence that the address abused
+/// anyone. The shipped SpiderFoot rule must not turn two such listings (or one abuse source plus
+/// one policy listing) into a HIGH claim. Two independent abuse sources still must trigger it.
+/// The same verdict must survive serialization of saved scan elements.
+#[test]
+fn policy_listings_never_create_a_multiple_malicious_finding() {
+    use crate::sf_correlate::{run, shipped};
+    use crate::sf_elements::{DataElement, Target, elements};
+
+    for (zen, uce1, uce2, uce3, expected_high) in [
+        (Some("127.0.0.10"), None, Some("127.0.0.2"), Some("127.0.0.2"), false),
+        (Some("127.0.0.4"), None, Some("127.0.0.2"), None, false),
+        (Some("127.0.0.4"), Some("127.0.0.2"), None, None, true),
+    ] {
+        let mut resolver = Resolver::healthy();
+        for (name, answer) in [
+            ("10.2.0.192.zen.spamhaus.org", zen),
+            ("10.2.0.192.dnsbl-1.uceprotect.net", uce1),
+            ("10.2.0.192.dnsbl-2.uceprotect.net", uce2),
+            ("10.2.0.192.dnsbl-3.uceprotect.net", uce3),
+        ] {
+            if let Some(answer) = answer {
+                resolver = resolver.with(name, &[answer]);
+            }
+        }
+        let (entities, _) = check(&resolver, Subject::Address(ip("192.0.2.10")), "s", 1);
+        let elements = elements(
+            Target { value: "192.0.2.10", kind: "IP_ADDRESS" },
+            &entities,
+            1,
+        );
+        let listed = elements.iter().filter(|element| element.kind == "BLACKLISTED_IPADDR").count();
+        let expected_listings = [zen, uce1, uce2, uce3].iter().filter(|answer| answer.is_some()).count();
+        assert_eq!(listed, expected_listings, "all observations must remain visible");
+        let check = |elements: &[DataElement]| {
+            let found = run(shipped(), elements);
+            let high = found.iter().any(|finding| finding.rule == "multiple_malicious" && finding.risk == crate::sf_correlate::Risk::High);
+            assert_eq!(high, expected_high, "{found:#?}");
+        };
+        check(&elements);
+        let saved = serde_json::to_vec(&elements).expect("serialize saved scan elements");
+        let restored: Vec<DataElement> = serde_json::from_slice(&saved).expect("reload saved scan elements");
+        check(&restored);
+    }
+}
