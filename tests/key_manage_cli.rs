@@ -31,8 +31,23 @@ fn set(home: &Path, slot: &str, bytes: &[u8]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    // A refusal can come before the command reads all it was sent (an unknown slot, a value past
+    // the bound), and it then closes its end of the pipe: a write it never read is no failure.
+    if let Err(error) = child.stdin.take().unwrap().write_all(bytes) {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    }
     child.wait_with_output().unwrap()
+}
+
+/// A command that refuses a value before reading all of it is still refusing it: an unknown slot
+/// sent more than a pipe holds is refused, and nothing is stored.
+#[test]
+fn a_refusal_before_the_value_is_read_is_still_a_refusal() {
+    let dir = home("unread");
+    let refused = set(&dir, "not_a_slot", &vec![b'x'; 1 << 20]);
+    assert_eq!(refused.status.code(), Some(64), "{:?}", refused.stderr);
+    assert!(!dir.join(".huntsman.env").exists());
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[cfg(unix)]

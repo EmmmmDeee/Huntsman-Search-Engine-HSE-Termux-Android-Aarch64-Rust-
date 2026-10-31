@@ -513,8 +513,9 @@ fn get<T: Transport + ?Sized>(
     })
 }
 
-/// A status that is no answer, typed as fetch typed it, so a 403 without a challenge page is
-/// `AuthRejected` as [`crate::fetch::answer`] types it.
+/// A status that is no answer, typed as fetch typed it, so a 403 without a challenge page to a
+/// registry, which is asked without a credential, is `Upstream4xx` as [`crate::fetch::answer`]
+/// types it.
 fn status_failure(reply: &Reply) -> Failure {
     let status = reply.response.status;
     Failure {

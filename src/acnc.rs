@@ -500,6 +500,30 @@ mod tests {
     }
 
     #[test]
+    fn a_website_on_an_address_is_kept_on_the_charity_but_is_no_domain() {
+        // A dotted IPv4 address is no domain, so a website hosted on one gives no Domain pivot,
+        // while the register's website field stays on the charity, verbatim.
+        let on_an_address = SMITH.replace("thesmithfamily.com.au", "http://93.184.216.34/");
+        let report = report_of(&on_an_address, "smith family");
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Domain),
+            "{:#?}",
+            report.entities
+        );
+        assert!(
+            org(&report).evidence.iter().any(|evidence| evidence
+                .attributes
+                .get("Charity_Website")
+                .is_some_and(|website| website == "http://93.184.216.34/")),
+            "{:#?}",
+            org(&report).evidence
+        );
+    }
+
+    #[test]
     fn a_fulltext_rank_hit_on_an_unrelated_charity_is_not_attributed() {
         // CKAN full-text search ranks loosely: a record that does not actually bear the queried
         // name as whole words must never be minted onto the name.

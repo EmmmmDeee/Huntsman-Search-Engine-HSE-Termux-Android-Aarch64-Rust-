@@ -1512,9 +1512,16 @@ fn classify_reports_causal_outcome_and_action() {
     };
     let waf = run("403", "<html>checking your browser cloudflare</html>");
     assert!(waf.ends_with("outcome=bot_waf\naction=backoff\n"), "{waf}");
-    let auth = run("403", "key revoked");
+    // Only a sent credential can be rejected, and `classify` is given no request: a 403 that is no
+    // challenge page is the provider refusing it.
+    let refused = run("403", "forbidden");
     assert!(
-        auth.ends_with("outcome=auth_rejected\naction=require_credential\n"),
+        refused.ends_with("outcome=upstream4xx\naction=investigate\n"),
+        "{refused}"
+    );
+    let auth = run("401", "key revoked");
+    assert!(
+        auth.ends_with("outcome=auth_required\naction=require_credential\n"),
         "{auth}"
     );
     let ok = run("200", "{}");

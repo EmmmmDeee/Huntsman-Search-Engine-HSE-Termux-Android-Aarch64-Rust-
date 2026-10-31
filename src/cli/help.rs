@@ -141,7 +141,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "attack status|coverage|gaps [--json] | attack navigator\nRender current Reconnaissance capability coverage from the reachable module catalogue. Parent techniques are roll-ups, not extra scored capabilities."
         }
         "classify" => {
-            "classify STATUS BODY...\nClassify an HTTP response as a result, challenge, or other outcome. The rest of the line is the body."
+            "classify STATUS BODY...\nClassify an HTTP response as a result, challenge, or other outcome. The rest of the line is the body. It reads the response as one to a request that carried no credential: a 403 that is no challenge page is `upstream4xx`, the provider refusing the request, since only a sent credential can be rejected."
         }
         "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
         "hibp" => HIBP_USAGE,

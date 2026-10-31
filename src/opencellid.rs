@@ -112,7 +112,10 @@ fn provider_error(value: &serde_json::Value) -> Option<Result<(), LegError>> {
         Some(2) => Err(LegError::Unauthorized),
         Some(3) => Err(LegError::BadRequest(400)),
         Some(5) => Err(LegError::Server(500)),
-        Some(7) => Err(LegError::RateLimited { retry_after: None }),
+        Some(7) => Err(LegError::RateLimited {
+            status: 200,
+            retry_after: None,
+        }),
         _ => Err(LegError::Decode(
             "OpenCelliD returned an unrecognised error response".into(),
         )),
@@ -406,7 +409,10 @@ mod tests {
             ),
             (
                 br#"{"error":"Daily limit exceeded","code":7}"#,
-                LegError::RateLimited { retry_after: None },
+                LegError::RateLimited {
+                    status: 200,
+                    retry_after: None,
+                },
             ),
         ];
         for (body, expected) in cases {

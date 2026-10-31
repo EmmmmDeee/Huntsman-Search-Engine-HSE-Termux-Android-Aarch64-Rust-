@@ -235,7 +235,7 @@ static AU_002: FnRule = FnRule {
     id: "AU-002",
     name: "identity_cluster",
     severity: Severity::Critical,
-    description: "Identities of at least two kinds (email, username, phone, name) that plausibly belong to one person.",
+    description: "Identities of at least two kinds (email, username, phone, name) that plausibly belong to one person. Not counted: a handle any record of which was guessed from an address, a name every record of which was, a role mailbox other than the operator's own, and a contact a registration record publishes as a group or an organisation, or as an abuse desk it does not call an individual, that no other source observed. More of a kind than one person holds is no cluster.",
     runner: rule_au_002_identity_cluster,
 };
 static AU_003: FnRule = FnRule {
@@ -616,6 +616,221 @@ mod tests {
         let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(findings[0].description.contains("1 username(s)"));
+    }
+
+    /// A person guessed from an e-mail's local part is no identity beside the address: a corporate
+    /// `first.last@` alone is no identity cluster.
+    #[test]
+    fn au002_does_not_count_a_person_inferred_from_the_email() {
+        let email = ent(
+            EntityKind::Email,
+            "jane.doe@acme.example",
+            0.99,
+            "seed",
+            false,
+        );
+        let mut person = Entity::new(EntityKind::Person, "Jane Doe", 0.55, "scan");
+        person
+            .add_evidence(evidence("email_parse", "derived from jane.doe@acme.example").inferred());
+        let entities = vec![email, person];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// A name a source tied to the address observed is an identity, though the analysis also
+    /// derived it from the address: a key server's "Jane Doe" for `jane.doe@` is the mailbox's.
+    #[test]
+    fn au002_counts_a_name_a_source_observed_for_the_address() {
+        let email = ent(
+            EntityKind::Email,
+            "jane.doe@acme.example",
+            0.99,
+            "seed",
+            false,
+        );
+        let mut person = Entity::new(EntityKind::Person, "Jane Doe", 0.65, "scan");
+        person
+            .add_evidence(evidence("email_parse", "derived from jane.doe@acme.example").inferred());
+        person.add_evidence(evidence(
+            "openpgp_keys",
+            "uid of the key for jane.doe@acme.example",
+        ));
+        let entities = vec![email, person];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].description.contains("1 person(s)"));
+    }
+
+    /// The mailbox or telephone of one of a registration record's contacts, as the RDAP legs
+    /// record it: its roles and, when the record gives one, its jCard kind.
+    fn registration_contact(
+        kind: EntityKind,
+        value: &str,
+        roles: &str,
+        jcard: Option<&str>,
+    ) -> Entity {
+        let tag = if roles.split(", ").any(|role| role == "abuse") {
+            tags::ABUSE_CONTACT
+        } else {
+            tags::WHOIS_CONTACT
+        };
+        let mut entity = Entity::new(kind, value, 0.85, "scan");
+        entity.add_evidence(
+            evidence(
+                crate::rdap::SOURCE,
+                &format!("contact ({roles}) in the registration"),
+            )
+            .with_attr("role", roles)
+            .with_optional_attrs([("contact_kind", jcard)]),
+        );
+        entity.tag(tag);
+        entity
+    }
+
+    /// A registration record's contacts that name a function (an abuse desk, a role or an
+    /// organisation's mailbox, its switchboard) are no identity cluster, also once a crawl has
+    /// looked them up; a contact the record publishes as an individual, or without a kind, is a
+    /// person's, and so is one another source also observed.
+    #[test]
+    fn au002_does_not_count_a_registration_records_role_contacts() {
+        let fires = |entities: &[Entity]| {
+            rule_au_002_identity_cluster(&RuleContext::new(entities, &[]), "scan", 0).len()
+        };
+        let role = registration_contact;
+        // An operator's role mailbox at its own domain, and its abuse desk's telephone.
+        let mut registry = vec![
+            role(
+                EntityKind::Email,
+                "rir@smallisp.example",
+                "administrative, technical",
+                Some("group"),
+            ),
+            role(EntityKind::Phone, "+16503198930", "abuse", None),
+        ];
+        assert_eq!(fires(&registry), 0, "{registry:?}");
+        assert!(
+            evaluate_rules(&registry, &[], "scan")
+                .iter()
+                .all(|correlation| correlation.rule_id != "AU-002")
+        );
+        // A crawl looked both up: the telephone's numbering plan and the lookup's echo of the
+        // mailbox observe no one.
+        registry[0].add_evidence(evidence("seed", "email selector the lookup was asked"));
+        registry[1].add_evidence(evidence("phone_intl", "international number"));
+        assert_eq!(fires(&registry), 0, "{registry:?}");
+
+        // An individual's contact, or one with no kind, which a jCard reads as an individual.
+        for jcard in [Some("individual"), None] {
+            let person = vec![
+                role(
+                    EntityKind::Email,
+                    "jsmith@smallco.example",
+                    "registrant",
+                    jcard,
+                ),
+                role(EntityKind::Phone, "+61412345678", "registrant", jcard),
+            ];
+            assert_eq!(fires(&person), 1, "{jcard:?}");
+        }
+        // An abuse desk the record calls an individual is a person's contact too.
+        let desk = vec![
+            role(
+                EntityKind::Email,
+                "jsmith@smallco.example",
+                "abuse",
+                Some("individual"),
+            ),
+            role(
+                EntityKind::Phone,
+                "+61412345678",
+                "abuse",
+                Some("individual"),
+            ),
+        ];
+        assert_eq!(fires(&desk), 1);
+
+        // A registration contact another source also observed counts.
+        let seen = |kind: EntityKind, value: &str| {
+            let mut entity = role(kind, value, "technical", Some("group"));
+            entity.add_evidence(evidence("hibp", "breach record"));
+            entity
+        };
+        let corroborated = vec![
+            seen(EntityKind::Email, "jane@acme.example"),
+            seen(EntityKind::Phone, "+61412345678"),
+        ];
+        assert_eq!(fires(&corroborated), 1);
+    }
+
+    /// A role mailbox names a function wherever it was found, unless the operator asked about it;
+    /// a person's mailbox at a provider's own domain is a person's.
+    #[test]
+    fn au002_does_not_count_a_role_mailbox_but_the_operators_own() {
+        let fires = |entities: &[Entity]| {
+            rule_au_002_identity_cluster(&RuleContext::new(entities, &[]), "scan", 0).len()
+        };
+        let phone = || ent(EntityKind::Phone, "+61412345678", 0.85, "hibp", false);
+        let found = vec![
+            ent(
+                EntityKind::Email,
+                "hostmaster@acme.example",
+                0.85,
+                "crtsh",
+                false,
+            ),
+            phone(),
+        ];
+        assert_eq!(fires(&found), 0);
+        let mut asked = Entity::new(EntityKind::Email, "hello@janedoe.example", 0.99, "scan");
+        asked.add_evidence(Evidence::new(
+            EvidenceProvenance::new("seed"),
+            "email selector the lookup was asked",
+        ));
+        assert_eq!(fires(&[asked, phone()]), 1);
+        let staff = ent(
+            EntityKind::Email,
+            "jane.doe@google.com",
+            0.85,
+            "hibp",
+            false,
+        );
+        assert_eq!(fires(&[staff, phone()]), 1);
+    }
+
+    /// Too many identities of a kind to be one person is judged by every identity observed, so
+    /// a page listing seven mailboxes is no person's, however few of them are a person's own.
+    #[test]
+    fn au002_judges_a_dump_by_every_identity_observed() {
+        let mut page: Vec<Entity> = ["info", "sales", "support", "accounts"]
+            .iter()
+            .map(|local| {
+                ent(
+                    EntityKind::Email,
+                    &format!("{local}@acme.example"),
+                    0.6,
+                    "wayback_cdx",
+                    false,
+                )
+            })
+            .collect();
+        for local in ["jane", "bob", "alice"] {
+            page.push(ent(
+                EntityKind::Email,
+                &format!("{local}@acme.example"),
+                0.6,
+                "wayback_cdx",
+                false,
+            ));
+        }
+        page.push(ent(
+            EntityKind::Phone,
+            "+61290000000",
+            0.6,
+            "wayback_cdx",
+            false,
+        ));
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&page, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
     }
 
     #[test]
