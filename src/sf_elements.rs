@@ -340,6 +340,36 @@ fn generic_contact_emails(evidence: &Evidence, out: &mut Vec<(&'static str, Stri
     }
 }
 
+/// The CVSS score a record on `entity` gives `cve`, the highest when records disagree: Shodan
+/// writes each scored CVE in `cve_scores` as `CVE-ID SCORE`. `None` when no record scores it.
+/// **Pure.**
+fn cvss_score(entity: &Entity, cve: &str) -> Option<f64> {
+    entity
+        .evidence
+        .iter()
+        .filter_map(|evidence| attr(evidence, "cve_scores"))
+        .flat_map(items)
+        .filter_map(|entry| {
+            let (id, score) = entry.split_once(char::is_whitespace)?;
+            let score: f64 = score.trim().parse().ok()?;
+            (id.eq_ignore_ascii_case(cve) && (0.0..=10.0).contains(&score)).then_some(score)
+        })
+        .reduce(f64::max)
+}
+
+/// A vulnerability's type by its CVSS score, as Spiderfoot's `cveInfo` rates one: CRITICAL from
+/// 9.0, HIGH from 7.0, MEDIUM from 4.0, LOW below, and GENERAL when nothing scores it. The
+/// CRITICAL, HIGH and MEDIUM/LOW correlation rules read these types. **Pure.**
+fn vulnerability_type(score: Option<f64>) -> &'static str {
+    match score {
+        Some(score) if score >= 9.0 => "VULNERABILITY_CVE_CRITICAL",
+        Some(score) if score >= 7.0 => "VULNERABILITY_CVE_HIGH",
+        Some(score) if score >= 4.0 => "VULNERABILITY_CVE_MEDIUM",
+        Some(_) => "VULNERABILITY_CVE_LOW",
+        None => "VULNERABILITY_GENERAL",
+    }
+}
+
 /// An HTTP status line code is exactly three ASCII digits naming a 1xx-5xx class. Validate the
 /// saved value so a malformed or non-status field cannot be surfaced as an `HTTP_CODE`.
 fn valid_http_status(value: &str) -> bool {
@@ -367,7 +397,7 @@ fn host_descriptors(
     }
     if let Some(vulns) = attr("vulns") {
         for cve in items(vulns) {
-            out.push(("VULNERABILITY_GENERAL", cve.to_owned()));
+            out.push((vulnerability_type(cvss_score(entity, cve)), cve.to_owned()));
         }
     }
     for key in ["software", "cpes"] {
@@ -1511,6 +1541,100 @@ mod tests {
             raw.contains("unmapped_detail") && raw.contains("kept in raw"),
             "{raw}"
         );
+    }
+
+    /// A CVE a record scores is typed by its CVSS score, as Spiderfoot types one, so the
+    /// CRITICAL and HIGH vulnerability rules can fire; a score on any record of the host types
+    /// the CVE wherever it is listed, and one nothing scores stays GENERAL.
+    #[test]
+    fn a_scored_vulnerability_is_typed_by_its_cvss_score() {
+        let mut ip = entity(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            "shodan",
+            &[
+                (
+                    "vulns",
+                    "CVE-2021-44228,CVE-2014-0160,CVE-2020-0001,CVE-2019-0002,CVE-2018-0003",
+                ),
+                (
+                    "cve_scores",
+                    "CVE-2021-44228 10.0,CVE-2014-0160 7.5,CVE-2020-0001 5.0,CVE-2019-0002 2.6",
+                ),
+            ],
+        );
+        ip.absorb(entity(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            "internetdb",
+            &[("vulns", "CVE-2021-44228")],
+        ));
+        let found = elements(
+            Target {
+                value: "198.51.100.7",
+                kind: "IP_ADDRESS",
+            },
+            &[ip],
+            1_700_000_000,
+        );
+        let typed = |kind: &str| -> Vec<(String, String)> {
+            of_type(&found, kind)
+                .iter()
+                .map(|element| (element.module.clone(), element.data.clone()))
+                .collect()
+        };
+        assert_eq!(
+            typed("VULNERABILITY_CVE_CRITICAL"),
+            [
+                ("shodan".to_owned(), "CVE-2021-44228".to_owned()),
+                ("internetdb".to_owned(), "CVE-2021-44228".to_owned()),
+            ]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_CVE_HIGH"),
+            [("shodan".to_owned(), "CVE-2014-0160".to_owned())]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_CVE_MEDIUM"),
+            [("shodan".to_owned(), "CVE-2020-0001".to_owned())]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_CVE_LOW"),
+            [("shodan".to_owned(), "CVE-2019-0002".to_owned())]
+        );
+        assert_eq!(
+            typed("VULNERABILITY_GENERAL"),
+            [("shodan".to_owned(), "CVE-2018-0003".to_owned())]
+        );
+        // So the shipped CRITICAL and HIGH rules fire on the host; with every CVE GENERAL, neither
+        // could.
+        let rules: Vec<_> = crate::sf_correlate::shipped()
+            .iter()
+            .filter(|rule| {
+                matches!(
+                    rule.id.as_str(),
+                    "vulnerability_critical" | "vulnerability_high"
+                )
+            })
+            .cloned()
+            .collect();
+        let mut fired: Vec<String> = crate::sf_correlate::run(&rules, &found)
+            .into_iter()
+            .map(|finding| finding.title)
+            .collect();
+        fired.sort();
+        assert_eq!(
+            fired,
+            [
+                "Critical-rated vulnerability found on 198.51.100.7",
+                "High-rated vulnerability found on 198.51.100.7",
+            ]
+        );
+        assert_eq!(vulnerability_type(Some(9.0)), "VULNERABILITY_CVE_CRITICAL");
+        assert_eq!(vulnerability_type(Some(8.9)), "VULNERABILITY_CVE_HIGH");
+        assert_eq!(vulnerability_type(Some(6.9)), "VULNERABILITY_CVE_MEDIUM");
+        assert_eq!(vulnerability_type(Some(3.9)), "VULNERABILITY_CVE_LOW");
+        assert_eq!(vulnerability_type(Some(0.0)), "VULNERABILITY_CVE_LOW");
     }
 
     #[test]
