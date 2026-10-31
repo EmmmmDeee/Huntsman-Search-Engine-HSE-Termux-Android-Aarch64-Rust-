@@ -514,7 +514,7 @@ fn surbl_policy_bits_are_named_and_mark_nothing_malicious() {
 }
 
 /// A policy or neighbourhood listing is an observation, not evidence that the address abused
-/// anyone. The shipped SpiderFoot rule must not turn two such listings (or one abuse source plus
+/// anyone. The shipped `SpiderFoot` rule must not turn two such listings (or one abuse source plus
 /// one policy listing) into a HIGH claim. Two independent abuse sources still must trigger it.
 /// The same verdict must survive serialization of saved scan elements.
 #[test]
