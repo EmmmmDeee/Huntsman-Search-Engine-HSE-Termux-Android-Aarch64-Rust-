@@ -132,7 +132,13 @@ fn an_unset_outcome_reads_as_unknown_and_a_missing_log_has_no_section() {
         &[("REPO", "fixture/fixture")],
         "0",
     );
-    assert!(run.output.status.success());
+    assert!(
+        run.output.status.success(),
+        "xtask issue-fix report exited with {}\nstdout:\n{}\nstderr:\n{}",
+        run.output.status,
+        String::from_utf8_lossy(&run.output.stdout),
+        String::from_utf8_lossy(&run.output.stderr)
+    );
     assert!(run.body.contains(
         "fix (model, path policy, capture)=unknown, repair gate=unknown, publish=unknown."
     ));
