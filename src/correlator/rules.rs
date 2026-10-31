@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::entity::{Entity, EntityKind};
+use crate::entity::{Entity, EntityKind, Evidence};
 use crate::relation::{PairPathways, RelationKind, basis_kind, connection_brokers};
 use crate::tags;
 use crate::timefmt::parse_timestamp;
@@ -112,11 +112,66 @@ fn identity_entities(entities: &[Entity]) -> Vec<&Entity> {
         .collect()
 }
 
-/// A username the analysis inferred, such as one derived from an email's local part. It adds no
-/// identity beyond the address it came from, so the identity-cluster rule does not count it.
-fn is_inferred_username(entity: &Entity) -> bool {
-    entity.kind == EntityKind::Username
-        && entity.evidence.iter().any(|evidence| evidence.is_inferred)
+/// A username or a person the analysis only inferred, such as one derived from an email's local
+/// part (`jane.doe@` gives `janedoe` and "Jane Doe"); it adds no identity beyond the address it
+/// came from, so the identity-cluster rule does not count it. A guessed handle stays a guess once a
+/// source finds an account under it, as that source was asked the guess; a guessed name is an
+/// identity once a source observed it (a key server's or Gravatar's name for the mailbox).
+fn is_inferred_identity(entity: &Entity) -> bool {
+    let mut inferred = entity.evidence.iter().map(|evidence| evidence.is_inferred);
+    match entity.kind {
+        EntityKind::Username => inferred.any(|is| is),
+        EntityKind::Person => !entity.evidence.is_empty() && inferred.all(|is| is),
+        _ => false,
+    }
+}
+
+/// A mailbox or telephone a registration record publishes for a function rather than a person
+/// ([`publishes_a_role`]: an abuse desk, a role or an organisation's contact), which no source but
+/// the registration observed. Enrichment of the value itself observes no one (a telephone's
+/// numbering plan, a lookup's echo of its selector), so a crawl that looks the contact up leaves it
+/// a role contact. The identity-cluster rule does not count it.
+fn is_role_contact(entity: &Entity) -> bool {
+    let registration = |evidence: &&Evidence| evidence.provenance.source == crate::rdap::SOURCE;
+    let mut contacts = entity.evidence.iter().filter(registration).peekable();
+    (entity.has_tag(tags::ABUSE_CONTACT) || entity.has_tag(tags::WHOIS_CONTACT))
+        && contacts.peek().is_some()
+        && contacts.all(publishes_a_role)
+        && entity
+            .evidence
+            .iter()
+            .filter(|evidence| {
+                !crate::entity::is_non_corroborating_source(
+                    &evidence.provenance.corroboration_key(),
+                )
+            })
+            .all(|evidence| registration(&evidence))
+}
+
+/// Whether a registration record's contact `evidence` publishes a function rather than a person: a
+/// contact its jCard calls a group or an organisation (`contact_kind`), or an abuse contact it does
+/// not call an individual. A jCard without a kind is an individual's, but an abuse desk is a
+/// function whatever its jCard leaves out. **Pure.**
+fn publishes_a_role(evidence: &Evidence) -> bool {
+    let mut kinds = evidence.attr_values("contact_kind").peekable();
+    if kinds.peek().is_some() {
+        return kinds
+            .all(|kind| kind.eq_ignore_ascii_case("group") || kind.eq_ignore_ascii_case("org"));
+    }
+    evidence
+        .attr_values("role")
+        .flat_map(|roles| roles.split(','))
+        .any(|role| role.trim().eq_ignore_ascii_case("abuse"))
+}
+
+/// A role mailbox (`abuse@`, `hostmaster@`, `info@`) wherever it was found, which names a function
+/// rather than a person, unless it is the operator's own seed. The identity-cluster rule does not
+/// count it.
+fn is_role_mailbox(entity: &Entity) -> bool {
+    entity.kind == EntityKind::Email
+        && !entity.evidence.iter().any(Evidence::is_operator_seed)
+        && crate::domains::split_email(&entity.value)
+            .is_some_and(|(local, _)| crate::value_syntax::is_role_localpart(&local))
 }
 
 fn dates_for_breach(entity: &Entity) -> Vec<i64> {
@@ -172,10 +227,25 @@ pub fn rule_au_002_identity_cluster(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let identities = identity_entities(context.entities())
+    let observed = identity_entities(context.entities())
         .into_iter()
         .filter(|entity| entity.confidence >= 0.5)
-        .filter(|entity| !is_inferred_username(entity))
+        .filter(|entity| !is_inferred_identity(entity))
+        .collect::<Vec<_>>();
+    // Too many of a kind to be one person, by every identity observed: a page or a record listing
+    // a dozen mailboxes is no person's, however few of them are a person's own.
+    let observed_of =
+        |kind: EntityKind| observed.iter().filter(|entity| entity.kind == kind).count();
+    if observed_of(EntityKind::Email) > 6
+        || observed_of(EntityKind::Username) > 8
+        || observed_of(EntityKind::Phone) > 4
+        || observed.len() > 12
+    {
+        return Vec::new();
+    }
+    let identities = observed
+        .into_iter()
+        .filter(|entity| !is_role_contact(entity) && !is_role_mailbox(entity))
         .collect::<Vec<_>>();
     let emails = identities
         .iter()
@@ -197,10 +267,7 @@ pub fn rule_au_002_identity_cluster(
         .into_iter()
         .filter(|count| *count > 0)
         .count();
-    if active_kinds < 2 || emails > 6 || usernames > 8 || phones > 4 || identities.len() > 12 {
-        return Vec::new();
-    }
-    if identities.len() < 2 {
+    if active_kinds < 2 || identities.len() < 2 {
         return Vec::new();
     }
     vec![Correlation::new(
