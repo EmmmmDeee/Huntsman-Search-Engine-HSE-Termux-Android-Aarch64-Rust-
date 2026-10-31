@@ -106,14 +106,33 @@ pub fn choose(captures: impl IntoIterator<Item = Capture>) -> Vec<Capture> {
 /// "not a web page" for a type other than HTML or plain text, "page over 1 MiB" past
 /// [`MAX_PAGE_BYTES`].
 pub fn web_page(content_type: &str, bytes: usize) -> Result<(), String> {
-    let content_type = content_type.trim().to_ascii_lowercase();
-    if !(content_type.contains("html") || content_type.starts_with("text/plain")) {
+    if !is_web_page_type(content_type) {
         return Err("not a web page".to_owned());
     }
     if bytes > MAX_PAGE_BYTES {
         return Err("page over 1 MiB".to_owned());
     }
     Ok(())
+}
+
+/// Whether `content_type` (a response's, or the type an archive's index recorded for a capture)
+/// is a web page, by its media type without parameters: HTML (`text/html`, and the
+/// `text/x-server-parsed-html` an old server sends for its server-side includes), XHTML (a
+/// `…xhtml+xml` type) or plain text. A type that only names HTML, as a compiled help file's
+/// `application/vnd.ms-htmlhelp` does, is no web page. **Pure.**
+#[must_use]
+pub fn is_web_page_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let subtype = essence.split_once('/').map_or("", |(_, subtype)| subtype);
+    essence == "text/plain"
+        || subtype == "html"
+        || subtype == "x-server-parsed-html"
+        || subtype.ends_with("xhtml+xml")
 }
 
 /// The e-mail addresses and phone numbers `html` publishes in its text and in its `mailto:` and
@@ -263,6 +282,31 @@ pub fn valid_timestamp(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A web page is HTML, XHTML or plain text by its media type, whatever its parameters or
+    /// case; a type that only names HTML is none.
+    #[test]
+    fn a_web_page_is_html_xhtml_or_plain_text_by_its_media_type() {
+        for page in [
+            "text/html",
+            "TEXT/HTML; charset=utf-8",
+            "application/xhtml+xml",
+            "application/vnd.wap.xhtml+xml",
+            "text/x-server-parsed-html",
+            "text/plain; charset=iso-8859-1",
+        ] {
+            assert!(is_web_page_type(page), "{page}");
+        }
+        for other in [
+            "application/vnd.ms-htmlhelp",
+            "application/pdf",
+            "image/png",
+            "text/plainly",
+            "",
+        ] {
+            assert!(!is_web_page_type(other), "{other}");
+        }
+    }
 
     fn capture(timestamp: &str, url: &str) -> Capture {
         Capture {
