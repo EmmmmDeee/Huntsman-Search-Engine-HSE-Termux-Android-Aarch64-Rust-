@@ -138,8 +138,9 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
 
 /// Infer the rebuilt lookup front-end for one selector.
 ///
-/// Precedence is intentional: canonical email, explicit `@handle`, public IP address, public
-/// address block, an `AS`-prefixed public AS number, a BSSID, `cell:` site or coordinate pair, recognised phone
+/// Precedence is intentional: canonical email, explicit `@handle`, IP address, address block
+/// (public or not, so the address and block lookups refuse a non-public one before any request
+/// rather than another lookup reading it), an `AS`-prefixed public AS number, a BSSID, `cell:` site or coordinate pair, recognised phone
 /// syntax, digits alone as an AS number (as Spiderfoot reads `1234`), domain, then a person/name
 /// fallback. A BSSID or
 /// coordinate pair is judged before phone syntax because its digits could otherwise read as a
@@ -152,9 +153,11 @@ pub fn infer_kind(selector: &str) -> ScanKind {
         ScanKind::Email
     } else if selector.starts_with('@') {
         ScanKind::Username
-    } else if canonical_ip(selector).is_some() {
+    } else if is_ip_address(selector) {
+        // Any address, public or not: the address lookup refuses one that is not public before
+        // any request, where read as a domain a dotted quad would go to every domain source.
         ScanKind::Ip
-    } else if canonical_netblock(selector).is_some() {
+    } else if crate::netblock::Netblock::parse(selector).is_some() {
         ScanKind::Netblock
     } else if is_written_as_asn(selector) {
         ScanKind::Asn
@@ -169,6 +172,16 @@ pub fn infer_kind(selector: &str) -> ScanKind {
     } else {
         ScanKind::People
     }
+}
+
+/// Whether `selector` is written as an IP address, public or not, a bracketed IPv6 address too.
+fn is_ip_address(selector: &str) -> bool {
+    let raw = selector.trim();
+    let raw = raw
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(raw);
+    raw.parse::<std::net::IpAddr>().is_ok()
 }
 
 /// Whether `selector` is a public AS number written with its `AS` prefix.
@@ -217,6 +230,38 @@ pub fn explicit_people_is_name(positionals: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An address or block that is not public is routed to its own lookup, which refuses it
+    /// before any request, never to the domain lookup, which would send a dotted quad to every
+    /// domain source; a public one is routed and accepted as before.
+    #[test]
+    fn an_address_that_is_not_public_is_refused_as_an_address_never_read_as_a_domain() {
+        for raw in [
+            "10.0.0.5",
+            "192.168.1.20",
+            "127.0.0.1",
+            "100.64.0.1",
+            "[::1]",
+            "fe80::1",
+        ] {
+            assert_eq!(infer_kind(raw), ScanKind::Ip, "{raw}");
+            assert_eq!(canonical_selector(ScanKind::Ip, raw), None, "{raw}");
+            assert_eq!(canonical_selector(ScanKind::Domain, raw), None, "{raw}");
+        }
+        for raw in ["10.0.0.0/8", "192.168.0.0/16"] {
+            assert_eq!(infer_kind(raw), ScanKind::Netblock, "{raw}");
+            assert_eq!(canonical_selector(ScanKind::Netblock, raw), None, "{raw}");
+        }
+        assert_eq!(infer_kind("8.8.8.8"), ScanKind::Ip);
+        assert_eq!(
+            canonical_selector(ScanKind::Ip, "8.8.8.8").as_deref(),
+            Some("8.8.8.8")
+        );
+        assert_eq!(infer_kind("8.8.8.0/24"), ScanKind::Netblock);
+        // A name with a numeric label is still a domain; one whose last label is numeric is not.
+        assert_eq!(infer_kind("123.example.com"), ScanKind::Domain);
+        assert_eq!(canonical_selector(ScanKind::Domain, "1.2.3"), None);
+    }
 
     #[test]
     fn a_phone_routed_by_its_international_prefix_is_a_canonical_selector() {
