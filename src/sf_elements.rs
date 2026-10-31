@@ -1568,6 +1568,55 @@ mod tests {
     /// A CVE a record scores is typed by its CVSS score, as Spiderfoot types one, so the
     /// CRITICAL and HIGH vulnerability rules can fire; a score on any record of the scan types
     /// the CVE wherever it is listed, on any host, and one nothing scores stays GENERAL.
+    /// The bands meet where Spiderfoot's `cveInfo` puts them, each lower edge in its own band:
+    /// 9.0 CRITICAL, 7.0 HIGH, 4.0 MEDIUM, and just below each the band under it. Records that
+    /// score one CVE differently type it by the highest, whichever comes first, its id read in
+    /// any case; a score outside 0 to 10, or no number, is no score.
+    #[test]
+    fn a_cves_type_takes_its_band_edges_and_its_highest_valid_score() {
+        for (score, typed) in [
+            (10.0, "VULNERABILITY_CVE_CRITICAL"),
+            (9.0, "VULNERABILITY_CVE_CRITICAL"),
+            (8.9, "VULNERABILITY_CVE_HIGH"),
+            (7.0, "VULNERABILITY_CVE_HIGH"),
+            (6.9, "VULNERABILITY_CVE_MEDIUM"),
+            (4.0, "VULNERABILITY_CVE_MEDIUM"),
+            (3.9, "VULNERABILITY_CVE_LOW"),
+            (0.0, "VULNERABILITY_CVE_LOW"),
+        ] {
+            assert_eq!(vulnerability_type(Some(score)), typed, "{score}");
+        }
+        assert_eq!(vulnerability_type(None), "VULNERABILITY_GENERAL");
+
+        let listing = |scores: &str| {
+            entity(
+                EntityKind::IpAddress,
+                "198.51.100.7",
+                "shodan",
+                &[("cve_scores", scores)],
+            )
+        };
+        for (first, second) in [
+            ("CVE-2024-0001 5.0", "cve-2024-0001 9.8"),
+            ("cve-2024-0001 9.8", "CVE-2024-0001 5.0"),
+        ] {
+            let scores = cvss_scores(&[listing(first), listing(second)]);
+            assert_eq!(
+                scores.get("CVE-2024-0001"),
+                Some(&9.8),
+                "{first} then {second}"
+            );
+        }
+        let scores = cvss_scores(&[listing(
+            "CVE-2024-0002 10.5,CVE-2024-0003 -1,CVE-2024-0004 NaN,CVE-2024-0005 inf,\
+             CVE-2024-0006 high,CVE-2024-0007 7.5",
+        )]);
+        assert_eq!(
+            scores.into_iter().collect::<Vec<_>>(),
+            [("CVE-2024-0007".to_owned(), 7.5)]
+        );
+    }
+
     #[test]
     fn a_scored_vulnerability_is_typed_by_its_cvss_score() {
         let mut ip = entity(
