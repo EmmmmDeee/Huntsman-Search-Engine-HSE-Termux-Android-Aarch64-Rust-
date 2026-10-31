@@ -1,0 +1,6 @@
+- Reconstruct all 83 public-source references from the supplied Rhinser OSINT APK as a typed, validated, searchable, offline Rust catalogue; mark all references as unverified discovery leads.
+- Add `osint catalog` listing, category filtering, search, tool lookup and link retrieval without network access.
+- Implement a bounded, atomic, persistent case research workspace with cases, notes, evidence leads, bookmarks, favourites, recent tools, search history and settings; fail closed for secret-bearing URLs.
+- Add offline, read-only ISO 7816 APDU and NDEF frame inspection from user-supplied hex, with malformed-input tests; no NFC hardware or card emulation is claimed.
+- Record component-by-component coverage and remaining work in `docs/RHINSER_FUNCTIONAL_PARITY.md`. Android NFC, active BLE, prank-scan interface and remote-agent operations are not misrepresented as implemented.
+- Add protected `GET /api/rhinser/catalog` with an HTTP test for all 83 references and refusal without the token on a public bind.

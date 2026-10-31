@@ -36,6 +36,30 @@ fn bind_for(token: Option<&str>) -> SocketAddr {
 }
 
 #[test]
+fn rhinser_catalogue_http_contract_is_read_only_and_complete() {
+    let request = "GET /api/rhinser/catalog HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n";
+    let answer = response_for_request(request, None, loopback_bind());
+    assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+    let body = answer.split_once("\r\n\r\n").unwrap().1;
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    let categories = parsed["categories"].as_array().unwrap();
+    assert_eq!(categories.len(), 11);
+    assert_eq!(
+        categories
+            .iter()
+            .map(|category| category["tools"].as_array().unwrap().len())
+            .sum::<usize>(),
+        83
+    );
+    let refusal = response_for_request(
+        "GET /api/rhinser/catalog HTTP/1.1\r\nHost: public.example\r\n\r\n",
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(refusal.starts_with("HTTP/1.1 401"), "{refusal}");
+}
+
+#[test]
 fn local_evidence_cannot_be_read_from_a_public_bind_even_with_token() {
     for path in ["/evidence", "/api/evidence"] {
         let request = format!(
