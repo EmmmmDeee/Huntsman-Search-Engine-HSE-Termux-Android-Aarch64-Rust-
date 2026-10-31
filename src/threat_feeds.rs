@@ -42,7 +42,7 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entit
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, TransportConfig};
 use crate::netblock::Netblock;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{EndpointAnswer, SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
 
 /// How a feed's body reads.
@@ -1039,36 +1039,19 @@ fn rows(said: &[(&Feed, Result<Read, Failure>)], now_unix: u64) -> Vec<SourceExe
                 .map(|(feed, result)| format!("{}: {}", feed.name, row_detail(result)))
                 .collect::<Vec<_>>()
                 .join("; ");
-            let listed: usize = mine
+            let answers: Vec<EndpointAnswer> = mine
                 .iter()
-                .filter_map(|(_, result)| result.as_ref().ok())
-                .map(|read| read.matches.len())
-                .sum();
-            // The source's row is refused only when every feed under it was refused, so take the
-            // first failure that was not a refusal, else the first.
-            let failures = || mine.iter().filter_map(|(_, result)| result.as_ref().err());
-            let failure = failures()
-                .find(|(kind, _)| *kind != SourceOutcomeKind::RefusedBeforeSending)
-                .or_else(|| failures().next());
-            let answered = mine.iter().any(|(_, result)| result.is_ok());
-            // "Not listed" is an answer only when every feed under the source was read and is
-            // current: a feed that failed, or a list that stopped updating, cannot say a subject
-            // is absent from it now.
-            let current = mine
-                .iter()
-                .all(|(_, result)| result.as_ref().is_ok_and(|read| !read.stale));
-            match (listed, failure) {
-                (0, Some((kind, _))) if !answered => {
-                    SourceExecutionOutcome::failed(source, now_unix, *kind, None, &detail)
-                }
-                (0, _) if current => {
-                    SourceExecutionOutcome::valid_zero(source, now_unix).with_detail(detail)
-                }
-                (0, _) => SourceExecutionOutcome::inconclusive(source, now_unix, detail),
-                (count, _) => {
-                    SourceExecutionOutcome::success(source, now_unix, count).with_detail(detail)
-                }
-            }
+                .map(|(_, result)| match result {
+                    Ok(read) if !read.matches.is_empty() => {
+                        EndpointAnswer::Found(read.matches.len())
+                    }
+                    // A list that stopped updating cannot say a subject is absent from it now.
+                    Ok(read) if read.stale => EndpointAnswer::Unvouched,
+                    Ok(_) => EndpointAnswer::Absent,
+                    Err((kind, _)) => EndpointAnswer::Failed(*kind),
+                })
+                .collect();
+            SourceExecutionOutcome::joined(source, now_unix, &answers, detail)
         })
         .collect()
 }

@@ -10,16 +10,19 @@
 //! test points: the listed one (`127.0.0.2`, or the list's own test domain) must answer, and
 //! `127.0.0.1` must not. A zone that does not answer its test point, refuses the resolver (Spamhaus
 //! refuses public resolvers with `127.255.255.254`, SURBL with `127.0.0.1`), or lists everything is
-//! reported as such on its row instead of as "not listed". Every listing is kept with the list,
-//! the zone, the answer and the reason; each list is its own source, so an address on two lists is
-//! two sources' verdicts.
+//! reported as such on its row instead of as "not listed". A list is "not listed" only when every
+//! zone of it asked said so: UCEPROTECT's levels 2 and 3, which list an address's network and AS,
+//! say nothing of level 1, so with level 1 unanswered its row is inconclusive (see
+//! [`SourceExecutionOutcome::joined`]). Every listing is kept with the list, the zone, the answer
+//! and the reason; each list is its own source, so an address on two lists is two sources'
+//! verdicts.
 
 use std::net::IpAddr;
 
 use crate::dns::reversed_labels;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::{Transport, TransportFailure};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{EndpointAnswer, SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
 
 /// What a zone is asked about.
@@ -347,29 +350,15 @@ fn rows(verdicts: &[(&Zone, Verdict)], now_unix: u64) -> Vec<SourceExecutionOutc
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let listed = mine
+            let answers: Vec<EndpointAnswer> = mine
                 .iter()
                 .map(|(_, verdict)| match verdict {
-                    Verdict::Listed(answers) => answers.len(),
-                    _ => 0,
+                    Verdict::Listed(answers) => EndpointAnswer::Found(answers.len()),
+                    Verdict::NotListed => EndpointAnswer::Absent,
+                    Verdict::Untrusted(kind, _) => EndpointAnswer::Failed(*kind),
                 })
-                .sum::<usize>();
-            let untrusted = mine.iter().find_map(|(_, verdict)| match verdict {
-                Verdict::Untrusted(kind, _) => Some(*kind),
-                _ => None,
-            });
-            let answered = mine
-                .iter()
-                .any(|(_, verdict)| !matches!(verdict, Verdict::Untrusted(..)));
-            match (listed, untrusted) {
-                (0, Some(kind)) if !answered => {
-                    SourceExecutionOutcome::failed(source, now_unix, kind, None, &detail)
-                }
-                (0, _) => SourceExecutionOutcome::valid_zero(source, now_unix).with_detail(detail),
-                (count, _) => {
-                    SourceExecutionOutcome::success(source, now_unix, count).with_detail(detail)
-                }
-            }
+                .collect();
+            SourceExecutionOutcome::joined(source, now_unix, &answers, detail)
         })
         .collect()
 }
