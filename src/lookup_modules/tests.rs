@@ -1018,3 +1018,78 @@ fn every_module_listed_under_people_is_one_it_asks() {
         assert_eq!(lookups_asking(module.name), ["people"], "{}", module.name);
     }
 }
+
+/// An e-mail lookup that ran the keyed breach legs covers its address's breach pass, whatever
+/// label each leg's row carries (`hibp_account` is the `hibp` module's); a lookup without a
+/// breach row, or of another kind, covers nothing.
+#[test]
+fn an_email_lookup_that_ran_the_breach_legs_covers_its_breach_pass() {
+    use crate::source_outcome::SourceExecutionOutcome;
+    let mut passes = BreachPasses::default();
+    passes.record(
+        ScanKind::Email,
+        "Ada@Example.org",
+        &[SourceExecutionOutcome::valid_zero("gravatar", 1)],
+    );
+    assert!(!passes.covered(ScanKind::Exposure, "ada@example.org"));
+    passes.record(
+        ScanKind::Username,
+        "ada@example.org",
+        &[SourceExecutionOutcome::valid_zero(
+            crate::exposure_cli::SOURCE,
+            1,
+        )],
+    );
+    assert!(!passes.covered(ScanKind::Exposure, "ada@example.org"));
+    passes.record(
+        ScanKind::Email,
+        "Ada@Example.org",
+        &[SourceExecutionOutcome::valid_zero(
+            crate::exposure_cli::SOURCE,
+            1,
+        )],
+    );
+    assert!(passes.covered(ScanKind::Exposure, "ada@example.org"));
+    assert!(!passes.covered(ScanKind::Email, "ada@example.org"));
+    for label in ["stolen_tax", "oathnet", "dehashed"] {
+        let mut passes = BreachPasses::default();
+        passes.record(
+            ScanKind::Email,
+            "bob@example.org",
+            &[SourceExecutionOutcome::valid_zero(label, 1)],
+        );
+        assert!(
+            passes.covered(ScanKind::Exposure, "bob@example.org"),
+            "{label}"
+        );
+    }
+}
+
+/// A source row saying no request was made is not evidence that the e-mail lookup ran the breach
+/// leg. The separate exposure lookup must remain eligible, rather than being falsely covered.
+#[test]
+fn an_unasked_breach_leg_cannot_cover_the_exposure_lookup() {
+    use crate::source_outcome::SourceExecutionOutcome;
+    for outcome in [
+        SourceExecutionOutcome::not_configured(crate::exposure_cli::SOURCE, 1),
+        SourceExecutionOutcome::refused_before_sending(
+            crate::exposure_cli::SOURCE,
+            1,
+            "the request was blocked before sending",
+        ),
+    ] {
+        let mut passes = BreachPasses::default();
+        passes.record(ScanKind::Email, "Ada@Example.org", &[outcome]);
+        assert!(!passes.covered(ScanKind::Exposure, "ada@example.org"));
+    }
+    let mut passes = BreachPasses::default();
+    passes.record(
+        ScanKind::Email,
+        "Ada@Example.org",
+        &[SourceExecutionOutcome::valid_zero(
+            crate::exposure_cli::SOURCE,
+            1,
+        )],
+    );
+    assert!(passes.covered(ScanKind::Exposure, "ada@example.org"));
+}
