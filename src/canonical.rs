@@ -321,7 +321,12 @@ fn canonical_authority(scheme: &str, authority: &str) -> Option<(String, Option<
     if raw_host.is_empty() {
         return None;
     }
-    let host = canonical_domain(raw_host.trim_end_matches('.'))?;
+    // An IPv4 address is a host as a name is, though no domain: its last label is all digits.
+    let raw_host = raw_host.trim_end_matches('.');
+    let host = match raw_host.parse::<std::net::Ipv4Addr>() {
+        Ok(address) => address.to_string(),
+        Err(_) => canonical_domain(raw_host)?,
+    };
     let port = match raw_port {
         None | Some("") => None,
         Some(value) => {
@@ -371,7 +376,7 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     Some(out)
 }
 
-/// One selector, one stored form. Email, phone, URL, domain, handle and
+/// One selector, one stored form. Email, phone, URL, IP address, domain, handle and
 /// coordinates win before a name. Empty after normalisation is `None`.
 #[must_use]
 pub fn canonicalise_selector(raw: &str) -> Option<String> {
@@ -382,6 +387,12 @@ pub fn canonicalise_selector(raw: &str) -> Option<String> {
     canonical_email(trimmed)
         .or_else(|| canonical_phone(trimmed))
         .or_else(|| canonical_url(trimmed))
+        .or_else(|| {
+            trimmed
+                .parse::<std::net::IpAddr>()
+                .ok()
+                .map(|address| address.to_string())
+        })
         .or_else(|| canonical_domain(trimmed))
         .or_else(|| canonical_handle(trimmed))
         .or_else(|| canonical_coordinates(trimmed))
@@ -710,5 +721,29 @@ mod tests {
         assert_eq!(canonicalise_selector("   "), None);
         assert_eq!(canonicalise_token(" CrtSh "), Some("crtsh".into()));
         assert_eq!(canonicalise_token("has space"), None);
+    }
+
+    /// An address is no domain, but it is still a URL's host and its own selector: it keeps its
+    /// dots, never becoming the handle its digits spell.
+    #[test]
+    fn an_address_is_a_urls_host_and_its_own_selector() {
+        assert_eq!(
+            canonical_url("HTTP://203.0.113.5:8080/x").as_deref(),
+            Some("http://203.0.113.5:8080/x")
+        );
+        assert_eq!(
+            canonical_url("http://45.131.135.227/sorry/index").as_deref(),
+            Some("http://45.131.135.227/sorry/index")
+        );
+        assert_eq!(canonical_domain("203.0.113.5"), None);
+        assert_eq!(canonicalise_selector("8.8.8.8").as_deref(), Some("8.8.8.8"));
+        assert_eq!(
+            canonicalise_selector(" 10.0.0.5 ").as_deref(),
+            Some("10.0.0.5")
+        );
+        assert_eq!(
+            canonicalise_selector("2001:db8::1").as_deref(),
+            Some("2001:db8::1")
+        );
     }
 }
