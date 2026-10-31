@@ -205,6 +205,7 @@ struct Research {
     live: Arc<AtomicUsize>,
 }
 
+#[derive(Clone)]
 struct Lookups {
     handler: LookupHandler,
     live: Arc<AtomicUsize>,
