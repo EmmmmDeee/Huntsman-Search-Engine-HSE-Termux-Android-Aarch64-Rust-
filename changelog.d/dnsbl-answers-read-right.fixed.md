@@ -3,11 +3,14 @@
   and 3 list the address's network and AS, yet each tagged the address `malicious` at 0.90 and a
   saved scan held `MALICIOUS_IPADDR` for it. Each listing now keeps its class (`dnsbl_class`:
   `abuse`, `policy` or `neighbourhood`) with its list, zone, answer and reason; a policy or
-  neighbourhood listing is still `BLACKLISTED_IPADDR`, as Spiderfoot types a listing, but marks
-  nothing malicious (Spiderfoot's `multiple_malicious` rule, run unchanged, still counts any two
-  blacklistings of one address). SURBL's DM and CT bits (disposable-mail providers and mail click
-  trackers) are named and are policy listings, where they read as "undocumented answer" abuse. A
-  scan saved before listings carried a class reads as it did.
+  neighbourhood listing is still `BLACKLISTED_IPADDR`, as SpiderFoot types a listing, but marks
+  nothing malicious. The shipped `multiple_malicious` YAML remains unchanged; the Rust adapter
+  excludes classified DNSBL blacklist descriptors from its three HIGH multi-source rules.
+  An abuse listing still emits `MALICIOUS_IPADDR` and can corroborate another abuse source;
+  policy and neighbourhood listings cannot. The same applies after saving and reloading scan
+  elements. SURBL's DM and CT bits (disposable-mail providers and mail click trackers) are named
+  and are policy listings, where they previously read as "undocumented answer" abuse. A scan saved
+  before listings carried a class reads as it did.
 - Spamhaus's DBL answer `127.0.1.255` ("IP queries prohibited") is the refusal it is, not a
   listing of the "domain" at 0.90.
 - SORBS has shut down: `sorbs.net` no longer resolves (NXDOMAIN at the `.net` servers), so every
