@@ -1038,7 +1038,7 @@ mod tests {
         let asked = |value: &str| {
             let mut entity = Entity::new(EntityKind::Username, value, 0.99, "s");
             entity.tag("seed");
-            entity.add_evidence(evidence("seed", "operator-supplied username selector"));
+            entity.add_evidence(evidence("seed", "username selector the lookup was asked"));
             entity
         };
         assert!(spellings(&asked("pgsmith")).is_empty());
