@@ -142,6 +142,15 @@ pub fn inspect_ndef(data: &[u8]) -> Result<NdefInspection, String> {
         } else {
             0
         };
+        // NDEF TNF=0 is empty; 5 has no type; 6 requires chunked framing;
+        // 7 is reserved. This inspector accepts only complete, unchunked records.
+        let tnf = flags & 0x07;
+        if matches!(tnf, 6 | 7)
+            || (tnf == 0 && (type_len != 0 || id_len != 0 || payload_len != 0 || has_id))
+            || (tnf == 5 && type_len != 0)
+        {
+            return Err("invalid NDEF type-name format for a complete record".to_owned());
+        }
         let required = type_len
             .checked_add(id_len)
             .and_then(|x| x.checked_add(payload_len))
@@ -200,6 +209,28 @@ mod tests {
         assert_eq!(report.total_payload_bytes, 5);
         assert_eq!(report.records, 1);
         assert!(inspect_ndef(&data[..7]).is_err());
+    }
+
+    #[test]
+    fn ndef_rejects_invalid_type_name_format_and_preserves_valid_records() {
+        // NFC Forum TNF 0 is a genuinely empty record; TNF 5 has no type field.
+        let empty = inspect_ndef(&[0xD0, 0x00, 0x00]).unwrap();
+        assert_eq!(empty.records, 1);
+        assert_eq!(empty.total_payload_bytes, 0);
+        let unknown = inspect_ndef(&[0xD5, 0x00, 0x01, 0xCA]).unwrap();
+        assert_eq!(unknown.total_payload_bytes, 1);
+
+        let malformed: &[&[u8]] = &[
+            &[0xD7, 0x00, 0x00],       // reserved TNF
+            &[0xD6, 0x00, 0x00],       // unchanged TNF without chunks
+            &[0xD0, 0x01, 0x00, b'T'], // empty TNF with type
+            &[0xD0, 0x00, 0x01, b'A'], // empty TNF with payload
+            &[0xD8, 0x00, 0x00, 0x00], // empty TNF with ID_LENGTH field
+            &[0xD5, 0x01, 0x00, b'T'], // unknown TNF with type
+        ];
+        for record in malformed {
+            assert!(inspect_ndef(record).is_err(), "{record:02X?}");
+        }
     }
 
     #[test]
