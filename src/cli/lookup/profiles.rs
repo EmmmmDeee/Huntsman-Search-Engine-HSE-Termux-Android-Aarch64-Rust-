@@ -432,8 +432,9 @@ fn username(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, R
     let keys = crate::cli::credentials::lookup_keys();
     // `selector` is the operator's ORIGINAL-case handle. `username_cli::run` case-folds it for the
     // report cohort and every case-insensitive profile source, and queries the case-sensitive
-    // Hacker News leg in this exact case. The SeekNow and breach legs match case-insensitively, so
-    // they take the canonical form — unchanged from before this selector carried original case.
+    // Hacker News and Wikipedia legs in this exact case. The SeekNow and breach legs match
+    // case-insensitively, so they take the canonical form — unchanged from before this selector
+    // carried original case.
     let canonical = huntsman_recon::username_cli::canonical_username(selector)
         .unwrap_or_else(|_| selector.to_owned());
     let (run, (seeknow, exposure)) = concurrent::pair(
@@ -564,16 +565,16 @@ fn domain(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Ref
     Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
 }
 
-/// The `WiGLE` network lookup for a BSSID, coordinate or SSID.
+/// The network lookup for a BSSID, SSID, cell site or coordinate: `WiGLE` and `OpenCelliD`.
 fn network(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
-    // Like the other keyed legs, the WiGLE credentials come from the default file or the
-    // environment. Configured, they always run; a lookup that does not ask `wigle` sends nothing
-    // and leaves no WiGLE row, configured or not.
+    // Like the other keyed legs, the WiGLE credentials and the OpenCelliD key come from the
+    // default file or the environment. Each source whose key is set always runs, the other
+    // configured or not; a lookup that does not ask a source sends it nothing and leaves no row.
     let keys = crate::cli::credentials::lookup_keys();
     let transport = transport(&wigle::transport_config(), chosen);
-    let leg = (wigle::configured(&keys) || !chosen.is_all())
-        .then_some((&transport as &dyn Transport, &keys));
-    let (text, report) = source_report(huntsman_recon::network_cli::run(leg, selector, now))?;
+    let (text, report) = source_report(huntsman_recon::network_cli::run(
+        &transport, &keys, selector, now,
+    ))?;
     Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
 }
 
