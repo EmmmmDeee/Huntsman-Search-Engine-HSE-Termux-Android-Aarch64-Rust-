@@ -298,6 +298,31 @@ fn the_ripestat_row_is_refused_only_when_every_call_was_refused() {
     assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Upstream5xx);
 }
 
+/// The one `ripestat` row says the AS has nothing only when every call answered so: an AS that
+/// announces no prefix and has no neighbour, with its overview unanswered, is inconclusive, since
+/// the overview may name a holder the others do not; with every call answered it is a clean zero.
+#[test]
+fn the_ripestat_row_is_no_clean_zero_while_a_call_went_unanswered() {
+    let routing = |overview| Routing {
+        overview,
+        prefixes: Ok(Prefixes::default()),
+        neighbours: Ok(Neighbours::default()),
+    };
+    let mut report = Report::default();
+    let unanswered = routing(Err(crate::api_leg::LegError::Server(503)));
+    routing_entities(&mut report, "AS64496", "scan", &unanswered, 1);
+    assert_eq!(report.outcomes.len(), 1);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+    let detail = report.outcomes[0].detail.as_deref().unwrap_or_default();
+    assert!(detail.contains("as-overview failed: "), "{detail}");
+
+    let mut report = Report::default();
+    let answered = routing(Ok(AsOverview::default()));
+    routing_entities(&mut report, "AS64496", "scan", &answered, 1);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    assert_eq!(report.outcomes[0].http_status, Some(200));
+}
+
 /// When no call answered, the lookup ends from its one ripestat row (and the RDAP row) through
 /// `SourceReach`: a request refused before sending is a refusal (exit 77), and no response at
 /// all is "no usable response" (exit 69) with the first reason in row order.

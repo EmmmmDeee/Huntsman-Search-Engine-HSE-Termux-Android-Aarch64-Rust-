@@ -8,5 +8,8 @@
   Cloudflare's malware filter answering HTTP 503, its family filter not blocking a name made
   Cloudflare read as not blocking it. Such a row is now inconclusive and names what each zone or
   filter said; a listing on one that answered is still the source's finding, and a source none of
-  whose zones or filters answered still says why. One rule now joins the row of every source
-  asked through several endpoints, the rule the threat feeds already followed.
+  whose zones or filters answered still says why. The one `ripestat` row of an `asn` lookup had
+  the same flaw: with the AS's overview unanswered and its prefix and neighbour calls finding
+  none, it said RIPEstat holds nothing on the AS; it is now inconclusive too. One rule, the one
+  the threat feeds already followed, now joins the rows of the blocklists, the filtering
+  resolvers, the threat feeds and `ripestat`.
