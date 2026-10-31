@@ -1051,6 +1051,19 @@ impl<'a> Walk<'a> {
                     continue;
                 }
                 said_malicious |= kind.starts_with("MALICIOUS_");
+                // Keep the DNSBL classification on its typed blacklist descriptor as well as
+                // the parent evidence. Correlation rules consume descriptors, and the target
+                // parent can hold records from several providers with different classes.
+                let descriptor_raw = if kind.starts_with("BLACKLISTED_") {
+                    evidence
+                        .attr_values(crate::dnsbl::LISTING_CLASS)
+                        .next()
+                        .map_or(Value::Null, |class| {
+                            json!({ "dnsbl_class": class })
+                        })
+                } else {
+                    Value::Null
+                };
                 self.builder.push(
                     kind,
                     data,
@@ -1059,7 +1072,7 @@ impl<'a> Walk<'a> {
                     confidence(entity),
                     created,
                     Some(&entity.uid),
-                    Value::Null,
+                    descriptor_raw,
                 );
             }
         }
