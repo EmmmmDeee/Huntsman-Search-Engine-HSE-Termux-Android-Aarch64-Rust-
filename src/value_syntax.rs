@@ -323,6 +323,14 @@ pub fn canonical_domain(raw: &str) -> Option<String> {
     {
         return None;
     }
+    // No top-level domain is all digits, which is how a dotted-quad address is told from a name
+    // (RFC 1123 section 2.1, RFC 3696 section 2): `10.0.0.5` is an address, never a domain.
+    if labels
+        .last()
+        .is_some_and(|tld| tld.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
     Some(domain)
 }
 
@@ -639,6 +647,12 @@ mod tests {
         assert!(canonical_domain("bad-.example").is_none());
         assert!(canonical_domain("bad..example").is_none());
         assert!(canonical_domain("bad_example.com").is_none());
+        // A dotted quad, or any name whose last label is all digits, is no domain.
+        assert!(canonical_domain("10.0.0.5").is_none());
+        assert!(canonical_domain("203.0.113.9.").is_none());
+        assert!(canonical_domain("example.123").is_none());
+        assert!(canonical_domain("123.example.com").is_some());
+        assert!(canonical_domain("9.9.9.9.in-addr.arpa").is_some());
         assert!(canonical_domain("example.café").is_none());
         // A dotted IPv4 address is no domain: no top-level label is all digits.
         assert!(canonical_domain("93.184.216.34").is_none());

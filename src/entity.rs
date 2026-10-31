@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{
-    canonical_coordinates, canonical_domain, canonical_email, canonical_handle, canonical_name,
-    canonical_phone, canonical_provenance_family, canonical_url, canonical_whitespace,
+    canonical_coordinates, canonical_domain, canonical_email, canonical_handle,
+    canonical_ip_literal, canonical_name, canonical_phone, canonical_provenance_family,
+    canonical_url, canonical_whitespace,
 };
 use crate::clock;
 use crate::confidence::{Classification, VerificationMethod, effective};
@@ -645,9 +646,11 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         EntityKind::Person | EntityKind::Organisation | EntityKind::Address => {
             canonical_name(value)
         }
-        EntityKind::IpAddress | EntityKind::Credential | EntityKind::Document => {
-            value.trim().to_owned()
+        // Every spelling of one address is one entity; what a source wrote stays its `raw_value`.
+        EntityKind::IpAddress => {
+            canonical_ip_literal(value).unwrap_or_else(|| value.trim().to_owned())
         }
+        EntityKind::Credential | EntityKind::Document => value.trim().to_owned(),
         // A Solana address is base58 without a checksum: two spellings that differ only in case
         // are two different keys, so its case is part of its identity.
         EntityKind::CryptoAddress if value.trim().starts_with(crate::canonical::SOLANA_PREFIX) => {
@@ -665,6 +668,22 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         EntityKind::Netblock => crate::netblock::Netblock::parse(value)
             .map_or_else(|| canonical_whitespace(value), |block| block.to_string()),
     }
+}
+
+/// The host a link names, as the entity it is: an IP address as an
+/// [`EntityKind::IpAddress`] in its one written form
+/// ([`crate::canonical::canonical_ip_literal`]), public or not, and a name the domain rule
+/// accepts as a [`EntityKind::Domain`]; `None` for any other host. The link is
+/// the observation, kept as its own URL; this is what a leg derives from it, so a link on an
+/// address is never a domain the crawl can neither look up nor route. **Pure.**
+#[must_use]
+pub fn link_host(link: &str) -> Option<(EntityKind, String)> {
+    let host = crate::domains::host_only(link);
+    if let Some(address) = crate::canonical::canonical_ip_literal(host) {
+        return Some((EntityKind::IpAddress, address));
+    }
+    crate::canonical::canonical_domain(host.trim_end_matches('.'))
+        .map(|domain| (EntityKind::Domain, domain))
 }
 
 #[must_use]
@@ -825,6 +844,39 @@ impl fmt::Display for Entity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host a link names is the entity it is: an address (IPv4 or IPv6, public or not) in its
+    /// one written form, a name the domain rule accepts, and nothing for any other host.
+    #[test]
+    fn a_links_host_is_an_address_or_a_domain_as_it_is() {
+        use EntityKind::{Domain, IpAddress};
+        for (link, host) in [
+            (
+                "http://45.131.135.227/blog",
+                Some((IpAddress, "45.131.135.227")),
+            ),
+            ("http://192.168.1.1/", Some((IpAddress, "192.168.1.1"))),
+            (
+                "https://[2001:DB8::1]:8443/x",
+                Some((IpAddress, "2001:db8::1")),
+            ),
+            (
+                "https://Blog.Example.COM./post",
+                Some((Domain, "blog.example.com")),
+            ),
+            ("https://user@example.org/", Some((Domain, "example.org"))),
+            ("https://my_site.example.com/", None),
+            ("http://localhost:8080/", None),
+        ] {
+            let got = link_host(link);
+            assert_eq!(
+                got.as_ref()
+                    .map(|(kind, value)| (kind.clone(), value.as_str())),
+                host,
+                "{link}"
+            );
+        }
+    }
 
     fn evidence(source: &str, summary: &str) -> Evidence {
         Evidence::new(EvidenceProvenance::for_scan(source, "scan-1"), summary)
@@ -1151,6 +1203,28 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Every spelling a source writes one address in is one entity, whose value is the address's
+    /// one written form; the spelling a source wrote stays its raw value. What is no address
+    /// keeps its own text.
+    #[test]
+    fn every_spelling_of_one_address_is_one_entity() {
+        let address = |raw: &str| Entity::new(EntityKind::IpAddress, raw, 0.6, "s1");
+        let mut entities: Vec<Entity> = ["2001:DB8::1", "2001:db8:0:0::1", "[2001:db8::1]"]
+            .into_iter()
+            .map(address)
+            .collect();
+        merge_by_uid(&mut entities);
+        assert_eq!(entities.len(), 1, "{entities:?}");
+        assert_eq!(entities[0].value, "2001:db8::1");
+        assert_eq!(entities[0].raw_value, "2001:DB8::1");
+
+        let mapped = address("::ffff:192.0.2.7");
+        assert_eq!(mapped.uid, address("192.0.2.7").uid);
+        assert_eq!(mapped.value, "192.0.2.7");
+        assert_eq!(mapped.raw_value, "::ffff:192.0.2.7");
+        assert_eq!(address(" 192.0.2.7:443 ").value, "192.0.2.7:443");
     }
 
     #[test]

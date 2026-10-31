@@ -416,6 +416,29 @@ fn a_refused_key_is_reported_and_the_other_legs_still_answer() {
     assert!(!text.contains(ABUSE_KEY) && !text.contains(VT_KEY));
 }
 
+/// An IPv4 address written IPv4-mapped (`::ffff:1.1.1.1`) is that IPv4 address: every source is
+/// sent exactly what `1.1.1.1` sends it, never a form a source may not index and so answer as an
+/// address it holds nothing about.
+#[test]
+fn an_ipv4_mapped_address_is_looked_up_as_its_ipv4_address() {
+    let asked = |address: &str| {
+        let transport = keyless();
+        let (_, report) = printed(run(&transport, &Keys::default(), address, 1));
+        let urls: Vec<String> = transport.sent().into_iter().map(|r| r.url).collect();
+        (urls, report)
+    };
+    let (plain, _) = asked("1.1.1.1");
+    let (mapped, report) = asked("::ffff:1.1.1.1");
+    assert!(!mapped.is_empty());
+    assert_eq!(mapped, plain);
+    assert!(
+        report
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::IpAddress && e.value == "1.1.1.1")
+    );
+}
+
 #[test]
 fn a_non_public_address_is_refused_before_any_request() {
     for address in [

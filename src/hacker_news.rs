@@ -18,7 +18,6 @@
 use serde::Deserialize;
 
 use crate::canonical::canonical_url;
-use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
@@ -278,20 +277,18 @@ fn add_bio_links(user: &HnUser, scan_id: &str, entities: &mut Vec<Entity>) {
             evidence.clone(),
             &["hacker-news", "self-reported"],
         );
-        let host = host_only(&link).to_ascii_lowercase();
-        if host.contains('.')
-            && !NOISE_HOSTS.contains(&host.as_str())
-            && seen_domains.insert(host.clone())
-        {
-            push_entity(
-                entities,
-                EntityKind::Domain,
-                &host,
-                BIO_DOMAIN_CONF,
-                scan_id,
-                evidence,
-                &["hacker-news", crate::tags::DERIVED],
-            );
+        if let Some((kind, host)) = crate::entity::link_host(&link) {
+            if !NOISE_HOSTS.contains(&host.as_str()) && seen_domains.insert(host.clone()) {
+                push_entity(
+                    entities,
+                    kind,
+                    &host,
+                    BIO_DOMAIN_CONF,
+                    scan_id,
+                    evidence,
+                    &["hacker-news", crate::tags::DERIVED],
+                );
+            }
         }
     }
 }

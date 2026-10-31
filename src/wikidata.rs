@@ -708,9 +708,8 @@ fn collect_pivots(
     match property.pivot {
         Pivot::None => {}
         Pivot::Website => {
-            let host = crate::value_syntax::host_only(value);
-            if let Some(domain) = crate::canonical::canonical_domain(host) {
-                pivots.push((EntityKind::Domain, domain, "Official website".to_owned()));
+            if let Some((kind, host)) = crate::entity::link_host(value) {
+                pivots.push((kind, host, "Official website".to_owned()));
             }
         }
         Pivot::Coordinate => {

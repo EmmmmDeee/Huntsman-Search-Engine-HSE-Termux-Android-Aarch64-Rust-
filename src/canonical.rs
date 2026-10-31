@@ -152,31 +152,46 @@ pub fn canonical_phone(raw: &str) -> Option<String> {
     crate::value_syntax::canonical_phone(raw)
 }
 
-/// `raw` as a public unicast IP address in its standard text form (IPv6 compressed and
-/// lower-case), or `None`. A bracketed IPv6 address is accepted. A private, loopback, link-local,
-/// shared (CGNAT), documentation, benchmarking, multicast, reserved or unspecified address is
-/// `None`: nothing public is known about it, and asking a provider would only disclose it.
-#[must_use]
-pub fn canonical_ip(raw: &str) -> Option<String> {
+/// The address `raw` writes, however it is written: surrounding whitespace, `[…]` brackets, IPv6
+/// case, zero compression or leading zeros, and an IPv4 address in IPv4-mapped form
+/// (`::ffff:192.0.2.7`, RFC 4291 section 2.5.5.2), which is that IPv4 address. **Pure.**
+fn parse_ip_literal(raw: &str) -> Option<std::net::IpAddr> {
     let raw = raw.trim();
     let raw = raw
         .strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
         .unwrap_or(raw);
-    let ip: std::net::IpAddr = raw.parse().ok()?;
+    raw.parse::<std::net::IpAddr>()
+        .ok()
+        .map(|ip| ip.to_canonical())
+}
+
+/// The one written form of any IP address, public or not: IPv6 compressed and lower-case (RFC
+/// 5952), IPv4 dotted, and an IPv4-mapped address as its IPv4 address, so every spelling of one
+/// address is one value; `None` for anything that is no address (a port or zone suffix
+/// included). **Pure.**
+#[must_use]
+pub fn canonical_ip_literal(raw: &str) -> Option<String> {
+    parse_ip_literal(raw).map(|ip| ip.to_string())
+}
+
+/// `raw` as a public unicast IP address in its one written form ([`canonical_ip_literal`]), or
+/// `None`. A private, loopback, link-local, shared (CGNAT), documentation, benchmarking,
+/// multicast, reserved or unspecified address is `None`: nothing public is known about it, and
+/// asking a provider would only disclose it.
+#[must_use]
+pub fn canonical_ip(raw: &str) -> Option<String> {
+    let ip = parse_ip_literal(raw)?;
     is_public_ip(ip).then(|| ip.to_string())
 }
 
-/// Whether `answered` and `asked` are the same IP address however each is written (surrounding
-/// whitespace, IPv6 compression or case). **Pure.**
+/// Whether `answered` and `asked` are the same IP address however each is written
+/// ([`canonical_ip_literal`]). **Pure.**
 #[must_use]
 pub fn same_ip(answered: &str, asked: &str) -> bool {
     matches!(
-        (
-            answered.trim().parse::<std::net::IpAddr>(),
-            asked.trim().parse::<std::net::IpAddr>(),
-        ),
-        (Ok(a), Ok(b)) if a == b
+        (parse_ip_literal(answered), parse_ip_literal(asked)),
+        (Some(a), Some(b)) if a == b
     )
 }
 
@@ -330,7 +345,12 @@ fn canonical_authority(scheme: &str, authority: &str) -> Option<(String, Option<
     if raw_host.is_empty() {
         return None;
     }
-    let host = canonical_domain(raw_host.trim_end_matches('.'))?;
+    // An IPv4 address is a host as a name is, though no domain: its last label is all digits.
+    let raw_host = raw_host.trim_end_matches('.');
+    let host = match raw_host.parse::<std::net::Ipv4Addr>() {
+        Ok(address) => address.to_string(),
+        Err(_) => canonical_domain(raw_host)?,
+    };
     let port = match raw_port {
         None | Some("") => None,
         Some(value) => {
@@ -380,8 +400,10 @@ pub fn canonical_url(raw: &str) -> Option<String> {
     Some(out)
 }
 
-/// One selector, one stored form. Email, phone, URL, domain, handle and
-/// coordinates win before a name. Empty after normalisation is `None`.
+/// One selector, one stored form. Email, IP address, phone, URL, domain, handle and
+/// coordinates win before a name; an address is read before a phone number, whose rule would take
+/// one whose digits spell a national number (`203.12.16.35`) for that number. Empty after
+/// normalisation is `None`.
 #[must_use]
 pub fn canonicalise_selector(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
@@ -389,6 +411,7 @@ pub fn canonicalise_selector(raw: &str) -> Option<String> {
         return None;
     }
     canonical_email(trimmed)
+        .or_else(|| canonical_ip_literal(trimmed))
         .or_else(|| canonical_phone(trimmed))
         .or_else(|| canonical_url(trimmed))
         .or_else(|| canonical_domain(trimmed))
@@ -481,10 +504,8 @@ mod tests {
             canonical_ip("[2606:4700:4700:0:0:0:0:1111]").as_deref(),
             Some("2606:4700:4700::1111")
         );
-        assert_eq!(
-            canonical_ip("::ffff:8.8.8.8").as_deref(),
-            Some("::ffff:8.8.8.8")
-        );
+        // An IPv4-mapped address is its IPv4 address, asked in the form every source indexes.
+        assert_eq!(canonical_ip("::ffff:8.8.8.8").as_deref(), Some("8.8.8.8"));
         for refused in [
             "10.0.0.1",
             "172.16.4.4",
@@ -525,13 +546,14 @@ mod tests {
             ),
             ("2001:4860:4860::8888", "2001:4860:4860::8888"),
             ("2A00:1450::1", "2a00:1450::1"),
+            ("::ffff:8.8.8.8", "8.8.8.8"),
         ] {
             assert!(same_ip(answered, asked), "{answered:?} vs {asked:?}");
         }
         for (answered, asked) in [
             ("1.1.1.1", "1.0.0.1"),
             ("2606:4700:4700::1111", "2606:4700:4700::1001"),
-            ("::ffff:8.8.8.8", "8.8.8.8"),
+            ("::ffff:8.8.8.8", "8.8.4.4"),
             ("", "1.1.1.1"),
             ("1.1.1.1", ""),
             ("", ""),
@@ -719,5 +741,85 @@ mod tests {
         assert_eq!(canonicalise_selector("   "), None);
         assert_eq!(canonicalise_token(" CrtSh "), Some("crtsh".into()));
         assert_eq!(canonicalise_token("has space"), None);
+    }
+
+    /// An address is no domain, but it is still a URL's host and its own selector: it keeps its
+    /// dots, never becoming the handle its digits spell.
+    #[test]
+    fn an_address_is_a_urls_host_and_its_own_selector() {
+        assert_eq!(
+            canonical_url("HTTP://203.0.113.5:8080/x").as_deref(),
+            Some("http://203.0.113.5:8080/x")
+        );
+        assert_eq!(
+            canonical_url("http://45.131.135.227/sorry/index").as_deref(),
+            Some("http://45.131.135.227/sorry/index")
+        );
+        assert_eq!(canonical_domain("203.0.113.5"), None);
+        assert_eq!(canonicalise_selector("8.8.8.8").as_deref(), Some("8.8.8.8"));
+        assert_eq!(
+            canonicalise_selector(" 10.0.0.5 ").as_deref(),
+            Some("10.0.0.5")
+        );
+        assert_eq!(
+            canonicalise_selector("2001:db8::1").as_deref(),
+            Some("2001:db8::1")
+        );
+    }
+
+    /// Every spelling of one address is one value: IPv6 case, zero compression and leading zeros,
+    /// brackets, whitespace, and an IPv4 address written IPv4-mapped, which is that IPv4 address.
+    /// A public one is asked in that form, a mapped private one refused as its IPv4 address is.
+    #[test]
+    fn every_spelling_of_one_address_is_one_value() {
+        for (raw, one) in [
+            ("2001:DB8::1", "2001:db8::1"),
+            ("2001:0db8:0000:0000:0000:0000:0000:0001", "2001:db8::1"),
+            (" [2606:4700:4700::1111] ", "2606:4700:4700::1111"),
+            ("::ffff:8.8.8.8", "8.8.8.8"),
+            ("::FFFF:10.0.0.5", "10.0.0.5"),
+            ("::ffff:808:808", "8.8.8.8"),
+            (" 192.0.2.7 ", "192.0.2.7"),
+        ] {
+            assert_eq!(canonical_ip_literal(raw).as_deref(), Some(one), "{raw}");
+        }
+        for raw in ["8.8.8.8:53", "fe80::1%eth0", "example.com", "", "1.2.3"] {
+            assert_eq!(canonical_ip_literal(raw), None, "{raw}");
+        }
+        assert_eq!(canonical_ip("::ffff:8.8.8.8").as_deref(), Some("8.8.8.8"));
+        assert_eq!(
+            canonical_ip("2606:4700:4700:0:0:0:0:1111").as_deref(),
+            Some("2606:4700:4700::1111")
+        );
+        assert_eq!(canonical_ip("::ffff:10.0.0.5"), None);
+        assert!(same_ip("::ffff:192.0.2.7", "192.0.2.7"));
+        assert!(same_ip("[2001:DB8::1]", "2001:db8:0::1"));
+        assert!(!same_ip("192.0.2.7", "192.0.2.8"));
+        assert_eq!(
+            canonicalise_selector("::ffff:8.8.8.8").as_deref(),
+            Some("8.8.8.8")
+        );
+    }
+
+    /// An address whose digits spell a national phone number stays the address it is, and a
+    /// number is still a number.
+    #[test]
+    fn an_address_is_read_before_a_phone_number() {
+        for address in [
+            "203.12.16.35",
+            "180.0.123.145",
+            "220.245.6.78",
+            "61.212.134.156",
+        ] {
+            assert_eq!(
+                canonicalise_selector(address).as_deref(),
+                Some(address),
+                "{address}"
+            );
+        }
+        assert_eq!(
+            canonicalise_selector("+61 7 3858 3100").as_deref(),
+            Some("+61738583100")
+        );
     }
 }
