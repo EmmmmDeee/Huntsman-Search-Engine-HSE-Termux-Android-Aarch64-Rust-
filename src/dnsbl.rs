@@ -49,8 +49,9 @@ pub enum Class {
     /// The subject was seen sending spam, serving malware, running a proxy or a bot, or is a
     /// hijacked network: a record of the subject's own abuse, which marks it malicious.
     Abuse,
-    /// The list's policy for a range, not anything the subject did: Spamhaus's PBL lists the
-    /// end-user ranges whose holders say they should not send mail directly.
+    /// The list's policy, not anything the subject did: Spamhaus's PBL lists the end-user ranges
+    /// whose holders say they should not send mail directly, and SURBL's DM and CT bits name
+    /// disposable-mail providers and mail click trackers, which have their honest uses.
     Policy,
     /// The subject's network or AS is listed, not the subject: UCEPROTECT's levels 2 and 3.
     Neighbourhood,
@@ -73,8 +74,9 @@ impl Class {
 pub enum Codes {
     /// Each answer address names one reason and what it says of the subject.
     Exact(&'static [(&'static str, &'static str, Class)]),
-    /// The last octet is a bit mask, each bit one reason (SURBL's `multi`); every one is abuse.
-    Bits(&'static [(u8, &'static str)]),
+    /// The last octet is a bit mask, each bit one reason and what it says of the subject (SURBL's
+    /// `multi`). An answer is abuse when any of its bits is.
+    Bits(&'static [(u8, &'static str, Class)]),
 }
 
 /// One blocklist zone.
@@ -123,7 +125,7 @@ const SPAMHAUS_REFUSALS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Every zone asked, in order.
+/// Every zone, in the order they are asked; a retired zone is never asked.
 pub const ZONES: &[Zone] = &[
     Zone {
         source: "spamhaus",
@@ -312,10 +314,12 @@ pub const ZONES: &[Zone] = &[
         zone: "multi.surbl.org",
         takes: Takes::Ipv4AndDomains,
         codes: Codes::Bits(&[
-            (8, "Phishing"),
-            (16, "Malware"),
-            (64, "Abuse"),
-            (128, "Cracked site"),
+            (4, "Disposable mail provider", Class::Policy),
+            (8, "Phishing", Class::Abuse),
+            (16, "Malware", Class::Abuse),
+            (32, "Mail click tracker", Class::Policy),
+            (64, "Abuse", Class::Abuse),
+            (128, "Cracked site", Class::Abuse),
         ]),
         refusals: &[(
             "127.0.0.1",
@@ -581,17 +585,27 @@ fn listed(zone: &Zone, answers: &[IpAddr]) -> Vec<(String, String, Class)> {
                 ),
                 Codes::Bits(bits) => {
                     let mask = v4.octets()[3];
-                    let named: Vec<&str> = bits
-                        .iter()
-                        .filter(|(bit, _)| mask & bit != 0)
-                        .map(|(_, why)| *why)
-                        .collect();
+                    let named: Vec<&(u8, &str, Class)> =
+                        bits.iter().filter(|(bit, _, _)| mask & bit != 0).collect();
                     let reason = if named.is_empty() {
                         format!("undocumented answer {text}")
                     } else {
-                        named.join(", ")
+                        named
+                            .iter()
+                            .map(|(_, why, _)| *why)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     };
-                    (reason, Class::Abuse)
+                    // An answer naming no documented bit reads as abuse, as an undocumented exact
+                    // answer does; one naming only policy bits marks nothing malicious.
+                    let class = if !named.is_empty()
+                        && named.iter().all(|(_, _, class)| *class != Class::Abuse)
+                    {
+                        Class::Policy
+                    } else {
+                        Class::Abuse
+                    };
+                    (reason, class)
                 }
             };
             (text, reason, class)

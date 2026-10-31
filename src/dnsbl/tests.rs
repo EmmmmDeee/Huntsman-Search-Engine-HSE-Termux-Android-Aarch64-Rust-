@@ -473,3 +473,42 @@ fn a_name_dns_cannot_carry_is_never_read_as_not_listed() {
     }
     assert!(resolver.asked().iter().all(|name| !name.starts_with(&long)));
 }
+
+/// SURBL's DM and CT bits name disposable-mail providers and mail click trackers: policy listings
+/// that mark nothing malicious, unless an abuse bit is set beside them.
+#[test]
+fn surbl_policy_bits_are_named_and_mark_nothing_malicious() {
+    let surbl = ZONES
+        .iter()
+        .find(|zone| zone.source == "surbl")
+        .expect("SURBL");
+    let read = |answer: &str| {
+        listed(surbl, &[answer.parse().expect("an address")])
+            .into_iter()
+            .map(|(_, reason, class)| (reason, class))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        read("127.0.0.4"),
+        [("Disposable mail provider".to_owned(), Class::Policy)]
+    );
+    assert_eq!(
+        read("127.0.0.32"),
+        [("Mail click tracker".to_owned(), Class::Policy)]
+    );
+    assert_eq!(
+        read("127.0.0.36"),
+        [(
+            "Disposable mail provider, Mail click tracker".to_owned(),
+            Class::Policy
+        )]
+    );
+    assert_eq!(
+        read("127.0.0.68"),
+        [("Disposable mail provider, Abuse".to_owned(), Class::Abuse)]
+    );
+    assert_eq!(
+        read("127.0.0.2"),
+        [("undocumented answer 127.0.0.2".to_owned(), Class::Abuse)]
+    );
+}
