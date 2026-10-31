@@ -11,7 +11,9 @@
 //! reads the copy and sends nothing. A feed that cannot be refreshed is read from its last copy,
 //! and its row says how old that copy is; one never downloaded is a failed row, not "not listed".
 //! A feed that downloads but holds no entry this module can read has changed form, and says so
-//! instead of reading as "not listed".
+//! instead of reading as "not listed". A page served in a list's place (a landing, terms, "feed
+//! has moved" or challenge page: a body that opens with a tag other than the `<pre>` VX Vault wraps
+//! its list in) is a failed download: it is never kept, and the last copy still answers.
 //!
 //! A list is only as current as its publisher keeps it. The `Last-Modified` date a download
 //! carries is kept beside the copy, with the copy's length and CRC-32 so it is read only with that
@@ -52,7 +54,8 @@ pub enum Format {
     /// A hosts file: each line an address, then the host names it maps.
     Hosts,
     /// One URL a line, with or without its scheme. A line that is not a URL, such as the HTML
-    /// around a list, is skipped.
+    /// around a list or a URL inside its markup (`<a href="https://…">`), is skipped, and a `://`
+    /// after something that is no scheme (a URL in an entry's query) is read as part of the entry.
     Urls,
     /// CSV whose given column (from 0) holds a URL or a host name. Lines starting `#` are
     /// comments, and a header row reads as no entry.
@@ -502,7 +505,11 @@ fn load(
     now_unix: u64,
 ) -> Result<Copy, Failure> {
     let path = dir.map(|dir| dir.join(feed.id));
-    let kept = path.as_deref().and_then(read_copy);
+    // A page an earlier version kept in the list's place is no copy of the list.
+    let kept = path
+        .as_deref()
+        .and_then(read_copy)
+        .filter(|(body, _)| !is_page(body));
     let kept_date = match (path.as_deref(), &kept) {
         (Some(path), Some((body, _))) => read_updated(path, body),
         _ => KeptDate::Missing,
@@ -544,6 +551,42 @@ fn load(
             None => Err((kind, why)),
         },
     }
+}
+
+/// Whether `body` is a page served in a list's place (a landing, terms, "feed has moved" or
+/// challenge page), by how it opens: after a byte-order mark, white space, an XML declaration and
+/// comments, a page opens with a tag (a doctype, `<html>`, a `<meta>` refresh, a `<script>`, a PHP
+/// error's `<br />`), and a list with an entry, a comment line or a header row. The one tag a list
+/// is known to open with is the `<pre>` VX Vault wraps its list in, so that list is the list
+/// whatever its entries spell, and Tor's Onionoo answer, JSON, is never a page. **Pure.**
+fn is_page(body: &[u8]) -> bool {
+    let mut rest = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
+    loop {
+        rest = rest.trim_ascii_start();
+        let close: &[u8] = if rest.starts_with(b"<!--") {
+            b"-->"
+        } else if rest.starts_with(b"<?") {
+            b"?>"
+        } else {
+            break;
+        };
+        match rest.windows(close.len()).position(|window| window == close) {
+            Some(at) => rest = &rest[at + close.len()..],
+            None => return true,
+        }
+    }
+    // A tag opens with a letter (`<html>`) or a `!` (`<!DOCTYPE html>`); `<203.0.113.5>` is none.
+    let Some(tag) = rest.strip_prefix(b"<").filter(|tag| {
+        tag.first()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'!')
+    }) else {
+        return false;
+    };
+    let name_len = tag
+        .iter()
+        .position(|byte| !byte.is_ascii_alphanumeric())
+        .unwrap_or(tag.len());
+    !tag[..name_len].eq_ignore_ascii_case(b"pre")
 }
 
 /// Where the publisher's date of the copy at `copy` is kept: beside it, with the copy's length
@@ -631,6 +674,19 @@ fn download(
             SourceOutcomeKind::ProtocolDrift,
             format!("larger than {MAX_FEED_BYTES} bytes"),
         )),
+        // A page served in the list's place is a failed download, never kept, so the copy kept
+        // before it still answers; it is a challenge when the fetch read it as one.
+        Some(response) if response.status == 200 && is_page(&response.body) => Err((
+            if fetched.outcome.kind == SourceOutcomeKind::BotWaf {
+                SourceOutcomeKind::BotWaf
+            } else {
+                SourceOutcomeKind::ProtocolDrift
+            },
+            format!(
+                "an HTML page of {} bytes in place of the list",
+                response.body.len()
+            ),
+        )),
         Some(response) if response.status == 200 => {
             let updated = response
                 .header_value("last-modified")
@@ -714,6 +770,7 @@ impl Listed {
 
 /// Every entry of a feed body in `format`.
 fn index(format: Format, body: &str) -> Listed {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let mut listed = Listed::default();
     if format == Format::Onionoo {
         index_relays(body, &mut listed);
@@ -777,7 +834,14 @@ fn listed_key(word: &str) -> Option<Key> {
 /// The host of a URL, with or without its scheme, or of a bare host name: an address or a name.
 fn url_key(url: &str) -> Option<Key> {
     let url = url.trim();
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    // What comes before `://` must be a URI scheme (RFC 3986: a letter, then letters, digits, `+`,
+    // `-` and `.`). A `://` after anything else is inside the entry, as a URL in its query, and
+    // the entry is read without a scheme, so markup around one (`<link href="https://…">`) is no
+    // host.
+    let rest = match url.split_once("://") {
+        Some((scheme, rest)) if is_scheme(scheme) => rest,
+        _ => url,
+    };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let host = authority.rsplit('@').next().unwrap_or(authority);
     let host = if let Some(bracketed) = host.strip_prefix('[') {
@@ -791,6 +855,15 @@ fn url_key(url: &str) -> Option<Key> {
         return Some(Key::Address(address));
     }
     host_name(host).map(Key::Name)
+}
+
+/// Whether `scheme` is a URI scheme: a letter, then letters, digits, `+`, `-` and `.`. **Pure.**
+fn is_scheme(scheme: &str) -> bool {
+    let mut bytes = scheme.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
 }
 
 /// `raw` as a host name in lower case without a trailing dot, when it is one: dotted labels of
