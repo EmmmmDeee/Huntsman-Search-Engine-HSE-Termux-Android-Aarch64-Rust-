@@ -101,7 +101,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
     if path.len() > 256 || !path.starts_with('/') {
         return Err("invalid path");
     }
-    let mut headers = Vec::new();
+    let mut headers: Vec<(String, String)> = Vec::new();
     for line in lines {
         if line.is_empty() {
             break;
