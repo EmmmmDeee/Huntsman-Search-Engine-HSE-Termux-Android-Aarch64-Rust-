@@ -438,8 +438,12 @@ fn an_interrupted_test_run_never_commits_or_pushes_main() {
         !output.status.success(),
         "test exit 137 should fail the lifecycle: {stderr}"
     );
+    // Inside the sandbox's target directory, in the checkout's own directory there.
+    let checkouts = sandbox.root.join("target").join("checkouts");
     assert!(
-        sandbox.root.join("target/debug/huntsman-recon").exists(),
+        fs::read_dir(&checkouts).is_ok_and(|mut dirs| {
+            dirs.any(|dir| dir.is_ok_and(|dir| dir.path().join("debug/huntsman-recon").exists()))
+        }),
         "the mock build must write its stub inside the sandbox, never an inherited target dir"
     );
     assert!(
@@ -463,4 +467,201 @@ fn an_interrupted_test_run_never_commits_or_pushes_main() {
         "interrupted tests must be recorded as failed: {state}"
     );
     assert!(state.contains("tests incomplete"), "{state}");
+}
+
+#[test]
+fn each_checkout_runs_the_binary_built_from_it_even_when_another_built_last() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Two checkouts on one device (two clones, or worktrees) share HOME, and so the lifecycle's
+    // default build cache, or a CARGO_TARGET_DIR both export. Cargo would reuse one checkout's
+    // build as fresh for the other, so each builds into a directory of its own, and `run` builds
+    // before it runs: neither ever runs the binary the other built.
+    let first = Sandbox::new("cache-first");
+    let second = Sandbox::new("cache-second");
+    let mock_bin = first.root.join("mock-bin-cache");
+    fs::create_dir_all(&mock_bin).unwrap();
+    let mock_cargo = mock_bin.join("cargo");
+    fs::write(
+        &mock_cargo,
+        r#"#!/bin/sh
+[ "$1" = build ] || exit 99
+printf '%s|%s\n' "$CARGO_TARGET_DIR" "$CARGO_BUILD_BUILD_DIR" >> "$HOME/target-dirs"
+mkdir -p "$CARGO_TARGET_DIR/debug" || exit 99
+printf '#!/bin/sh\nprintf "built from %%s\\n" "%s"\n' "$PWD" > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
+chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon"
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&mock_cargo).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&mock_cargo, permissions).unwrap();
+    let mut path = std::ffi::OsString::from(mock_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+
+    let shared = first.root.join("shared-target");
+    for (home, target, cache) in [
+        (
+            first.root.join("home"),
+            None,
+            first.root.join("home/.cache/huntsman-recon-checkouts"),
+        ),
+        (
+            second.root.join("home"),
+            Some(&shared),
+            shared.join("checkouts"),
+        ),
+    ] {
+        let lifecycle = |sandbox: &Sandbox, mode: &str| {
+            let mut command = sandbox.command("bash", &sandbox.work);
+            command
+                .env_remove("CARGO_TARGET_DIR")
+                .env("HOME", &home)
+                .env("PATH", &path);
+            if let Some(target) = target {
+                command.env("CARGO_TARGET_DIR", target);
+            }
+            let output = command
+                .args(["scripts/lifecycle.sh", mode])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        lifecycle(&first, "build");
+        lifecycle(&second, "build");
+        let ran = lifecycle(&first, "run");
+        assert!(
+            ran.contains(&format!("built from {}", first.work.display())),
+            "run did not run the binary built from its own checkout: {ran}"
+        );
+        assert!(
+            !ran.contains(&format!("built from {}", second.work.display())),
+            "run ran the other checkout's binary: {ran}"
+        );
+        let dirs = fs::read_to_string(home.join("target-dirs")).unwrap();
+        let dirs: Vec<(&str, &str)> = dirs
+            .lines()
+            .map(|line| line.split_once('|').unwrap())
+            .collect();
+        assert_eq!(dirs.len(), 3, "run built before it ran: {dirs:?}");
+        assert!(
+            dirs.iter()
+                .all(|(target, build)| target == build && Path::new(target).starts_with(&cache)),
+            "{dirs:?}"
+        );
+        assert_eq!(dirs[0], dirs[2], "one checkout, one directory");
+        assert_ne!(dirs[0], dirs[1], "two checkouts, two directories");
+    }
+}
+
+/// A checkout at `dir` holding only the lifecycle script, and in `mock_bin` a `cargo` whose builds
+/// log the directory they were given.
+fn lone_checkout(dir: &Path, mock_bin: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::create_dir_all(dir.join("scripts")).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/lifecycle.sh"),
+        dir.join("scripts/lifecycle.sh"),
+    )
+    .unwrap();
+    fs::create_dir_all(mock_bin).unwrap();
+    let cargo = mock_bin.join("cargo");
+    fs::write(
+        &cargo,
+        "#!/bin/sh\n[ \"$1\" = build ] || exit 99\nprintf '%s\\n' \"$CARGO_TARGET_DIR\" >> \"$HOME/target-dirs\"\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&cargo).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&cargo, permissions).unwrap();
+}
+
+#[test]
+fn a_checkout_named_with_a_colon_builds_where_cargo_accepts_the_path() {
+    // Cargo joins the build directory into LD_LIBRARY_PATH, which a `:` in it would break.
+    let root =
+        std::env::temp_dir().join(format!("huntsman-lifecycle-{}-colon", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let checkout = root.join("wt:fix one");
+    let mock_bin = root.join("mock-bin");
+    lone_checkout(&checkout, &mock_bin);
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let mut path = std::ffi::OsString::from(mock_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let output = Command::new("bash")
+        .current_dir(&checkout)
+        .env_remove("CARGO_TARGET_DIR")
+        .env("HOME", &home)
+        .env("HUNTSMAN_HOME", root.join("state"))
+        .env("PATH", path)
+        .args(["scripts/lifecycle.sh", "build"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dirs = fs::read_to_string(home.join("target-dirs")).unwrap();
+    let name = Path::new(dirs.trim())
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(name.starts_with("wt_fix_one-"), "{name}");
+    assert!(
+        name.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+        "{name}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn without_cksum_the_lifecycle_refuses_instead_of_sharing_a_cache() {
+    // Without the checksum, same-named checkouts would share one cache again.
+    let root =
+        std::env::temp_dir().join(format!("huntsman-lifecycle-{}-nocksum", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let checkout = root.join("huntsman");
+    let mock_bin = root.join("mock-bin");
+    lone_checkout(&checkout, &mock_bin);
+    let which = |tool: &str| {
+        let found = Command::new("sh")
+            .args(["-c", &format!("command -v {tool}")])
+            .output()
+            .unwrap();
+        PathBuf::from(String::from_utf8(found.stdout).unwrap().trim())
+    };
+    for tool in ["dirname", "mkdir", "chmod", "date", "tee"] {
+        std::os::unix::fs::symlink(which(tool), mock_bin.join(tool)).unwrap();
+    }
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let output = Command::new(which("bash"))
+        .current_dir(&checkout)
+        .env_remove("CARGO_TARGET_DIR")
+        .env("HOME", &home)
+        .env("HUNTSMAN_HOME", root.join("state"))
+        .env("PATH", &mock_bin)
+        .args(["scripts/lifecycle.sh", "build"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("cannot name this checkout's build directory"),
+        "{stderr}"
+    );
+    assert!(!home.join("target-dirs").exists(), "a build ran: {stderr}");
+    let _ = fs::remove_dir_all(&root);
 }

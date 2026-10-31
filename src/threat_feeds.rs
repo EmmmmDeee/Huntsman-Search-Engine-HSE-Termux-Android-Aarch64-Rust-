@@ -1,9 +1,10 @@
 //! Threat feeds: whether an address, a host name or an address block is on the public threat
-//! lists Spiderfoot downloads, as its `sfp_abusech` (Feodo Tracker and `URLhaus`),
-//! `sfp_alienvaultiprep`, `sfp_blocklistde`, `sfp_botvrij`, `sfp_cinsscore`, `sfp_coinblocker`,
-//! `sfp_cybercrimetracker`, `sfp_emergingthreats`, `sfp_greensnow`, `sfp_openphish`,
-//! `sfp_phishtank`, `sfp_stevenblack_hosts`, `sfp_torexits`, `sfp_voipbl` and `sfp_vxvault` read
-//! them.
+//! lists Spiderfoot downloads, as its `sfp_abusech` (Feodo Tracker), `sfp_alienvaultiprep`,
+//! `sfp_blocklistde`, `sfp_botvrij`, `sfp_cinsscore`, `sfp_cybercrimetracker`,
+//! `sfp_emergingthreats`, `sfp_greensnow`, `sfp_openphish`, `sfp_phishtank`,
+//! `sfp_stevenblack_hosts`, `sfp_torexits`, `sfp_voipbl` and `sfp_vxvault` read them. `URLhaus`'s
+//! public downloads and the `CoinBlocker` list are gone (`URLhaus` answers 410 to every download, so
+//! its keyed API leg, [`crate::urlhaus`], is the way to it), so neither is downloaded.
 //!
 //! Each feed is downloaded whole and kept in the directory [`Feeds`] names for as long as
 //! Spiderfoot keeps it (18 hours; an hour for the Tor exit list), so a lookup after the first
@@ -11,6 +12,15 @@
 //! and its row says how old that copy is; one never downloaded is a failed row, not "not listed".
 //! A feed that downloads but holds no entry this module can read has changed form, and says so
 //! instead of reading as "not listed".
+//!
+//! A list is only as current as its publisher keeps it. The `Last-Modified` date a download
+//! carries is kept beside the copy, with the copy's length and CRC-32 so it is read only with that
+//! body; a list published without one answers for when its copy was downloaded, and a copy whose
+//! date is unknown answers for nothing. Once a list is older than its [`Feed::stale_after`] (30
+//! days; the windows blocklist.de and `CleanTalk` publish, 48 hours and seven days; Tor's hourly
+//! list three days), a subject it does not list is not "not listed" but inconclusive, and a
+//! subject it lists keeps the listing whole but as an entry on a list that stopped updating:
+//! never a current threat or Tor exit, nor a blacklisted or malicious element in a saved scan.
 //!
 //! Matching is local, so a lookup checks every address, host name and address block it found, not
 //! only its target: an address against the feed's addresses and blocks, a host name exactly, as
@@ -76,10 +86,26 @@ pub struct Feed {
     pub meaning: Meaning,
     /// How long a copy is read before it is downloaded again, in seconds.
     pub max_age: u64,
+    /// How long after its publisher last updated it (`Last-Modified`) the list still answers for
+    /// the present, in seconds. Every listed feed is regenerated at least daily while maintained.
+    pub stale_after: u64,
 }
 
 /// Spiderfoot's cache period for its feeds.
 const SPIDERFOOT_CACHE: u64 = 18 * 3_600;
+
+/// A list its publisher has not updated for 30 days no longer answers for the present.
+const STALE_AFTER: u64 = 30 * 86_400;
+
+/// Tor's relay list is published hourly, so three days without an update is a stopped list.
+const TOR_STALE_AFTER: u64 = 3 * 86_400;
+
+/// blocklist.de lists the addresses reported in the last 48 hours, so an older list describes an
+/// earlier 48 hours.
+const BLOCKLISTDE_STALE_AFTER: u64 = 2 * 86_400;
+
+/// `CleanTalk`'s list holds the last seven days' spammers.
+const CLEANTALK_STALE_AFTER: u64 = 7 * 86_400;
 
 /// Every feed read, grouped by source.
 pub const FEEDS: &[Feed] = &[
@@ -91,15 +117,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
-    },
-    Feed {
-        id: "urlhaus",
-        source: "abusech",
-        name: "abuse.ch URLhaus",
-        url: "https://urlhaus.abuse.ch/downloads/csv_recent/",
-        format: Format::Csv(2),
-        meaning: Meaning::Threat,
-        max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "alienvaultiprep",
@@ -109,6 +127,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "blocklistde",
@@ -118,6 +137,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: BLOCKLISTDE_STALE_AFTER,
     },
     Feed {
         id: "botvrij",
@@ -127,6 +147,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Csv(0),
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "cinsscore",
@@ -136,6 +157,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "cleantalk",
@@ -145,15 +167,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
-    },
-    Feed {
-        id: "coinblocker",
-        source: "coinblocker",
-        name: "CoinBlocker",
-        url: "https://zerodot1.gitlab.io/CoinBlockerLists/list.txt",
-        format: Format::Lines,
-        meaning: Meaning::Threat,
-        max_age: SPIDERFOOT_CACHE,
+        stale_after: CLEANTALK_STALE_AFTER,
     },
     Feed {
         id: "cybercrimetracker",
@@ -163,6 +177,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Urls,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "emergingthreats",
@@ -172,6 +187,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "greensnow",
@@ -181,6 +197,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "openphish",
@@ -190,6 +207,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Urls,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "phishtank",
@@ -199,6 +217,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Csv(1),
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "stevenblack_hosts",
@@ -208,6 +227,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Hosts,
         meaning: Meaning::Listing,
         max_age: 24 * 3_600,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "torexits",
@@ -217,6 +237,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Onionoo,
         meaning: Meaning::TorExit,
         max_age: 3_600,
+        stale_after: TOR_STALE_AFTER,
     },
     Feed {
         id: "voipbl",
@@ -226,6 +247,7 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Lines,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
     Feed {
         id: "vxvault",
@@ -235,11 +257,14 @@ pub const FEEDS: &[Feed] = &[
         format: Format::Urls,
         meaning: Meaning::Threat,
         max_age: SPIDERFOOT_CACHE,
+        stale_after: STALE_AFTER,
     },
 ];
 
-/// The largest feed read, in bytes: `PhishTank`'s list runs to about 12 MiB and `URLhaus`'s to 8.
+/// The largest feed read, in bytes: `PhishTank`'s list runs to about 12 MiB.
 pub const MAX_FEED_BYTES: usize = 64 * 1024 * 1024;
+/// The most a kept publisher's date may hold: a decimal `u64`, the copy's length and CRC-32.
+const UPDATED_BYTES: u64 = 64;
 /// How long one feed's download may take.
 pub const FEED_TIMEOUT: Duration = Duration::from_secs(90);
 /// The confidence of a listing.
@@ -398,6 +423,15 @@ struct Read {
     entries: usize,
     /// When the copy read was downloaded.
     fetched: u64,
+    /// When its publisher last updated the list (`Last-Modified`), when the download said.
+    updated: Option<u64>,
+    /// When the list last answered for the present: its publisher's date, else, for a list
+    /// published without one, when the copy was downloaded. `None` when the copy's date is
+    /// unknown.
+    as_of: Option<u64>,
+    /// Whether the list is older than its [`Feed::stale_after`], or of unknown date, so it no
+    /// longer answers for the present.
+    stale: bool,
     /// Whether it was downloaded by this lookup.
     downloaded: bool,
     /// What the row should say about the copy read: why it is old, or why it was not kept.
@@ -431,10 +465,18 @@ fn read_feed(
             (!entries.is_empty()).then(|| (subject.clone(), entries))
         })
         .collect();
+    let (updated, as_of) = match copy.date {
+        KeptDate::Kept(Some(updated)) => (Some(updated), Some(updated)),
+        KeptDate::Kept(None) => (None, Some(copy.fetched)),
+        KeptDate::Missing => (None, None),
+    };
     Ok(Read {
         matches,
         entries: listed.entries,
         fetched: copy.fetched,
+        updated,
+        as_of,
+        stale: as_of.is_none_or(|as_of| now_unix.saturating_sub(as_of) > feed.stale_after),
         downloaded: copy.downloaded,
         note: copy.note,
     })
@@ -445,6 +487,8 @@ fn read_feed(
 struct Copy {
     body: Vec<u8>,
     fetched: u64,
+    /// Its publisher's date: as the download said, or as kept beside the copy.
+    date: KeptDate,
     downloaded: bool,
     note: Option<String>,
 }
@@ -459,26 +503,32 @@ fn load(
 ) -> Result<Copy, Failure> {
     let path = dir.map(|dir| dir.join(feed.id));
     let kept = path.as_deref().and_then(read_copy);
-    if let Some((body, fetched)) = &kept {
+    let kept_date = match (path.as_deref(), &kept) {
+        (Some(path), Some((body, _))) => read_updated(path, body),
+        _ => KeptDate::Missing,
+    };
+    // A copy without its own date kept beside it was kept by an earlier version, rewritten since,
+    // or its date could not be written, so it is downloaded again rather than read as current.
+    if let (Some((body, fetched)), KeptDate::Kept(_)) = (&kept, kept_date) {
         if now_unix.saturating_sub(*fetched) < feed.max_age {
             return Ok(Copy {
                 body: body.clone(),
                 fetched: *fetched,
+                date: kept_date,
                 downloaded: false,
                 note: None,
             });
         }
     }
     match download(transport, feed, now_unix) {
-        Ok(body) => {
-            let note = path.and_then(|path| {
-                crate::fsio::write_atomic(&path, &body, MAX_FEED_BYTES as u64)
-                    .err()
-                    .map(|error| format!("its copy could not be kept ({error})"))
-            });
+        Ok((body, updated)) => {
+            let note = path
+                .and_then(|path| keep(&path, &body, updated).err())
+                .map(|error| format!("its copy could not be kept ({error})"));
             Ok(Copy {
                 body,
                 fetched: now_unix,
+                date: KeptDate::Kept(updated),
                 downloaded: true,
                 note,
             })
@@ -487,11 +537,66 @@ fn load(
             Some((body, fetched)) => Ok(Copy {
                 body,
                 fetched,
+                date: kept_date,
                 downloaded: false,
                 note: Some(format!("could not be downloaded again ({why})")),
             }),
             None => Err((kind, why)),
         },
+    }
+}
+
+/// Where the publisher's date of the copy at `copy` is kept: beside it, with the copy's length
+/// and CRC-32, so it is read only with the body it came with.
+fn updated_path(copy: &Path) -> PathBuf {
+    let mut name = copy.as_os_str().to_owned();
+    name.push(".updated");
+    PathBuf::from(name)
+}
+
+/// What is kept beside a copy of BODY: its publisher's date in Unix seconds, or `-` for a download
+/// that carried none, then the body's length and CRC-32.
+fn date_line(body: &[u8], updated: Option<u64>) -> String {
+    let date = updated.map_or_else(|| "-".to_owned(), |updated| updated.to_string());
+    format!("{date} {} {:08x}", body.len(), crc32fast::hash(body))
+}
+
+/// Keep a download as the copy at `path`, with its publisher's date beside it.
+fn keep(path: &Path, body: &[u8], updated: Option<u64>) -> Result<(), String> {
+    crate::fsio::write_atomic(path, body, MAX_FEED_BYTES as u64)
+        .map_err(|error| error.to_string())?;
+    crate::fsio::write_atomic(
+        &updated_path(path),
+        date_line(body, updated).as_bytes(),
+        UPDATED_BYTES,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// What is kept beside a copy about when its publisher last updated it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeptDate {
+    /// No date for this body: a copy an earlier version kept, a copy rewritten since its date was
+    /// kept, or one whose date could not be written.
+    Missing,
+    /// The publisher's date, or `None` for a download that carried none.
+    Kept(Option<u64>),
+}
+
+/// The publisher's date kept beside the copy at `copy`, when it was kept with BODY.
+fn read_updated(copy: &Path, body: &[u8]) -> KeptDate {
+    let Ok(text) = crate::fsio::read_bounded(&updated_path(copy), UPDATED_BYTES) else {
+        return KeptDate::Missing;
+    };
+    let text = String::from_utf8_lossy(&text);
+    let updated = text
+        .split_whitespace()
+        .next()
+        .and_then(|date| date.parse().ok());
+    if text.trim() == date_line(body, updated) {
+        KeptDate::Kept(updated)
+    } else {
+        KeptDate::Missing
     }
 }
 
@@ -503,12 +608,13 @@ fn read_copy(path: &Path) -> Option<(Vec<u8>, u64)> {
     Some((body, fetched))
 }
 
-/// Download `feed` whole.
+/// Download `feed` whole: its body, and when its publisher last updated it (`Last-Modified`),
+/// when the answer says.
 fn download(
     transport: &(dyn Transport + Send + Sync),
     feed: &Feed,
     now_unix: u64,
-) -> Result<Vec<u8>, Failure> {
+) -> Result<(Vec<u8>, Option<u64>), Failure> {
     let request = Request::get(feed.url).with_timeout(FEED_TIMEOUT);
     let fetched = fetch(
         transport,
@@ -525,7 +631,13 @@ fn download(
             SourceOutcomeKind::ProtocolDrift,
             format!("larger than {MAX_FEED_BYTES} bytes"),
         )),
-        Some(response) if response.status == 200 => Ok(response.body),
+        Some(response) if response.status == 200 => {
+            let updated = response
+                .header_value("last-modified")
+                .and_then(|date| crate::timefmt::parse_http_date(date, now_unix))
+                .and_then(|date| u64::try_from(date).ok());
+            Ok((response.body, updated))
+        }
         Some(response) => Err((fetched.outcome.kind, format!("HTTP {}", response.status))),
         None => Err((
             fetched.outcome.kind,
@@ -773,32 +885,60 @@ fn push_listing(
 ) {
     let value = subject.value();
     let copy = crate::timefmt::format_unix(i64::try_from(read.fetched).unwrap_or(i64::MAX));
+    let updated = read
+        .updated
+        .map(|updated| crate::timefmt::format_unix(i64::try_from(updated).unwrap_or(i64::MAX)));
+    // On a list that stopped updating, or of unknown date, the entry is kept whole, but it says
+    // what the list once held, not that the subject is a threat or a Tor exit now.
+    let stale = |summary: String| match (&updated, read.as_of) {
+        _ if !read.stale => summary,
+        (Some(updated), _) => format!("{summary} (on a list last updated {updated})"),
+        (None, Some(_)) => format!("{summary} (on a copy downloaded {copy})"),
+        (None, None) => format!("{summary} (on a copy of unknown date)"),
+    };
     let provenance = EvidenceProvenance::for_scan(feed.source, scan_id);
     let entries = entries.join("\n");
-    let (evidence, tags): (Evidence, &[&str]) = match feed.meaning {
-        Meaning::TorExit => (
-            Evidence::new(provenance, format!("{value} is a Tor exit relay"))
-                .with_attr("tor", "true")
+    let (mut evidence, tags, list): (Evidence, &[&str], &str) = match feed.meaning {
+        Meaning::TorExit => {
+            let said = if read.stale {
+                stale(format!("{value} is listed as a Tor exit relay"))
+            } else {
+                format!("{value} is a Tor exit relay")
+            };
+            let mut evidence = Evidence::new(provenance, said)
                 .with_attr("tor_relays", entries)
                 .with_attr("tor_relays_url", feed.url)
-                .with_attr("tor_relays_copy", copy),
-            &[tags::TOR_EXIT],
-        ),
+                .with_attr("tor_relays_copy", copy.clone());
+            if !read.stale {
+                evidence = evidence.with_attr("tor", "true");
+            }
+            let tags: &[&str] = if read.stale { &[] } else { &[tags::TOR_EXIT] };
+            (evidence, tags, "tor_relays")
+        }
         Meaning::Threat | Meaning::Listing => {
-            let threat = feed.meaning == Meaning::Threat;
-            let mut evidence =
-                Evidence::new(provenance, format!("{value} is listed by {}", feed.name))
-                    .with_attr("threat_feed", feed.name)
-                    .with_attr("threat_feed_threat", if threat { "true" } else { "false" })
-                    .with_attr("threat_feed_url", feed.url)
-                    .with_attr("threat_feed_entries", entries)
-                    .with_attr("threat_feed_copy", copy);
+            let threat = feed.meaning == Meaning::Threat && !read.stale;
+            let mut evidence = Evidence::new(
+                provenance,
+                stale(format!("{value} is listed by {}", feed.name)),
+            )
+            .with_attr("threat_feed", feed.name)
+            .with_attr("threat_feed_threat", if threat { "true" } else { "false" })
+            .with_attr("threat_feed_url", feed.url)
+            .with_attr("threat_feed_entries", entries)
+            .with_attr("threat_feed_copy", copy.clone());
             if threat {
                 evidence = evidence.with_attr("blocklists", feed.name);
             }
-            (evidence, if threat { &[tags::MALICIOUS] } else { &[] })
+            let tags: &[&str] = if threat { &[tags::MALICIOUS] } else { &[] };
+            (evidence, tags, "threat_feed")
         }
     };
+    if let Some(updated) = updated {
+        evidence = evidence.with_attr(format!("{list}_updated"), updated);
+    }
+    if read.stale {
+        evidence = evidence.with_attr(format!("{list}_stale"), "true");
+    }
     push_entity(
         entities,
         subject.kind(),
@@ -838,11 +978,20 @@ fn rows(said: &[(&Feed, Result<Read, Failure>)], now_unix: u64) -> Vec<SourceExe
                 .find(|(kind, _)| *kind != SourceOutcomeKind::RefusedBeforeSending)
                 .or_else(|| failures().next());
             let answered = mine.iter().any(|(_, result)| result.is_ok());
+            // "Not listed" is an answer only when every feed under the source was read and is
+            // current: a feed that failed, or a list that stopped updating, cannot say a subject
+            // is absent from it now.
+            let current = mine
+                .iter()
+                .all(|(_, result)| result.as_ref().is_ok_and(|read| !read.stale));
             match (listed, failure) {
                 (0, Some((kind, _))) if !answered => {
                     SourceExecutionOutcome::failed(source, now_unix, *kind, None, &detail)
                 }
-                (0, _) => SourceExecutionOutcome::valid_zero(source, now_unix).with_detail(detail),
+                (0, _) if current => {
+                    SourceExecutionOutcome::valid_zero(source, now_unix).with_detail(detail)
+                }
+                (0, _) => SourceExecutionOutcome::inconclusive(source, now_unix, detail),
                 (count, _) => {
                     SourceExecutionOutcome::success(source, now_unix, count).with_detail(detail)
                 }
@@ -881,7 +1030,20 @@ fn row_detail(result: &Result<Read, Failure>) -> String {
         .note
         .as_ref()
         .map_or(String::new(), |why| format!(", {why}"));
-    format!("{said} ({} entries, {copy}{note})", read.entries)
+    let date = |unix: u64| crate::timefmt::format_unix(i64::try_from(unix).unwrap_or(i64::MAX));
+    let updated = match (read.updated, read.as_of, read.stale) {
+        (Some(updated), _, false) => format!(", list updated {}", date(updated)),
+        (Some(updated), _, true) => format!(
+            ", a list last updated {}, too old to say what is listed now",
+            date(updated)
+        ),
+        (None, Some(_), true) => ", too old to say what is listed now".to_owned(),
+        (None, None, _) => {
+            ", a copy of unknown date, which cannot say what is listed now".to_owned()
+        }
+        (None, Some(_), false) => String::new(),
+    };
+    format!("{said} ({} entries, {copy}{updated}{note})", read.entries)
 }
 
 #[cfg(test)]
