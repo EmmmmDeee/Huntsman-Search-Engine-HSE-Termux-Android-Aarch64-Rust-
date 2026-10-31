@@ -1,0 +1,1 @@
+SEC EDGAR now reports malformed or misaligned search hits as schema drift instead of a clean zero, and retains parser/schema failure classifications for unreadable or CIK-mismatched submissions. Valid profiles, honest empty searches and operator-authorized User-Agent requirements are preserved.
