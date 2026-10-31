@@ -578,7 +578,7 @@ fn build_query_on_a_root_dotted_domain_and_an_address_literal_url() {
 fn cert(id: u64, names: &str, issuer: &str, not_before: &str, not_after: &str) -> CrtEntry {
     CrtEntry {
         id: Some(id),
-        issuer_ca_id: Some(id % 7),
+        issuer_ca_id: Some(i64::try_from(id % 7).unwrap_or_default()),
         common_name: names.split('\n').next().map(str::to_owned),
         name_value: Some(names.into()),
         issuer_name: Some(issuer.into()),

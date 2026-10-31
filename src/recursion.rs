@@ -12,12 +12,13 @@
 //! source outcome is carried through in full; redaction, where it exists at all, is the caller's
 //! output concern, never the scan's.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::canonical::handle_route_key;
 use crate::clock;
-use crate::entity::{Entity, EntityKind, merge_by_uid};
+use crate::entity::{Entity, EntityKind, Evidence, merge_by_uid};
 use crate::pipeline_limits::PipelineLimits;
 use crate::scan_route::{ScanKind, canonical_selector, infer_kind};
 use crate::source_outcome::SourceExecutionOutcome;
@@ -34,9 +35,29 @@ pub struct Target {
 
 impl Target {
     /// The order-stable de-duplication key: a lookup of the same selector under the same kind is
-    /// the same dispatch. `ScanKind` is not `Ord`, so its stable command word carries the order.
+    /// the same dispatch. A handle is keyed by how it is routed ([`handle_route_key`]: ASCII case
+    /// folded, separators kept), as the planner routes seeds, so a platform's echo of a handle in
+    /// another case is not looked up again while `pg-smith` and `pg_smith`, which can be two
+    /// accounts, are both looked up. `ScanKind` is not `Ord`, so its stable command word carries
+    /// the order.
     fn owned_key(&self) -> (String, String) {
-        (self.kind.command().to_owned(), self.selector.clone())
+        let selector = match self.kind {
+            ScanKind::Username => handle_route_key(&self.selector),
+            _ => self.selector.clone(),
+        };
+        (self.kind.command().to_owned(), selector)
+    }
+}
+
+/// The identity a routed selector names: the key the entity a lookup of it describes carries, so
+/// an edge recorded under any spelling of one identity resolves to that entity. A username's
+/// identity is its entity key ([`crate::entity::normalise`]: case and `.`, `_` and `-` folded);
+/// every other route's canonical selector already is its identity. **Pure.**
+#[must_use]
+pub fn selector_identity(kind: ScanKind, selector: &str) -> String {
+    match kind {
+        ScanKind::Username => crate::entity::normalise(&EntityKind::Username, selector),
+        _ => selector.to_owned(),
     }
 }
 
@@ -157,6 +178,19 @@ pub struct PivotEdge {
     pub generation: u32,
 }
 
+impl PivotEdge {
+    /// The identity of the lookup this edge was recorded under ([`selector_identity`] on its
+    /// route), so an edge recorded under any spelling of one identity, by this crawl or in a scan
+    /// saved before it, resolves to the same source. An unknown route keeps its selector.
+    #[must_use]
+    pub fn from_identity(&self) -> String {
+        crate::scan_route::parse_kind(&self.from_kind).map_or_else(
+            |_| self.from_selector.clone(),
+            |kind| selector_identity(kind, &self.from_selector),
+        )
+    }
+}
+
 /// The finished crawl: the full entity graph, the pivot lineage, every source outcome, the
 /// per-generation shape, and why it stopped.
 #[derive(Debug, Clone, PartialEq)]
@@ -208,6 +242,39 @@ fn names_a_mailbox_holder(email: &str) -> bool {
         && !crate::domains::is_noreply_email_domain(email)
 }
 
+/// The selectors `entity` is followed by on `kind`'s route. A username is followed by every
+/// spelling a source observed it under ([`Entity::observed_spellings`]) whose own confidence
+/// reaches FLOOR, its `raw_value` first, each through the route's own rule as an operator's
+/// selector is, once per [`handle_route_key`]. Its identity key lowercases and strips separators
+/// so that `Ada-L` and `adal` share one entity, and following the key would look up an account
+/// nobody observed where handles are case- or separator-sensitive (Hacker News, GitHub). A
+/// username no observation of which reaches the floor, as one only guessed from an e-mail's local
+/// part, is followed by its identity key, the separator-free form most platforms accept. The
+/// handle a lookup was asked (its operator-seed record, which the username lookup echoes back) was already
+/// looked up: it is followed by what sources observed, never by the key. The crawl routes a pivot
+/// lookup's echo before it forgets it ([`forget_pivot_echo`]), so this holds for a pivot too. Every other route follows the entity's canonical value. Edges resolve by
+/// [`selector_identity`], so what each lookup finds joins the same entity. **Pure.**
+fn route_selectors(kind: ScanKind, entity: &Entity, floor: f64) -> Vec<String> {
+    if kind == ScanKind::Username && entity.kind == EntityKind::Username {
+        let own = entity.raw_value.trim().trim_start_matches('@');
+        let mut spellings: Vec<(String, f64)> = entity.observed_spellings().into_iter().collect();
+        spellings.sort_by_key(|(spelling, _)| spelling != own);
+        let mut routes = BTreeSet::new();
+        let observed: Vec<String> = spellings
+            .into_iter()
+            .filter(|(_, confidence)| *confidence >= floor)
+            .filter_map(|(spelling, _)| canonical_selector(kind, &spelling))
+            .filter(|selector| routes.insert(handle_route_key(selector)))
+            .collect();
+        if !observed.is_empty() || entity.evidence.iter().any(Evidence::is_operator_seed) {
+            return observed;
+        }
+    }
+    canonical_selector(kind, &entity.value)
+        .into_iter()
+        .collect()
+}
+
 /// The new targets an entity contributes to the next generation.
 fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     // A pivot that matched only by a name search — a Wikidata knowledge-base, ACNC
@@ -229,20 +296,27 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     if entity.kind == EntityKind::Email && !names_a_mailbox_holder(&entity.value) {
         return Vec::new();
     }
-    let Some(selector) = canonical_selector(kind, &entity.value) else {
+    let floor = policy.expand_confidence_floor;
+    let selectors = route_selectors(kind, entity, floor);
+    // A value its own route refuses is not followed at all, its exposure included: an e-mail with
+    // no address in it (`noemail`, a bare login a breach record put in its e-mail field) would
+    // otherwise be looked up as the username the exposure route falls back to.
+    if selectors.is_empty() {
         return Vec::new();
-    };
-    let mut targets = vec![Target {
-        kind,
-        selector: selector.clone(),
-    }];
+    }
+    let mut targets: Vec<Target> = selectors
+        .into_iter()
+        .map(|selector| Target { kind, selector })
+        .collect();
     if policy.expose_emails && entity.kind == EntityKind::Email {
-        if let Some(exposure) = canonical_selector(ScanKind::Exposure, &entity.value) {
-            targets.push(Target {
-                kind: ScanKind::Exposure,
-                selector: exposure,
-            });
-        }
+        targets.extend(
+            route_selectors(ScanKind::Exposure, entity, floor)
+                .into_iter()
+                .map(|selector| Target {
+                    kind: ScanKind::Exposure,
+                    selector,
+                }),
+        );
     }
     targets
 }
@@ -269,9 +343,9 @@ pub struct LineageLink {
 /// it available to the graph.
 ///
 /// Each endpoint is resolved by the SAME routing that recorded the edge — the `from` side by the
-/// entity's expansion target ([`expansion_kind`] + [`canonical_selector`]), the `to` side by the
-/// produced entity's kind and value — so a link is emitted only when BOTH endpoints are a retained
-/// entity. No dangling edge is produced (an edge whose source was a seed never collected as an
+/// identity of the entity's expansion target ([`expansion_kind`] + [`selector_identity`], so any
+/// spelling the lookup ran under resolves), the `to` side by the produced entity's kind and value
+/// — so a link is emitted only when BOTH endpoints are a retained entity. No dangling edge is produced (an edge whose source was a seed never collected as an
 /// entity, or whose endpoint was dropped, is skipped) and a self-link is dropped. Pairs reached by
 /// several lookups collapse in [`Graph::build`](crate::graph::Graph::build), so repeats here are
 /// harmless. Links are sorted and de-duplicated for a deterministic result.
@@ -280,8 +354,8 @@ pub fn lineage_links(report: &RecursionReport) -> Vec<LineageLink> {
     use std::collections::HashMap;
     // The produced entity, by (kind, value) exactly as the edge recorded it.
     let mut by_value: HashMap<(&str, &str), &str> = HashMap::new();
-    // The source entity, by (expansion command word, canonical selector) — the inverse of the
-    // routing that built the edge's `from` fields.
+    // The source entity, by (expansion command word, selector identity) — the inverse of the
+    // routing that built the edge's `from` fields, whichever spelling it dispatched.
     let mut by_route: HashMap<(String, String), &str> = HashMap::new();
     let mut confidence: HashMap<&str, f64> = HashMap::new();
     for entity in &report.entities {
@@ -294,7 +368,10 @@ pub fn lineage_links(report: &RecursionReport) -> Vec<LineageLink> {
         if let Some(kind) = expansion_kind(&entity.kind) {
             if let Some(selector) = canonical_selector(kind, &entity.value) {
                 by_route
-                    .entry((kind.command().to_owned(), selector))
+                    .entry((
+                        kind.command().to_owned(),
+                        selector_identity(kind, &selector),
+                    ))
                     .or_insert_with(|| entity.uid.as_str());
             }
         }
@@ -313,8 +390,7 @@ pub fn lineage_links(report: &RecursionReport) -> Vec<LineageLink> {
     }
     let mut links: Vec<LineageLink> = Vec::new();
     for edge in &report.edges {
-        let Some(&from_uid) = by_route.get(&(edge.from_kind.clone(), edge.from_selector.clone()))
-        else {
+        let Some(&from_uid) = by_route.get(&(edge.from_kind.clone(), edge.from_identity())) else {
             continue;
         };
         let Some(&to_uid) = by_value.get(&(edge.to_kind.as_str(), edge.to_value.as_str())) else {
@@ -338,8 +414,8 @@ pub fn lineage_links(report: &RecursionReport) -> Vec<LineageLink> {
     links
 }
 
-/// A de-duplicated queue of targets: at most one lookup per `(kind, selector)`. Centralises the
-/// crawl's dedup invariant, so the seed frontier, each generation's next frontier, and the
+/// A de-duplicated queue of targets: at most one lookup per `(kind, selector identity)`.
+/// Centralises the crawl's dedup invariant, so the seed frontier, each generation's next frontier, and the
 /// expansion queue share one definition of "the same lookup" and cannot drift apart.
 #[derive(Default)]
 struct Frontier {
@@ -348,8 +424,8 @@ struct Frontier {
 }
 
 impl Frontier {
-    /// Queue `target` unless an equal `(kind, selector)` is already queued. Returns whether it was
-    /// newly queued.
+    /// Queue `target` unless one with an equal `(kind, selector identity)` is already queued.
+    /// Returns whether it was newly queued.
     fn push(&mut self, target: Target) -> bool {
         if self.seen.insert(target.owned_key()) {
             self.queue.push(target);
@@ -445,6 +521,10 @@ fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
 #[derive(Default)]
 struct CrawlState {
     visited: BTreeSet<(String, String)>,
+    /// The highest confidence of any entity a queued target was followed from, by its key: what a
+    /// pivot's lookup may hold it at, as the lookup's echo of its selector says nothing of it. An
+    /// echo is followed from at no more than the pivot it echoes ([`pivot_held_at`]).
+    followed_at: BTreeMap<(String, String), f64>,
     entities: Vec<Entity>,
     edges: Vec<PivotEdge>,
     outcomes: Vec<SourceExecutionOutcome>,
@@ -544,21 +624,8 @@ impl CrawlState {
                 let step = steps
                     .next()
                     .unwrap_or_else(|| missing_batch_step(&target, 0));
-                self.dispatches += 1;
                 dispatched += 1;
-                self.outcomes.extend(step.outcomes);
-                for mut entity in step.entities {
-                    entity.generation = generation;
-                    self.edges.push(PivotEdge {
-                        from_kind: target.kind.command().to_owned(),
-                        from_selector: target.selector.clone(),
-                        to_kind: entity.kind.as_str().to_owned(),
-                        to_value: entity.value.clone(),
-                        generation,
-                    });
-                    self.queue_expansions(&entity, policy, &mut next);
-                    self.entities.push(entity);
-                }
+                self.take_step(generation, &target, step, policy, &mut next);
             }
             stopped |= self.batch_done(collector, generation, remaining.by_ref(), &mut next);
             if stopped {
@@ -573,6 +640,51 @@ impl CrawlState {
             entities_after: self.entities.len(),
         });
         (next.into_queue(), stopped)
+    }
+
+    /// Reduce what one dispatch of `target` returned into the crawl: its outcomes, and each entity
+    /// with the edge it was reached by and the targets it queues for the next generation. Each
+    /// entity is routed and recorded as the lookup returned it, so a lookup's echo of its own
+    /// selector still says that selector was looked up ([`route_selectors`]) and still shows the
+    /// lookup in the lineage. Generation 0 is the operator's seeds; every later target is a pivot
+    /// the crawl found, whose echo is then not kept as the operator's seed ([`forget_pivot_echo`]),
+    /// and what each entity queues is followed at the confidence it is kept at ([`pivot_held_at`]).
+    fn take_step(
+        &mut self,
+        generation: u32,
+        target: &Target,
+        step: Step,
+        policy: &RecursionPolicy,
+        next: &mut Frontier,
+    ) {
+        let followed_at = (generation > 0).then(|| {
+            self.followed_at
+                .get(&target.owned_key())
+                .copied()
+                .unwrap_or(policy.expand_confidence_floor)
+        });
+        self.dispatches += 1;
+        self.outcomes.extend(step.outcomes);
+        for mut entity in step.entities {
+            entity.generation = generation;
+            self.edges.push(PivotEdge {
+                from_kind: target.kind.command().to_owned(),
+                from_selector: target.selector.clone(),
+                to_kind: entity.kind.as_str().to_owned(),
+                to_value: entity.value.clone(),
+                generation,
+            });
+            let held_at = followed_at.map_or(entity.confidence, |followed_at| {
+                pivot_held_at(&entity, followed_at)
+            });
+            self.queue_expansions(&entity, held_at, policy, next);
+            if let Some(followed_at) = followed_at {
+                if !forget_pivot_echo(&mut entity, followed_at) {
+                    continue;
+                }
+            }
+            self.entities.push(entity);
+        }
     }
 
     /// After a wave is reduced into the crawl: let the collector checkpoint what the crawl holds,
@@ -612,22 +724,86 @@ impl CrawlState {
         true
     }
 
-    /// Queue the next-generation targets an entity contributes, honouring the per-generation
-    /// frontier cap. An overflow is a resource limit, not silently lost work.
-    fn queue_expansions(&mut self, entity: &Entity, policy: &RecursionPolicy, next: &mut Frontier) {
+    /// Queue the next-generation targets an entity held at `held_at` contributes, honouring the
+    /// per-generation frontier cap. An overflow is a resource limit, not silently lost work.
+    fn queue_expansions(
+        &mut self,
+        entity: &Entity,
+        held_at: f64,
+        policy: &RecursionPolicy,
+        next: &mut Frontier,
+    ) {
         for candidate in expansions(entity, policy) {
             let key = candidate.owned_key();
             // Already dispatched, or already queued for the next generation: skip before the cap
-            // check so a duplicate never counts as overflow.
-            if self.visited.contains(&key) || next.contains_key(&key) {
+            // check so a duplicate never counts as overflow. A queued target is still followed
+            // at the highest confidence any entity gave it.
+            if self.visited.contains(&key) {
+                continue;
+            }
+            if next.contains_key(&key) {
+                self.follow_at(key, held_at);
                 continue;
             }
             if next.len() >= policy.max_frontier_per_generation {
                 self.resource_limited = true;
                 continue;
             }
+            self.follow_at(key, held_at);
             next.push(candidate);
         }
+    }
+
+    /// Record that the target keyed `key` is followed from an entity held at `confidence`.
+    fn follow_at(&mut self, key: (String, String), confidence: f64) {
+        let held = self.followed_at.entry(key).or_insert(confidence);
+        *held = held.max(confidence);
+    }
+}
+
+/// Forget a pivot lookup's echo of its selector in `entity`, and say whether anything is left to
+/// keep. The e-mail, exposure, username and network lookups echo their selector back as the
+/// operator's seed: tagged `seed`, at the seed's confidence, with a seed record
+/// ([`Evidence::is_operator_seed`]). A pivot was found by the crawl, not supplied by the
+/// operator, and its echo would fold into the entity it was followed from, so a weak lead (a handle
+/// guessed from an e-mail's local part) would leave the crawl as the operator's own seed at 0.99.
+/// The echo's records and tag are not kept, nor counted as observations. An echo holding nothing
+/// else is not kept at all, as the crawl already holds the entity it was followed from; one a source
+/// also described keeps what the source said, at no more than `followed_at`, the confidence the
+/// crawl followed it at, though the source held it higher: a pivot is no more likely the subject's
+/// than the lead it was followed from (an account under a guessed handle exists, which says nothing
+/// of whose it is), and a record keeps no confidence of its own to say what the source alone held
+/// it at. An entity with no operator-seed record is kept as it is. **Pure.**
+fn forget_pivot_echo(entity: &mut Entity, followed_at: f64) -> bool {
+    if !entity.evidence.iter().any(Evidence::is_operator_seed) {
+        return true;
+    }
+    let held_at = pivot_held_at(entity, followed_at);
+    // Each echo the lookup folded in was one observation of the entity; none was a source's.
+    let echoes: u32 = entity
+        .evidence
+        .iter()
+        .filter(|evidence| evidence.is_operator_seed())
+        .map(|evidence| 1 + u32::try_from(evidence.merged_provenance.len()).unwrap_or(u32::MAX))
+        .fold(0, u32::saturating_add);
+    entity
+        .evidence
+        .retain(|evidence| !evidence.is_operator_seed());
+    entity.tags.retain(|tag| tag != "seed");
+    entity.confidence = held_at;
+    entity.corroboration = entity.corroboration.saturating_sub(echoes).max(1);
+    !entity.evidence.is_empty()
+}
+
+/// The confidence a pivot lookup's `entity` is held at once its echo is forgotten
+/// ([`forget_pivot_echo`]): an echo at no more than `followed_at`, the confidence the crawl followed
+/// the pivot at, and any other entity at its own. What it queues is followed at the same, so a
+/// target an echo queues is never held above the pivot either. **Pure.**
+fn pivot_held_at(entity: &Entity, followed_at: f64) -> f64 {
+    if entity.evidence.iter().any(Evidence::is_operator_seed) {
+        entity.confidence.min(followed_at)
+    } else {
+        entity.confidence
     }
 }
 
@@ -1008,6 +1184,662 @@ mod tests {
         );
         assert_eq!(report.termination, TerminationReason::FixedPoint);
         assert_eq!(report.accepted_seeds.len(), 2);
+    }
+
+    #[test]
+    fn a_username_pivot_is_followed_by_the_spelling_it_was_observed_with() {
+        // The identity key of `PG_Smith` is `pgsmith`, another account where handles are case-
+        // or separator-sensitive (Hacker News, GitHub): the pivot is followed as observed.
+        let observed = ent(EntityKind::Username, "PG_Smith", 0.9);
+        assert_eq!(observed.value, "pgsmith");
+        assert_eq!(
+            expansions(&observed, &policy()),
+            vec![Target {
+                kind: ScanKind::Username,
+                selector: "PG_Smith".to_owned(),
+            }]
+        );
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Email,
+                "person@example.com",
+                vec![
+                    ent(EntityKind::Email, "person@example.com", 0.99),
+                    ent(EntityKind::Username, "PG_Smith", 0.8),
+                ],
+            )
+            .on(ScanKind::Exposure, "person@example.com", vec![])
+            .on(
+                ScanKind::Username,
+                "PG_Smith",
+                vec![ent(EntityKind::Domain, "pg-smith.example", 0.7)],
+            );
+        let report = run(
+            &["person@example.com".to_owned()],
+            &policy(),
+            &mut collector,
+        );
+        assert!(
+            collector
+                .calls
+                .contains(&("username".to_owned(), "PG_Smith".to_owned()))
+        );
+        assert!(
+            !collector
+                .calls
+                .iter()
+                .any(|(kind, selector)| kind == "username" && selector == "pgsmith"),
+            "the identity key must never be looked up as a handle"
+        );
+        // The edge the dispatch recorded resolves back to the username entity, so the graph links
+        // the handle to what its lookup found.
+        let username = report
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Username)
+            .expect("username entity");
+        let domain = report
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Domain)
+            .expect("domain entity");
+        assert!(
+            lineage_links(&report)
+                .iter()
+                .any(|link| link.from_uid == username.uid && link.to_uid == domain.uid),
+            "the username's edge must resolve to the entity it produced"
+        );
+    }
+
+    #[test]
+    fn a_username_guessed_from_an_email_is_followed_by_its_identity_key() {
+        // An e-mail's local part yields permutations (`jane.doe`, `jane_doe`, `janedoe`) that merge
+        // into one entity, so whichever merged first is no observation. The guess is followed by
+        // its identity key, the separator-free form most platforms accept, never by a separator
+        // spelling no source observed.
+        let mut guessed = ent(EntityKind::Username, "jane.doe", 0.6);
+        guessed.add_evidence(
+            crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("email_parse", "test"),
+                "local part of jane.doe@acme.example",
+            )
+            .inferred(),
+        );
+        assert_eq!(guessed.value, "janedoe");
+        assert_eq!(
+            expansions(&guessed, &policy()),
+            vec![Target {
+                kind: ScanKind::Username,
+                selector: "janedoe".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn only_a_username_is_followed_by_its_observed_spelling() {
+        // Every other route follows the entity's value, which its producer normalised with context
+        // the raw text may lack: a UK number written nationally has no country code of its own.
+        let mut phone = ent(EntityKind::Phone, "+442079460958", 0.8);
+        phone.raw_value = "020 7946 0958".to_owned();
+        let followed = route_selectors(ScanKind::Phone, &phone, 0.0);
+        assert_eq!(
+            followed,
+            canonical_selector(ScanKind::Phone, &phone.value)
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(followed.len(), 1);
+        assert_ne!(
+            followed.first().cloned(),
+            canonical_selector(ScanKind::Phone, &phone.raw_value)
+        );
+    }
+
+    /// A record a source observed, as a username producer adds one.
+    fn observed(kind: EntityKind, value: &str, source: &str) -> Entity {
+        let mut entity = ent(kind, value, 0.8);
+        entity.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan(source, "test"),
+            format!("{source} reports {value}"),
+        ));
+        entity
+    }
+
+    #[test]
+    fn separator_spellings_of_a_handle_are_each_looked_up() {
+        // `pg-smith` and `pg_smith` share an identity key but can be two accounts where a platform
+        // keeps separators; the planner routes each, and so does the crawl, while seeds that
+        // differ only in case are one lookup.
+        let mut collector = Scripted::new();
+        let report = run(
+            &[
+                "@pg-smith".to_owned(),
+                "@pg_smith".to_owned(),
+                "@PG_SMITH".to_owned(),
+            ],
+            &policy(),
+            &mut collector,
+        );
+        let handles: Vec<&str> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind == "username")
+            .map(|(_, selector)| selector.as_str())
+            .collect();
+        assert_eq!(handles, ["pg-smith", "pg_smith"]);
+        assert_eq!(report.dispatches, 2);
+    }
+
+    #[test]
+    fn every_spelling_a_handle_was_observed_under_is_followed_above_the_floor() {
+        // Gravatar names a profile's own handle and a verified GitHub account under another
+        // spelling of one identity, with one source and summary, so the two merge into one
+        // record. Both are followed, the entity's own spelling first; GitHub refuses `pg_smith`
+        // as a login, so only the account's own spelling reaches it.
+        let gravatar = |value: &str, confidence: f64| {
+            let mut entity = ent(EntityKind::Username, value, confidence);
+            entity.add_evidence(crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("gravatar", "test"),
+                "Gravatar public profile",
+            ));
+            entity
+        };
+        let mut profile = gravatar("pg_smith", 0.8);
+        profile.absorb(gravatar("PGSmith", 0.8));
+        assert_eq!(profile.evidence.len(), 1, "the records merge");
+        let handles = |entity: &Entity, policy: &RecursionPolicy| -> Vec<String> {
+            expansions(entity, policy)
+                .into_iter()
+                .map(|target| target.selector)
+                .collect()
+        };
+        assert_eq!(handles(&profile, &policy()), ["pg_smith", "PGSmith"]);
+        // A spelling observed only below the operator's floor is not followed on another's
+        // strength.
+        let mut handle = gravatar("pgsmith", 0.9);
+        handle.absorb(gravatar("pg_smith", 0.5));
+        let floor = RecursionPolicy {
+            expand_confidence_floor: 0.75,
+            ..policy()
+        };
+        assert_eq!(handles(&handle, &floor), ["pgsmith"]);
+        // In a crawl, a lookup's echo of the handle it was asked for is not looked up again, but
+        // another spelling merged into the echo is.
+        let mut echo = observed(EntityKind::Username, "pg-smith", "github_user");
+        echo.absorb(observed(EntityKind::Username, "pgsmith", "github_twitter"));
+        let mut collector = Scripted::new().on(ScanKind::Username, "pg-smith", vec![echo]);
+        let report = run(&["@pg-smith".to_owned()], &policy(), &mut collector);
+        let looked_up: Vec<&str> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind == "username")
+            .map(|(_, selector)| selector.as_str())
+            .collect();
+        assert_eq!(looked_up, ["pg-smith", "pgsmith"]);
+        assert_eq!(report.dispatches, 2);
+    }
+
+    #[test]
+    fn an_observed_handle_merged_behind_email_guesses_is_followed_as_observed() {
+        // An e-mail's local-part guess (`pg-smith`, inferred) merges with Gravatar's verified
+        // `PG_Smith`; the entity keeps the guess's `raw_value`, but only the observed spelling,
+        // case included, is followed, never the guess or the identity key `pgsmith`.
+        let mut guess = ent(EntityKind::Username, "pg-smith", 0.55);
+        guess.add_evidence(
+            crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("email_parse", "test"),
+                "local part of pg.smith@example.com",
+            )
+            .inferred(),
+        );
+        guess.absorb(observed(EntityKind::Username, "PG_Smith", "gravatar"));
+        assert_eq!(guess.raw_value, "pg-smith");
+        assert_eq!(
+            expansions(&guess, &policy()),
+            vec![Target {
+                kind: ScanKind::Username,
+                selector: "PG_Smith".to_owned(),
+            }]
+        );
+        // An observation below the operator's floor is not followed on the guesses' strength;
+        // the guesses alone are followed as guesses are, by the identity key.
+        let mut strong_guess = ent(EntityKind::Username, "pg-smith", 0.7);
+        strong_guess.add_evidence(
+            crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("email_parse", "test"),
+                "local part of pg.smith@example.com",
+            )
+            .inferred(),
+        );
+        let mut weak = observed(EntityKind::Username, "PG_Smith", "gravatar");
+        weak.confidence = 0.65;
+        strong_guess.absorb(weak);
+        let floor = RecursionPolicy {
+            expand_confidence_floor: 0.68,
+            ..policy()
+        };
+        assert_eq!(
+            expansions(&strong_guess, &floor),
+            vec![Target {
+                kind: ScanKind::Username,
+                selector: "pgsmith".to_owned(),
+            }]
+        );
+    }
+
+    /// The entity a username lookup returns for the selector it was asked, as the e-mail,
+    /// exposure, username and network lookups return one (`username_cli`'s seed).
+    fn asked(value: &str) -> Entity {
+        let mut entity = ent(EntityKind::Username, value, 0.99);
+        entity.tag("seed");
+        entity.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan("seed", "test"),
+            "username selector the lookup was asked",
+        ));
+        entity
+    }
+
+    /// A username guessed from an e-mail's local part, as `email_cli` derives one.
+    fn guessed(value: &str) -> Entity {
+        let mut entity = ent(EntityKind::Username, value, 0.7);
+        entity.add_evidence(
+            crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("email_parse", "test"),
+                "local part of pg.smith@corp.example",
+            )
+            .inferred(),
+        );
+        entity
+    }
+
+    /// A pivot is something the crawl found, so the lookup of it echoing it back as the
+    /// operator's seed never makes it one: a handle guessed from an e-mail's local part leaves the
+    /// crawl at the confidence it was followed at, untagged and with no seed record,
+    /// keeping what a source said of it. The operator's own e-mail stays the seed.
+    #[test]
+    fn a_pivot_the_crawl_found_never_leaves_it_as_the_operators_seed() {
+        let email = "pg.smith@corp.example";
+        let mailbox_only = RecursionPolicy {
+            expose_emails: false,
+            ..policy()
+        };
+        let mut seed = ent(EntityKind::Email, email, 0.99);
+        seed.tag("seed");
+        seed.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan("seed", "test"),
+            "email selector the lookup was asked",
+        ));
+        let find = |report: &RecursionReport, kind: EntityKind| -> Entity {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.kind == kind)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {kind:?} in {:?}", report.entities))
+        };
+        let operators = |entity: &Entity| entity.evidence.iter().any(Evidence::is_operator_seed);
+
+        // The lookup of the guess echoes it alone, and a source then describes it.
+        let mut described = asked("pgsmith");
+        described.absorb(observed(EntityKind::Username, "pgsmith", "github"));
+        for echo in [asked("pgsmith"), described] {
+            let mut collector = Scripted::new()
+                .on(
+                    ScanKind::Email,
+                    email,
+                    vec![seed.clone(), guessed("pg-smith")],
+                )
+                .on(ScanKind::Username, "pgsmith", vec![echo.clone()]);
+            let report = run(&[email.to_owned()], &mailbox_only, &mut collector);
+            let handle = find(&report, EntityKind::Username);
+            assert!(!operators(&handle), "{handle:?}");
+            assert!(!handle.has_tag("seed"), "{handle:?}");
+            assert!(handle.confidence <= 0.7, "{handle:?}");
+            let sources = handle.evidence_sources();
+            assert_eq!(
+                sources.contains("github"),
+                echo.evidence_sources().contains("github"),
+                "{sources:?}"
+            );
+            // The guess, and the source's observation when there is one: the echo is not counted.
+            let described = u32::from(echo.evidence_sources().contains("github"));
+            assert_eq!(handle.corroboration, 1 + described, "{handle:?}");
+            let mailbox = find(&report, EntityKind::Email);
+            assert!(
+                operators(&mailbox) && mailbox.has_tag("seed"),
+                "{mailbox:?}"
+            );
+            assert!((mailbox.confidence - 0.99).abs() < f64::EPSILON);
+        }
+    }
+
+    /// A pivot lookup's echo loses its seed record and tag, is never held above the confidence the
+    /// crawl followed it at, and is not counted as an observation; an echo holding nothing else is
+    /// not kept, and an entity that is no echo is kept as it is.
+    #[test]
+    fn a_pivots_echo_keeps_only_what_sources_said_of_it() {
+        let mut echo = asked("pgsmith");
+        assert!(!forget_pivot_echo(&mut echo, 0.7), "{echo:?}");
+
+        let mut described = asked("pgsmith");
+        described.absorb(observed(EntityKind::Username, "pgsmith", "github"));
+        assert_eq!(described.corroboration, 2);
+        assert!(forget_pivot_echo(&mut described, 0.7));
+        assert!(!described.evidence.iter().any(Evidence::is_operator_seed));
+        assert!(!described.has_tag("seed"));
+        assert!(
+            (described.confidence - 0.7).abs() < f64::EPSILON,
+            "{described:?}"
+        );
+        assert_eq!(described.corroboration, 1);
+        assert_eq!(
+            described.evidence_sources(),
+            BTreeSet::from(["github".to_owned()])
+        );
+
+        let mut finding = observed(EntityKind::Username, "pgsmith", "github");
+        let before = finding.clone();
+        assert!(forget_pivot_echo(&mut finding, 0.1));
+        assert_eq!(finding, before);
+    }
+
+    /// An e-mail pivot's lookup echoes it twice over when its breach pass is folded in (one seed
+    /// record, a second echo merged into it): both echoes are forgotten and only what sources
+    /// observed is counted, the pivot stays at the confidence it was followed at, and the
+    /// operator's own e-mail, which its breach pass echoes too, stays the seed.
+    #[test]
+    fn an_email_pivots_folded_echoes_are_forgotten_and_only_sources_counted() {
+        let seed = "ada@example.com";
+        let pivot = "ada.l@example.org";
+        // As the e-mail and exposure lookups echo it, each under its own scan.
+        let echo_in = |value: &str, scan: &str| {
+            let mut entity = ent(EntityKind::Email, value, 0.99);
+            entity.tag("seed");
+            entity.add_evidence(crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("seed", scan),
+                "email selector the lookup was asked",
+            ));
+            entity
+        };
+        let echo = |value: &str| echo_in(value, "email");
+        let mut found = observed(EntityKind::Email, pivot, "hunter");
+        found.confidence = 0.6;
+        let mut folded = echo(pivot);
+        folded.absorb(echo_in(pivot, "exposure"));
+        folded.absorb(observed(EntityKind::Email, pivot, "hibp"));
+        folded.absorb(observed(EntityKind::Email, pivot, "dehashed"));
+        let seed_record = folded
+            .evidence
+            .iter()
+            .find(|evidence| evidence.is_operator_seed())
+            .expect("the echo's record");
+        assert_eq!(seed_record.merged_provenance.len(), 1, "{folded:?}");
+        let mut collector = Scripted::new()
+            .on(ScanKind::Email, seed, vec![echo(seed), found])
+            .on(ScanKind::Exposure, seed, vec![echo(seed)])
+            .on(ScanKind::Email, pivot, vec![folded])
+            .on(ScanKind::Exposure, pivot, vec![echo(pivot)]);
+        let report = run(&[seed.to_owned()], &policy(), &mut collector);
+        let email = |value: &str| -> Entity {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.kind == EntityKind::Email && entity.value == value)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {value} in {:?}", report.entities))
+        };
+        let lead = email(pivot);
+        assert!(!lead.has_tag("seed"), "{lead:?}");
+        assert!(
+            !lead.evidence.iter().any(Evidence::is_operator_seed),
+            "{lead:?}"
+        );
+        assert!((lead.confidence - 0.6).abs() < f64::EPSILON, "{lead:?}");
+        // Hunter's, HIBP's and DeHashed's observations, and no echo.
+        assert_eq!(lead.corroboration, 3, "{lead:?}");
+        let mailbox = email(seed);
+        assert!(mailbox.has_tag("seed"), "{mailbox:?}");
+        assert!(
+            mailbox.evidence.iter().any(Evidence::is_operator_seed),
+            "{mailbox:?}"
+        );
+        assert!((mailbox.confidence - 0.99).abs() < f64::EPSILON);
+    }
+
+    /// What a pivot's echo queues is followed at no more than the pivot: a spelling a source
+    /// reported of a handle guessed from an e-mail's local part, looked up from the guess's echo,
+    /// leaves the crawl at the guess's confidence, not at the echo's, nor as the operator's seed.
+    #[test]
+    fn what_a_pivots_echo_queues_is_followed_at_no_more_than_the_pivot() {
+        let email = "pg.smith@corp.example";
+        let mailbox_only = RecursionPolicy {
+            expose_emails: false,
+            ..policy()
+        };
+        let mut guess = asked("pgsmith");
+        guess.absorb(observed(EntityKind::Username, "pg_smith", "github_twitter"));
+        let mut reported = asked("pg_smith");
+        reported.absorb(observed(EntityKind::Username, "pg_smith", "hacker_news"));
+        let mut collector = Scripted::new()
+            .on(ScanKind::Email, email, vec![guessed("pg-smith")])
+            .on(ScanKind::Username, "pgsmith", vec![guess])
+            .on(ScanKind::Username, "pg_smith", vec![reported]);
+        let report = run(&[email.to_owned()], &mailbox_only, &mut collector);
+        let handles: Vec<&str> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind == "username")
+            .map(|(_, selector)| selector.as_str())
+            .collect();
+        assert_eq!(handles, ["pgsmith", "pg_smith"]);
+        let kept: Vec<&Entity> = report
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::Username)
+            .collect();
+        assert!(!kept.is_empty());
+        for handle in kept {
+            assert!(handle.confidence <= 0.7, "{handle:?}");
+            assert!(!handle.has_tag("seed"), "{handle:?}");
+            assert!(
+                !handle.evidence.iter().any(Evidence::is_operator_seed),
+                "{handle:?}"
+            );
+        }
+    }
+
+    /// A pivot's lookup is routed and recorded as it returned, before its echo is forgotten: a
+    /// handle followed by a spelling a source observed is not looked up again by its identity key
+    /// when every other spelling is below the floor (the echo says it was looked up), and a lookup
+    /// whose echo was all it returned still shows in the lineage.
+    #[test]
+    fn a_pivots_lookup_is_routed_and_recorded_before_its_echo_is_forgotten() {
+        let email = "pg.smith@corp.example";
+        let floor = RecursionPolicy {
+            expose_emails: false,
+            expand_confidence_floor: 0.8,
+            ..policy()
+        };
+        let mut echo = asked("pg_smith");
+        let mut other = observed(EntityKind::Username, "PG-Smith", "keybase");
+        other.confidence = 0.7;
+        echo.absorb(other);
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Email,
+                email,
+                vec![observed(EntityKind::Username, "PG_Smith", "gravatar")],
+            )
+            .on(ScanKind::Username, "PG_Smith", vec![echo]);
+        run(&[email.to_owned()], &floor, &mut collector);
+        let handles: Vec<&str> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind == "username")
+            .map(|(_, selector)| selector.as_str())
+            .collect();
+        assert_eq!(handles, ["PG_Smith"]);
+
+        let mailbox_only = RecursionPolicy {
+            expose_emails: false,
+            ..policy()
+        };
+        let mut collector = Scripted::new()
+            .on(ScanKind::Email, email, vec![guessed("pg-smith")])
+            .on(ScanKind::Username, "pgsmith", vec![asked("pgsmith")]);
+        let report = run(&[email.to_owned()], &mailbox_only, &mut collector);
+        assert!(
+            report
+                .edges
+                .iter()
+                .any(|edge| edge.from_kind == "username" && edge.from_selector == "pgsmith"),
+            "{:?}",
+            report.edges
+        );
+    }
+
+    #[test]
+    fn a_lookups_echo_of_the_handle_it_was_asked_is_no_observation() {
+        let email = "pg.smith@corp.example";
+        let mailbox_only = RecursionPolicy {
+            expose_emails: false,
+            ..policy()
+        };
+        let handle = |report: &RecursionReport| -> Entity {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.kind == EntityKind::Username)
+                .cloned()
+                .expect("the handle")
+        };
+        let handles = |collector: &Scripted| -> Vec<String> {
+            collector
+                .calls
+                .iter()
+                .filter(|(kind, _)| kind == "username")
+                .map(|(_, selector)| selector.clone())
+                .collect()
+        };
+        // A guess is followed by its identity key, and that lookup's echo of the key records no
+        // spelling as observed: every source may have answered that it is not there.
+        let mut collector = Scripted::new()
+            .on(ScanKind::Email, email, vec![guessed("pg-smith")])
+            .on(ScanKind::Username, "pgsmith", vec![asked("pgsmith")]);
+        let report = run(&[email.to_owned()], &mailbox_only, &mut collector);
+        assert_eq!(handles(&collector), ["pgsmith"]);
+        let merged = handle(&report);
+        assert!(
+            merged.spellings.is_empty() && merged.observed_spellings().is_empty(),
+            "{merged:?}"
+        );
+        // A spelling a source observed keeps the confidence it was observed at when the lookup of
+        // it echoes it back, and the echo is not followed by the identity key.
+        let mut gravatar = observed(EntityKind::Username, "PG_Smith", "gravatar");
+        gravatar.confidence = 0.65;
+        let mut seen = guessed("pg-smith");
+        seen.absorb(gravatar);
+        let mut collector = Scripted::new().on(ScanKind::Email, email, vec![seen]).on(
+            ScanKind::Username,
+            "PG_Smith",
+            vec![asked("pg_smith")],
+        );
+        let report = run(&[email.to_owned()], &mailbox_only, &mut collector);
+        assert_eq!(handles(&collector), ["PG_Smith"]);
+        let spellings: Vec<(String, f64)> =
+            handle(&report).observed_spellings().into_iter().collect();
+        assert_eq!(spellings, [("PG_Smith".to_owned(), 0.65)]);
+        // The operator's handle, whose only other spelling a source reported is below the floor,
+        // is not followed by its identity key either: the handle itself was looked up.
+        let mut echo = asked("pg_smith");
+        let mut other = observed(EntityKind::Username, "PG-Smith", "keybase");
+        other.confidence = 0.7;
+        echo.absorb(other);
+        let mut collector = Scripted::new().on(ScanKind::Username, "PG_Smith", vec![echo]);
+        run(
+            &["@PG_Smith".to_owned()],
+            &RecursionPolicy {
+                expand_confidence_floor: 0.8,
+                ..mailbox_only
+            },
+            &mut collector,
+        );
+        assert_eq!(handles(&collector), ["PG_Smith"]);
+    }
+
+    #[test]
+    fn a_handle_echoed_in_another_spelling_is_not_looked_up_again() {
+        // A platform that reports the handle it was asked for in lower case echoes the seed under a
+        // second spelling of one identity, which the crawl has already looked up: it neither looks
+        // up the echo nor the identity key, while the echo's other findings are still followed.
+        let mut collector = Scripted::new().on(
+            ScanKind::Username,
+            "PG_Smith",
+            vec![
+                ent(EntityKind::Username, "pg_smith", 0.9),
+                ent(EntityKind::Domain, "pg-smith.example", 0.7),
+            ],
+        );
+        let report = run(&["@PG_Smith".to_owned()], &policy(), &mut collector);
+        let handles: Vec<&(String, String)> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind == "username")
+            .collect();
+        assert_eq!(handles, [&("username".to_owned(), "PG_Smith".to_owned())]);
+        assert!(
+            collector
+                .calls
+                .contains(&("domain".to_owned(), "pg-smith.example".to_owned()))
+        );
+        assert_eq!(report.dispatches, 2);
+    }
+
+    #[test]
+    fn an_edge_resolves_to_its_source_under_any_spelling_of_its_identity() {
+        // The crawl records the spelling it followed (`PG_Smith`); a scan saved before recorded the
+        // identity key (`pgsmith`). Either edge, and one under another spelling of the same handle,
+        // links the handle to what its lookup found.
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Email,
+                "person@example.com",
+                vec![ent(EntityKind::Username, "PG_Smith", 0.8)],
+            )
+            .on(ScanKind::Exposure, "person@example.com", vec![])
+            .on(
+                ScanKind::Username,
+                "PG_Smith",
+                vec![ent(EntityKind::Domain, "pg-smith.example", 0.7)],
+            );
+        let report = run(
+            &["person@example.com".to_owned()],
+            &policy(),
+            &mut collector,
+        );
+        let uid = |kind: EntityKind| {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.kind == kind)
+                .map(|entity| entity.uid.clone())
+                .expect("entity")
+        };
+        let (handle, site) = (uid(EntityKind::Username), uid(EntityKind::Domain));
+        for spelling in ["PG_Smith", "pgsmith", "pg-smith"] {
+            let mut saved = report.clone();
+            for edge in &mut saved.edges {
+                if edge.from_kind == "username" {
+                    edge.from_selector = spelling.to_owned();
+                }
+            }
+            assert!(
+                lineage_links(&saved)
+                    .iter()
+                    .any(|link| link.from_uid == handle && link.to_uid == site),
+                "an edge recorded under {spelling} must resolve to the handle"
+            );
+        }
     }
 
     #[test]
@@ -1474,6 +2306,30 @@ mod tests {
             "the exposure pass did not run on the e-mail"
         );
         assert_eq!(report.termination, TerminationReason::FixedPoint);
+    }
+
+    #[test]
+    fn an_email_with_no_address_in_it_is_not_followed() {
+        // A breach or people-search record can put a non-address in its e-mail field. The e-mail
+        // route refuses it, so neither it nor its exposure is looked up: the exposure route would
+        // read it as a username nobody reported.
+        for junk in ["noemail", "null", "pgsmith"] {
+            let email = ent(EntityKind::Email, junk, 0.6);
+            assert_eq!(expansions(&email, &policy()), Vec::new(), "{junk}");
+        }
+        // An address is followed on both routes.
+        let email = ent(EntityKind::Email, "Person@Example.com", 0.6);
+        let followed: Vec<(ScanKind, String)> = expansions(&email, &policy())
+            .into_iter()
+            .map(|target| (target.kind, target.selector))
+            .collect();
+        assert_eq!(
+            followed,
+            [
+                (ScanKind::Email, "person@example.com".to_owned()),
+                (ScanKind::Exposure, "person@example.com".to_owned()),
+            ]
+        );
     }
 
     #[test]

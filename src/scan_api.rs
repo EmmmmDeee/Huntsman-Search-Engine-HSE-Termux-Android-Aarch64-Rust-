@@ -41,20 +41,22 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// process-wide to prevent concurrent exports multiplying peak memory on phones.
 static MULTI_EXPORT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-struct MultiExportPermit;
+/// The one multi-export a flag admits: while it is held, a second export, on any thread, is
+/// refused with 503. Released when dropped, on every return and during unwinding.
+struct MultiExportPermit(&'static AtomicBool);
 
 impl MultiExportPermit {
-    fn try_acquire() -> Option<Self> {
-        MULTI_EXPORT_ACTIVE
+    fn try_acquire(active: &'static AtomicBool) -> Option<Self> {
+        active
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| Self)
+            .map(|_| Self(active))
     }
 }
 
 impl Drop for MultiExportPermit {
     fn drop(&mut self) {
-        MULTI_EXPORT_ACTIVE.store(false, Ordering::Release);
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -70,8 +72,9 @@ use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::scan_alert::{self, Policy};
 use crate::scan_compare;
 use crate::scan_export;
+use crate::scan_route::ScanKind;
 use crate::scan_search;
-use crate::scan_service::{MAX_RUNNING, ScanRequest, ScanService, ServiceError};
+use crate::scan_service::{MAX_RUNNING, ScanRequest, ScanService, ServiceError, plan};
 use crate::scan_store::{LogLevel, Risk, ScanOptions, ScanRecord, ScanResults, ScanStatus};
 use crate::sf_correlate::{Rule, RuleError};
 use crate::sf_elements::{self, DataElement};
@@ -254,6 +257,8 @@ pub struct ScanApi {
     /// Admission slots for memory-intensive embedded-server scan responses. Shared across
     /// cloned HTTP routes and released when response construction has completed.
     web_request_slots: Arc<AtomicUsize>,
+    /// Whether a multi-export holds its permit: [`MULTI_EXPORT_ACTIVE`], one for the process.
+    multi_export: &'static AtomicBool,
 }
 
 impl ScanApi {
@@ -264,7 +269,17 @@ impl ScanApi {
             slots,
             globals: Vec::new(),
             web_request_slots: Arc::new(AtomicUsize::new(0)),
+            multi_export: &MULTI_EXPORT_ACTIVE,
         }
+    }
+
+    /// This API with a multi-export permit of its own, as each unit test's: the tests of one
+    /// binary run in parallel, and an export one of them runs must not refuse another's.
+    #[cfg(test)]
+    #[must_use]
+    fn with_own_multi_export(mut self) -> Self {
+        self.multi_export = Box::leak(Box::new(AtomicBool::new(false)));
+        self
     }
 
     /// Adds one entry to the Settings page's Global Settings: `key` names it in the API, the page
@@ -1172,7 +1187,7 @@ impl ScanApi {
         }
         // Validate the request before acquiring the process-wide export permit.
         // RAII releases on every return and during unwinding.
-        let Some(_permit) = MultiExportPermit::try_acquire() else {
+        let Some(_permit) = MultiExportPermit::try_acquire(self.multi_export) else {
             return error(503, "another multi-scan export is already running");
         };
         // Reserve only the bounded number of scan slots, avoiding incremental
@@ -1435,7 +1450,23 @@ fn event_types() -> ApiResponse {
     ok(200, &Value::Array(types))
 }
 
-/// Elements as `/elements` answers them: each as saved, with its type's description and the data
+/// The lookup New Scan of `element` runs, which the page offers it only with: the one its type
+/// names ([`crate::sf_compat::pivot_kind`]) when that lookup takes the value, else the one the
+/// value's own form names (a breach record's `username` that is an address runs the e-mail lookup,
+/// a host name that is an IP address the IP lookup), but never a people search of a value only
+/// because nothing else takes it. `None` when no lookup takes the value as what it is. **Pure.**
+fn pivot_kind(element: &DataElement) -> Option<ScanKind> {
+    let typed = crate::sf_compat::pivot_kind(&element.kind)?;
+    let takes = |kind: ScanKind| plan(&element.data, Some(kind.command())).is_ok();
+    if takes(typed) {
+        return Some(typed);
+    }
+    let named = crate::scan_route::infer_kind(&element.data);
+    (named != ScanKind::People && takes(named)).then_some(named)
+}
+
+/// Elements as `/elements` answers them: each as saved, with its type's description, the lookup
+/// New Scan of it runs (`scan_kind`, [`pivot_kind`]; null when none takes its value) and the data
 /// of the element it was found from in `results`. An element whose source was not saved (a scan a
 /// `types` filter trimmed before the ancestry was kept) says so with `source_missing`, rather than
 /// passing an empty source off as the root.
@@ -1453,6 +1484,10 @@ fn element_rows<'a>(
                 .map(|source| sources.get(source).copied());
             let mut row = json!(element);
             row["description"] = Value::String(sf_types::describe(&element.kind).to_owned());
+            // The page opens New Scan of a value with this lookup, and offers it only with one;
+            // detection would read a bare handle as a domain, an AS or a name.
+            row["scan_kind"] = pivot_kind(element)
+                .map_or(Value::Null, |kind| Value::String(kind.command().to_owned()));
             row["source_data"] = Value::String(source_data.flatten().unwrap_or("").to_owned());
             if source_data == Some(None) {
                 row["source_missing"] = Value::Bool(true);
@@ -1516,7 +1551,10 @@ mod tests {
         });
         let service = ScanService::new(ScanStore::open(&dir).unwrap(), lookup);
         let slots: SlotCheck = Arc::new(move |slot: &str| held.contains(&slot));
-        (ScanApi::new(service, Some(slots)), dir)
+        (
+            ScanApi::new(service, Some(slots)).with_own_multi_export(),
+            dir,
+        )
     }
 
     fn body(response: &ApiResponse) -> Value {
@@ -1658,6 +1696,94 @@ mod tests {
     }
 
     #[test]
+    fn an_element_names_the_lookup_a_scan_of_its_value_runs() {
+        // The page opens New Scan of an element with the row's `scan_kind`. Detection reads a bare
+        // handle as a domain (`jane.doe`), an AS (`1337`) or a name (`john_smith`), and refuses
+        // `janedoe`, so a USERNAME element must name its lookup.
+        let element = |kind: &str, data: &str| crate::sf_elements::DataElement {
+            id: format!("{kind}-{data}"),
+            kind: kind.to_owned(),
+            data: data.to_owned(),
+            source: None,
+            module: "test".to_owned(),
+            confidence: 100,
+            created: 0,
+            fp: false,
+            entity: None,
+            raw: Value::Null,
+        };
+        let expected = [
+            ("USERNAME", "jane.doe", Some("username")),
+            ("PHONE_NUMBER", "+61400000000", Some("phone")),
+            ("PHYSICAL_ADDRESS", "1 Example St", Some("geocode")),
+            (
+                "HSE_CRYPTO_ADDRESS",
+                "sol:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                Some("crypto"),
+            ),
+            ("HUMAN_NAME", "Jane Doe", Some("people")),
+            // A value found beside a target names the lookup of its kind of value, where
+            // detection would read a co-hosted site with a phone number for a name as a phone.
+            ("DOMAIN_NAME", "example.com", Some("domain")),
+            ("CO_HOSTED_SITE", "0412345678.com.au", Some("domain")),
+            ("BGP_AS_MEMBER", "AS13335", Some("asn")),
+            ("NETBLOCK_MEMBER", "93.184.216.0/24", Some("netblock")),
+            ("AFFILIATE_IPADDR", "93.184.216.34", Some("ip")),
+            ("EMAILADDR_GENERIC", "abuse@example.com", Some("email")),
+            ("PHYSICAL_COORDINATES", "-33.8688,151.2093", Some("network")),
+            // A value its type's lookup refuses runs the lookup its own form names: a breach
+            // record's `username` that is an address or a number, a host name that is an address.
+            ("USERNAME", "jane.doe@yahoo.com", Some("email")),
+            ("USERNAME", "+61412345678", Some("phone")),
+            ("INTERNET_NAME", "93.184.216.34", Some("ip")),
+            // Nothing takes it as what it is, so New Scan is not offered, never a people search.
+            ("DOMAIN_NAME", "foo_bar.example.com", None),
+            ("LINKED_URL_EXTERNAL", "https://example.com/", None),
+        ];
+        let elements = expected
+            .iter()
+            .map(|(kind, data, _)| element(kind, data))
+            .collect();
+        let results = ScanResults {
+            format_version: crate::scan_store::FORMAT_VERSION,
+            scan_id: "s".into(),
+            text: String::new(),
+            entities: Vec::new(),
+            outcomes: Vec::new(),
+            elements,
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        let rows = element_rows(&results, results.elements.iter());
+        for ((kind, data, lookup), row) in expected.iter().zip(&rows) {
+            assert_eq!(
+                row["scan_kind"],
+                lookup.map_or(Value::Null, Value::from),
+                "{kind} {data}"
+            );
+            // The page submits the kind it was given, so the API must take it for the value.
+            if let Some(lookup) = lookup {
+                assert!(plan(data, Some(lookup)).is_ok(), "{kind} {data}");
+            }
+        }
+        // Each mapped type's kind is one the scan form and the API accept, and it routes the
+        // value as its type, where detection would not.
+        for handle in ["jane.doe", "janedoe", "1337", "john_smith"] {
+            let planned = crate::scan_service::plan(handle, rows[0]["scan_kind"].as_str())
+                .expect("a handle is a username target");
+            assert_eq!(planned.kind, ScanKind::Username, "{handle}");
+        }
+        assert!(
+            !matches!(
+                crate::scan_service::plan("jane.doe", Some("auto")),
+                Ok(plan) if plan.kind == ScanKind::Username
+            ),
+            "detection reads a bare handle as something else"
+        );
+    }
+
+    #[test]
     fn single_export_limits_input_before_deserializing_and_keeps_small_exports() {
         let (api, dir) = api("single-export-budget");
         let id = finished(&api);
@@ -1717,6 +1843,42 @@ mod tests {
         assert_eq!(accepted.body, normal.body);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One multi-export runs at a time, whichever thread runs it: a second is refused with 503
+    /// while another thread holds the permit, as a request served beside it would, and admitted
+    /// once it is released. Another API's permit, as another test's, refuses none.
+    #[test]
+    fn a_second_multi_export_is_refused_while_one_runs() {
+        let (other_api, other_dir) = api("multi-export-permit-other");
+        let (api, dir) = api("multi-export-permit");
+        // The served API's permit is the process's one; this test's API has its own.
+        assert!(std::ptr::eq(
+            ScanApi::new(Arc::clone(&api.service), None).multi_export,
+            std::ptr::addr_of!(MULTI_EXPORT_ACTIVE)
+        ));
+        let id = finished(&api);
+        let export = || api.handle("GET", "/api/scans/export", &format!("ids={id}"));
+        let flag = api.multi_export;
+        let (took, taken) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let other = std::thread::spawn(move || {
+            let permit = MultiExportPermit::try_acquire(flag);
+            took.send(permit.is_some()).unwrap();
+            released.recv().unwrap();
+            drop(permit);
+        });
+        assert!(taken.recv().unwrap(), "no export was running");
+        let refused = export();
+        assert_eq!(refused.status, 503, "{}", refused.text());
+        release.send(()).unwrap();
+        other.join().unwrap();
+        assert_eq!(export().status, 200);
+        let held = MultiExportPermit::try_acquire(other_api.multi_export).expect("its own permit");
+        assert_eq!(export().status, 200);
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     #[test]
