@@ -1,8 +1,12 @@
 //! Hudson Rock Cavalier: keyless infostealer intelligence for a domain or an email address.
 //!
-//! The domain leg is one GET to Cavalier's public search-by-domain endpoint; its results are
-//! domain-wide aggregates, so this source deliberately does not claim they identify a particular
-//! account, and the raw provider response is retained for auditability.
+//! The domain leg is one GET to Cavalier's public search-by-domain endpoint. It answers `200`
+//! with how many of the domain's employees, users and third parties an infostealer compromised
+//! (`employees`, `users`, `third_parties`), all zero for a domain it holds nothing on (verified
+//! 2026-10-31). The results are domain-wide aggregates, so this source deliberately does not claim
+//! they identify a particular account, and the raw provider response is never kept: it lists the
+//! URLs the stolen credentials were for. A `404` is a failed lookup, never a zero: the host
+//! answers `404` for a path it does not serve.
 //!
 //! The email leg is one GET to the public search-by-email endpoint. An address with no infection
 //! answers `200` with an empty `stealers` list, a clean zero (verified 2026-10-29). When records
@@ -55,9 +59,10 @@ pub fn email_url(email: &str) -> String {
 /// Look up domain-level aggregates, or one address's infostealer records.
 ///
 /// # Errors
-/// Returns the typed API-leg error, or a decode error for malformed JSON, a missing aggregate
-/// count (domain) or a missing `stealers` list (email). Domain counts are deliberately not
-/// attributed to an individual account.
+/// Returns the typed API-leg error, `LegError::Unexpected(404)` for a `404` from either endpoint,
+/// or a decode error for malformed JSON, a missing aggregate count (domain) or a missing
+/// `stealers` list (email). Domain counts are deliberately not attributed to an individual
+/// account.
 pub fn lookup(
     transport: &dyn Transport,
     keys: &Keys,
@@ -65,15 +70,41 @@ pub fn lookup(
     now_unix: u64,
 ) -> Result<Option<Finding>, LegError> {
     match indicator {
-        Indicator::Domain(domain) => {
-            match api_leg::get(transport, &API, keys, &url(domain), now_unix)? {
-                Answer::Body(body) => decode(&body),
-                Answer::NotFound(_) => Ok(None),
-            }
-        }
+        Indicator::Domain(domain) => lookup_domain(transport, keys, domain, now_unix),
         Indicator::Email(email) => lookup_email(transport, keys, email, now_unix),
         _ => Ok(None),
     }
+}
+
+/// Look up the aggregates of the domain `domain` is registered under. Cavalier holds them by
+/// registrable domain and answers all zero for a host below one (`www.tesla.com` answers zero
+/// where `tesla.com` answers its counts, verified 2026-10-31), so a host is asked as its
+/// registrable domain, and its finding names that domain (`registrable_domain`).
+///
+/// # Errors
+/// The typed API-leg error, `LegError::Unexpected(404)` for a `404`, or a decode error.
+fn lookup_domain(
+    transport: &dyn Transport,
+    keys: &Keys,
+    domain: &str,
+    now_unix: u64,
+) -> Result<Option<Finding>, LegError> {
+    let registered =
+        crate::domains::registrable_domain(domain).unwrap_or_else(|| domain.to_owned());
+    let finding = match api_leg::get(transport, &API, keys, &url(&registered), now_unix)? {
+        Answer::Body(body) => decode(&body)?,
+        Answer::NotFound(_) => return Err(LegError::Unexpected(404)),
+    };
+    Ok(finding.map(|mut finding| {
+        if registered != domain {
+            finding.summary = format!(
+                "{} (asked for {registered}, the domain {domain} is registered under)",
+                finding.summary
+            );
+            finding = finding.attr("registrable_domain", &registered);
+        }
+        finding
+    }))
 }
 
 /// Look up one address's infostealer records. An empty selector asks nothing -- the endpoint
@@ -100,32 +131,74 @@ fn lookup_email(
 
 /// Decode one domain answer. **Pure.**
 ///
+/// All three counts zero is a clean negative. Otherwise the finding keeps them, their `total`,
+/// when an employee and a user were last compromised, and the stealer families with how many
+/// compromises each took, most first. The URLs the credentials were for (`data`, `stats`) are
+/// not read, nor the password-strength figures or the antivirus list; `totalStealers` counts
+/// Cavalier's whole database, not the domain.
+///
 /// # Errors
-/// Returns `LegError::Decode` when the response is not UTF-8 JSON with numeric aggregate
-/// counts. A valid zero-count response is a clean negative.
+/// Returns `LegError::Decode` when the response is not UTF-8 JSON with numeric `employees`,
+/// `users` and `third_parties` counts.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let text =
         std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
-    let employees = value
-        .get("total_employees")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| LegError::Decode("missing or invalid total_employees".into()))?;
-    let users = value
-        .get("total_users")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| LegError::Decode("missing or invalid total_users".into()))?;
-    if employees == 0 && users == 0 {
+    let count = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| LegError::Decode(format!("missing or invalid {key}")))
+    };
+    let employees = count("employees")?;
+    let users = count("users")?;
+    let third_parties = count("third_parties")?;
+    if employees == 0 && users == 0 && third_parties == 0 {
         return Ok(None);
     }
-    // Provider responses can contain nested infostealer records. Never persist the raw
-    // document: it may contain credentials, host identifiers or other private fields.
-    let mut finding = Finding::new(format!("Hudson Rock: {employees} employees, {users} users"))
-        .attr("employees", employees.to_string())
-        .attr("users", users.to_string());
-    if let Some(stealers) = value.get("stealers").and_then(|v| v.as_array()) {
-        finding = finding.attr("stealers", stealers.len().to_string());
+    let text_of = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
+    let mut families: Vec<(&str, u64)> = value
+        .get("stealerFamilies")
+        .and_then(serde_json::Value::as_object)
+        .map(|families| {
+            families
+                .iter()
+                .filter(|(name, _)| name.as_str() != "total")
+                .filter_map(|(name, count)| Some((name.as_str(), count.as_u64()?)))
+                .filter(|(_, count)| *count > 0)
+                .collect()
+        })
+        .unwrap_or_default();
+    families.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    let mut finding = Finding::new(format!(
+        "Hudson Rock: {employees} employees, {users} users and {third_parties} third parties \
+         compromised by infostealers"
+    ))
+    .attr("employees", employees.to_string())
+    .attr("users", users.to_string())
+    .attr("third_parties", third_parties.to_string())
+    .opt_attr(
+        "total",
+        value
+            .get("total")
+            .and_then(serde_json::Value::as_u64)
+            .map(|total| total.to_string()),
+    )
+    .opt_attr(
+        "last_employee_compromised",
+        text_of("last_employee_compromised"),
+    )
+    .opt_attr("last_user_compromised", text_of("last_user_compromised"));
+    if !families.is_empty() {
+        let names: Vec<&str> = families.iter().map(|(name, _)| *name).collect();
+        let counts: Vec<String> = families
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect();
+        finding = finding
+            .list_attr("stealer_families", &names)
+            .list_attr("stealer_family_counts", &counts);
     }
     Ok(Some(finding))
 }
@@ -210,54 +283,156 @@ pub fn decode_email(body: &[u8]) -> Result<Option<Finding>, LegError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn domain_aggregates_never_persist_nested_credentials() {
-        let body = br#"{"total_employees":5,"total_users":10,"stealers":[{"credentials":[{"password":"SENTINEL_PASSWORD_83","username":"private@example.test"}],"computer_name":"PRIVATE_HOST_83","ip":"203.0.113.83"}]}"#;
-        let finding = decode(body).unwrap().unwrap();
-        assert!(finding.summary.contains("5 employees"));
-        assert!(
-            finding
-                .attrs
-                .iter()
-                .any(|(k, v)| *k == "employees" && v == "5")
-        );
-        assert!(
-            finding
-                .attrs
-                .iter()
-                .any(|(k, v)| *k == "users" && v == "10")
-        );
-        assert!(
-            finding
-                .attrs
-                .iter()
-                .any(|(k, v)| *k == "stealers" && v == "1")
-        );
-        assert!(!finding.attrs.iter().any(|(k, _)| *k == "raw_answer"));
-        for secret in [
-            "SENTINEL_PASSWORD_83",
-            "private@example.test",
-            "PRIVATE_HOST_83",
-            "203.0.113.83",
-        ] {
-            assert!(!finding.summary.contains(secret));
-            assert!(!finding.attrs.iter().any(|(_, v)| v.contains(secret)));
-        }
+    /// A domain answer in the live shape (verified 2026-10-31; the values here are synthetic).
+    const DOMAIN_ANSWER: &str = r#"{
+        "antiviruses":{"total":4,"found":50.0,"not_found":25.0,"free":25.0,"list":[{"count":2,"name":"Windows Defender [ON]"}]},
+        "applications":[{"keyword":"sso"}],
+        "data":{
+            "all_urls":[{"occurrence":4,"type":"Employee","url":"https://sso.example.com/login?token=SENTINEL_TOKEN_31"}],
+            "clients_urls":[{"occurrence":9,"type":"User","url":"https://auth.example.com/signin"}],
+            "employees_urls":[{"occurrence":4,"type":"Employee","url":"https://sso.example.com/login?token=SENTINEL_TOKEN_31"}]
+        },
+        "employeePasswords":{"has_stats":true,"too_weak":{"perc":50.0,"qty":1},"weak":{"perc":50.0,"qty":1},"medium":{"perc":0.0,"qty":0},"strong":{"perc":0.0,"qty":0},"totalPass":2},
+        "employees":3,
+        "is_shopify":false,
+        "last_employee_compromised":"2026-09-18T00:00:00.000Z",
+        "last_user_compromised":"2026-10-28T14:46:10.000Z",
+        "logo":"https://cdn.example.net/logo",
+        "stats":{"clients_count":[9],"clients_urls":["https://auth.example.com/signin"],"employees_count":[4],"employees_urls":["https://sso.example.com/login?token=SENTINEL_TOKEN_31"],"totalEmployees":1,"totalUsers":1},
+        "stealerFamilies":{"total":15,"Lumma":6,"RedLine":9,"Vidar":0},
+        "thirdPartyDomains":[{"domain":"thirdparty.example.net","occurrence":2}],
+        "third_parties":2,
+        "total":17,
+        "totalStealers":37109871,
+        "totalUrls":3,
+        "userPasswords":{"has_stats":false},
+        "users":12
+    }"#;
+
+    fn attr<'a>(finding: &'a Finding, key: &str) -> Option<&'a str> {
+        finding
+            .attrs
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
     }
 
     #[test]
-    fn valid_zero_is_a_clean_negative() {
-        assert!(
-            decode(br#"{"total_employees":0,"total_users":0}"#)
-                .unwrap()
-                .is_none()
+    fn a_domain_answer_keeps_its_aggregates_and_never_a_url_it_lists() {
+        let finding = decode(DOMAIN_ANSWER.as_bytes()).unwrap().unwrap();
+        assert_eq!(
+            finding.summary,
+            "Hudson Rock: 3 employees, 12 users and 2 third parties compromised by infostealers"
         );
+        assert_eq!(attr(&finding, "employees"), Some("3"));
+        assert_eq!(attr(&finding, "users"), Some("12"));
+        assert_eq!(attr(&finding, "third_parties"), Some("2"));
+        assert_eq!(attr(&finding, "total"), Some("17"));
+        assert_eq!(
+            attr(&finding, "last_employee_compromised"),
+            Some("2026-09-18T00:00:00.000Z")
+        );
+        assert_eq!(
+            attr(&finding, "last_user_compromised"),
+            Some("2026-10-28T14:46:10.000Z")
+        );
+        assert_eq!(attr(&finding, "stealer_families"), Some("RedLine,Lumma"));
+        assert_eq!(
+            attr(&finding, "stealer_family_counts"),
+            Some("RedLine=9,Lumma=6")
+        );
+        assert!(finding.pivots.is_empty());
+        for kept_out in [
+            "SENTINEL_TOKEN_31",
+            "sso.example.com",
+            "auth.example.com",
+            "thirdparty.example.net",
+            "37109871",
+        ] {
+            assert!(
+                !finding.summary.contains(kept_out)
+                    && !finding.attrs.iter().any(|(_, v)| v.contains(kept_out)),
+                "kept {kept_out}: {finding:?}"
+            );
+        }
+    }
+
+    /// The live answer for a domain Cavalier holds nothing on (verified 2026-10-31).
+    #[test]
+    fn valid_zero_is_a_clean_negative() {
+        let clean = br#"{"data":{"employees_urls":[],"clients_urls":[],"all_urls":[]},"employees":0,"is_shopify":false,"logo":"https://cdn.example.net/logo","stats":{"totalEmployees":0,"totalUsers":0,"employees_urls":[],"clients_urls":[],"employees_count":[],"clients_count":[]},"third_parties":0,"total":0,"totalStealers":37109871,"totalUrls":0,"users":0}"#;
+        assert!(decode(clean).unwrap().is_none());
+    }
+
+    #[test]
+    fn third_parties_alone_are_no_clean_negative() {
+        let body = br#"{"employees":0,"users":0,"third_parties":4,"total":4}"#;
+        let finding = decode(body).unwrap().unwrap();
+        assert_eq!(attr(&finding, "third_parties"), Some("4"));
     }
 
     #[test]
     fn malformed_aggregate_is_not_silently_reported_as_zero() {
         assert!(decode(br#"{"status":"ok"}"#).is_err());
         assert!(decode(b"not JSON").is_err());
+        // Counts the endpoint does not send are no answer, and neither is a count missing.
+        assert!(decode(br#"{"total_employees":0,"total_users":0}"#).is_err());
+        assert!(decode(br#"{"employees":0,"users":0}"#).is_err());
+        assert!(decode(br#"{"employees":"3","users":0,"third_parties":0}"#).is_err());
+    }
+
+    /// Cavalier answers all zero for a host below a registrable domain, so a host is asked as the
+    /// domain it is registered under, and the finding names that domain; a registrable domain is
+    /// asked as itself.
+    #[test]
+    fn a_host_is_asked_as_the_domain_it_is_registered_under() {
+        let prefix = "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-domain";
+        let transport = crate::test_support::RoutedTransport::new(&[(prefix, 200, DOMAIN_ANSWER)]);
+        let finding = lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Domain("www.shop.example.co.uk"),
+            1,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(transport.urls(), [url("example.co.uk")]);
+        assert_eq!(attr(&finding, "registrable_domain"), Some("example.co.uk"));
+        assert!(
+            finding.summary.ends_with(
+                "(asked for example.co.uk, the domain www.shop.example.co.uk is registered under)"
+            ),
+            "{}",
+            finding.summary
+        );
+
+        let transport = crate::test_support::RoutedTransport::new(&[(prefix, 200, DOMAIN_ANSWER)]);
+        let finding = lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Domain("example.com"),
+            1,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(transport.urls(), [url("example.com")]);
+        assert_eq!(attr(&finding, "registrable_domain"), None);
+    }
+
+    /// The host answers `404` for a path it does not serve, as it would after the endpoint moved.
+    #[test]
+    fn a_404_on_the_domain_endpoint_is_a_failure_not_a_zero() {
+        let transport = crate::test_support::OneResponse::json(404, r#"{"detail":"Not Found"}"#);
+        let looked = lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Domain("example.com"),
+            1,
+        );
+        assert!(
+            matches!(looked, Err(LegError::Unexpected(404))),
+            "{looked:?}"
+        );
     }
 
     #[test]
