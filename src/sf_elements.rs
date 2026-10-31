@@ -305,9 +305,14 @@ fn says_malicious(evidence: &Evidence) -> bool {
 }
 
 /// The child elements one evidence record's attributes describe, as `(type, data)`.
-fn descriptors(entity: &Entity, evidence: &Evidence, now_unix: u64) -> Vec<(&'static str, String)> {
+fn descriptors(
+    entity: &Entity,
+    evidence: &Evidence,
+    cve_scores: &BTreeMap<String, f64>,
+    now_unix: u64,
+) -> Vec<(&'static str, String)> {
     let mut out = Vec::new();
-    host_descriptors(entity, evidence, now_unix, &mut out);
+    host_descriptors(entity, evidence, cve_scores, now_unix, &mut out);
     identity_descriptors(entity, evidence, &mut out);
     out
 }
@@ -340,21 +345,33 @@ fn generic_contact_emails(evidence: &Evidence, out: &mut Vec<(&'static str, Stri
     }
 }
 
-/// The CVSS score a record on `entity` gives `cve`, the highest when records disagree: Shodan
-/// writes each scored CVE in `cve_scores` as `CVE-ID SCORE`. `None` when no record scores it.
+/// The CVSS score of every CVE any record of the scan scores, by upper-cased CVE id, the highest
+/// when records disagree: Shodan writes each scored CVE in `cve_scores` as `CVE-ID SCORE`. A
+/// score belongs to the CVE, not the host, so one scan types a CVE alike wherever it is listed.
 /// **Pure.**
-fn cvss_score(entity: &Entity, cve: &str) -> Option<f64> {
-    entity
-        .evidence
+fn cvss_scores(entities: &[Entity]) -> BTreeMap<String, f64> {
+    let mut scores = BTreeMap::new();
+    let entries = entities
         .iter()
+        .flat_map(|entity| &entity.evidence)
         .filter_map(|evidence| attr(evidence, "cve_scores"))
-        .flat_map(items)
-        .filter_map(|entry| {
-            let (id, score) = entry.split_once(char::is_whitespace)?;
-            let score: f64 = score.trim().parse().ok()?;
-            (id.eq_ignore_ascii_case(cve) && (0.0..=10.0).contains(&score)).then_some(score)
-        })
-        .reduce(f64::max)
+        .flat_map(items);
+    for entry in entries {
+        let Some((id, score)) = entry.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(score) = score.trim().parse::<f64>() else {
+            continue;
+        };
+        if !(0.0..=10.0).contains(&score) {
+            continue;
+        }
+        let best = scores.entry(id.to_ascii_uppercase()).or_insert(score);
+        if score > *best {
+            *best = score;
+        }
+    }
+    scores
 }
 
 /// A vulnerability's type by its CVSS score, as Spiderfoot's `cveInfo` rates one: CRITICAL from
@@ -385,6 +402,7 @@ fn valid_http_status(value: &str) -> bool {
 fn host_descriptors(
     entity: &Entity,
     evidence: &Evidence,
+    cve_scores: &BTreeMap<String, f64>,
     now_unix: u64,
     out: &mut Vec<(&'static str, String)>,
 ) {
@@ -397,7 +415,8 @@ fn host_descriptors(
     }
     if let Some(vulns) = attr("vulns") {
         for cve in items(vulns) {
-            out.push((vulnerability_type(cvss_score(entity, cve)), cve.to_owned()));
+            let score = cve_scores.get(&cve.to_ascii_uppercase()).copied();
+            out.push((vulnerability_type(score), cve.to_owned()));
         }
     }
     for key in ["software", "cpes"] {
@@ -857,6 +876,8 @@ struct Walk<'a> {
     target: Target<'a>,
     target_id: String,
     by_value: BTreeMap<String, String>,
+    /// Every CVE any record of the scan scores (see [`cvss_scores`]).
+    cve_scores: BTreeMap<String, f64>,
     now_unix: u64,
 }
 
@@ -913,6 +934,7 @@ impl<'a> Walk<'a> {
             target,
             target_id,
             by_value,
+            cve_scores: cvss_scores(entities),
             now_unix,
         }
     }
@@ -1006,7 +1028,7 @@ impl<'a> Walk<'a> {
                 continue;
             };
             let created = evidence.provenance.recorded_at_unix.saturating_mul(1000);
-            for (kind, data) in descriptors(entity, evidence, self.now_unix) {
+            for (kind, data) in descriptors(entity, evidence, &self.cve_scores, self.now_unix) {
                 if kind == "BGP_AS_MEMBER" && self.target.is_as(&data) {
                     continue;
                 }
@@ -1544,8 +1566,8 @@ mod tests {
     }
 
     /// A CVE a record scores is typed by its CVSS score, as Spiderfoot types one, so the
-    /// CRITICAL and HIGH vulnerability rules can fire; a score on any record of the host types
-    /// the CVE wherever it is listed, and one nothing scores stays GENERAL.
+    /// CRITICAL and HIGH vulnerability rules can fire; a score on any record of the scan types
+    /// the CVE wherever it is listed, on any host, and one nothing scores stays GENERAL.
     #[test]
     fn a_scored_vulnerability_is_typed_by_its_cvss_score() {
         let mut ip = entity(
@@ -1569,12 +1591,20 @@ mod tests {
             "internetdb",
             &[("vulns", "CVE-2021-44228")],
         ));
+        // Another host that only InternetDB lists the CVE on: a score belongs to the CVE, so the
+        // scan types it alike there.
+        let other = entity(
+            EntityKind::IpAddress,
+            "198.51.100.8",
+            "internetdb",
+            &[("vulns", "cve-2021-44228")],
+        );
         let found = elements(
             Target {
                 value: "198.51.100.7",
                 kind: "IP_ADDRESS",
             },
-            &[ip],
+            &[ip, other],
             1_700_000_000,
         );
         let typed = |kind: &str| -> Vec<(String, String)> {
@@ -1588,6 +1618,7 @@ mod tests {
             [
                 ("shodan".to_owned(), "CVE-2021-44228".to_owned()),
                 ("internetdb".to_owned(), "CVE-2021-44228".to_owned()),
+                ("internetdb".to_owned(), "cve-2021-44228".to_owned()),
             ]
         );
         assert_eq!(
@@ -1627,6 +1658,7 @@ mod tests {
             fired,
             [
                 "Critical-rated vulnerability found on 198.51.100.7",
+                "Critical-rated vulnerability found on 198.51.100.8",
                 "High-rated vulnerability found on 198.51.100.7",
             ]
         );
