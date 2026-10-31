@@ -107,18 +107,28 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
             break;
         }
         let (name, value) = line.split_once(':').ok_or("invalid header")?;
-        if name.trim().is_empty() {
+        let name = name.trim();
+        if name.is_empty() {
             return Err("invalid header");
         }
-        headers.push((name.trim().to_owned(), value.trim().to_owned()));
-    }
-    let lengths: Vec<_> = headers
-        .iter()
-        .filter(|(n, _)| n.eq_ignore_ascii_case("content-length"))
-        .map(|(_, v)| v.as_str())
-        .collect();
-    if lengths.len() > 1 {
-        return Err("duplicate content length");
+        // Ambiguous singleton fields must be refused before routing. Downstream handlers
+        // read one value via HttpRequest::header; accepting another value would let
+        // different HTTP clients disagree about the Host, origin, or request semantics.
+        let singleton = ["host", "origin", "content-type", "x-meta-scan", "content-length"]
+            .iter()
+            .any(|field| name.eq_ignore_ascii_case(field));
+        if singleton
+            && headers
+                .iter()
+                .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        {
+            return Err(if name.eq_ignore_ascii_case("content-length") {
+                "duplicate content length"
+            } else {
+                "duplicate singleton header"
+            });
+        }
+        headers.push((name.to_owned(), value.trim().to_owned()));
     }
     if headers
         .iter()
@@ -126,8 +136,13 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
     {
         return Err("transfer encoding not supported");
     }
-    let length = match lengths.first() {
-        Some(s) => s.parse::<usize>().map_err(|_| "invalid content length")?,
+    let length = match headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+    {
+        Some((_, length)) => length
+            .parse::<usize>()
+            .map_err(|_| "invalid content length")?,
         None => 0,
     };
     if length > HTTP_MAX_BODY {
@@ -818,6 +833,55 @@ pub(super) fn serve(bind: &str, timeout: Duration) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise the actual bounded HTTP parser over a loopback socket, not a header-map
+    /// fixture: mixed-case duplicates must fail before any routing or provider work.
+    fn read_raw_request(raw: &str) -> Result<HttpRequest, &'static str> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let parser = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream)
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(raw.as_bytes()).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        parser.join().unwrap()
+    }
+
+    #[test]
+    fn duplicate_singleton_headers_are_refused_before_routing() {
+        for header in ["Host", "Origin", "Content-Type", "X-Meta-Scan", "Content-Length"] {
+            let request = format!(
+                "POST /api/scan HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n{header}: first\r\n{}: second\r\n\r\n",
+                header.to_ascii_lowercase()
+            );
+            // Host is already present once before the loop's additional copy.
+            assert!(
+                read_raw_request(&request).is_err(),
+                "duplicate {header} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_repeatable_headers_and_singleton_body_are_preserved() {
+        let request = concat!(
+            "POST /api/scan HTTP/1.1\r\n",
+            "Host: 127.0.0.1:8787\r\n",
+            "Content-Type: application/json\r\n",
+            "Content-Length: 2\r\n",
+            "Accept: application/json\r\n",
+            "Accept: */*\r\n",
+            "\r\n{}"
+        );
+        let parsed = read_raw_request(request).unwrap();
+        assert_eq!(parsed.method, "POST");
+        assert_eq!(parsed.path, "/api/scan");
+        assert_eq!(parsed.body, b"{}");
+        assert_eq!(parsed.header("Host"), Some("127.0.0.1:8787"));
+        assert_eq!(parsed.header("Content-Type"), Some("application/json"));
+    }
 
     #[test]
     fn form_decoding_rejects_duplicate_fields_and_bad_percent_encoding() {
