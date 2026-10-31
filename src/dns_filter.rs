@@ -17,7 +17,10 @@
 //!
 //! So before trusting a filter the lookup asks a name the filter is known to block, its test
 //! point. A filter that does not block it, answers with an error or does not answer says so on its
-//! row instead of "not blocked". Comodo has no known test point, so its answer is read only when
+//! row instead of "not blocked", and a source is "not blocked" only when every filter of it asked
+//! said so: Cloudflare's family filter says nothing of its malware filter, so with the malware
+//! filter unanswered the row is inconclusive (see [`SourceExecutionOutcome::joined`]). Comodo has
+//! no known test point, so its answer is read only when
 //! another filter asked over UDP blocked its test point, proving port 53 reaches the filters' own
 //! servers, and its "not blocked" still says it is unverified. The test points are also how this module knows that `AdGuard`'s default filter and
 //! DNS for Family now answer `0.0.0.0` for what they block, which Spiderfoot, still looking for
@@ -31,7 +34,7 @@ use crate::dns_wire::{self, A, AAAA, Message, NOERROR, NXDOMAIN};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, TransportFailure};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{EndpointAnswer, SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -480,33 +483,15 @@ fn rows(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let blocked = mine
+            let answers: Vec<EndpointAnswer> = mine
                 .iter()
-                .filter(|(_, verdict)| matches!(verdict, Verdict::Blocked(_)))
-                .count();
-            // The source's row is refused only when every server under it was refused, so take the
-            // first untrusted kind that was not a refusal, else the first.
-            let untrusted_kinds = || {
-                mine.iter().filter_map(|(_, verdict)| match verdict {
-                    Verdict::Untrusted(kind, _) => Some(*kind),
-                    _ => None,
+                .map(|(_, verdict)| match verdict {
+                    Verdict::Blocked(_) => EndpointAnswer::Found(1),
+                    Verdict::NotBlocked(_) => EndpointAnswer::Absent,
+                    Verdict::Untrusted(kind, _) => EndpointAnswer::Failed(*kind),
                 })
-            };
-            let untrusted = untrusted_kinds()
-                .find(|kind| *kind != SourceOutcomeKind::RefusedBeforeSending)
-                .or_else(|| untrusted_kinds().next());
-            let answered = mine
-                .iter()
-                .any(|(_, verdict)| !matches!(verdict, Verdict::Untrusted(..)));
-            match (blocked, untrusted) {
-                (0, Some(kind)) if !answered => {
-                    SourceExecutionOutcome::failed(source, now_unix, kind, None, &detail)
-                }
-                (0, _) => SourceExecutionOutcome::valid_zero(source, now_unix).with_detail(detail),
-                (count, _) => {
-                    SourceExecutionOutcome::success(source, now_unix, count).with_detail(detail)
-                }
-            }
+                .collect();
+            SourceExecutionOutcome::joined(source, now_unix, &answers, detail)
         })
         .collect()
 }
