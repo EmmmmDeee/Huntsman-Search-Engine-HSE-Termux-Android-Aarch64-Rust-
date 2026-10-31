@@ -269,20 +269,15 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "rdap"), SourceOutcomeKind::Success);
     assert_eq!(outcome(&report, "mnemonic"), SourceOutcomeKind::ValidZero);
     // The DNS blocklists are keyless and always asked; this transport has no system resolver.
-    for source in [
-        "spamhaus",
-        "spamcop",
-        "uceprotect",
-        "dronebl",
-        "sorbs",
-        "surbl",
-    ] {
+    for source in ["spamhaus", "spamcop", "uceprotect", "dronebl", "surbl"] {
         assert_eq!(
             outcome(&report, source),
             SourceOutcomeKind::DnsFailure,
             "{source}"
         );
     }
+    // SORBS has shut down: it is not asked, and its row says so.
+    assert_eq!(outcome(&report, "sorbs"), SourceOutcomeKind::ConfirmedDead);
     // The keyed legs with no key sent nothing (no host above is theirs), and each leaves the row
     // saying it was not configured, as every other keyed leg does.
     let unkeyed = keyed_ip_sources_without_a_key();

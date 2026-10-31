@@ -708,7 +708,12 @@ fn read(filter: &Filter, message: &Message, unfiltered: &Unfiltered) -> Verdict 
         Signal::NoAddress => None,
     };
     if let Some((address, reason, threat)) = coded {
-        return block(address, reason, threat, None);
+        if !zones_own(unfiltered, address) || withheld {
+            return block(address, reason, threat, None);
+        }
+        return Verdict::NotBlocked(format!(
+            "{answer}, which the unfiltered resolvers answer too: the zone's own record"
+        ));
     }
     if withheld {
         return block(&answer, filter.reason, filter.threat, None);
@@ -737,6 +742,15 @@ fn read(filter: &Filter, message: &Message, unfiltered: &Unfiltered) -> Verdict 
             ),
         ),
     }
+}
+
+/// Whether `address`, a filter's block answer, is one the unfiltered resolvers also give: a zone
+/// that publishes the block address itself (`0.0.0.0` for a parked or sinkholed name) gives every
+/// resolver that answer, so it is the zone's own record, not the filter's block, unless the filter
+/// says it withheld the answer. **Pure.**
+fn zones_own(unfiltered: &Unfiltered, address: &str) -> bool {
+    matches!(unfiltered, Unfiltered::Resolves(elsewhere)
+        if elsewhere.iter().any(|ip| ip.to_string() == address))
 }
 
 #[cfg(test)]

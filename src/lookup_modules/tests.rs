@@ -701,6 +701,8 @@ const BROKEN: &[(ScanKind, &str, Net)] = &[];
 /// silent (a renamed key slot, a `runs_module` name that no longer matches, a pacing hold) fails
 /// instead of passing with nothing to hold it to.
 const ASKS_NOTHING: &[(ScanKind, &str, &str)] = &[
+    // SORBS has shut down: its zone is never asked, and its row is `confirmed_dead`.
+    (ScanKind::Ip, "sorbs", "93.184.216.34"),
     (ScanKind::Domain, "dnsresolve", "huntsman-shop.net"),
     (ScanKind::Email, "seeknow", "ada@huntsman-shop.net"),
     (ScanKind::Email, "hibp", "ada@huntsman-shop.net"),

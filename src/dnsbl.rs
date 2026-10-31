@@ -1,7 +1,12 @@
 //! DNS blocklists: whether an address or a domain is listed by Spamhaus, `SpamCop`, UCEPROTECT,
-//! `DroneBL`, SORBS and SURBL, as Spiderfoot's `sfp_spamhaus`, `sfp_spamcop`, `sfp_uceprotect`,
-//! `sfp_dronebl`, `sfp_sorbs` and `sfp_surbl` ask them, with Spamhaus's domain list (DBL) and
-//! UCEPROTECT's third level beside them.
+//! `DroneBL` and SURBL, as Spiderfoot's `sfp_spamhaus`, `sfp_spamcop`, `sfp_uceprotect`,
+//! `sfp_dronebl` and `sfp_surbl` ask them, with Spamhaus's domain list (DBL) and UCEPROTECT's third
+//! level beside them. SORBS (`sfp_sorbs`) has shut down: its zone is kept, never asked, and its row
+//! is `confirmed_dead`.
+//!
+//! Each answer code has a [`Class`]: only a record of the subject's own abuse marks it malicious. A
+//! policy listing of its range (Spamhaus's PBL) and a listing of its network or AS (UCEPROTECT's
+//! levels 2 and 3) are kept as blacklistings that say nothing the subject did.
 //!
 //! A list is asked through the system resolver (see [`Transport::resolve`]): an IPv4 address as
 //! its reversed octets under the zone (`2.0.0.127.zen.spamhaus.org`), an IPv6 address as its
@@ -38,12 +43,37 @@ pub enum Takes {
     Ipv4AndDomains,
 }
 
+/// What a listing says of the subject itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    /// The subject was seen sending spam, serving malware, running a proxy or a bot, or is a
+    /// hijacked network: a record of the subject's own abuse, which marks it malicious.
+    Abuse,
+    /// The list's policy for a range, not anything the subject did: Spamhaus's PBL lists the
+    /// end-user ranges whose holders say they should not send mail directly.
+    Policy,
+    /// The subject's network or AS is listed, not the subject: UCEPROTECT's levels 2 and 3.
+    Neighbourhood,
+}
+
+impl Class {
+    /// The label a listing's evidence keeps (`dnsbl_class`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Abuse => "abuse",
+            Self::Policy => "policy",
+            Self::Neighbourhood => "neighbourhood",
+        }
+    }
+}
+
 /// How a zone's answers read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codes {
-    /// Each answer address names one reason.
-    Exact(&'static [(&'static str, &'static str)]),
-    /// The last octet is a bit mask, each bit one reason (SURBL's `multi`).
+    /// Each answer address names one reason and what it says of the subject.
+    Exact(&'static [(&'static str, &'static str, Class)]),
+    /// The last octet is a bit mask, each bit one reason (SURBL's `multi`); every one is abuse.
     Bits(&'static [(u8, &'static str)]),
 }
 
@@ -61,7 +91,25 @@ pub struct Zone {
     pub refusals: &'static [(&'static str, &'static str)],
     /// The domain the list documents as always listed, for a domain-only zone.
     pub test_domain: Option<&'static str>,
+    /// Why the list is no longer asked, for one that has shut down: nothing is sent to it, and
+    /// its row says so as `confirmed_dead`.
+    pub retired: Option<&'static str>,
 }
+
+/// Spamhaus's refusal codes for its DBL: its zen ones, and DBL's own answer to a question about an
+/// IP address, which it does not list.
+const SPAMHAUS_DBL_REFUSALS: &[(&str, &str)] = &[
+    ("127.0.1.255", "Spamhaus DBL refuses IP-address queries"),
+    ("127.255.255.252", "Spamhaus rejected a malformed query"),
+    (
+        "127.255.255.254",
+        "Spamhaus refuses queries through public or open resolvers",
+    ),
+    (
+        "127.255.255.255",
+        "Spamhaus refused the resolver for too many queries",
+    ),
+];
 
 const SPAMHAUS_REFUSALS: &[(&str, &str)] = &[
     ("127.255.255.252", "Spamhaus rejected a malformed query"),
@@ -83,18 +131,27 @@ pub const ZONES: &[Zone] = &[
         zone: "zen.spamhaus.org",
         takes: Takes::Addresses,
         codes: Codes::Exact(&[
-            ("127.0.0.2", "Spammer"),
-            ("127.0.0.3", "Spammer"),
-            ("127.0.0.4", "Proxies, Trojans, etc."),
-            ("127.0.0.5", "Proxies, Trojans, etc."),
-            ("127.0.0.6", "Proxies, Trojans, etc."),
-            ("127.0.0.7", "Proxies, Trojans, etc."),
-            ("127.0.0.9", "Hijacked network (DROP)"),
-            ("127.0.0.10", "Potential Spammer"),
-            ("127.0.0.11", "Potential Spammer"),
+            ("127.0.0.2", "Spammer", Class::Abuse),
+            ("127.0.0.3", "Spammer", Class::Abuse),
+            ("127.0.0.4", "Proxies, Trojans, etc.", Class::Abuse),
+            ("127.0.0.5", "Proxies, Trojans, etc.", Class::Abuse),
+            ("127.0.0.6", "Proxies, Trojans, etc.", Class::Abuse),
+            ("127.0.0.7", "Proxies, Trojans, etc.", Class::Abuse),
+            ("127.0.0.9", "Hijacked network (DROP)", Class::Abuse),
+            (
+                "127.0.0.10",
+                "Policy Block List (end-user range)",
+                Class::Policy,
+            ),
+            (
+                "127.0.0.11",
+                "Policy Block List (end-user range)",
+                Class::Policy,
+            ),
         ]),
         refusals: SPAMHAUS_REFUSALS,
         test_domain: None,
+        retired: None,
     },
     Zone {
         source: "spamhaus",
@@ -102,57 +159,87 @@ pub const ZONES: &[Zone] = &[
         zone: "dbl.spamhaus.org",
         takes: Takes::Domains,
         codes: Codes::Exact(&[
-            ("127.0.1.2", "Spam domain"),
-            ("127.0.1.4", "Phishing domain"),
-            ("127.0.1.5", "Malware domain"),
-            ("127.0.1.6", "Botnet command and control domain"),
-            ("127.0.1.102", "Abused legitimate spam domain"),
-            ("127.0.1.103", "Abused spammed redirector domain"),
-            ("127.0.1.104", "Abused legitimate phishing domain"),
-            ("127.0.1.105", "Abused legitimate malware domain"),
+            ("127.0.1.2", "Spam domain", Class::Abuse),
+            ("127.0.1.4", "Phishing domain", Class::Abuse),
+            ("127.0.1.5", "Malware domain", Class::Abuse),
+            (
+                "127.0.1.6",
+                "Botnet command and control domain",
+                Class::Abuse,
+            ),
+            ("127.0.1.102", "Abused legitimate spam domain", Class::Abuse),
+            (
+                "127.0.1.103",
+                "Abused spammed redirector domain",
+                Class::Abuse,
+            ),
+            (
+                "127.0.1.104",
+                "Abused legitimate phishing domain",
+                Class::Abuse,
+            ),
+            (
+                "127.0.1.105",
+                "Abused legitimate malware domain",
+                Class::Abuse,
+            ),
             (
                 "127.0.1.106",
                 "Abused legitimate botnet command and control domain",
+                Class::Abuse,
             ),
         ]),
-        refusals: SPAMHAUS_REFUSALS,
+        refusals: SPAMHAUS_DBL_REFUSALS,
         test_domain: Some("dbltest.com"),
+        retired: None,
     },
     Zone {
         source: "spamcop",
         list: "SpamCop",
         zone: "bl.spamcop.net",
         takes: Takes::Ipv4,
-        codes: Codes::Exact(&[("127.0.0.2", "Blacklist")]),
+        codes: Codes::Exact(&[("127.0.0.2", "Blacklist", Class::Abuse)]),
         refusals: &[],
         test_domain: None,
+        retired: None,
     },
     Zone {
         source: "uceprotect",
         list: "UCEPROTECT",
         zone: "dnsbl-1.uceprotect.net",
         takes: Takes::Ipv4,
-        codes: Codes::Exact(&[("127.0.0.2", "Level 1 (high likelihood)")]),
+        codes: Codes::Exact(&[("127.0.0.2", "Level 1 (high likelihood)", Class::Abuse)]),
         refusals: &[],
         test_domain: None,
+        retired: None,
     },
     Zone {
         source: "uceprotect",
         list: "UCEPROTECT",
         zone: "dnsbl-2.uceprotect.net",
         takes: Takes::Ipv4,
-        codes: Codes::Exact(&[("127.0.0.2", "Level 2 (some false positives)")]),
+        codes: Codes::Exact(&[(
+            "127.0.0.2",
+            "Level 2 (the address's network)",
+            Class::Neighbourhood,
+        )]),
         refusals: &[],
         test_domain: None,
+        retired: None,
     },
     Zone {
         source: "uceprotect",
         list: "UCEPROTECT",
         zone: "dnsbl-3.uceprotect.net",
         takes: Takes::Ipv4,
-        codes: Codes::Exact(&[("127.0.0.2", "Level 3 (the address's AS)")]),
+        codes: Codes::Exact(&[(
+            "127.0.0.2",
+            "Level 3 (the address's AS)",
+            Class::Neighbourhood,
+        )]),
         refusals: &[],
         test_domain: None,
+        retired: None,
     },
     Zone {
         source: "dronebl",
@@ -160,29 +247,31 @@ pub const ZONES: &[Zone] = &[
         zone: "dnsbl.dronebl.org",
         takes: Takes::Addresses,
         codes: Codes::Exact(&[
-            ("127.0.0.3", "IRC Drone"),
-            ("127.0.0.5", "Bottler"),
-            ("127.0.0.6", "Unknown spambot or drone"),
-            ("127.0.0.7", "DDOS Drone"),
-            ("127.0.0.8", "SOCKS Proxy"),
-            ("127.0.0.9", "HTTP Proxy"),
-            ("127.0.0.10", "ProxyChain"),
-            ("127.0.0.11", "Web Page Proxy"),
-            ("127.0.0.12", "Open DNS Resolver"),
-            ("127.0.0.13", "Brute force attackers"),
-            ("127.0.0.14", "Open Wingate Proxy"),
-            ("127.0.0.15", "Compromised router / gateway"),
-            ("127.0.0.16", "Autorooting worms"),
+            ("127.0.0.3", "IRC Drone", Class::Abuse),
+            ("127.0.0.5", "Bottler", Class::Abuse),
+            ("127.0.0.6", "Unknown spambot or drone", Class::Abuse),
+            ("127.0.0.7", "DDOS Drone", Class::Abuse),
+            ("127.0.0.8", "SOCKS Proxy", Class::Abuse),
+            ("127.0.0.9", "HTTP Proxy", Class::Abuse),
+            ("127.0.0.10", "ProxyChain", Class::Abuse),
+            ("127.0.0.11", "Web Page Proxy", Class::Abuse),
+            ("127.0.0.12", "Open DNS Resolver", Class::Abuse),
+            ("127.0.0.13", "Brute force attackers", Class::Abuse),
+            ("127.0.0.14", "Open Wingate Proxy", Class::Abuse),
+            ("127.0.0.15", "Compromised router / gateway", Class::Abuse),
+            ("127.0.0.16", "Autorooting worms", Class::Abuse),
             (
                 "127.0.0.17",
                 "Automatically determined botnet IPs (experimental)",
+                Class::Abuse,
             ),
-            ("127.0.0.18", "Possibly compromised DNS/MX"),
-            ("127.0.0.19", "Abused VPN Service"),
-            ("127.0.0.255", "Unknown"),
+            ("127.0.0.18", "Possibly compromised DNS/MX", Class::Abuse),
+            ("127.0.0.19", "Abused VPN Service", Class::Abuse),
+            ("127.0.0.255", "Unknown", Class::Abuse),
         ]),
         refusals: &[],
         test_domain: None,
+        retired: None,
     },
     Zone {
         source: "sorbs",
@@ -190,21 +279,32 @@ pub const ZONES: &[Zone] = &[
         zone: "dnsbl.sorbs.net",
         takes: Takes::Ipv4,
         codes: Codes::Exact(&[
-            ("127.0.0.2", "Open HTTP Proxy"),
-            ("127.0.0.3", "Open SOCKS Proxy"),
-            ("127.0.0.4", "Open Proxy"),
-            ("127.0.0.5", "Open SMTP Relay"),
-            ("127.0.0.6", "Spammer"),
-            ("127.0.0.7", "Vulnerability exposed to spammers"),
-            ("127.0.0.8", "Host ignored by SORBS"),
-            ("127.0.0.9", "Hijacked host"),
-            ("127.0.0.10", "Dynamic IP address range"),
-            ("127.0.0.11", "Misconfigured A or MX record"),
-            ("127.0.0.12", "Host does not send mail"),
-            ("127.0.0.14", "Network does not contain servers"),
+            ("127.0.0.2", "Open HTTP Proxy", Class::Abuse),
+            ("127.0.0.3", "Open SOCKS Proxy", Class::Abuse),
+            ("127.0.0.4", "Open Proxy", Class::Abuse),
+            ("127.0.0.5", "Open SMTP Relay", Class::Abuse),
+            ("127.0.0.6", "Spammer", Class::Abuse),
+            (
+                "127.0.0.7",
+                "Vulnerability exposed to spammers",
+                Class::Abuse,
+            ),
+            ("127.0.0.8", "Host ignored by SORBS", Class::Abuse),
+            ("127.0.0.9", "Hijacked host", Class::Abuse),
+            ("127.0.0.10", "Dynamic IP address range", Class::Abuse),
+            ("127.0.0.11", "Misconfigured A or MX record", Class::Abuse),
+            ("127.0.0.12", "Host does not send mail", Class::Abuse),
+            (
+                "127.0.0.14",
+                "Network does not contain servers",
+                Class::Abuse,
+            ),
         ]),
         refusals: &[],
         test_domain: None,
+        retired: Some(
+            "SORBS has shut down: sorbs.net no longer resolves (NXDOMAIN at the .net servers, checked 2026-10-31), so dnsbl.sorbs.net is not asked",
+        ),
     },
     Zone {
         source: "surbl",
@@ -222,6 +322,7 @@ pub const ZONES: &[Zone] = &[
             "SURBL refused the resolver (public resolvers are blocked)",
         )],
         test_domain: Some("surbl-org-permanent-test-point.com"),
+        retired: None,
     },
 ];
 
@@ -260,8 +361,8 @@ impl Subject<'_> {
 /// What one zone said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Verdict {
-    /// Each answer address with its reason.
-    Listed(Vec<(String, String)>),
+    /// Each answer address with its reason and what it says of the subject.
+    Listed(Vec<(String, String, Class)>),
     NotListed,
     /// The zone cannot be trusted for this lookup: the kind of failure and why.
     Untrusted(SourceOutcomeKind, String),
@@ -280,6 +381,8 @@ pub fn check<T: Transport + ?Sized>(
         .iter()
         .filter(|zone| subject.asked_by(zone) && transport.runs_module(zone.source))
         .collect();
+    let (retired, zones): (Vec<&Zone>, Vec<&Zone>) =
+        zones.into_iter().partition(|zone| zone.retired.is_some());
     let verdicts: Vec<(&Zone, Verdict)> = zones
         .iter()
         .map(|zone| (*zone, ask(transport, zone, subject)))
@@ -294,7 +397,7 @@ pub fn check<T: Transport + ?Sized>(
         let Verdict::Listed(answers) = verdict else {
             continue;
         };
-        for (answer, reason) in answers {
+        for (answer, reason, class) in answers {
             let listing = format!("{} - {reason}", zone.list);
             let evidence = Evidence::new(
                 EvidenceProvenance::for_scan(zone.source, scan_id),
@@ -303,7 +406,14 @@ pub fn check<T: Transport + ?Sized>(
             .with_attr("blocklists", listing.as_str())
             .with_attr("dnsbl", listing.as_str())
             .with_attr("dnsbl_zone", zone.zone)
-            .with_attr("dnsbl_answer", answer.as_str());
+            .with_attr("dnsbl_answer", answer.as_str())
+            .with_attr(LISTING_CLASS, class.as_str());
+            // Only a record of the subject's own abuse marks it malicious: a policy listing of its
+            // range, or a listing of its network or AS, says nothing the subject did.
+            let tags: &[&str] = match class {
+                Class::Abuse => &[tags::MALICIOUS],
+                Class::Policy | Class::Neighbourhood => &[],
+            };
             push_entity(
                 &mut entities,
                 kind.clone(),
@@ -311,16 +421,30 @@ pub fn check<T: Transport + ?Sized>(
                 LISTED_CONFIDENCE,
                 scan_id,
                 evidence,
-                &[tags::MALICIOUS],
+                tags,
             );
         }
     }
-    let outcomes = rows(&verdicts, now_unix);
+    let mut outcomes = rows(&verdicts, now_unix);
+    outcomes.extend(retired.iter().filter_map(|zone| {
+        zone.retired.map(|why| {
+            SourceExecutionOutcome::failed(
+                zone.source,
+                now_unix,
+                SourceOutcomeKind::ConfirmedDead,
+                None,
+                format!("{}: {why}", zone.zone),
+            )
+        })
+    }));
     (entities, outcomes)
 }
 
 /// The subject is what was asked about: its listing is the list's own record.
 const LISTED_CONFIDENCE: f64 = 0.90;
+
+/// The evidence attribute naming a listing's [`Class`]: `abuse`, `policy` or `neighbourhood`.
+pub const LISTING_CLASS: &str = "dnsbl_class";
 
 /// One row per source, joining what each of its zones said.
 fn rows(verdicts: &[(&Zone, Verdict)], now_unix: u64) -> Vec<SourceExecutionOutcome> {
@@ -341,7 +465,7 @@ fn rows(verdicts: &[(&Zone, Verdict)], now_unix: u64) -> Vec<SourceExecutionOutc
                         zone.zone,
                         answers
                             .iter()
-                            .map(|(answer, reason)| format!("{answer} {reason}"))
+                            .map(|(answer, reason, _)| format!("{answer} {reason}"))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -395,7 +519,14 @@ fn ask<T: Transport + ?Sized>(transport: &T, zone: &Zone, subject: Subject<'_>) 
             }
         }
     }
-    match transport.resolve(&subject.query(zone.zone)) {
+    let query = subject.query(zone.zone);
+    if !crate::dns_wire::askable_name(&query) {
+        return Verdict::Untrusted(
+            SourceOutcomeKind::Inconclusive,
+            format!("{query} cannot be asked: a DNS name is at most 253 bytes, each label 1 to 63"),
+        );
+    }
+    match transport.resolve(&query) {
         Err(failure) => unreachable(&failure),
         Ok(answers) => {
             if let Some(why) = refusal(zone, &answers) {
@@ -426,9 +557,10 @@ fn refusal(zone: &Zone, answers: &[IpAddr]) -> Option<String> {
     })
 }
 
-/// Each listing answer with its reason; an answer outside `127.0.0.0/8` is not a listing, and a
-/// code the list does not document is kept as itself. **Pure.**
-fn listed(zone: &Zone, answers: &[IpAddr]) -> Vec<(String, String)> {
+/// Each listing answer with its reason and class; an answer outside `127.0.0.0/8` is not a
+/// listing, and a code the list does not document is kept as itself, as abuse: the list listed
+/// the subject. **Pure.**
+fn listed(zone: &Zone, answers: &[IpAddr]) -> Vec<(String, String, Class)> {
     answers
         .iter()
         .filter_map(|answer| match answer {
@@ -442,10 +574,10 @@ fn listed(zone: &Zone, answers: &[IpAddr]) -> Vec<(String, String)> {
         })
         .map(|v4| {
             let text = v4.to_string();
-            let reason = match zone.codes {
-                Codes::Exact(codes) => codes.iter().find(|(code, _)| *code == text).map_or_else(
-                    || format!("undocumented answer {text}"),
-                    |(_, why)| (*why).to_owned(),
+            let (reason, class) = match zone.codes {
+                Codes::Exact(codes) => codes.iter().find(|(code, _, _)| *code == text).map_or_else(
+                    || (format!("undocumented answer {text}"), Class::Abuse),
+                    |(_, why, class)| ((*why).to_owned(), *class),
                 ),
                 Codes::Bits(bits) => {
                     let mask = v4.octets()[3];
@@ -454,14 +586,15 @@ fn listed(zone: &Zone, answers: &[IpAddr]) -> Vec<(String, String)> {
                         .filter(|(bit, _)| mask & bit != 0)
                         .map(|(_, why)| *why)
                         .collect();
-                    if named.is_empty() {
+                    let reason = if named.is_empty() {
                         format!("undocumented answer {text}")
                     } else {
                         named.join(", ")
-                    }
+                    };
+                    (reason, Class::Abuse)
                 }
             };
-            (text, reason)
+            (text, reason, class)
         })
         .collect()
 }

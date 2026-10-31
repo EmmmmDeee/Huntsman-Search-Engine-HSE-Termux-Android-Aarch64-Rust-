@@ -683,13 +683,17 @@ fn reputation_descriptors(
     let host = entity.raw_value.as_str();
     let attr = |key: &str| attr(evidence, key);
     // A blocklist's listing names the list and its reason, as Spiderfoot's DNSBL modules write
-    // both the blacklisted and the malicious element.
+    // both the blacklisted and the malicious element. A listing that records no abuse of the
+    // subject itself (a policy listing of its range, a listing of its network or AS) is
+    // blacklisted only; one saved before listings carried a class is read as abuse, as it was.
     if let Some(listing) = attr("dnsbl") {
         let data = format!("{listing} [{host}]");
         if let Some(kind) = blacklisted_type(&entity.kind) {
             out.push((kind, data.clone()));
         }
-        if let Some(kind) = malicious_type(&entity.kind) {
+        let abuse = attr(crate::dnsbl::LISTING_CLASS)
+            .is_none_or(|class| class == crate::dnsbl::Class::Abuse.as_str());
+        if let Some(kind) = malicious_type(&entity.kind).filter(|_| abuse) {
             out.push((kind, data));
         }
     } else if let Some(reason) = attr("dns_filter") {
