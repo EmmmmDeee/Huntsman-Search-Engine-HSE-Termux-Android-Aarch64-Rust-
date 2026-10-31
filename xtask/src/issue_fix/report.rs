@@ -109,7 +109,11 @@ fn gate_tail<R: Read>(mut log: R) -> io::Result<Vec<u8>> {
     let mut chunk = [0_u8; 8192];
 
     loop {
-        let count = log.read(&mut chunk)?;
+        let count = match log.read(&mut chunk) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             break;
         }
@@ -252,6 +256,40 @@ mod tests {
         assert_eq!(text.lines().count(), GATE_TAIL_LINES);
         assert!(text.starts_with("line 9960\n"));
         assert!(text.ends_with("line 9999\n"));
+    }
+
+    struct ErrorOnce {
+        kind: Option<io::ErrorKind>,
+        bytes: &'static [u8],
+    }
+
+    impl Read for ErrorOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if let Some(kind) = self.kind.take() {
+                return Err(io::Error::new(kind, "injected read failure"));
+            }
+            self.bytes.read(buffer)
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_retried_without_losing_the_tail() {
+        let log = ErrorOnce {
+            kind: Some(io::ErrorKind::Interrupted),
+            bytes: b"first\nlast `line`",
+        };
+        assert_eq!(gate_tail(log).unwrap(), b"first\nlast 'line'\n");
+    }
+
+    #[test]
+    fn a_non_interrupted_read_error_is_propagated_after_partial_input() {
+        let log = (&b"first\n"[..]).chain(ErrorOnce {
+            kind: Some(io::ErrorKind::PermissionDenied),
+            bytes: b"unreachable\n",
+        });
+        let error = gate_tail(log).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "injected read failure");
     }
 
     #[test]
