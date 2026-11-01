@@ -112,7 +112,9 @@ fn the_report_posts_the_stage_outcomes_and_the_gate_tail_on_standard_input() {
     );
     assert!(
         run.output.status.success(),
-        "{}",
+        "xtask issue-fix report exited with {}\nstdout:\n{}\nstderr:\n{}",
+        run.output.status,
+        String::from_utf8_lossy(&run.output.stdout),
         String::from_utf8_lossy(&run.output.stderr)
     );
     assert_eq!(
