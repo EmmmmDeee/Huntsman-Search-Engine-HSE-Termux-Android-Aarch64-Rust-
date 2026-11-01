@@ -176,7 +176,7 @@ fn accelerated_backend_for(length: usize) -> bool {
 /// SHA-256 of a single byte slice, compatible with the incremental hasher.
 ///
 /// Reuses the already-linked `ring` backend for large payloads and for
-/// inputs of at least 32 bytes on SHA2-capable AArch64 hardware. The in-tree
+/// inputs of at least 32 bytes on SHA2-capable `AArch64` hardware. The in-tree
 /// portable implementation remains the streaming API and fallback. Neither
 /// path copies the full input or changes its 32-byte digest format.
 #[must_use]
