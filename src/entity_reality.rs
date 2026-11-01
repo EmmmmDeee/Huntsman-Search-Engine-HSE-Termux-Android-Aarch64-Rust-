@@ -111,9 +111,7 @@ fn sensitive_attribute(name: &str) -> bool {
     // Provider-field names are namespaced for storage integrity, not semantically
     // different. Classify the underlying field so harmless `session_count`
     // remains visible while `provider_field.api_token` remains protected.
-    crate::redact::sensitive_field_name(
-        name.strip_prefix("provider_field.").unwrap_or(name),
-    )
+    crate::redact::sensitive_field_name(name.strip_prefix("provider_field.").unwrap_or(name))
 }
 
 fn dimension(name: &str) -> Dimension {
