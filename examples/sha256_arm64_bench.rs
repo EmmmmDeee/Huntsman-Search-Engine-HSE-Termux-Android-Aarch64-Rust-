@@ -30,7 +30,11 @@ fn time_path(input: &[u8], repeats: usize, accelerated: bool) -> Duration {
 
 fn main() {
     println!("SHA-256 backend comparison (wall-clock; not hardware attestation)");
-    println!("arch={} os={}", std::env::consts::ARCH, std::env::consts::OS);
+    println!(
+        "arch={} os={}",
+        std::env::consts::ARCH,
+        std::env::consts::OS
+    );
     println!("size_bytes,repetitions,portable_ms,selected_ms,portable_over_selected");
 
     for size in [64, 1023, 1024, 4096, 65_536, 1_048_576] {
