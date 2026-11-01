@@ -1,6 +1,6 @@
-//! Compact SHA-256. The NIST empty, "abc", two-block, and padding-boundary vectors
-//! are the acceptance tests.
-//! In-tree so the ledger hash does not depend on a second crate.
+//! SHA-256 with portable streaming and hardware-aware one-shot hashing.
+//! NIST and padding-boundary vectors enforce digest compatibility.
+//! Large one-shot inputs reuse the existing `ring` dependency without exposing unsafe Rust.
 
 const K: [u32; 64] = [
     0x428a_2f98,
@@ -156,7 +156,7 @@ impl Sha256 {
 /// SHA-256 of a single byte slice, compatible with the incremental hasher.
 ///
 /// Large payloads reuse the already-linked `ring` backend, which dispatches to
-/// CPU SHA instructions on supported AArch64 hardware. The in-tree Rust hasher
+/// CPU SHA instructions on supported `AArch64` hardware. The in-tree Rust hasher
 /// remains the small-payload path and the portable streaming implementation.
 /// Neither path allocates a copy of the input.
 #[must_use]
@@ -238,7 +238,7 @@ mod tests {
             4097, 65536, 1_048_576,
         ] {
             let input = (0..size)
-                .map(|n| (n.wrapping_mul(47).wrapping_add(29) & 255) as u8)
+                .map(|n| n.to_le_bytes()[0].wrapping_mul(47).wrapping_add(29))
                 .collect::<Vec<_>>();
             let mut portable = Sha256::new();
             for chunk in input.chunks(37) {
