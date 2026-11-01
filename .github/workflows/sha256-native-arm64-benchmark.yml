@@ -1,0 +1,42 @@
+name: sha256-native-arm64-benchmark
+
+on:
+  pull_request:
+    paths:
+      - 'src/sha256.rs'
+      - 'examples/sha256_arm64_bench.rs'
+      - 'tests/ci_policy.rs'
+      - '.github/workflows/sha256-native-arm64-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sha256-arm64-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-arm64:
+    name: Native ARM64 SHA-256 throughput (informational)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.99"
+      - name: Record actual ARM64 runner
+        run: |
+          set -euo pipefail
+          uname -m
+          test "$(uname -m)" = aarch64
+          grep -m1 '^Features' /proc/cpuinfo || true
+      - name: Verify SHA-256 differential tests
+        run: cargo test --locked --lib sha256::tests
+      - name: Measure portable versus CPU-dispatched SHA-256
+        run: |
+          set -euo pipefail
+          cargo run --release --locked --example sha256_arm64_bench | tee "$RUNNER_TEMP/sha256-arm64.csv"
