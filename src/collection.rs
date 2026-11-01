@@ -97,6 +97,29 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
     }
     batch.observations.truncate(limits.max_entities);
     batch.events.truncate(limits.max_dispatches);
+
+    // A retained observation must have a retained execution receipt. Otherwise
+    // the evidence pipeline could consume findings from a provider whose outcome
+    // disappeared when the dispatch budget was enforced. Raw observations do not
+    // carry scan IDs, so match conservatively by provider and target.
+    let retained_sources: BTreeSet<_> = batch
+        .events
+        .iter()
+        .map(|event| (
+            event.provider_id.as_str(),
+            event.target.kind,
+            event.target.value.as_str(),
+        ))
+        .collect();
+    let before = batch.observations.len();
+    batch.observations.retain(|observation| {
+        retained_sources.contains(&(
+            observation.provider_id.as_str(),
+            observation.target.kind,
+            observation.target.value.as_str(),
+        ))
+    });
+    batch.truncated |= batch.observations.len() != before;
     batch.truncated |= overflow;
     batch
 }
@@ -138,4 +161,77 @@ pub fn coverage_events(batch: &ObservationBatch) -> Vec<Event> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dependency::TargetKind;
+
+    fn target(value: &str) -> Target {
+        Target::new(TargetKind::Domain, value)
+    }
+
+    fn event(provider: &str, value: &str) -> CollectionEvent {
+        CollectionEvent {
+            scan_id: "scan".into(),
+            provider_id: provider.into(),
+            target: target(value),
+            outcome: SourceOutcomeKind::Success,
+            finding_count: 1,
+            truncated: false,
+            started_at_unix: 1,
+            finished_at_unix: 2,
+            credential_fingerprint: None,
+            upstream: None,
+        }
+    }
+
+    fn observation(provider: &str, value: &str) -> RawObservation {
+        RawObservation {
+            provider_id: provider.into(),
+            upstream: None,
+            target: target(value),
+            kind: EntityKind::Domain,
+            value: value.into(),
+            summary: "fixture".into(),
+            attributes: BTreeMap::new(),
+            observed_at_unix: None,
+        }
+    }
+
+    #[test]
+    fn discarded_dispatch_cannot_leave_orphan_evidence() {
+        let batch = ObservationBatch {
+            events: vec![event("kept", "a.example"), event("dropped", "b.example")],
+            observations: vec![
+                observation("kept", "a.example"),
+                observation("dropped", "b.example"),
+            ],
+            independence_assertions: Vec::new(),
+            truncated: false,
+        };
+        let limits = PipelineLimits {
+            max_dispatches: 1,
+            ..PipelineLimits::default()
+        };
+        let bounded = bounded_batch(batch, &limits);
+        assert_eq!(bounded.events.len(), 1);
+        assert_eq!(bounded.observations.len(), 1);
+        assert_eq!(bounded.observations[0].provider_id, "kept");
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn unmatched_observation_is_not_accepted_as_evidence() {
+        let batch = ObservationBatch {
+            events: vec![event("source", "a.example")],
+            observations: vec![observation("source", "b.example")],
+            independence_assertions: Vec::new(),
+            truncated: false,
+        };
+        let bounded = bounded_batch(batch, &PipelineLimits::default());
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.truncated);
+    }
 }
