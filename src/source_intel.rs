@@ -65,18 +65,28 @@ fn normalise_url(input: &str) -> Option<String> {
     if input.len() > MAX_URL_BYTES || input.bytes().any(|b| b.is_ascii_control() || b == b'\\') {
         return None;
     }
-    let (scheme, rest) = if input.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
+    let (scheme, rest) = if input
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+    {
         ("https", &input[8..])
-    } else if input.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("http://")) {
+    } else if input
+        .get(..7)
+        .is_some_and(|s| s.eq_ignore_ascii_case("http://"))
+    {
         ("http", &input[7..])
     } else {
         return None;
     };
-    let boundary = rest.find(|c| matches!(c, '/' | '?' | '#')).unwrap_or(rest.len());
+    let boundary = rest
+        .find(|c| matches!(c, '/' | '?' | '#'))
+        .unwrap_or(rest.len());
     let authority = &rest[..boundary];
     if authority.is_empty()
         || !authority.is_ascii()
-        || authority.bytes().any(|b| b == b'@' || b == b'%' || b.is_ascii_whitespace())
+        || authority
+            .bytes()
+            .any(|b| b == b'@' || b == b'%' || b.is_ascii_whitespace())
     {
         return None;
     }
@@ -97,8 +107,7 @@ fn normalise_url(input: &str) -> Option<String> {
             ip.to_string()
         } else {
             let domain = canonical_domain(hostname)?;
-            if is_placeholder_domain(&domain)
-                || !domain.rsplit('.').next().is_some_and(is_iana_tld)
+            if is_placeholder_domain(&domain) || !domain.rsplit('.').next().is_some_and(is_iana_tld)
             {
                 return None;
             }
@@ -117,9 +126,7 @@ fn normalise_url(input: &str) -> Option<String> {
     } else {
         "/"
     };
-    if path.len() > MAX_PATH_BYTES
-        || path.bytes().any(|b| !b.is_ascii_graphic() || b == b'\\')
-    {
+    if path.len() > MAX_PATH_BYTES || path.bytes().any(|b| !b.is_ascii_graphic() || b == b'\\') {
         return None;
     }
     Some(format!("{scheme}://{host}{effective_port}{path}"))
@@ -163,7 +170,9 @@ fn from_urls(
         }
         let id = format!(
             "sha256:{}",
-            hex32(&sha256(format!("hse-source-endpoint/v1:{endpoint}").as_bytes()))
+            hex32(&sha256(
+                format!("hse-source-endpoint/v1:{endpoint}").as_bytes()
+            ))
         );
         candidates.insert(
             endpoint.clone(),
@@ -281,8 +290,18 @@ mod tests {
             "https://[2001:db8::1]:8443/a",
         ]);
         assert_eq!(report.candidates.len(), 2);
-        assert!(report.candidates.iter().any(|c| c.endpoint == "http://api.github.com:8080/data"));
-        assert!(report.candidates.iter().any(|c| c.endpoint == "https://[2001:db8::1]:8443/a"));
+        assert!(
+            report
+                .candidates
+                .iter()
+                .any(|c| c.endpoint == "http://api.github.com:8080/data")
+        );
+        assert!(
+            report
+                .candidates
+                .iter()
+                .any(|c| c.endpoint == "https://[2001:db8::1]:8443/a")
+        );
         assert!(report.candidates.iter().all(|c| c.access == "unknown"));
     }
 }
