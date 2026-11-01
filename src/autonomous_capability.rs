@@ -50,11 +50,12 @@ pub struct Decision {
 
 #[must_use]
 pub const fn negotiate(probe: CapabilityProbe, scope: Scope, impact: Impact) -> Decision {
-    let authorised = scope.target_authorised && match impact {
-        Impact::Passive => scope.passive_allowed,
-        Impact::LowImpactActive => scope.low_impact_active_allowed,
-        Impact::Intrusive => scope.intrusive_explicitly_approved,
-    };
+    let authorised = scope.target_authorised
+        && match impact {
+            Impact::Passive => scope.passive_allowed,
+            Impact::LowImpactActive => scope.low_impact_active_allowed,
+            Impact::Intrusive => scope.intrusive_explicitly_approved,
+        };
     if !authorised {
         return Decision {
             status: Availability::NotAuthorised,
