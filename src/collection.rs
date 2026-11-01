@@ -12,7 +12,7 @@ use crate::pipeline_limits::PipelineLimits;
 use crate::retrieval_artifact::ArtifactId;
 use crate::source_outcome::SourceOutcomeKind;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UpstreamOrigin {
     pub provider: Option<String>,
     pub dataset: Option<String>,
@@ -86,104 +86,95 @@ fn mark_rejected_executions(
 #[must_use]
 pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> ObservationBatch {
     let original_observation_count = batch.observations.len();
+    // Raw observations do not identify the execution that produced them.
+    // Detect ambiguous sources before dispatch truncation: a dropped receipt
+    // must not cause evidence from another scan to inherit the retained scan ID.
+    let ambiguous_execution_sources = {
+        let mut scan_by_source = BTreeMap::new();
+        let mut ambiguous = BTreeSet::new();
+        for event in &batch.events {
+            let source = (
+                event.provider_id.clone(),
+                event.target.kind,
+                event.target.value.clone(),
+                event.upstream.clone(),
+            );
+            if let Some(previous_scan) =
+                scan_by_source.insert(source.clone(), event.scan_id.as_str())
+            {
+                if previous_scan != event.scan_id.as_str() {
+                    ambiguous.insert(source);
+                }
+            }
+        }
+        ambiguous
+    };
     let overflow = batch.observations.len() > limits.max_entities
         || batch.events.len() > limits.max_dispatches;
 
-    // A batch-wide limit does not imply every retained provider was incomplete.
-    // Attribute omitted findings only to their originating provider and target.
-    // Raw observations have no scan_id, so matching provider/target pairs in
-    // different scans are conservatively treated as sharing the truncation.
-    let dropped_sources: BTreeSet<_> = batch
-        .observations
-        .iter()
-        .skip(limits.max_entities)
-        .map(|observation| {
-            (
-                observation.provider_id.as_str(),
-                observation.target.kind,
-                observation.target.value.as_str(),
-            )
-        })
-        .collect();
-    for event in batch.events.iter_mut().take(limits.max_dispatches) {
-        if dropped_sources.contains(&(
-            event.provider_id.as_str(),
-            event.target.kind,
-            event.target.value.as_str(),
-        )) {
-            event.truncated = true;
-        }
-    }
-    batch.observations.truncate(limits.max_entities);
+    // Bound receipts first; unsupported findings must not consume the evidence budget.
     batch.events.truncate(limits.max_dispatches);
 
     // A retained observation must have a retained execution receipt. Otherwise
     // the evidence pipeline could consume findings from a provider whose outcome
     // disappeared when the dispatch budget was enforced. Raw observations do not
     // carry scan IDs, so match conservatively by provider and target.
-    let retained_sources: BTreeSet<_> = batch
-        .events
-        .iter()
-        .map(|event| {
-            (
-                event.provider_id.as_str(),
-                event.target.kind,
-                event.target.value.as_str(),
-            )
-        })
-        .collect();
-    // Where the execution receipt declares an upstream origin, require an
-    // observation with declared provenance to match it. Provider/target alone
-    // cannot distinguish two executions of the same source.
-    let mut retained_origins: BTreeMap<_, Vec<&UpstreamOrigin>> = BTreeMap::new();
-    let mut unprovenanced_sources = BTreeSet::new();
+    // Index retained execution receipts by the full source scope. Provenance
+    // must match in BOTH directions: an unattributed receipt cannot authorize
+    // an attributed finding, and vice versa. A legacy None/None pair remains
+    // valid. Do not collapse distinct upstreams behind one provider/target.
+    let mut retained_receipts = BTreeMap::<_, Vec<Option<&UpstreamOrigin>>>::new();
     for event in &batch.events {
-        if let Some(origin) = event.upstream.as_ref() {
-            retained_origins
-                .entry((
-                    event.provider_id.as_str(),
-                    event.target.kind,
-                    event.target.value.as_str(),
-                ))
-                .or_default()
-                .push(origin);
-        } else {
-            unprovenanced_sources.insert((
+        retained_receipts
+            .entry((
                 event.provider_id.as_str(),
                 event.target.kind,
                 event.target.value.as_str(),
-            ));
-        }
+            ))
+            .or_default()
+            .push(event.upstream.as_ref());
     }
-    let before = batch.observations.len();
     let mut rejected_sources = BTreeSet::new();
+    let mut dropped_sources = BTreeSet::new();
+    let mut retained_count = 0;
     batch.observations.retain(|observation| {
         let key = (
             observation.provider_id.as_str(),
             observation.target.kind,
             observation.target.value.as_str(),
         );
-        let keep = retained_sources.contains(&key)
-            && match observation.upstream.as_ref() {
-                Some(origin) => retained_origins
-                    .get(&key)
-                    .is_none_or(|origins| origins.contains(&origin)),
-                // An attributed execution receipt must not authorise evidence
-                // that omits the provenance necessary to identify its source.
-                None => unprovenanced_sources.contains(&key),
-            };
-        if !keep {
+        let ambiguous = ambiguous_execution_sources.contains(&(
+            observation.provider_id.clone(),
+            observation.target.kind,
+            observation.target.value.clone(),
+            observation.upstream.clone(),
+        ));
+        let supported = !ambiguous
+            && retained_receipts
+                .get(&key)
+                .is_some_and(|origins| origins.contains(&observation.upstream.as_ref()));
+        if !supported {
             rejected_sources.insert((
                 observation.provider_id.clone(),
                 observation.target.kind,
                 observation.target.value.clone(),
             ));
+            return false;
         }
-        keep
+        if retained_count >= limits.max_entities {
+            dropped_sources.insert((
+                observation.provider_id.clone(),
+                observation.target.kind,
+                observation.target.value.clone(),
+            ));
+            return false;
+        }
+        retained_count += 1;
+        true
     });
-    // An execution cannot remain a complete success after its evidence was
-    // rejected. With no observation scan ID, conservatively mark every retained
-    // receipt for the affected provider/target incomplete, not unrelated sources.
+    // Mark retained receipts incomplete if their evidence was rejected or
+    // exceeded the budget, without marking unrelated providers incomplete.
+    rejected_sources.extend(dropped_sources);
     mark_rejected_executions(&mut batch.events, &rejected_sources);
     if batch.observations.len() < original_observation_count {
         // An independence assertion cannot survive the removal of the
@@ -199,7 +190,7 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
                 && retained_origins.contains(&&assertion.right)
         });
     }
-    batch.truncated |= batch.observations.len() != before;
+    batch.truncated |= batch.observations.len() != original_observation_count;
     batch.truncated |= overflow;
     batch
 }
@@ -328,12 +319,17 @@ mod tests {
         second.upstream = Some(origin("b"));
         let mut dropped = observation("c", "c.example");
         dropped.upstream = Some(origin("c"));
+        // Execution receipts must describe the same upstream as their findings.
+        // The old fixture gave all three receipts None, relying on the now
+        // forbidden attribution fallback instead of testing dispatch truncation.
+        let mut first_receipt = event("a", "a.example");
+        first_receipt.upstream = Some(origin("a"));
+        let mut second_receipt = event("b", "b.example");
+        second_receipt.upstream = Some(origin("b"));
+        let mut dropped_receipt = event("c", "c.example");
+        dropped_receipt.upstream = Some(origin("c"));
         let batch = ObservationBatch {
-            events: vec![
-                event("a", "a.example"),
-                event("b", "b.example"),
-                event("c", "c.example"),
-            ],
+            events: vec![first_receipt, second_receipt, dropped_receipt],
             observations: vec![first, second, dropped],
             independence_assertions: vec![assertion("a", "b"), assertion("a", "c")],
             truncated: false,
@@ -475,5 +471,197 @@ mod tests {
         let bounded = bounded_batch(batch, &PipelineLimits::default());
         assert!(bounded.observations.is_empty());
         assert!(bounded.truncated);
+    }
+    #[test]
+    fn unattributed_receipt_cannot_authorize_attributed_observation() {
+        let mut forged = observation("source", "a.example");
+        forged.upstream = Some(UpstreamOrigin {
+            provider: Some("unrecorded-provider".into()),
+            dataset: Some("unrecorded-dataset".into()),
+            artifact: None,
+        });
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("source", "a.example")],
+                observations: vec![forged],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.truncated);
+        assert!(bounded.events[0].truncated);
+        assert!(matches!(
+            coverage_events(&bounded)[0].kind,
+            EventKind::ModuleError { .. }
+        ));
+        assert_eq!(
+            bounded_batch(bounded.clone(), &PipelineLimits::default()),
+            bounded
+        );
+    }
+
+    #[test]
+    fn mixed_receipts_accept_only_matching_origins() {
+        let origin = UpstreamOrigin {
+            provider: Some("primary".into()),
+            dataset: Some("one".into()),
+            artifact: None,
+        };
+        let mut attributed_receipt = event("same", "a.example");
+        attributed_receipt.upstream = Some(origin.clone());
+        let mut attributed = observation("same", "a.example");
+        attributed.upstream = Some(origin);
+        let legacy = observation("same", "a.example");
+        let mut unknown = observation("same", "a.example");
+        unknown.upstream = Some(UpstreamOrigin {
+            provider: Some("primary".into()),
+            dataset: Some("other".into()),
+            artifact: None,
+        });
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("same", "a.example"), attributed_receipt],
+                observations: vec![legacy, attributed, unknown],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 2);
+        assert!(bounded.observations[0].upstream.is_none());
+        assert!(bounded.observations[1].upstream.is_some());
+        assert!(bounded.events.iter().all(|receipt| receipt.truncated));
+        assert!(bounded.truncated);
+    }
+    #[test]
+    fn unsupported_observations_do_not_exhaust_the_valid_evidence_budget() {
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("kept", "valid.example")],
+                observations: vec![
+                    observation("orphan", "unrecorded.example"),
+                    observation("kept", "valid.example"),
+                ],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_entities: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert_eq!(bounded.observations[0].value, "valid.example");
+        assert!(bounded.truncated);
+        assert!(!bounded.events[0].truncated);
+        assert!(matches!(
+            coverage_events(&bounded)[0].kind,
+            EventKind::ModuleDone { .. }
+        ));
+    }
+
+    #[test]
+    fn identical_source_in_different_scans_cannot_inherit_the_first_scan_id() {
+        let origin = UpstreamOrigin {
+            provider: Some("same-upstream".into()),
+            dataset: Some("same-dataset".into()),
+            artifact: None,
+        };
+        let mut first = event("shared", "a.example");
+        first.scan_id = "scan-one".into();
+        first.upstream = Some(origin.clone());
+        let mut second = first.clone();
+        second.scan_id = "scan-two".into();
+        let mut raw = observation("shared", "a.example");
+        raw.upstream = Some(origin);
+
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![first, second],
+                observations: vec![raw],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.truncated);
+        assert!(bounded.events.iter().all(|receipt| receipt.truncated));
+        assert!(
+            coverage_events(&bounded)
+                .iter()
+                .all(|event| matches!(&event.kind, EventKind::ModuleError { .. }))
+        );
+    }
+
+    #[test]
+    fn dropped_duplicate_scan_receipt_cannot_relabel_its_observation() {
+        let mut first = event("shared", "a.example");
+        first.scan_id = "scan-one".into();
+        let mut second = first.clone();
+        second.scan_id = "scan-two".into();
+
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![first, second],
+                observations: vec![observation("shared", "a.example")],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_dispatches: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.events.len(), 1);
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.events[0].truncated);
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn duplicate_receipts_in_one_scan_remain_unambiguous() {
+        let first = event("shared", "a.example");
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![first.clone(), first],
+                observations: vec![observation("shared", "a.example")],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(!bounded.truncated);
+        assert!(bounded.events.iter().all(|receipt| !receipt.truncated));
+    }
+
+    #[test]
+    fn valid_evidence_beyond_the_budget_marks_its_provider_incomplete() {
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("kept", "valid.example")],
+                observations: vec![
+                    observation("orphan", "unrecorded.example"),
+                    observation("kept", "valid.example"),
+                    observation("kept", "valid.example"),
+                ],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_entities: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(bounded.truncated);
+        assert!(bounded.events[0].truncated);
+        assert!(matches!(
+            coverage_events(&bounded)[0].kind,
+            EventKind::ModuleError { .. }
+        ));
     }
 }
