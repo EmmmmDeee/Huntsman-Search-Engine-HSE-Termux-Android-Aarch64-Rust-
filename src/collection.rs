@@ -65,6 +65,24 @@ pub struct ObservationBatch {
     pub truncated: bool,
 }
 
+// Keep coverage in sync when evidence is rejected after bounding. The raw
+// observation schema has no scan ID, so provider/target is the precise scope
+// available for conservative attribution of an incomplete execution.
+fn mark_rejected_executions(
+    events: &mut [CollectionEvent],
+    rejected_sources: &BTreeSet<(String, crate::dependency::TargetKind, String)>,
+) {
+    for event in events {
+        if rejected_sources.contains(&(
+            event.provider_id.clone(),
+            event.target.kind,
+            event.target.value.clone(),
+        )) {
+            event.truncated = true;
+        }
+    }
+}
+
 #[must_use]
 pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> ObservationBatch {
     let original_observation_count = batch.observations.len();
@@ -166,15 +184,7 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
     // An execution cannot remain a complete success after its evidence was
     // rejected. With no observation scan ID, conservatively mark every retained
     // receipt for the affected provider/target incomplete, not unrelated sources.
-    for event in &mut batch.events {
-        if rejected_sources.contains(&(
-            event.provider_id.clone(),
-            event.target.kind,
-            event.target.value.clone(),
-        )) {
-            event.truncated = true;
-        }
-    }
+    mark_rejected_executions(&mut batch.events, &rejected_sources);
     if batch.observations.len() < original_observation_count {
         // An independence assertion cannot survive the removal of the
         // observations establishing either upstream root. Exact provenance
