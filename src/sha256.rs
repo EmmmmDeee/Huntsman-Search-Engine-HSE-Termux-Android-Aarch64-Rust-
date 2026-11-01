@@ -234,8 +234,8 @@ mod tests {
         // This covers the one-shot switch, SHA-256 block/padding transitions,
         // and larger evidence payloads with non-repeating bytes.
         for size in [
-            0_usize, 1, 55, 56, 63, 64, 65, 119, 120, 127, 128, 129, 1023, 1024, 1025, 4095, 4096, 4097,
-            65536, 1_048_576,
+            0_usize, 1, 55, 56, 63, 64, 65, 119, 120, 127, 128, 129, 1023, 1024, 1025, 4095, 4096,
+            4097, 65536, 1_048_576,
         ] {
             let input = (0..size)
                 .map(|n| (n.wrapping_mul(47).wrapping_add(29) & 255) as u8)
