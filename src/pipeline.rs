@@ -217,14 +217,8 @@ fn scan_id_for(batch: &ObservationBatch, observation: &RawObservation) -> String
                 && event.target == observation.target
                 && event.upstream == observation.upstream
         })
-        // Older collection receipts can lack upstream provenance. Preserve
-        // their provider/target association only when no exact receipt exists.
-        .or_else(|| {
-            batch.events.iter().find(|event| {
-                event.provider_id == observation.provider_id && event.target == observation.target
-            })
-        })
-        .or_else(|| batch.events.first())
+        // `bounded_batch` admitted only exact provider/target/upstream pairs.
+        // Never substitute another execution's scan ID for an unmatched source.
         .map_or_else(|| "collection".to_string(), |event| event.scan_id.clone())
 }
 
@@ -314,11 +308,16 @@ fn evidence_for(
         // Collector and upstream metadata come from execution receipts, not
         // arbitrary response fields. Preserve collisions without granting them
         // authority over the receipt-derived attributes.
-        let attribute_key = match key.as_str() {
-            "collector" | "upstream_provider" | "upstream_dataset" | "upstream_artifact" => {
-                format!("raw_attribute:{key}")
-            }
-            _ => key.clone(),
+        let reserved = matches!(
+            key.as_str(),
+            "collector" | "upstream_provider" | "upstream_dataset" | "upstream_artifact"
+        );
+        // Escape the reserved prefix itself so user-supplied
+        // "raw_attribute:collector" cannot alias a literal "collector" field.
+        let attribute_key = if reserved || key.starts_with("raw_attribute:") {
+            format!("raw_attribute:{key}")
+        } else {
+            key.clone()
         };
         evidence = evidence.with_attr(attribute_key, value.clone());
     }
