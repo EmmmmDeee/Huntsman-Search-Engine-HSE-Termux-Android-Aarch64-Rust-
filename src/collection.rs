@@ -114,13 +114,35 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
             )
         })
         .collect();
+    // Where the execution receipt declares an upstream origin, require an
+    // observation with declared provenance to match it. Provider/target alone
+    // cannot distinguish two executions of the same source.
+    let mut retained_origins: BTreeMap<_, Vec<&UpstreamOrigin>> = BTreeMap::new();
+    for event in &batch.events {
+        if let Some(origin) = event.upstream.as_ref() {
+            retained_origins
+                .entry((
+                    event.provider_id.as_str(),
+                    event.target.kind,
+                    event.target.value.as_str(),
+                ))
+                .or_default()
+                .push(origin);
+        }
+    }
     let before = batch.observations.len();
     batch.observations.retain(|observation| {
-        retained_sources.contains(&(
+        let key = (
             observation.provider_id.as_str(),
             observation.target.kind,
             observation.target.value.as_str(),
-        ))
+        );
+        retained_sources.contains(&key)
+            && observation.upstream.as_ref().is_none_or(|origin| {
+                retained_origins
+                    .get(&key)
+                    .is_none_or(|origins| origins.contains(&origin))
+            })
     });
     if batch.observations.len() < original_observation_count {
         // An independence assertion cannot survive the removal of the
@@ -285,6 +307,44 @@ mod tests {
         assert_eq!(bounded.observations.len(), 2);
         assert_eq!(bounded.independence_assertions.len(), 1);
         assert_eq!(bounded.independence_assertions[0].right, origin("b"));
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn dropped_dispatch_cannot_retain_evidence_from_a_different_upstream() {
+        fn origin(name: &str) -> UpstreamOrigin {
+            UpstreamOrigin {
+                provider: Some(name.into()),
+                dataset: Some("primary".into()),
+                artifact: None,
+            }
+        }
+        let mut kept_event = event("source", "a.example");
+        kept_event.upstream = Some(origin("kept"));
+        let mut dropped_event = event("source", "a.example");
+        dropped_event.scan_id = "different-scan".into();
+        dropped_event.upstream = Some(origin("discarded"));
+
+        let mut kept_observation = observation("source", "a.example");
+        kept_observation.upstream = Some(origin("kept"));
+        let mut dropped_observation = observation("source", "a.example");
+        dropped_observation.upstream = Some(origin("discarded"));
+
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![kept_event, dropped_event],
+                observations: vec![kept_observation, dropped_observation],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_dispatches: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.events.len(), 1);
+        assert_eq!(bounded.observations.len(), 1);
+        assert_eq!(bounded.observations[0].upstream, Some(origin("kept")));
         assert!(bounded.truncated);
     }
 
