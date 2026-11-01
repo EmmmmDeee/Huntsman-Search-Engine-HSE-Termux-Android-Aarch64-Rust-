@@ -29,7 +29,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     let candidates = source_intel::from_apk_report(&apk);
     match terminal_json_pretty(&candidates) {
         Ok(output) => println!("{output}"),
-        Err(error) => return fail(EX_IOERR, &error),
+        Err(error) => return fail(EX_IOERR, &error.to_string()),
     }
     ExitCode::SUCCESS
 }
