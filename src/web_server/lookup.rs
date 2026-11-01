@@ -286,6 +286,87 @@ pub(super) fn research_response(
     }
 }
 
+/// Start or join a bounded, durable autonomous mission through the *existing* scan service.
+/// Only exact supported identifiers can become scan seeds. General text first needs a keyless
+/// discovery pass and explicit selection of a supported pivot: a search hit is not identity proof.
+/// This route performs no network I/O on the connection thread, and the ordinary Scans UI owns
+/// cancellation, progress, evidence, checkpoints and restart recovery.
+pub(super) fn research_mission_response(
+    parsed: &ParsedRequest<'_>,
+    scans: Option<&Arc<ScanApi>>,
+) -> String {
+    if parsed.method != Method::Post {
+        return json_error(405, "starting a research mission needs POST");
+    }
+    if let Some(refused) = page_refusal(parsed, "research mission", true) {
+        return refused;
+    }
+    if parsed.has_body {
+        return json_error(
+            400,
+            "send research parameters in the query string, without a body",
+        );
+    }
+    let Some(scans) = scans else {
+        return json_error(
+            404,
+            "saved research missions are not enabled on this server",
+        );
+    };
+    let query = match parse_lookup_query(parsed.query) {
+        Ok(query) => query,
+        Err(message) => return json_error(400, message),
+    };
+    let (kind, selector) = match crate::research_route::plan(&query.selector) {
+        Ok(crate::research_route::ResearchAction::Targeted { kind, selector }) => (kind, selector),
+        Ok(crate::research_route::ResearchAction::AdaptiveWeb { .. }) => {
+            return json_error(
+                422,
+                "an arbitrary phrase is a discovery seed, not a verified scan target; research it first and choose a supported identifier",
+            );
+        }
+        Err(message) => return json_error(400, message),
+    };
+    // No new scheduler, task database or unlimited recursion. The existing worker policy caps
+    // dispatch, and all intermediate evidence is checkpointed in the saved scan store.
+    let request = ScanRequest {
+        target: selector,
+        kind: Some(kind.command().to_owned()),
+        options: crate::scan_store::ScanOptions {
+            usecase: "passive".to_owned(),
+            depth: 1,
+            ..crate::scan_store::ScanOptions::default()
+        },
+        ..ScanRequest::default()
+    };
+    let record = match scans.service().start_or_join(&request) {
+        Ok(record) => record,
+        Err(failure) => return json_error(failure.status(), &failure.to_string()),
+    };
+    let body = serde_json::json!({
+        "mission_id": record.id,
+        "scan": record.id,
+        "status": record.status.as_str(),
+        "kind": record.kind,
+        "selector": record.target,
+        "autonomous": true,
+        "execution": "saved_scan_with_bounded_evidence_gated_recursion",
+        "usecase": "passive",
+        "recursion_depth": 1,
+        "limitations": [
+            "passive_scan_can_query_external_sources_and_configured_credentials",
+            "public_observations_are_not_independent_fact_verification",
+            "follow_up_scope_is_limited_by_existing_scan_recursion_policy"
+        ]
+    });
+    response(
+        202,
+        "application/json; charset=utf-8",
+        &format!("{body}\n"),
+        false,
+    )
+}
+
 /// The saved scans: Spiderfoot's scan list, scan views, exports and state changes, answered by the
 /// binary's [`ScanApi`]. A scan makes network requests and spends keys, and its results are the
 /// operator's, so every call is guarded as a lookup is: refused cross-site or same-site, it needs
