@@ -311,7 +311,16 @@ fn evidence_for(
         ]);
     }
     for (key, value) in &observation.attributes {
-        evidence = evidence.with_attr(key.clone(), value.clone());
+        // Collector and upstream metadata come from execution receipts, not
+        // arbitrary response fields. Preserve collisions without granting them
+        // authority over the receipt-derived attributes.
+        let attribute_key = match key.as_str() {
+            "collector" | "upstream_provider" | "upstream_dataset" | "upstream_artifact" => {
+                format!("raw_attribute:{key}")
+            }
+            _ => key.clone(),
+        };
+        evidence = evidence.with_attr(attribute_key, value.clone());
     }
     evidence
 }
