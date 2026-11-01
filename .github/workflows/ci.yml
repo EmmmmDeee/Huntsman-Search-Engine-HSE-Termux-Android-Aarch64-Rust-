@@ -131,8 +131,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build current Huntsman Recon image
-        # Exercise the Railway metadata fallback, not merely CI's explicit build argument.
-        run: bash scripts/container-build-retry.sh --pull --build-arg RAILWAY_GIT_COMMIT_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
+        # Exercise the generic source-SHA fallback, not merely CI's explicit build argument.
+        run: bash scripts/container-build-retry.sh --pull --build-arg HUNTSMAN_SOURCE_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
       - name: Exercise self-hosted container runtime
         shell: bash
         run: |
