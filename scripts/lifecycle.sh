@@ -2,7 +2,7 @@
 # Canonical lifecycle. No opt-in flags.
 #   bash scripts/lifecycle.sh
 # builds the locked binary, runs check, records state, commits non-secret
-# changes, and pushes main. Direct sync must pass the same checks as all.
+# changes, then publishes the verified commit to a PR review branch, never main.
 # Termux aarch64, no root, no ports below 1024.
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -212,19 +212,22 @@ sync_cmd() {
       die "clean tree differs from verified tree; refusing push"
     log "clean tree"
   fi
-  # Push the verified object ID, never a branch name that may move after
-  # verification. Git still enforces non-force fast-forward semantics.
-  local verified_commit
+  # An exact-main CI origin gate rejects commits that are not merged PRs.
+  # Publish the verified object to its own stable review branch, never main.
+  # The full SHA makes retries idempotent and avoids moving another candidate.
+  local verified_commit review_branch
   verified_commit="$(git rev-parse HEAD)" || die "could not identify the verified commit"
   [[ "$(git rev-parse "$verified_commit^{tree}")" == "$SYNC_EXPECTED_TREE" ]] ||
     die "push candidate differs from verified tree"
+  review_branch="lifecycle/$verified_commit"
   git remote get-url origin >/dev/null 2>&1 || die "no origin remote"
-  if ! git push origin "$verified_commit:refs/heads/main"; then
-    write_state sync failed "git push origin verified-commit:refs/heads/main"
-    die "push failed; credentials or network. Local commit is kept. See $LOG"
+  if ! git push origin "$verified_commit:refs/heads/$review_branch"; then
+    write_state sync failed "git push origin verified-commit:refs/heads/$review_branch"
+    die "review-branch push failed; credentials or network. Local commit is kept. See $LOG"
   fi
-  log "pushed $verified_commit"
-  write_state sync ok "$verified_commit"
+  log "staged $verified_commit on $review_branch; open a PR targeting main"
+  write_state sync pending "$review_branch@$verified_commit"
+  printf 'lifecycle review branch=%s revision=%s; open a pull request to main\n' "$review_branch" "$verified_commit"
 }
 
 cmd="${1:-all}"
@@ -239,7 +242,7 @@ case "$cmd" in
     test_cmd
     SYNC_VERIFIED=1
     sync_cmd
-    printf 'lifecycle ok revision=%s\n' "$(git rev-parse --short HEAD)"
+    printf 'lifecycle staged revision=%s\n' "$(git rev-parse --short HEAD)"
     printf 'state=%s\n' "$STATE"
     ;;
   *)
