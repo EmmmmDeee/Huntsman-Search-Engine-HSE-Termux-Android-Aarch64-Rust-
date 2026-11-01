@@ -29,7 +29,10 @@ fn time_path(input: &[u8], repeats: usize, path: Path) -> Duration {
                 black_box(portable_hash(black_box(input)));
             }
             Path::Ring => {
-                black_box(ring::digest::digest(&ring::digest::SHA256, black_box(input)));
+                black_box(ring::digest::digest(
+                    &ring::digest::SHA256,
+                    black_box(input),
+                ));
             }
             Path::Selected => {
                 black_box(sha256(black_box(input)));
@@ -64,7 +67,9 @@ fn main() {
         std::env::consts::ARCH,
         std::env::consts::OS
     );
-    println!("size_bytes,repetitions,portable_ms,ring_ms,selected_ms,portable_over_ring,portable_over_selected");
+    println!(
+        "size_bytes,repetitions,portable_ms,ring_ms,selected_ms,portable_over_ring,portable_over_selected"
+    );
 
     for (case_index, size) in BENCHMARK_SIZES.into_iter().enumerate() {
         let input = (0..size)
