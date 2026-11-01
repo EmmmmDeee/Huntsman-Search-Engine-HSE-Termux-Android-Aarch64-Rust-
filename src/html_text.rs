@@ -149,7 +149,7 @@ pub enum Piece<'a> {
 /// inside a quoted attribute value does not close it, as in [`attribute`]. Markup that never
 /// closes is text, and so is everything after it: each search starts where the last one ended,
 /// and none is repeated after one fails, so reading is linear in the input even when it is
-/// malformed.
+/// malformed. An unterminated HTML comment is ignored through end-of-input.
 pub struct Markup<'a> {
     html: &'a str,
     /// `html` with ASCII letters lower-cased: the same bytes at the same offsets otherwise, for
@@ -158,8 +158,6 @@ pub struct Markup<'a> {
     pos: usize,
     /// Markup at or before `pos` never closed, so the rest of the input is text.
     no_close: bool,
-    /// No `-->` at or after `pos`.
-    no_comment_close: bool,
 }
 
 /// The offset in `tag` (the text after a tag's `<`) of the `>` that closes it, or `None` when the
@@ -194,7 +192,6 @@ impl<'a> Markup<'a> {
             lower: html.to_ascii_lowercase(),
             pos: 0,
             no_close: false,
-            no_comment_close: false,
         }
     }
 
@@ -208,12 +205,13 @@ impl<'a> Markup<'a> {
         let mut bytes = after.bytes();
         let first = bytes.next()?;
         let second = bytes.next();
-        if after.starts_with("!--") && !self.no_comment_close {
+        if after.starts_with("!--") {
+            // An unterminated comment consumes the rest of the document. Treating
+            // its first stray '>' as a declaration terminator would expose the
+            // remaining comment body as visible evidence text.
             let body = start + 4;
-            match self.lower.get(body..)?.find("-->") {
-                Some(offset) => return Some((Piece::Ignored, body + offset + 3)),
-                None => self.no_comment_close = true,
-            }
+            let end = self.lower.get(body..)?.find("-->").map_or(self.html.len(), |offset| body + offset + 3);
+            return Some((Piece::Ignored, end));
         }
         let end_tag = first == b'/';
         let tag = first.is_ascii_alphabetic()
@@ -286,5 +284,31 @@ impl<'a> Iterator for Markup<'a> {
         }
         self.pos = start + 1;
         Some(Piece::Text("<"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::html_to_text;
+
+    #[test]
+    fn unterminated_html_comment_does_not_surface_hidden_suffix() {
+        assert_eq!(
+            html_to_text("Visible <!-- private > SHOULD_NOT_SURFACE", 200),
+            Some("Visible".to_owned())
+        );
+        assert_eq!(html_to_text("<!-- private > SHOULD_NOT_SURFACE", 200), None);
+        assert_eq!(
+            html_to_text("Visible <!-- private without a terminator", 200),
+            Some("Visible".to_owned())
+        );
+    }
+
+    #[test]
+    fn closed_html_comment_preserves_subsequent_visible_text() {
+        assert_eq!(
+            html_to_text("Before <!-- hidden > comment --> After", 200),
+            Some("Before After".to_owned())
+        );
     }
 }
