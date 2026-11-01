@@ -4,6 +4,7 @@ address_au	leaf	Australian address and phone normalization utility
 analysis	runtime	shared analysis fan-out
 api_leg	runtime	shared request path, key binding and status mapping of the free-tier API legs
 apk_intel	adapter	bounded offline APK archive intelligence reached by the shipped apk CLI and the serve upload path: ZIP inventory, binary AndroidManifest.xml, v1/v2/v3 signer certificates and DEX code URLs as source-labelled evidence and pivot entities
+application	runtime	Stage 2 directory shim re-exporting L7 record and orchestration leaves
 archived_page	leaf	the one archived-page contact reader (capture choice, web-page bound, mailto/tel and text contacts, URL admission, CDX timestamp) shared by wayback_cdx and common_crawl
 artifacts	exporter	bounded shared-state artifact renderer
 asic_director	adapter	ASIC director source client
@@ -19,7 +20,10 @@ base64	leaf	RFC 4648 base64 codec for CSP hashes, PKCE values and certificate DE
 benchmark	diagnostic	benchmarking support
 blockchain	adapter	blockchain.info Bitcoin address source client reached through crypto_cli
 base_rpc	adapter	keyless Base mainnet account observations through crypto_cli, scan and shared Web UI lookup; provenance retained without ownership attribution
+core	runtime	Stage 2 directory shim re-exporting L0/L3 leaves including network_selector
 eth_rpc	adapter	keyless Ethereum mainnet account observations through crypto_cli, scan and shared Web UI lookup over the shared evm_rpc core; provenance retained without ownership attribution
+evidence	runtime	Stage 2 directory shim re-exporting L1 evidence-contract leaves
+infrastructure	runtime	Stage 2 directory shim re-exporting L2 network-boundary leaves
 solana_rpc	adapter	keyless Solana mainnet-beta account observations through crypto_cli, scan and shared Web UI lookup: genesis-gated read-only batch, bounded SPL token, mint and multisig decode, recent transactions naming the address; provenance retained without ownership attribution
 evm_rpc	leaf	the one keyless EVM JSON-RPC account-observation core (batch request, fail-closed decode, exact-wei provenance) shared by base_rpc and eth_rpc
 bluesky_user	adapter	public Bluesky profile source client
@@ -115,6 +119,7 @@ keybase	adapter	public Keybase identity source client reached through username_c
 keys	leaf	credential file handling
 mastodon_user	adapter	public Mastodon account source client reached through username_cli from username, scan and /api/lookup
 tiktok_public_contact	adapter	keyless public TikTok bio contact client, reached from username_cli and bounded by same guarded transport
+web	runtime	Stage 2 directory shim re-exporting serve/API listener leaves
 wikidata	adapter	Wikidata entity source client reached through wikidata_cli from the wikidata command and folded into a people scan as a candidate lead
 wikidata_cli	adapter	wikidata query front-end reached from the wikidata command
 gleif	adapter	GLEIF legal-entity source client reached through gleif_cli from the gleif command
