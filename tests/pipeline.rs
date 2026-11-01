@@ -44,7 +44,9 @@ fn batch(observations: Vec<RawObservation>) -> ObservationBatch {
     let mut events: Vec<CollectionEvent> = Vec::new();
     for observation in &observations {
         if let Some(event) = events.iter_mut().find(|event| {
-            event.provider_id == observation.provider_id && event.target == observation.target
+            event.provider_id == observation.provider_id
+                && event.target == observation.target
+                && event.upstream == observation.upstream
         }) {
             event.finding_count += 1;
         } else {
