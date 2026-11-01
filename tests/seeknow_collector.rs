@@ -263,7 +263,6 @@ fn evidence_is_deduped_and_lineage_comes_from_response_dataset_not_seeknow() {
     }
 }
 
-
 #[test]
 fn safe_provider_fields_survive_collection_into_saved_evidence() {
     let transport = ScriptedTransport::new(vec![response(
@@ -289,7 +288,10 @@ fn safe_provider_fields_survive_collection_into_saved_evidence() {
     assert_eq!(batch.outcome, CollectionOutcome::Success);
     let evidence = &batch.entities[0].evidence[0];
     assert_eq!(evidence.attributes["source"], "Dataset One");
-    assert_eq!(evidence.attributes["provider_field.secretary"], "Jane Citizen");
+    assert_eq!(
+        evidence.attributes["provider_field.secretary"],
+        "Jane Citizen"
+    );
     assert_eq!(evidence.attributes["provider_field.session_count"], "5");
     assert_eq!(
         evidence.attributes["provider_field.tokenomics"],
@@ -299,7 +301,11 @@ fn safe_provider_fields_survive_collection_into_saved_evidence() {
         evidence.attributes["provider_field.email"],
         "alice@example.com"
     );
-    assert!(!evidence.attributes.contains_key("provider_field.accessToken"));
+    assert!(
+        !evidence
+            .attributes
+            .contains_key("provider_field.accessToken")
+    );
     assert!(evidence.attributes["sensitive_fields_present"].contains("accessToken"));
     let serialized = serde_json::to_string(evidence).unwrap();
     assert!(serialized.contains("Jane Citizen"));
