@@ -146,9 +146,9 @@ struct EftsHit {
 #[derive(Debug, Deserialize)]
 struct EftsSource {
     #[serde(default)]
-    ciks: Vec<String>,
+    ciks: Option<Vec<String>>,
     #[serde(default)]
-    display_names: Vec<String>,
+    display_names: Option<Vec<String>>,
 }
 
 /// The submissions profile envelope (the fields modelled; EDGAR sends more, kept verbatim where read).
@@ -342,8 +342,8 @@ fn lookup_with_agent<T: Transport + ?Sized>(
                 break;
             }
         };
-        if !build_from_submission(&fetched, filer, scan_id, &mut entities) {
-            unreadable = Some(fetched.outcome.clone());
+        if let Err(outcome) = build_from_submission(&fetched, filer, scan_id, &mut entities) {
+            unreadable = Some(outcome);
         }
     }
 
@@ -393,20 +393,37 @@ fn interpret_search(
             "EDGAR search response lacked the required hits array",
         ));
     };
-    Ok(matched_filers(&hits, query))
+    matched_filers(&hits, query).map_err(|detail| {
+        SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            detail,
+        )
+    })
 }
 
 /// The distinct name-matched filers across the scanned hits, in first-seen order. Each hit lists its
 /// filing's entities as index-aligned `ciks` and `display_names`; only an entity whose published
 /// name matches the queried name as whole words is kept, so a co-filed issuer or an unrelated
 /// full-text rank is never attributed to the query. **Pure.**
-fn matched_filers(hits: &[EftsHit], query: &str) -> Vec<MatchedFiler> {
+fn matched_filers(hits: &[EftsHit], query: &str) -> Result<Vec<MatchedFiler>, &'static str> {
     let mut filers: Vec<MatchedFiler> = Vec::new();
     for hit in hits.iter().take(MAX_HITS) {
-        let Some(source) = hit.source.as_ref() else {
-            continue;
-        };
-        for (cik, display_name) in source.ciks.iter().zip(source.display_names.iter()) {
+        let source = hit
+            .source
+            .as_ref()
+            .ok_or("EDGAR search hit lacked _source")?;
+        let ciks = source.ciks.as_ref().ok_or("EDGAR search hit lacked ciks")?;
+        let names = source
+            .display_names
+            .as_ref()
+            .ok_or("EDGAR search hit lacked display_names")?;
+        if ciks.len() != names.len() {
+            return Err("EDGAR search hit carried misaligned ciks and display_names");
+        }
+        for (cik, display_name) in ciks.iter().zip(names.iter()) {
             let Some(cik) = canonical_cik(cik) else {
                 continue;
             };
@@ -423,7 +440,7 @@ fn matched_filers(hits: &[EftsHit], query: &str) -> Vec<MatchedFiler> {
             });
         }
     }
-    filers
+    Ok(filers)
 }
 
 /// `cik` as a canonical 10-digit CIK when it is one (EDGAR already zero-pads them), else `None`.
@@ -443,33 +460,31 @@ fn filer_name(display_name: &str) -> &str {
         .trim()
 }
 
-/// Build the candidate for one matched filer from its submissions profile, appending to `entities`
-/// and returning whether the filer entity was emitted. A 404, an unreadable or truncated body, or a
-/// document whose own CIK is not the requested one emits nothing and returns `false` (fail-closed):
-/// the filer is simply not deepened, never fabricated. **Pure.**
+/// Build a filer from its submissions profile, appending entities only after its envelope and
+/// identifier have been validated. Preserve transport/refusal outcomes and classify unreadable
+/// documents, so an all-unreadable lookup cannot lose its failure reason. **Pure.**
 fn build_from_submission(
     fetched: &Fetched,
     filer: &MatchedFiler,
     scan_id: &str,
     entities: &mut Vec<Entity>,
-) -> bool {
-    let Some(response) = &fetched.response else {
-        return false;
-    };
-    if !fetched.outcome.kind.is_accepted()
-        && fetched.outcome.kind != SourceOutcomeKind::Inconclusive
-    {
-        return false;
-    }
-    if response.truncated {
-        return false;
-    }
-    let Ok(submission) = crate::http::parse_json_body::<Submission>(response) else {
-        return false;
-    };
-    // The document must be the requested filer's own profile; a mismatched CIK is schema drift.
+) -> Result<(), SourceExecutionOutcome> {
+    let response = whole_response(fetched, "EDGAR submissions")?;
+    answer(fetched, "EDGAR submissions")?;
+    let submission: Submission = decode_json(
+        response,
+        SOURCE,
+        fetched.outcome.observed_at_unix,
+        "EDGAR submissions",
+    )?;
     if submission.cik.as_deref().and_then(canonical_cik).as_deref() != Some(filer.cik.as_str()) {
-        return false;
+        return Err(SourceExecutionOutcome::failed(
+            SOURCE,
+            fetched.outcome.observed_at_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "EDGAR submissions CIK did not match the requested filer",
+        ));
     }
     let name = submission
         .name
@@ -492,7 +507,7 @@ fn build_from_submission(
 
     push_website(&submission, &name, scan_id, entities);
     push_addresses(&submission, &name, scan_id, entities);
-    true
+    Ok(())
 }
 
 /// Whether the submissions profile describes a company (an operating entity, or one with tickers,
@@ -814,6 +829,38 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_submissions_preserve_parser_failure_classification() {
+        let mut truncated = json_ok(PERSON);
+        truncated.truncated = true;
+        for response in [json_ok("not-json"), truncated] {
+            let transport = ScriptedTransport::new(vec![Ok(json_ok(SEARCH)), Ok(response)]);
+            let report = lookup(&transport, "elon musk", "scan-edgar", 1).expect("runs");
+            assert!(report.entities.is_empty());
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
+            assert_eq!(report.outcome.http_status, Some(200));
+            assert_eq!(transport.seen.borrow().len(), 2);
+        }
+    }
+
+    #[test]
+    fn malformed_search_hits_are_not_clean_zero_results() {
+        for hit in [
+            "{}",
+            r#"{"_source":{"display_names":["Musk Elon"]}}"#,
+            r#"{"_source":{"ciks":["0001494730"]}}"#,
+            r#"{"_source":{"ciks":["0001494730"],"display_names":[]}}"#,
+        ] {
+            let body = format!(r#"{{"hits":{{"hits":[{hit}]}}}}"#);
+            let transport = ScriptedTransport::new(vec![Ok(json_ok(&body))]);
+            let report = lookup(&transport, "elon musk", "scan-edgar", 1).expect("runs");
+            assert!(report.entities.is_empty());
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift, "{hit}");
+            assert_eq!(report.outcome.http_status, Some(200));
+            assert_eq!(transport.seen.borrow().len(), 1);
+        }
+    }
+
+    #[test]
     fn a_submissions_cik_mismatch_is_not_attributed() {
         // The submissions document must be the requested filer's own profile; a document whose CIK
         // is a different filer is schema drift, never minted onto the matched name.
@@ -828,8 +875,9 @@ mod tests {
             "a CIK-mismatched submissions document must not be attributed: {:#?}",
             report.entities
         );
-        // No readable profile for the matched filer -> inconclusive, never a fabricated success.
-        assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+        // A contradictory profile is schema drift, never an unclassified response or clean zero.
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
+        assert_eq!(report.outcome.http_status, Some(200));
     }
 
     #[test]
