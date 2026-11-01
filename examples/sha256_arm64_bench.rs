@@ -1,6 +1,6 @@
 //! Opt-in SHA-256 benchmark for the real Android/Termux CPU.
 //!
-//! Run: cargo run --release --example sha256_arm64_bench --locked
+//! Run: `cargo run --release --example sha256_arm64_bench --locked`
 //! Compare results on one physical handset with consistent power/thermal state.
 //! QEMU throughput and CI cross-build success are not handset speed evidence.
 
@@ -32,7 +32,7 @@ const BENCHMARK_SIZES: [usize; 6] = [64, 1023, 1024, 4096, 65_536, 1_048_576];
 
 /// Alternate order by case index; five of six payload sizes are even.
 fn portable_first(case_index: usize) -> bool {
-    case_index % 2 == 0
+    case_index & 1 == 0
 }
 
 fn main() {
