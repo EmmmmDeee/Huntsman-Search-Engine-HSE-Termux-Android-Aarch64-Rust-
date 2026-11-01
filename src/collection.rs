@@ -105,11 +105,13 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
     let retained_sources: BTreeSet<_> = batch
         .events
         .iter()
-        .map(|event| (
-            event.provider_id.as_str(),
-            event.target.kind,
-            event.target.value.as_str(),
-        ))
+        .map(|event| {
+            (
+                event.provider_id.as_str(),
+                event.target.kind,
+                event.target.value.as_str(),
+            )
+        })
         .collect();
     let before = batch.observations.len();
     batch.observations.retain(|observation| {
