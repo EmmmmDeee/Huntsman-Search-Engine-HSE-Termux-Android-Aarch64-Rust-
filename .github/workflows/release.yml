@@ -243,6 +243,7 @@ jobs:
             huntsman-recon:container
           HUNTSMAN_CONTAINER_URL=http://127.0.0.1:18080 \
           HSE_AUTH_TOKEN=release-gate-token \
+          HUNTSMAN_EXPECTED_SHA="$GITHUB_SHA" \
             bash scripts/container-live-acceptance.sh
 
   web-ui:
