@@ -614,6 +614,19 @@ fn fetch_hops_inner<T: Transport + ?Sized>(
             return Ok(refusal.finish(module, now_unix, &current, response, &scrub));
         };
         if let Some(next) = next {
+            // A 307/308 (or any other redirect retaining a request body) must not
+            // forward that body to a different origin. It may contain provider
+            // secrets or personal data that header stripping cannot protect.
+            // A scheme downgrade is also an origin change. Bodyless redirects
+            // and same-origin 307/308 requests retain their existing behaviour.
+            if !next.body.is_empty() && origin_of(&next.url) != origin_of(&current.url) {
+                return Ok(Refusal {
+                    why: "redirect refused: request body would cross origin",
+                    redirects,
+                    sent,
+                }
+                .finish(module, now_unix, &current, response, &scrub));
+            }
             if redirects >= options.max_redirects {
                 return Ok(finish(
                     module,
@@ -1617,6 +1630,77 @@ mod tests {
             (seen[1].method, seen[1].body.as_slice()),
             (Method::Post, &b"data"[..])
         );
+    }
+
+    #[test]
+    fn cross_origin_307_and_308_never_forward_post_bodies() {
+        for status in [307, 308] {
+            let f = Fake::new(vec![
+                Ok(resp(status, &[("location", "https://other.example/collect")], "")),
+                Ok(resp(200, &[], "")),
+            ]);
+            let body = b"private-form-data".to_vec();
+            let result = fetch(
+                &f,
+                Request::post("https://api.example/submit", body.clone()),
+                Some(&cred("tok-abcdef-123456", AuthStyle::Bearer)),
+                &FetchOptions::default(),
+                "t",
+                1,
+            )
+            .expect("a refused redirect preserves the original response");
+
+            assert_eq!(f.seen.borrow().len(), 1, "{status}: body sent to redirect target");
+            assert_eq!(f.seen.borrow()[0].body, body);
+            assert_eq!(result.response.as_ref().map(|r| r.status), Some(status));
+            assert_eq!(result.outcome.kind, SourceOutcomeKind::RedirectChanged);
+            assert_eq!(
+                result.redirect_refused,
+                Some("redirect refused: request body would cross origin")
+            );
+        }
+    }
+
+    #[test]
+    fn https_to_http_307_cannot_downgrade_a_post_body() {
+        let f = Fake::new(vec![
+            Ok(resp(307, &[("location", "http://api.example/receive")], "")),
+            Ok(resp(200, &[], "")),
+        ]);
+        let result = fetch(
+            &f,
+            Request::post("https://api.example/submit", b"private-form-data".to_vec()),
+            None,
+            &FetchOptions::default(),
+            "t",
+            1,
+        )
+        .expect("a refused redirect preserves the original response");
+        assert_eq!(f.seen.borrow().len(), 1);
+        assert_eq!(result.response.as_ref().map(|r| r.status), Some(307));
+        assert!(result.redirect_refused.is_some());
+    }
+
+    #[test]
+    fn cross_origin_303_is_followed_without_the_post_body() {
+        let f = Fake::new(vec![
+            Ok(resp(303, &[("location", "https://other.example/done")], "")),
+            Ok(resp(200, &[], "")),
+        ]);
+        let result = fetch(
+            &f,
+            Request::post("https://api.example/submit", b"private-form-data".to_vec()),
+            None,
+            &FetchOptions::default(),
+            "t",
+            1,
+        )
+        .expect("a bodyless redirect follows");
+        let seen = f.seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].method, Method::Get);
+        assert!(seen[1].body.is_empty());
+        assert!(result.redirect_refused.is_none());
     }
 
     #[test]
