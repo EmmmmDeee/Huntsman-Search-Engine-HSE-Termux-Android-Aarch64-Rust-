@@ -191,6 +191,53 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await ctx.close();
     }
 
+    // Delayed responses must never overwrite the term now on-screen or arm a stale mission.
+    // Routes are mocked: this check does not contact search engines or use provider keys.
+    {
+      const ctx = await browser.newContext(PHONE);
+      const page = await ctx.newPage();
+      await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
+      let oldStarted, releaseOld;
+      const oldRequest = new Promise(resolve => { oldStarted = resolve; });
+      const oldBlocked = new Promise(resolve => { releaseOld = resolve; });
+      await page.route('**/api/research?*', async route => {
+        const q = new URL(route.request().url()).searchParams.get('q');
+        if (q === 'example.org') {
+          oldStarted();
+          await oldBlocked;
+          await route.fulfill({ json: { route: 'scan', kind: 'domain', selector: 'example.org' } });
+        } else {
+          await route.fulfill({ json: {
+            route: 'adaptive_web_search',
+            report: { hits: [{ url: 'https://fresh.example/' }], stop_reason: 'fixture' },
+          } });
+        }
+      });
+      await page.fill('#uresearch-q', 'example.org');
+      await page.click('#uresearch-go');
+      await oldRequest;
+      await page.fill('#uresearch-q', 'fresh term');
+      await page.click('#uresearch-go');
+      await page.waitForFunction(() => document.getElementById('uresearch-hits').textContent.includes('fresh.example'));
+      const olderResponse = page.waitForResponse(res => res.url().includes('/api/research?') &&
+        new URL(res.url()).searchParams.get('q') === 'example.org');
+      releaseOld();
+      await olderResponse;
+      await page.waitForTimeout(100);
+      const state = await page.evaluate(() => ({
+        term: document.getElementById('uresearch-q').value,
+        hits: document.getElementById('uresearch-hits').textContent,
+        status: document.getElementById('uresearch-status').textContent,
+        missionDisabled: document.getElementById('uresearch-mission').disabled,
+        target: document.getElementById('starget').value,
+      }));
+      check('late research reply cannot replace newer term or enable old mission',
+        state.term === 'fresh term' && state.hits.includes('fresh.example') &&
+        !state.hits.includes('example.org') && state.status.includes('Unverified') &&
+        state.missionDisabled && state.target !== 'example.org', state);
+      await ctx.close();
+    }
+
     // A tab open across an upgrade: once health names another page than the one the tab loaded,
     // the page asks to be reloaded, and Reload brings the page the server now serves.
     {
