@@ -121,39 +121,20 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
     // the evidence pipeline could consume findings from a provider whose outcome
     // disappeared when the dispatch budget was enforced. Raw observations do not
     // carry scan IDs, so match conservatively by provider and target.
-    let retained_sources: BTreeSet<_> = batch
-        .events
-        .iter()
-        .map(|event| {
-            (
-                event.provider_id.as_str(),
-                event.target.kind,
-                event.target.value.as_str(),
-            )
-        })
-        .collect();
-    // Where the execution receipt declares an upstream origin, require an
-    // observation with declared provenance to match it. Provider/target alone
-    // cannot distinguish two executions of the same source.
-    let mut retained_origins: BTreeMap<_, Vec<&UpstreamOrigin>> = BTreeMap::new();
-    let mut unprovenanced_sources = BTreeSet::new();
+    // Index retained execution receipts by the full source scope. Provenance
+    // must match in BOTH directions: an unattributed receipt cannot authorize
+    // an attributed finding, and vice versa. A legacy None/None pair remains
+    // valid. Do not collapse distinct upstreams behind one provider/target.
+    let mut retained_receipts = BTreeMap::<_, Vec<Option<&UpstreamOrigin>>>::new();
     for event in &batch.events {
-        if let Some(origin) = event.upstream.as_ref() {
-            retained_origins
-                .entry((
-                    event.provider_id.as_str(),
-                    event.target.kind,
-                    event.target.value.as_str(),
-                ))
-                .or_default()
-                .push(origin);
-        } else {
-            unprovenanced_sources.insert((
+        retained_receipts
+            .entry((
                 event.provider_id.as_str(),
                 event.target.kind,
                 event.target.value.as_str(),
-            ));
-        }
+            ))
+            .or_default()
+            .push(event.upstream.as_ref());
     }
     let before = batch.observations.len();
     let mut rejected_sources = BTreeSet::new();
@@ -163,16 +144,10 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
             observation.target.kind,
             observation.target.value.as_str(),
         );
-        let keep = retained_sources.contains(&key)
-            && match observation.upstream.as_ref() {
-                Some(origin) => retained_origins
-                    .get(&key)
-                    .is_none_or(|origins| origins.contains(&origin)),
-                // An attributed execution receipt must not authorise evidence
-                // that omits the provenance necessary to identify its source.
-                None => unprovenanced_sources.contains(&key),
-            };
-        if !keep {
+        let keep = retained_receipts
+            .get(&key)
+            .is_some_and(|origins| origins.contains(&observation.upstream.as_ref()));
+    if !keep {
             rejected_sources.insert((
                 observation.provider_id.clone(),
                 observation.target.kind,
