@@ -13,7 +13,7 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE: &str = "apple_itunes";
 const HOST: &str = "https://itunes.apple.com/search";
@@ -33,8 +33,12 @@ pub struct Report {
 
 #[derive(Debug, Deserialize)]
 struct Search {
+    // Both envelope fields are required to conclude a confirmed empty result.
+    // Distinguish missing/null from the provider explicitly returning zero.
+    #[serde(default, rename = "resultCount")]
+    result_count: Option<usize>,
     #[serde(default)]
-    results: Vec<App>,
+    results: Option<Vec<App>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,13 +110,31 @@ fn interpret(
     let response = whole_response(fetched, "iTunes Search")?;
     answer(fetched, "iTunes Search")?;
     let search: Search = decode_json(response, SOURCE, now_unix, "iTunes Search")?;
-    Ok(decode(&search, term, scan_id, now_unix, response.status))
+    let (Some(count), Some(results)) = (search.result_count, search.results.as_deref()) else {
+        return Err(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "iTunes Search response is missing resultCount or results",
+        ));
+    };
+    if count != results.len() {
+        return Err(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "iTunes Search resultCount does not match the results array",
+        ));
+    }
+    Ok(decode(results, term, scan_id, now_unix, response.status))
 }
 
 /// Build the report from a parsed search. **Pure.**
-fn decode(search: &Search, term: &str, scan_id: &str, now_unix: u64, status: u16) -> Report {
+fn decode(results: &[App], term: &str, scan_id: &str, now_unix: u64, status: u16) -> Report {
     let mut entities = Vec::new();
-    for app in search.results.iter().take(RESULT_LIMIT) {
+    for app in results.iter().take(RESULT_LIMIT) {
         let Some(page) = app
             .track_view_url
             .as_deref()
@@ -154,10 +176,20 @@ fn decode(search: &Search, term: &str, scan_id: &str, now_unix: u64, status: u16
     }
     merge_by_uid(&mut entities);
 
-    let outcome = if entities.is_empty() {
+    let outcome = if !entities.is_empty() {
+        SourceExecutionOutcome::success(SOURCE, now_unix, entities.len()).with_http_status(status)
+    } else if results.is_empty() {
+        // Only a contract-valid zero-result envelope can establish absence.
         SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(status)
     } else {
-        SourceExecutionOutcome::success(SOURCE, now_unix, entities.len()).with_http_status(status)
+        // The provider found records but none had a usable HTTPS app page.
+        // This is neither a positive record nor proof of target absence.
+        SourceExecutionOutcome::inconclusive(
+            SOURCE,
+            now_unix,
+            "iTunes Search returned records without a usable HTTPS app page",
+        )
+        .with_http_status(status)
     };
     Report { entities, outcome }
 }
@@ -221,6 +253,56 @@ mod tests {
                 assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
             }
             Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[test]
+    fn missing_or_inconsistent_search_envelope_is_schema_drift_not_valid_zero() {
+        for body in [
+            "{}",
+            r#"{"resultCount":0}"#,
+            r#"{"results":[]}"#,
+            r#"{"resultCount":1,"results":[]}"#,
+            r#"{"resultCount":0,"results":[{"trackViewUrl":"https://apps.apple.com/us/app/fixture/id1"}]}"#,
+        ] {
+            let report = lookup(
+                &OneResponse::json(200, body),
+                "Example Co",
+                "scan-itunes",
+                1,
+            )
+            .expect("synthetic HTTP response is handled as an outcome");
+            assert!(report.entities.is_empty(), "{body}");
+            assert_eq!(
+                report.outcome.kind,
+                SourceOutcomeKind::SchemaDrift,
+                "{body}"
+            );
+            assert_eq!(report.outcome.http_status, Some(200), "{body}");
+        }
+    }
+
+    #[test]
+    fn nonempty_unusable_search_results_are_not_false_verified_negatives() {
+        for body in [
+            r#"{"resultCount":1,"results":[{}]}"#,
+            r#"{"resultCount":1,"results":[{"trackViewUrl":"http://insecure.example/app"}]}"#,
+            r#"{"resultCount":1,"results":[{"trackViewUrl":"not-a-url"}]}"#,
+        ] {
+            let report = lookup(
+                &OneResponse::json(200, body),
+                "Example Co",
+                "scan-itunes",
+                1,
+            )
+            .expect("synthetic HTTP response is handled as an outcome");
+            assert!(report.entities.is_empty(), "{body}");
+            assert_eq!(
+                report.outcome.kind,
+                SourceOutcomeKind::Inconclusive,
+                "{body}"
+            );
+            assert_eq!(report.outcome.http_status, Some(200), "{body}");
         }
     }
 
