@@ -38,19 +38,32 @@ fn observation(
 }
 
 fn batch(observations: Vec<RawObservation>) -> ObservationBatch {
+    // Every fixture observation must have an independent collector execution
+    // receipt. This preserves the intended identity/corroboration assertions
+    // while exercising the fail-closed orphan-observation check.
+    let mut events: Vec<CollectionEvent> = Vec::new();
+    for observation in &observations {
+        if let Some(event) = events.iter_mut().find(|event| {
+            event.provider_id == observation.provider_id && event.target == observation.target
+        }) {
+            event.finding_count += 1;
+        } else {
+            events.push(CollectionEvent {
+                scan_id: "scan-test".to_string(),
+                provider_id: observation.provider_id.clone(),
+                target: observation.target.clone(),
+                outcome: SourceOutcomeKind::Success,
+                finding_count: 1,
+                truncated: false,
+                started_at_unix: 9,
+                finished_at_unix: 10,
+                credential_fingerprint: None,
+                upstream: observation.upstream.clone(),
+            });
+        }
+    }
     ObservationBatch {
-        events: vec![CollectionEvent {
-            scan_id: "scan-test".to_string(),
-            provider_id: "seeknow".to_string(),
-            target: Target::new(TargetKind::Email, "ada@example.com"),
-            outcome: SourceOutcomeKind::Success,
-            finding_count: observations.len(),
-            truncated: false,
-            started_at_unix: 9,
-            finished_at_unix: 10,
-            credential_fingerprint: None,
-            upstream: None,
-        }],
+        events,
         observations,
         independence_assertions: Vec::new(),
         truncated: false,
