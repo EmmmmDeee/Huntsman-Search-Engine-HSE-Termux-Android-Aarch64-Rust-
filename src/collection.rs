@@ -12,7 +12,7 @@ use crate::pipeline_limits::PipelineLimits;
 use crate::retrieval_artifact::ArtifactId;
 use crate::source_outcome::SourceOutcomeKind;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct UpstreamOrigin {
     pub provider: Option<String>,
     pub dataset: Option<String>,
@@ -86,6 +86,29 @@ fn mark_rejected_executions(
 #[must_use]
 pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> ObservationBatch {
     let original_observation_count = batch.observations.len();
+    // Raw observations do not identify the execution that produced them.
+    // Detect ambiguous sources before dispatch truncation: a dropped receipt
+    // must not cause evidence from another scan to inherit the retained scan ID.
+    let ambiguous_execution_sources = {
+        let mut scan_by_source = BTreeMap::new();
+        let mut ambiguous = BTreeSet::new();
+        for event in &batch.events {
+            let source = (
+                event.provider_id.clone(),
+                event.target.kind,
+                event.target.value.clone(),
+                event.upstream.clone(),
+            );
+            if let Some(previous_scan) =
+                scan_by_source.insert(source.clone(), event.scan_id.as_str())
+            {
+                if previous_scan != event.scan_id.as_str() {
+                    ambiguous.insert(source);
+                }
+            }
+        }
+        ambiguous
+    };
     let overflow = batch.observations.len() > limits.max_entities
         || batch.events.len() > limits.max_dispatches;
 
@@ -120,9 +143,16 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
             observation.target.kind,
             observation.target.value.as_str(),
         );
-        let supported = retained_receipts
-            .get(&key)
-            .is_some_and(|origins| origins.contains(&observation.upstream.as_ref()));
+        let ambiguous = ambiguous_execution_sources.contains(&(
+            observation.provider_id.clone(),
+            observation.target.kind,
+            observation.target.value.clone(),
+            observation.upstream.clone(),
+        ));
+        let supported = !ambiguous
+            && retained_receipts
+                .get(&key)
+                .is_some_and(|origins| origins.contains(&observation.upstream.as_ref()));
         if !supported {
             rejected_sources.insert((
                 observation.provider_id.clone(),
@@ -530,6 +560,80 @@ mod tests {
             coverage_events(&bounded)[0].kind,
             EventKind::ModuleDone { .. }
         ));
+    }
+
+    #[test]
+    fn identical_source_in_different_scans_cannot_inherit_the_first_scan_id() {
+        let origin = UpstreamOrigin {
+            provider: Some("same-upstream".into()),
+            dataset: Some("same-dataset".into()),
+            artifact: None,
+        };
+        let mut first = event("shared", "a.example");
+        first.scan_id = "scan-one".into();
+        first.upstream = Some(origin.clone());
+        let mut second = first.clone();
+        second.scan_id = "scan-two".into();
+        let mut raw = observation("shared", "a.example");
+        raw.upstream = Some(origin);
+
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![first, second],
+                observations: vec![raw],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.truncated);
+        assert!(bounded.events.iter().all(|receipt| receipt.truncated));
+        assert!(coverage_events(&bounded)
+            .iter()
+            .all(|event| matches!(&event.kind, EventKind::ModuleError { .. })));
+    }
+
+    #[test]
+    fn dropped_duplicate_scan_receipt_cannot_relabel_its_observation() {
+        let mut first = event("shared", "a.example");
+        first.scan_id = "scan-one".into();
+        let mut second = first.clone();
+        second.scan_id = "scan-two".into();
+
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![first, second],
+                observations: vec![observation("shared", "a.example")],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_dispatches: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.events.len(), 1);
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.events[0].truncated);
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn duplicate_receipts_in_one_scan_remain_unambiguous() {
+        let first = event("shared", "a.example");
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![first.clone(), first],
+                observations: vec![observation("shared", "a.example")],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(!bounded.truncated);
+        assert!(bounded.events.iter().all(|receipt| !receipt.truncated));
     }
 
     #[test]
