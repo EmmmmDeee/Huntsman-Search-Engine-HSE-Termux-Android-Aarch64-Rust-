@@ -108,22 +108,7 @@ pub struct EntityReality {
 }
 
 fn sensitive_attribute(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    [
-        "password",
-        "passwd",
-        "token",
-        "api_key",
-        "apikey",
-        "credential",
-        "secret",
-        "private_key",
-        "authorization",
-        "cookie",
-        "session",
-    ]
-    .iter()
-    .any(|part| name.contains(part))
+    crate::redact::sensitive_field_name(name)
 }
 
 fn dimension(name: &str) -> Dimension {
@@ -530,6 +515,30 @@ mod tests {
         let report = assess(&org);
         assert_eq!(report.assertions.len(), 1);
         assert_eq!(report.assertions[0].attribute, "acn");
+    }
+
+    #[test]
+    fn ordinary_authorised_attributes_survive_the_reality_projection() {
+        let org = Entity::builder(EntityKind::Organisation, "Example", 0.7, "scan")
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("public-registry"), "record")
+                    .with_attr("secretary", "Jane Citizen")
+                    .with_attr("session_count", "42")
+                    .with_attr("tokenomics", "published analysis")
+                    .with_attr("api_token", "operator-secret-value"),
+            )
+            .build();
+        let report = assess(&org);
+        let attributes: std::collections::BTreeSet<_> = report
+            .assertions
+            .iter()
+            .map(|assertion| assertion.attribute.as_str())
+            .collect();
+        assert!(attributes.contains("secretary"));
+        assert!(attributes.contains("session_count"));
+        assert!(attributes.contains("tokenomics"));
+        assert!(!attributes.contains("api_token"));
+        assert!(!format!("{report:?}").contains("operator-secret-value"));
     }
 
     #[test]
