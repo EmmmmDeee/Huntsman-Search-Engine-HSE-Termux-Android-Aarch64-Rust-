@@ -266,7 +266,11 @@ mod tests {
         let mut dropped = observation("c", "c.example");
         dropped.upstream = Some(origin("c"));
         let batch = ObservationBatch {
-            events: vec![event("a", "a.example"), event("b", "b.example"), event("c", "c.example")],
+            events: vec![
+                event("a", "a.example"),
+                event("b", "b.example"),
+                event("c", "c.example"),
+            ],
             observations: vec![first, second, dropped],
             independence_assertions: vec![assertion("a", "b"), assertion("a", "c")],
             truncated: false,
