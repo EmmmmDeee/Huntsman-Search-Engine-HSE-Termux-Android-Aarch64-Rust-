@@ -69,7 +69,7 @@ pub fn sensitive_field_name(name: &str) -> bool {
         words.push(word);
     }
 
-    if words.as_slice() == ["session", "count"] {
+    if words.len() == 2 && words[0] == "session" && words[1] == "count" {
         return false;
     }
     if words.iter().any(|word| {
