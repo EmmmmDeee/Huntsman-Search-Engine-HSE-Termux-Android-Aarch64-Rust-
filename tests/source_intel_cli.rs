@@ -74,7 +74,10 @@ fn run(args: &[&str]) -> std::process::Output {
 fn source_intel_apk_cli_is_offline_evidence_scoped_and_preserves_original_apk_output() {
     let test_apk = zip(&[
         ("AndroidManifest.xml", b"unverified manifest bytes"),
-        ("classes.dex", &dex("https://api.github.com/v1/items?token=PRIVATE")),
+        (
+            "classes.dex",
+            &dex("https://api.github.com/v1/items?token=PRIVATE"),
+        ),
     ]);
     let path = file();
     fs::write(&path, &test_apk).expect("write fixture");
@@ -83,20 +86,42 @@ fn source_intel_apk_cli_is_offline_evidence_scoped_and_preserves_original_apk_ou
     let first = run(&["source-intel", "apk", target, "--json"]);
     let second = run(&["source-intel", "apk", target, "--json"]);
     fs::remove_file(&path).expect("remove fixture");
-    assert!(original.status.success(), "{}", String::from_utf8_lossy(&original.stderr));
-    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
-    assert_eq!(first.stdout, second.stdout, "offline report must be deterministic");
+    assert!(
+        original.status.success(),
+        "{}",
+        String::from_utf8_lossy(&original.stderr)
+    );
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "offline report must be deterministic"
+    );
     assert_eq!(first.stderr, second.stderr);
-    assert!(!first.stdout.windows(b"PRIVATE".len()).any(|w| w == b"PRIVATE"));
+    assert!(
+        !first
+            .stdout
+            .windows(b"PRIVATE".len())
+            .any(|w| w == b"PRIVATE")
+    );
     let source: serde_json::Value = serde_json::from_slice(&first.stdout).expect("JSON");
     let apk: serde_json::Value = serde_json::from_slice(&original.stdout).expect("APK JSON");
     assert_eq!(source["schema"], "huntsman.source-candidates/1");
     assert_eq!(source["artifact_sha256"], apk["inventory"]["sha256"]);
-    assert_eq!(source["candidates"][0]["endpoint"], "https://api.github.com/v1/items");
+    assert_eq!(
+        source["candidates"][0]["endpoint"],
+        "https://api.github.com/v1/items"
+    );
     assert_eq!(source["candidates"][0]["method"], serde_json::Value::Null);
     assert_eq!(source["candidates"][0]["access"], "unknown");
     assert_eq!(source["candidates"][0]["operational_status"], "not_tested");
-    assert_eq!(source["candidates"][0]["evidence"]["byte_range"], serde_json::Value::Null);
+    assert_eq!(
+        source["candidates"][0]["evidence"]["byte_range"],
+        serde_json::Value::Null
+    );
 }
 
 #[test]
