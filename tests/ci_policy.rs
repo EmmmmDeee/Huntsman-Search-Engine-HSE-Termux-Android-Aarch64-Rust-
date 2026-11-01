@@ -94,6 +94,7 @@ fn native_arm64_benchmark_is_read_only_and_scoped() {
         "pull_request:",
         "workflow_dispatch:",
         "cargo test --locked --lib sha256::tests",
+        "cargo test --locked --example sha256_arm64_bench",
         "cargo run --release --locked --example sha256_arm64_bench",
     ] {
         assert!(

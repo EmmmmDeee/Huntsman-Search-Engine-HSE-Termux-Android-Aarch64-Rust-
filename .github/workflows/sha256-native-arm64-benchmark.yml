@@ -36,6 +36,8 @@ jobs:
           grep -m1 '^Features' /proc/cpuinfo || true
       - name: Verify SHA-256 differential tests
         run: cargo test --locked --lib sha256::tests
+      - name: Verify benchmark measurement-order regression
+        run: cargo test --locked --example sha256_arm64_bench
       - name: Measure portable versus CPU-dispatched SHA-256
         run: |
           set -euo pipefail

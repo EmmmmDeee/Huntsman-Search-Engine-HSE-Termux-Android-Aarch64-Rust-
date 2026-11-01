@@ -28,6 +28,13 @@ fn time_path(input: &[u8], repeats: usize, accelerated: bool) -> Duration {
     start.elapsed()
 }
 
+const BENCHMARK_SIZES: [usize; 6] = [64, 1023, 1024, 4096, 65_536, 1_048_576];
+
+/// Alternate order by case index; five of six payload sizes are even.
+fn portable_first(case_index: usize) -> bool {
+    case_index % 2 == 0
+}
+
 fn main() {
     println!("SHA-256 backend comparison (wall-clock; not hardware attestation)");
     println!(
@@ -37,7 +44,7 @@ fn main() {
     );
     println!("size_bytes,repetitions,portable_ms,selected_ms,portable_over_selected");
 
-    for size in [64, 1023, 1024, 4096, 65_536, 1_048_576] {
+    for (case_index, size) in BENCHMARK_SIZES.into_iter().enumerate() {
         let input = (0..size)
             .map(|index| (index.wrapping_mul(113).wrapping_add(17) & 255) as u8)
             .collect::<Vec<_>>();
@@ -47,7 +54,7 @@ fn main() {
         // avoiding a systematic advantage from always running one path first.
         black_box(sha256(&input));
         black_box(portable_hash(&input));
-        let (portable, selected) = if size % 2 == 0 {
+        let (portable, selected) = if portable_first(case_index) {
             (
                 time_path(&input, repeats, false),
                 time_path(&input, repeats, true),
@@ -63,5 +70,20 @@ fn main() {
             portable.as_secs_f64() * 1000.0,
             selected.as_secs_f64() * 1000.0
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BENCHMARK_SIZES, portable_first};
+
+    #[test]
+    fn measurement_order_alternates_across_benchmark_cases() {
+        let actual: Vec<bool> = BENCHMARK_SIZES
+            .iter()
+            .enumerate()
+            .map(|(index, _)| portable_first(index))
+            .collect();
+        assert_eq!(actual.as_slice(), &[true, false, true, false, true, false]);
     }
 }
