@@ -197,6 +197,7 @@ cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenS
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
 cargo run -- apk --help                   # offline Android APK archive intelligence: structural ZIP/DEX/ABI/signing indicators, exact-byte SHA-256
+cargo run -- source-intel --help          # offline APK-to-source-candidate projection; no public-access or network-contact claims
 # Example after creating two local archives: huntsman-recon apk diff old.apk new.apk --json
 # Diff compares exact stored ZIP-member bytes and structural metadata, not verified signatures or decoded code.
 cargo run -- radar --help                 # no root, explain Termux:API Wi-Fi cache acquisition; offline

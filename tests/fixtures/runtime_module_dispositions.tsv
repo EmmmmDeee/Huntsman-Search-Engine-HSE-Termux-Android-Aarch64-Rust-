@@ -227,6 +227,7 @@ sha256	leaf	SHA-256 primitive
 shadow_assessment	leaf	shadow-mode claim assessment reporting
 shodan	adapter	Shodan host and DNS leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 snake_graph	exporter	compact graph rendering
+source_intel	adapter	offline APK URL candidate projection via source-intel CLI; existing APK parser owns extraction, no network or source verification
 source_outcome	runtime	causal provider outcome model
 source_registry	runtime	lead-only discovery route registry
 spf	leaf	SPF parser

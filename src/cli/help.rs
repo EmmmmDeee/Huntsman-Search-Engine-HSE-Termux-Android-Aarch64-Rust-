@@ -113,6 +113,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "exif" => huntsman_recon::exif::EXIF_HELP,
         "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,
         "apk" => huntsman_recon::apk_intel::APK_HELP,
+        "source-intel" => super::source_intel::HELP,
         "radar" => radar_help(),
         "mitm" => super::mitm::USAGE,
         "domain" => domain_help(),
