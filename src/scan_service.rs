@@ -2083,8 +2083,9 @@ mod tests {
         );
         let logs = service.store().log(&record.id).unwrap();
         assert!(
-            logs.iter()
-                .any(|entry| entry.message.contains("could not save what the scan has found")),
+            logs.iter().any(|entry| entry
+                .message
+                .contains("could not save what the scan has found")),
             "the transient failure must also be observable"
         );
         let _ = std::fs::remove_dir_all(&dir);
