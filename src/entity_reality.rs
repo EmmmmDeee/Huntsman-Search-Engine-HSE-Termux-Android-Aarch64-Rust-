@@ -108,7 +108,12 @@ pub struct EntityReality {
 }
 
 fn sensitive_attribute(name: &str) -> bool {
-    crate::redact::sensitive_field_name(name)
+    // Provider-field names are namespaced for storage integrity, not semantically
+    // different. Classify the underlying field so harmless `session_count`
+    // remains visible while `provider_field.api_token` remains protected.
+    crate::redact::sensitive_field_name(
+        name.strip_prefix("provider_field.").unwrap_or(name),
+    )
 }
 
 fn dimension(name: &str) -> Dimension {
@@ -525,7 +530,9 @@ mod tests {
                     .with_attr("secretary", "Jane Citizen")
                     .with_attr("session_count", "42")
                     .with_attr("tokenomics", "published analysis")
-                    .with_attr("api_token", "operator-secret-value"),
+                    .with_attr("provider_field.session_count", "42")
+                    .with_attr("api_token", "operator-secret-value")
+                    .with_attr("provider_field.api_token", "operator-secret-value"),
             )
             .build();
         let report = assess(&org);
@@ -537,7 +544,9 @@ mod tests {
         assert!(attributes.contains("secretary"));
         assert!(attributes.contains("session_count"));
         assert!(attributes.contains("tokenomics"));
+        assert!(attributes.contains("provider_field.session_count"));
         assert!(!attributes.contains("api_token"));
+        assert!(!attributes.contains("provider_field.api_token"));
         assert!(!format!("{report:?}").contains("operator-secret-value"));
     }
 
