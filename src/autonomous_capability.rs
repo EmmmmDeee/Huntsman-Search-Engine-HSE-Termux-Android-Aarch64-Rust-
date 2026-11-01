@@ -222,4 +222,37 @@ mod tests {
             Availability::TransientFailure
         );
     }
+    #[test]
+    fn denied_scope_cannot_be_bypassed_by_fallback() {
+        let mut probe = OK;
+        probe.network_available = false;
+        probe.fallback_available = true;
+        assert_eq!(
+            negotiate(probe, SCOPE, Impact::Intrusive).status,
+            Availability::NotAuthorised
+        );
+    }
+
+    #[test]
+    fn resource_exhaustion_does_not_select_fallback() {
+        let mut probe = OK;
+        probe.resource_budget_available = false;
+        probe.fallback_available = true;
+        let decision = negotiate(probe, SCOPE, Impact::Passive);
+        assert_eq!(decision.status, Availability::TransientFailure);
+        assert!(!decision.use_fallback);
+    }
+
+    #[test]
+    fn explicit_intrusive_scope_is_required_even_for_passive_targets() {
+        let scope = Scope {
+            intrusive_explicitly_approved: true,
+            ..SCOPE
+        };
+        assert_eq!(
+            negotiate(OK, scope, Impact::Intrusive).status,
+            Availability::Available
+        );
+    }
+
 }
