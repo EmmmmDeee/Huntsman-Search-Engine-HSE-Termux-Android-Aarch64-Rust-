@@ -153,18 +153,35 @@ impl Sha256 {
     }
 }
 
+/// Select the accelerated one-shot backend without weakening older CPUs.
+///
+/// Native ARM64 SHA2 benchmarking showed that hardware-backed hashing beats
+/// the portable implementation from 32-byte inputs onwards. On CPUs without
+/// that feature, retain the conservative large-payload threshold.
+fn accelerated_backend_for(length: usize) -> bool {
+    const GENERIC_MIN_BYTES: usize = 1024;
+    if length >= GENERIC_MIN_BYTES {
+        return true;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        length >= 32 && std::arch::is_aarch64_feature_detected!("sha2")
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
 /// SHA-256 of a single byte slice, compatible with the incremental hasher.
 ///
-/// Large payloads reuse the already-linked `ring` backend, which dispatches to
-/// CPU SHA instructions on supported `AArch64` hardware. The in-tree Rust hasher
-/// remains the small-payload path and the portable streaming implementation.
-/// Neither path allocates a copy of the input.
+/// Reuses the already-linked `ring` backend for large payloads and for
+/// inputs of at least 32 bytes on SHA2-capable AArch64 hardware. The in-tree
+/// portable implementation remains the streaming API and fallback. Neither
+/// path copies the full input or changes its 32-byte digest format.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    // Short evidence identifiers and ledger preimages avoid a native dispatch.
-    // Benchmark this boundary on the target handset before tuning it further.
-    const ACCELERATED_MIN_BYTES: usize = 1024;
-    if data.len() >= ACCELERATED_MIN_BYTES {
+    if accelerated_backend_for(data.len()) {
         let digest = ring::digest::digest(&ring::digest::SHA256, data);
         let mut output = [0u8; 32];
         output.copy_from_slice(digest.as_ref());
@@ -228,6 +245,24 @@ pub fn hex32(bytes: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_message_hardware_dispatch_preserves_conservative_fallback() {
+        assert!(!accelerated_backend_for(0));
+        assert!(!accelerated_backend_for(31));
+        assert!(accelerated_backend_for(1024));
+        #[cfg(target_arch = "aarch64")]
+        {
+            let has_sha2 = std::arch::is_aarch64_feature_detected!("sha2");
+            assert_eq!(accelerated_backend_for(32), has_sha2);
+            assert_eq!(accelerated_backend_for(1023), has_sha2);
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            assert!(!accelerated_backend_for(32));
+            assert!(!accelerated_backend_for(1023));
+        }
+    }
 
     #[test]
     fn accelerated_and_portable_sha256_match_on_all_size_boundaries() {
