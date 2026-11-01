@@ -89,32 +89,7 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
     let overflow = batch.observations.len() > limits.max_entities
         || batch.events.len() > limits.max_dispatches;
 
-    // A batch-wide limit does not imply every retained provider was incomplete.
-    // Attribute omitted findings only to their originating provider and target.
-    // Raw observations have no scan_id, so matching provider/target pairs in
-    // different scans are conservatively treated as sharing the truncation.
-    let dropped_sources: BTreeSet<_> = batch
-        .observations
-        .iter()
-        .skip(limits.max_entities)
-        .map(|observation| {
-            (
-                observation.provider_id.as_str(),
-                observation.target.kind,
-                observation.target.value.as_str(),
-            )
-        })
-        .collect();
-    for event in batch.events.iter_mut().take(limits.max_dispatches) {
-        if dropped_sources.contains(&(
-            event.provider_id.as_str(),
-            event.target.kind,
-            event.target.value.as_str(),
-        )) {
-            event.truncated = true;
-        }
-    }
-    batch.observations.truncate(limits.max_entities);
+    // Bound receipts first; unsupported findings must not consume the evidence budget.
     batch.events.truncate(limits.max_dispatches);
 
     // A retained observation must have a retained execution receipt. Otherwise
@@ -136,29 +111,40 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
             .or_default()
             .push(event.upstream.as_ref());
     }
-    let before = batch.observations.len();
     let mut rejected_sources = BTreeSet::new();
+    let mut dropped_sources = BTreeSet::new();
+    let mut retained_count = 0;
     batch.observations.retain(|observation| {
         let key = (
             observation.provider_id.as_str(),
             observation.target.kind,
             observation.target.value.as_str(),
         );
-        let keep = retained_receipts
+        let supported = retained_receipts
             .get(&key)
             .is_some_and(|origins| origins.contains(&observation.upstream.as_ref()));
-        if !keep {
+        if !supported {
             rejected_sources.insert((
                 observation.provider_id.clone(),
                 observation.target.kind,
                 observation.target.value.clone(),
             ));
+            return false;
         }
-        keep
+        if retained_count >= limits.max_entities {
+            dropped_sources.insert((
+                observation.provider_id.clone(),
+                observation.target.kind,
+                observation.target.value.clone(),
+            ));
+            return false;
+        }
+        retained_count += 1;
+        true
     });
-    // An execution cannot remain a complete success after its evidence was
-    // rejected. With no observation scan ID, conservatively mark every retained
-    // receipt for the affected provider/target incomplete, not unrelated sources.
+    // Mark retained receipts incomplete if their evidence was rejected or
+    // exceeded the budget, without marking unrelated providers incomplete.
+    rejected_sources.extend(dropped_sources);
     mark_rejected_executions(&mut batch.events, &rejected_sources);
     if batch.observations.len() < original_observation_count {
         // An independence assertion cannot survive the removal of the
@@ -174,7 +160,7 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
                 && retained_origins.contains(&&assertion.right)
         });
     }
-    batch.truncated |= batch.observations.len() != before;
+    batch.truncated |= batch.observations.len() != original_observation_count;
     batch.truncated |= overflow;
     batch
 }
@@ -519,4 +505,52 @@ mod tests {
         assert!(bounded.events.iter().all(|receipt| receipt.truncated));
         assert!(bounded.truncated);
     }
+    #[test]
+    fn unsupported_observations_do_not_exhaust_the_valid_evidence_budget() {
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("kept", "valid.example")],
+                observations: vec![
+                    observation("orphan", "unrecorded.example"),
+                    observation("kept", "valid.example"),
+                ],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_entities: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert_eq!(bounded.observations[0].value, "valid.example");
+        assert!(bounded.truncated);
+        assert!(!bounded.events[0].truncated);
+        assert!(matches!(coverage_events(&bounded)[0].kind, EventKind::ModuleDone { .. }));
+    }
+
+    #[test]
+    fn valid_evidence_beyond_the_budget_marks_its_provider_incomplete() {
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("kept", "valid.example")],
+                observations: vec![
+                    observation("orphan", "unrecorded.example"),
+                    observation("kept", "valid.example"),
+                    observation("kept", "valid.example"),
+                ],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_entities: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(bounded.truncated);
+        assert!(bounded.events[0].truncated);
+        assert!(matches!(coverage_events(&bounded)[0].kind, EventKind::ModuleError { .. }));
+    }
+
 }
