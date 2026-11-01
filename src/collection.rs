@@ -380,6 +380,43 @@ mod tests {
     }
 
     #[test]
+    fn rejected_evidence_marks_only_its_retained_execution_incomplete() {
+        let source_origin = UpstreamOrigin {
+            provider: Some("upstream".into()),
+            dataset: Some("reference".into()),
+            artifact: None,
+        };
+        let mut source = event("source", "a.example");
+        source.upstream = Some(source_origin.clone());
+        source.finding_count = 2;
+        let unrelated = event("unrelated", "b.example");
+
+        let mut supported = observation("source", "a.example");
+        supported.upstream = Some(source_origin);
+        let rejected = observation("source", "a.example");
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![source, unrelated],
+                observations: vec![supported, rejected],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(bounded.truncated);
+        assert!(bounded.events[0].truncated);
+        assert!(!bounded.events[1].truncated);
+        let coverage = coverage_events(&bounded);
+        assert!(matches!(coverage[0].kind, EventKind::ModuleError { .. }));
+        assert!(matches!(coverage[1].kind, EventKind::ModuleDone { .. }));
+        // Reapplying the bounding pass cannot silently turn the execution
+        // back into a complete success after the rejected finding is gone.
+        let again = bounded_batch(bounded.clone(), &PipelineLimits::default());
+        assert_eq!(again, bounded);
+    }
+
+    #[test]
     fn attributed_receipt_cannot_authorise_unattributed_observation() {
         let origin = UpstreamOrigin {
             provider: Some("verified_source".into()),
