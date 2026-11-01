@@ -435,7 +435,9 @@ fn receipt_metadata_is_not_combined_with_raw_response_attributes() {
         ("upstream_artifact", "response-artifact"),
     ] {
         assert_eq!(
-            attrs.get(&format!("raw_attribute:{key}")).map(String::as_str),
+            attrs
+                .get(&format!("raw_attribute:{key}"))
+                .map(String::as_str),
             Some(expected),
             "{key} remains visible as untrusted raw data"
         );
@@ -451,7 +453,9 @@ fn receipt_metadata_is_not_combined_with_raw_response_attributes() {
     let attrs = &snapshot.entities[0].evidence[0].attributes;
     assert!(!attrs.contains_key("upstream_provider"));
     assert_eq!(
-        attrs.get("raw_attribute:upstream_provider").map(String::as_str),
+        attrs
+            .get("raw_attribute:upstream_provider")
+            .map(String::as_str),
         Some("response-provider")
     );
 }
