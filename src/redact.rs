@@ -115,6 +115,9 @@ pub fn sensitive_field_name(name: &str) -> bool {
         || compact.ends_with("password")
         || compact.starts_with("passwd")
         || compact.ends_with("passwd")
+        || ["token", "secret", "cookie", "credential"]
+            .iter()
+            .any(|suffix| compact.ends_with(suffix))
 }
 
 /// Replace every occurrence of every secret in `text` with [`REDACTED`].
@@ -251,6 +254,8 @@ mod tests {
             "session_count",
             "sessionCount",
             "tokenomics",
+            "token_sale",
+            "secretary_general",
             "api_version",
             "public_key",
             "organisation",
@@ -273,7 +278,13 @@ mod tests {
             "recoveryCodes",
             "jwt",
             "api_token",
+            "accesstoken",
+            "refreshtoken",
+            "authtoken",
+            "sessioncookie",
+            "clientsecret",
             "credential",
+            "usercredential",
         ] {
             assert!(sensitive_field_name(secret), "missed credential: {secret}");
         }
