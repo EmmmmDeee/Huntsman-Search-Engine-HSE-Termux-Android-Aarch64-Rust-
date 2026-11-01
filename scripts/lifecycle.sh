@@ -221,6 +221,46 @@ sync_cmd() {
     die "push candidate differs from verified tree"
   review_branch="lifecycle/$verified_commit"
   git remote get-url origin >/dev/null 2>&1 || die "no origin remote"
+  # Do not create a PR branch for a checkout that is already the remote main.
+  # Read the remote, not a potentially stale local origin/main tracking ref.
+  local remote_main
+  remote_main="$(git ls-remote --exit-code origin refs/heads/main)" ||
+    die "could not verify current origin/main; refusing sync"
+  remote_main="${remote_main%%
+    write_state sync failed "git push origin verified-commit:refs/heads/$review_branch"
+    die "review-branch push failed; credentials or network. Local commit is kept. See $LOG"
+  fi
+  log "staged $verified_commit on $review_branch; open a PR targeting main"
+  write_state sync pending "$review_branch@$verified_commit"
+  printf 'lifecycle review branch=%s revision=%s; open a pull request to main\n' "$review_branch" "$verified_commit"
+}
+
+cmd="${1:-all}"
+case "$cmd" in
+  build) build ;;
+  test) test_cmd ;;
+  run) check_cmd ;;
+  sync) sync_cmd ;;
+  all)
+    prepare_sync
+    check_cmd
+    test_cmd
+    SYNC_VERIFIED=1
+    sync_cmd
+    printf 'lifecycle staged revision=%s\n' "$(git rev-parse --short HEAD)"
+    printf 'state=%s\n' "$STATE"
+    ;;
+  *)
+    die "usage: bash scripts/lifecycle.sh [all|build|test|run|sync]"
+    ;;
+esac
+\t'*}"
+  if [[ "$remote_main" == "$verified_commit" ]]; then
+    log "already integrated on origin/main: $verified_commit"
+    write_state sync ok "$verified_commit (origin/main)"
+    printf 'lifecycle already on main revision=%s\n' "$verified_commit"
+    return 0
+  fi
   if ! git push origin "$verified_commit:refs/heads/$review_branch"; then
     write_state sync failed "git push origin verified-commit:refs/heads/$review_branch"
     die "review-branch push failed; credentials or network. Local commit is kept. See $LOG"
