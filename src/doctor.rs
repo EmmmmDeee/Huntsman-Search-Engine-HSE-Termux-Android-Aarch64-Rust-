@@ -1362,12 +1362,14 @@ fn dir_size(dir: &Path) -> u64 {
             if visited > MAX_CACHE_ENTRIES {
                 return total;
             }
-            let Ok(meta) = entry.metadata() else {
+            // DirEntry::metadata follows symlinks, including links outside the cache.
+            // Inspect the entry itself so linked directories and files are not counted.
+            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
                 continue;
             };
             if meta.is_dir() {
                 pending.push(entry.path());
-            } else {
+            } else if meta.is_file() {
                 total = total.saturating_add(meta.len());
             }
         }

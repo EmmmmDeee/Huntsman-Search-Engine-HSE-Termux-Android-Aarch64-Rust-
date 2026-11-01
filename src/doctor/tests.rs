@@ -830,6 +830,25 @@ fn tag_cache(dir: &Path) {
     fs::write(dir.join("release/blob"), vec![0_u8; 4096]).expect("blob");
 }
 
+#[cfg(unix)]
+#[test]
+fn cache_size_does_not_follow_links_outside_cache() {
+    use std::os::unix::fs::symlink;
+
+    let scratch = Scratch::new("cache-size-links");
+    let cache = scratch.path(BUILD_CACHE);
+    fs::create_dir_all(cache.join("release")).expect("cache");
+    fs::write(cache.join("release/local"), vec![0_u8; 37]).expect("local");
+    let outside = scratch.path("outside");
+    fs::create_dir_all(&outside).expect("outside");
+    let external_file = outside.join("external");
+    fs::write(&external_file, vec![0_u8; 8192]).expect("outside file");
+    symlink(&outside, cache.join("release/linked-dir")).expect("directory link");
+    symlink(&external_file, cache.join("release/linked-file")).expect("file link");
+
+    assert_eq!(dir_size(&cache), 37);
+}
+
 #[test]
 fn low_disk_fails_and_fix_clears_only_a_tagged_build_cache() {
     let scratch = Scratch::new("lowdisk");
