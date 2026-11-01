@@ -210,7 +210,11 @@ impl<'a> Markup<'a> {
             // its first stray '>' as a declaration terminator would expose the
             // remaining comment body as visible evidence text.
             let body = start + 4;
-            let end = self.lower.get(body..)?.find("-->").map_or(self.html.len(), |offset| body + offset + 3);
+            let end = self
+                .lower
+                .get(body..)?
+                .find("-->")
+                .map_or(self.html.len(), |offset| body + offset + 3);
             return Some((Piece::Ignored, end));
         }
         let end_tag = first == b'/';
