@@ -189,6 +189,7 @@ mod tests {
             Availability::Unsupported
         );
     }
+
     #[test]
     fn offline_local_operation_remains_available() {
         let mut probe = OK;
@@ -222,6 +223,7 @@ mod tests {
             Availability::TransientFailure
         );
     }
+
     #[test]
     fn denied_scope_cannot_be_bypassed_by_fallback() {
         let mut probe = OK;
