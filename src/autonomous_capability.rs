@@ -90,7 +90,7 @@ pub const fn negotiate(probe: CapabilityProbe, scope: Scope, impact: Impact) -> 
             retryable: true,
         };
     }
-    if (probe.requires_network && !probe.network_available) || !probe.provider_healthy {
+    if probe.requires_network && (!probe.network_available || !probe.provider_healthy) {
         if probe.fallback_available {
             return Decision {
                 status: Availability::Degraded,
@@ -196,6 +196,7 @@ mod tests {
         probe.requires_credentials = false;
         probe.network_available = false;
         probe.credentials_available = false;
+        probe.provider_healthy = false;
         assert_eq!(
             negotiate(probe, SCOPE, Impact::Passive).status,
             Availability::Available
