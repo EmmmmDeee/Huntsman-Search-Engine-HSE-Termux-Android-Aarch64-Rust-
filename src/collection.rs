@@ -451,4 +451,64 @@ mod tests {
         assert!(bounded.observations.is_empty());
         assert!(bounded.truncated);
     }
+    #[test]
+    fn unattributed_receipt_cannot_authorize_attributed_observation() {
+        let mut forged = observation("source", "a.example");
+        forged.upstream = Some(UpstreamOrigin {
+            provider: Some("unrecorded-provider".into()),
+            dataset: Some("unrecorded-dataset".into()),
+            artifact: None,
+        });
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("source", "a.example")],
+                observations: vec![forged],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.truncated);
+        assert!(bounded.events[0].truncated);
+        assert!(matches!(
+            coverage_events(&bounded)[0].kind,
+            EventKind::ModuleError { .. }
+        ));
+        assert_eq!(bounded_batch(bounded.clone(), &PipelineLimits::default()), bounded);
+    }
+
+    #[test]
+    fn mixed_receipts_accept_only_matching_origins() {
+        let origin = UpstreamOrigin {
+            provider: Some("primary".into()),
+            dataset: Some("one".into()),
+            artifact: None,
+        };
+        let mut attributed_receipt = event("same", "a.example");
+        attributed_receipt.upstream = Some(origin.clone());
+        let mut attributed = observation("same", "a.example");
+        attributed.upstream = Some(origin);
+        let legacy = observation("same", "a.example");
+        let mut unknown = observation("same", "a.example");
+        unknown.upstream = Some(UpstreamOrigin {
+            provider: Some("primary".into()),
+            dataset: Some("other".into()),
+            artifact: None,
+        });
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![event("same", "a.example"), attributed_receipt],
+                observations: vec![legacy, attributed, unknown],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 2);
+        assert!(bounded.observations[0].upstream.is_none());
+        assert!(bounded.observations[1].upstream.is_some());
+        assert!(bounded.events.iter().all(|receipt| receipt.truncated));
+        assert!(bounded.truncated);
+    }
 }
