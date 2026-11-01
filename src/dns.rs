@@ -938,9 +938,10 @@ mod tests {
         let answers = ask_all(
             &items,
             |index| {
-                if *index == ASK_WORKERS {
-                    panic!("simulated provider parser panic after a successful lookup");
-                }
+                assert_ne!(
+                    *index, ASK_WORKERS,
+                    "simulated provider parser panic after a successful lookup"
+                );
                 first_wave.wait();
                 *index
             },
@@ -948,12 +949,8 @@ mod tests {
         );
 
         assert_eq!(answers.len(), ASK_WORKERS + 1);
-        for index in 0..ASK_WORKERS {
-            assert_eq!(
-                answers[index],
-                Some(index),
-                "completed item {index} was lost"
-            );
+        for (index, answer) in answers.iter().take(ASK_WORKERS).enumerate() {
+            assert_eq!(*answer, Some(index), "completed item {index} was lost");
         }
         assert_eq!(
             answers[ASK_WORKERS], None,
