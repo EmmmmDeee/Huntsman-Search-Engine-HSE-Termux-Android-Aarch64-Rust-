@@ -32,10 +32,8 @@ pub struct CapabilityProbe {
     pub provider_healthy: bool,
     pub fallback_available: bool,
     /// True only for operations that actually need remote connectivity.
-    #[serde(default)]
     pub requires_network: bool,
     /// True only when the operation needs an external provider credential.
-    #[serde(default)]
     pub requires_credentials: bool,
 }
 
