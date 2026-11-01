@@ -253,11 +253,11 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-body">
 <form id="uresearch" class="row">
 <label class="fl" for="uresearch-q">Universal Research</label>
-<input id="uresearch-q" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Any term, phrase, domain or public identifier">
+<input id="uresearch-q" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false">
 <button class="btn btn-primary" id="uresearch-go" type="submit">Research</button>
 </form>
 <div class="toolbar"><button class="btn" id="uresearch-mission" type="button" disabled>Start bounded autonomous mission</button></div>
-<p class="help">Phrases search keylessly. One-hop saved missions may contact configured sources; manage them under Scans.</p>
+<p class="help">Missions may use sources.</p>
 <p class="help" id="uresearch-status" role="status"></p>
 <div id="uresearch-hits" class="help"></div>
 </div></div>
@@ -885,28 +885,34 @@ $('nattackapply').onclick=()=>{
 };
 function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))if(!i.disabled)i.checked=on}
 $('nall').onclick=()=>setAll(true);$('nnone').onclick=()=>setAll(false);
-let missionSeed=null;
-$('uresearch-q').oninput=()=>{missionSeed=null;$('uresearch-mission').disabled=true};
+let missionSeed=null,researchVersion=0;
+$('uresearch-q').oninput=()=>{
+  researchVersion++;missionSeed=null;$('uresearch-mission').disabled=true;
+  $('uresearch-go').disabled=false;$('uresearch-hits').replaceChildren();
+  $('uresearch-status').textContent='';
+};
 $('uresearch-mission').onclick=async()=>{
   const q=$('uresearch-q').value.trim();if(!missionSeed||missionSeed!==q)return;
   const b=$('uresearch-mission');b.disabled=true;
   $('uresearch-status').textContent='Starting…';
   try{
     const result=await api('/api/research/mission?'+new URLSearchParams({q}),{method:'POST'});
-    if(!result.scan)throw new Error('Missing scan ID');
+    if(!result.scan)throw Error('No scan ID');
     location.hash='#/scan/'+enc(result.scan)+'/summary';
-  }catch(e){$('uresearch-status').textContent='Error: '+e.message;b.disabled=false}
+  }catch(e){if(missionSeed===q){$('uresearch-status').textContent='Error: '+e.message;b.disabled=false}}
 };
 $('uresearch').onsubmit=async ev=>{
   ev.preventDefault();
   const q=$('uresearch-q').value.trim();if(!q)return;
+  const version=++researchVersion;
   missionSeed=null;$('uresearch-mission').disabled=true;
   const b=$('uresearch-go');b.disabled=true;
-  $('uresearch-status').textContent='Researching…';$('uresearch-hits').replaceChildren();
+  $('uresearch-status').textContent='Searching…';$('uresearch-hits').replaceChildren();
   try{
     const result=await api('/api/research?'+new URLSearchParams({q}));
+    if(version!==researchVersion)return;
     if(result.route==='scan'){
-      $('uresearch-status').textContent='Recognised '+result.kind+'. Review the scan options and select Run Scan Now to collect.';
+      $('uresearch-status').textContent='Recognised '+result.kind+'; select Run Scan Now to collect.';
       missionSeed=q;$('uresearch-mission').disabled=false;
       await prefill({name:q,target:result.selector,kind:result.kind,depth:0});
       $('starget').focus();
@@ -920,10 +926,10 @@ $('uresearch').onsubmit=async ev=>{
         items.append(li);
       }
       $('uresearch-hits').replaceChildren(items);
-      $('uresearch-status').textContent=hits.length+' discovery leads · '+(report.stop_reason||'')+'. Links are not verified claims; inspect source outcomes before relying on them. First 40 displayed.';
+      $('uresearch-status').textContent=hits.length+' discovery leads · '+(report.stop_reason||'')+'. Unverified leads.';
     }
-  }catch(e){$('uresearch-status').textContent='Research unavailable: '+e.message}
-  finally{b.disabled=false}
+  }catch(e){if(version===researchVersion)$('uresearch-status').textContent='Error: '+e.message}
+  finally{if(version===researchVersion)b.disabled=false}
 };
 $('newscan').onsubmit=async ev=>{
   ev.preventDefault();
