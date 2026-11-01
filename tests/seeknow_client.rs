@@ -360,7 +360,6 @@ fn variant_secret_field_names_are_dropped_without_losing_safe_evidence() {
     assert!(!serialized.contains("must-not-retain-"));
 }
 
-
 #[test]
 fn ordinary_provider_attributes_survive_sensitive_field_filtering() {
     let body = serde_json::json!({
@@ -382,7 +381,10 @@ fn ordinary_provider_attributes_survive_sensitive_field_filtering() {
     assert_eq!(result.outcome.kind, SourceOutcomeKind::Success);
     let row = &result.rows[0];
     for key in ["secretary", "session_count", "sessionCount", "tokenomics"] {
-        assert!(row.fields.contains_key(key), "ordinary field was dropped: {key}");
+        assert!(
+            row.fields.contains_key(key),
+            "ordinary field was dropped: {key}"
+        );
         assert!(!row.sensitive_fields.contains(key));
     }
     for key in ["passwordHash", "accessToken"] {
