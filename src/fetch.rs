@@ -1636,7 +1636,11 @@ mod tests {
     fn cross_origin_307_and_308_never_forward_post_bodies() {
         for status in [307, 308] {
             let f = Fake::new(vec![
-                Ok(resp(status, &[("location", "https://other.example/collect")], "")),
+                Ok(resp(
+                    status,
+                    &[("location", "https://other.example/collect")],
+                    "",
+                )),
                 Ok(resp(200, &[], "")),
             ]);
             let body = b"private-form-data".to_vec();
@@ -1650,7 +1654,11 @@ mod tests {
             )
             .expect("a refused redirect preserves the original response");
 
-            assert_eq!(f.seen.borrow().len(), 1, "{status}: body sent to redirect target");
+            assert_eq!(
+                f.seen.borrow().len(),
+                1,
+                "{status}: body sent to redirect target"
+            );
             assert_eq!(f.seen.borrow()[0].body, body);
             assert_eq!(result.response.as_ref().map(|r| r.status), Some(status));
             assert_eq!(result.outcome.kind, SourceOutcomeKind::RedirectChanged);
