@@ -372,7 +372,9 @@ fn ordinary_provider_attributes_survive_sensitive_field_filtering() {
             "sessionCount": 5,
             "tokenomics": "public analysis",
             "passwordHash": "must-not-retain-credential",
-            "accessToken": "must-not-retain-token"
+            "accessToken": "must-not-retain-token",
+            "apiKeyValue": "must-not-retain-api-key-value",
+            "accessKeyId": "must-not-retain-access-key-id"
         }]
     })
     .to_string();
@@ -387,7 +389,7 @@ fn ordinary_provider_attributes_survive_sensitive_field_filtering() {
         );
         assert!(!row.sensitive_fields.contains(key));
     }
-    for key in ["passwordHash", "accessToken"] {
+    for key in ["passwordHash", "accessToken", "apiKeyValue", "accessKeyId"] {
         assert!(!row.fields.contains_key(key), "secret was exported: {key}");
         assert!(row.sensitive_fields.contains(key));
     }
