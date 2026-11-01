@@ -225,6 +225,56 @@ mod tests {
     }
 
     #[test]
+    fn missing_or_inconsistent_search_envelope_is_schema_drift_not_valid_zero() {
+        for body in [
+            "{}",
+            r#"{"resultCount":0}"#,
+            r#"{"results":[]}"#,
+            r#"{"resultCount":1,"results":[]}"#,
+            r#"{"resultCount":0,"results":[{"trackViewUrl":"https://apps.apple.com/us/app/fixture/id1"}]}"#,
+        ] {
+            let report = lookup(
+                &OneResponse::json(200, body),
+                "Example Co",
+                "scan-itunes",
+                1,
+            )
+            .expect("synthetic HTTP response is handled as an outcome");
+            assert!(report.entities.is_empty(), "{body}");
+            assert_eq!(
+                report.outcome.kind,
+                SourceOutcomeKind::SchemaDrift,
+                "{body}"
+            );
+            assert_eq!(report.outcome.http_status, Some(200), "{body}");
+        }
+    }
+
+    #[test]
+    fn nonempty_unusable_search_results_are_not_false_verified_negatives() {
+        for body in [
+            r#"{"resultCount":1,"results":[{}]}"#,
+            r#"{"resultCount":1,"results":[{"trackViewUrl":"http://insecure.example/app"}]}"#,
+            r#"{"resultCount":1,"results":[{"trackViewUrl":"not-a-url"}]}"#,
+        ] {
+            let report = lookup(
+                &OneResponse::json(200, body),
+                "Example Co",
+                "scan-itunes",
+                1,
+            )
+            .expect("synthetic HTTP response is handled as an outcome");
+            assert!(report.entities.is_empty(), "{body}");
+            assert_eq!(
+                report.outcome.kind,
+                SourceOutcomeKind::Inconclusive,
+                "{body}"
+            );
+            assert_eq!(report.outcome.http_status, Some(200), "{body}");
+        }
+    }
+
+    #[test]
     fn a_refusal_is_not_read_as_a_zero() {
         match lookup(
             &OneResponse::json(403, "forbidden"),
