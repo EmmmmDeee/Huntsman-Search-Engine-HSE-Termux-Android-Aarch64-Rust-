@@ -263,6 +263,49 @@ fn evidence_is_deduped_and_lineage_comes_from_response_dataset_not_seeknow() {
     }
 }
 
+
+#[test]
+fn safe_provider_fields_survive_collection_into_saved_evidence() {
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[{
+            "email":"alice@example.com",
+            "source":"Dataset One",
+            "secretary":"Jane Citizen",
+            "session_count":5,
+            "tokenomics":"published analysis",
+            "accessToken":"must-not-survive-credential"
+        }]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Email, "alice@example.com"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        42,
+    )
+    .unwrap();
+    assert_eq!(batch.outcome, CollectionOutcome::Success);
+    let evidence = &batch.entities[0].evidence[0];
+    assert_eq!(evidence.attributes["source"], "Dataset One");
+    assert_eq!(evidence.attributes["provider_field.secretary"], "Jane Citizen");
+    assert_eq!(evidence.attributes["provider_field.session_count"], "5");
+    assert_eq!(
+        evidence.attributes["provider_field.tokenomics"],
+        "published analysis"
+    );
+    assert_eq!(
+        evidence.attributes["provider_field.email"],
+        "alice@example.com"
+    );
+    assert!(!evidence.attributes.contains_key("provider_field.accessToken"));
+    assert!(evidence.attributes["sensitive_fields_present"].contains("accessToken"));
+    let serialized = serde_json::to_string(evidence).unwrap();
+    assert!(serialized.contains("Jane Citizen"));
+    assert!(!serialized.contains("must-not-survive-credential"));
+}
+
 #[test]
 fn stealer_machine_identifiers_map_to_device_entities() {
     let transport = ScriptedTransport::new(vec![response(
