@@ -516,3 +516,25 @@ fn mixed_legacy_and_attributed_receipts_keep_their_exact_scan_ids() {
         );
     }
 }
+
+#[test]
+fn distinct_scan_receipts_with_identical_source_do_not_emit_misattributed_evidence() {
+    let raw = observation(
+        "shared-collector",
+        Some(origin("same-provider", "same-dataset")),
+        EntityKind::Domain,
+        "evidence.example",
+    );
+    let mut collected = batch(vec![raw]);
+    let mut other_scan = collected.events[0].clone();
+    other_scan.scan_id = "different-execution".into();
+    collected.events.push(other_scan);
+
+    let snapshot = normalize_observations(collected, &PipelineLimits::default())
+        .expect("ambiguous receipts must fail closed without breaking analysis");
+    assert!(
+        snapshot.entities.is_empty(),
+        "an observation without an execution ID cannot be assigned to either scan"
+    );
+    assert!(snapshot.truncated, "ambiguous evidence must not appear complete");
+}
