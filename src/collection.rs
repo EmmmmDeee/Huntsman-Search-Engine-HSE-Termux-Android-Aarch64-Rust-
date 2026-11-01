@@ -67,6 +67,7 @@ pub struct ObservationBatch {
 
 #[must_use]
 pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> ObservationBatch {
+    let original_observation_count = batch.observations.len();
     let overflow = batch.observations.len() > limits.max_entities
         || batch.events.len() > limits.max_dispatches;
 
@@ -121,6 +122,20 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
             observation.target.value.as_str(),
         ))
     });
+    if batch.observations.len() < original_observation_count {
+        // An independence assertion cannot survive the removal of the
+        // observations establishing either upstream root. Exact provenance
+        // matching is conservative: never invent an equivalence between origins.
+        let retained_origins: Vec<_> = batch
+            .observations
+            .iter()
+            .filter_map(|observation| observation.upstream.as_ref())
+            .collect();
+        batch.independence_assertions.retain(|assertion| {
+            retained_origins.contains(&&assertion.left)
+                && retained_origins.contains(&&assertion.right)
+        });
+    }
     batch.truncated |= batch.observations.len() != before;
     batch.truncated |= overflow;
     batch
@@ -221,6 +236,51 @@ mod tests {
         assert_eq!(bounded.events.len(), 1);
         assert_eq!(bounded.observations.len(), 1);
         assert_eq!(bounded.observations[0].provider_id, "kept");
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn dropped_observations_cannot_leave_dangling_independence_assertions() {
+        fn origin(name: &str) -> UpstreamOrigin {
+            UpstreamOrigin {
+                provider: Some(name.into()),
+                dataset: Some("primary".into()),
+                artifact: None,
+            }
+        }
+        fn assertion(left: &str, right: &str) -> UpstreamIndependenceAssertion {
+            UpstreamIndependenceAssertion {
+                left: origin(left),
+                right: origin(right),
+                basis: IndependenceBasis::ExplicitUpstreamProvenance,
+                method_id: "fixture".into(),
+                method_version: 1,
+                supporting_artifact_ids: Vec::new(),
+                observed_at_unix: 1,
+            }
+        }
+        let mut first = observation("a", "a.example");
+        first.upstream = Some(origin("a"));
+        let mut second = observation("b", "b.example");
+        second.upstream = Some(origin("b"));
+        let mut dropped = observation("c", "c.example");
+        dropped.upstream = Some(origin("c"));
+        let batch = ObservationBatch {
+            events: vec![event("a", "a.example"), event("b", "b.example"), event("c", "c.example")],
+            observations: vec![first, second, dropped],
+            independence_assertions: vec![assertion("a", "b"), assertion("a", "c")],
+            truncated: false,
+        };
+        let bounded = bounded_batch(
+            batch,
+            &PipelineLimits {
+                max_dispatches: 2,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.observations.len(), 2);
+        assert_eq!(bounded.independence_assertions.len(), 1);
+        assert_eq!(bounded.independence_assertions[0].right, origin("b"));
         assert!(bounded.truncated);
     }
 
