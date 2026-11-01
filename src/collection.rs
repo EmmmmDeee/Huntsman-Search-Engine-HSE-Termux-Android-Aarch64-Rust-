@@ -589,9 +589,11 @@ mod tests {
         assert!(bounded.observations.is_empty());
         assert!(bounded.truncated);
         assert!(bounded.events.iter().all(|receipt| receipt.truncated));
-        assert!(coverage_events(&bounded)
-            .iter()
-            .all(|event| matches!(&event.kind, EventKind::ModuleError { .. })));
+        assert!(
+            coverage_events(&bounded)
+                .iter()
+                .all(|event| matches!(&event.kind, EventKind::ModuleError { .. }))
+        );
     }
 
     #[test]
