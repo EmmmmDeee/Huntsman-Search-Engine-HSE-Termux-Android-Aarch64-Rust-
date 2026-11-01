@@ -109,6 +109,30 @@ pub const fn negotiate(probe: CapabilityProbe, scope: Scope, impact: Impact) -> 
     }
 }
 
+/// Independently evaluate primary and fallback requirements. The fallback is
+/// never assumed healthy merely because it exists.
+#[must_use]
+pub const fn negotiate_with_fallback(
+    primary: CapabilityProbe,
+    fallback: CapabilityProbe,
+    scope: Scope,
+    impact: Impact,
+) -> Decision {
+    let first = negotiate(primary, scope, impact);
+    if !matches!(first.status, Availability::TransientFailure) || !primary.fallback_available {
+        return first;
+    }
+    let alternate = negotiate(fallback, scope, impact);
+    if matches!(alternate.status, Availability::Available) {
+        return Decision {
+            status: Availability::Degraded,
+            use_fallback: true,
+            retryable: false,
+        };
+    }
+    first
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +154,31 @@ mod tests {
         low_impact_active_allowed: false,
         intrusive_explicitly_approved: false,
     };
+
+    #[test]
+    fn fallback_requires_independent_network_and_credentials() {
+        let mut primary = OK;
+        primary.provider_healthy = false;
+        primary.fallback_available = true;
+        let mut fallback = OK;
+        fallback.network_available = false;
+        assert!(!negotiate_with_fallback(primary, fallback, SCOPE, Impact::Passive).use_fallback);
+        fallback.network_available = true;
+        fallback.credentials_available = false;
+        assert!(!negotiate_with_fallback(primary, fallback, SCOPE, Impact::Passive).use_fallback);
+        fallback.credentials_available = true;
+        assert!(negotiate_with_fallback(primary, fallback, SCOPE, Impact::Passive).use_fallback);
+    }
+
+    #[test]
+    fn fallback_cannot_override_scope_denial() {
+        let mut primary = OK;
+        primary.provider_healthy = false;
+        primary.fallback_available = true;
+        let decision = negotiate_with_fallback(primary, OK, SCOPE, Impact::Intrusive);
+        assert_eq!(decision.status, Availability::NotAuthorised);
+        assert!(!decision.use_fallback);
+    }
 
     #[test]
     fn passive_is_automatic_when_available() {
