@@ -18,7 +18,7 @@ fn root() -> PathBuf {
 }
 
 fn readme() -> String {
-    fs::read_to_string(root().join("README.md")).unwrap()
+    fs::read_to_string(root().join("docs/USAGE.md")).unwrap()
 }
 
 fn scratch(tag: &str) -> PathBuf {
