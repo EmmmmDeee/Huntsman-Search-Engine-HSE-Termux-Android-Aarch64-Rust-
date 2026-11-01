@@ -285,7 +285,11 @@ fn ordinary_changes_are_committed_to_a_review_branch_without_pushing_main() {
         "sync skipped tests"
     );
     assert_ne!(sandbox.head(), before, "nothing was committed");
-    assert_eq!(sandbox.pushed(), main_before, "direct sync changed remote main");
+    assert_eq!(
+        sandbox.pushed(),
+        main_before,
+        "direct sync changed remote main"
+    );
     assert_eq!(
         sandbox.staged(),
         [
@@ -310,7 +314,11 @@ fn repeating_a_clean_sync_reuses_the_same_review_branch_without_mutating_main() 
     let main_before = sandbox.pushed();
     for _ in 0..2 {
         let output = sandbox.run_with_mock_cargo("sync", 0);
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(sandbox.head(), initial, "clean sync must not commit");
         assert_eq!(sandbox.pushed(), main_before, "sync must not push main");
         assert_eq!(sandbox.staged(), main_before, "staged tree changed");
