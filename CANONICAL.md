@@ -5,7 +5,7 @@ One operator repository. One crate. One installed binary.
 - Repository: `EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-`
 - Binary: `huntsman-recon`
 - Package: `huntsman-recon` 0.2.0, edition 2024, rust-version 1.87
-- Dependencies: serde, serde_json, thiserror, ureq
+- Runtime dependencies (see authoritative `Cargo.toml`): serde, serde_json, thiserror, ureq, ring, miniz_oxide, crc32fast
 - Target: Termux Android `aarch64-linux-android`, no root, no ports below 1024
 - Value normaliser: `src/canonical.rs`
 

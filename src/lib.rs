@@ -26,6 +26,7 @@ pub mod attack_catalog;
 pub mod attack_cli;
 pub mod attack_reporting;
 pub mod au_id;
+pub mod autonomous_capability;
 pub mod base64;
 pub mod base_rpc;
 pub mod benchmark;

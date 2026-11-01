@@ -16,6 +16,7 @@ attack_catalog	leaf	ATT&CK catalogue
 attack_cli	diagnostic	ATT&CK command front-end over the reachable module catalogue
 attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 au_id	leaf	Australian identifier normalization
+autonomous_capability	diagnostic	policy negotiation prototype exercised by an external contract test; not connected to runtime dispatch
 base64	leaf	RFC 4648 base64 codec for CSP hashes, PKCE values and certificate DER
 benchmark	diagnostic	benchmarking support
 blockchain	adapter	blockchain.info Bitcoin address source client reached through crypto_cli
