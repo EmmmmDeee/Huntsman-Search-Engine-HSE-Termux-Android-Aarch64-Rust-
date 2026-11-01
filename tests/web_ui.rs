@@ -1156,3 +1156,16 @@ fn autonomous_research_controls_require_explicit_start_and_reuse_saved_scan_ui()
     assert!(PAGE.contains("id=\"sdepth\""));
     assert!(PAGE.len() <= PAGE_BUDGET);
 }
+
+#[test]
+fn research_input_changes_invalidate_old_responses_and_mission_controls() {
+    assert!(PAGE.contains("let missionSeed=null,researchVersion=0"));
+    assert!(PAGE.contains("researchVersion++;missionSeed=null"));
+    assert!(PAGE.contains("const version=++researchVersion"));
+    assert!(PAGE.contains("if(version!==researchVersion)return"));
+    assert!(PAGE.contains("if(version===researchVersion)b.disabled=false"));
+    assert!(PAGE.contains("if(missionSeed===q)"));
+    assert!(PAGE.contains("$('uresearch-go').disabled=false"));
+    assert!(PAGE.contains("$('uresearch-hits').replaceChildren()"));
+    assert!(PAGE.len() <= PAGE_BUDGET);
+}
