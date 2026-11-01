@@ -118,6 +118,7 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
     // observation with declared provenance to match it. Provider/target alone
     // cannot distinguish two executions of the same source.
     let mut retained_origins: BTreeMap<_, Vec<&UpstreamOrigin>> = BTreeMap::new();
+    let mut unprovenanced_sources = BTreeSet::new();
     for event in &batch.events {
         if let Some(origin) = event.upstream.as_ref() {
             retained_origins
@@ -128,6 +129,12 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
                 ))
                 .or_default()
                 .push(origin);
+        } else {
+            unprovenanced_sources.insert((
+                event.provider_id.as_str(),
+                event.target.kind,
+                event.target.value.as_str(),
+            ));
         }
     }
     let before = batch.observations.len();
@@ -138,11 +145,14 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
             observation.target.value.as_str(),
         );
         retained_sources.contains(&key)
-            && observation.upstream.as_ref().is_none_or(|origin| {
-                retained_origins
+            && match observation.upstream.as_ref() {
+                Some(origin) => retained_origins
                     .get(&key)
-                    .is_none_or(|origins| origins.contains(&origin))
-            })
+                    .is_none_or(|origins| origins.contains(&origin)),
+                // An attributed execution receipt must not authorise evidence
+                // that omits the provenance necessary to identify its source.
+                None => unprovenanced_sources.contains(&key),
+            }
     });
     if batch.observations.len() < original_observation_count {
         // An independence assertion cannot survive the removal of the
@@ -346,6 +356,44 @@ mod tests {
         assert_eq!(bounded.observations.len(), 1);
         assert_eq!(bounded.observations[0].upstream, Some(origin("kept")));
         assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn attributed_receipt_cannot_authorise_unattributed_observation() {
+        let origin = UpstreamOrigin {
+            provider: Some("verified_source".into()),
+            dataset: Some("dataset".into()),
+            artifact: Some("capture".into()),
+        };
+        let mut receipt = event("source", "a.example");
+        receipt.upstream = Some(origin.clone());
+        let missing_origin = observation("source", "a.example");
+        let mut matching = observation("source", "a.example");
+        matching.upstream = Some(origin);
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![receipt],
+                observations: vec![missing_origin, matching],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(bounded.observations[0].upstream.is_some());
+        assert!(bounded.truncated);
+
+        let legacy = bounded_batch(
+            ObservationBatch {
+                events: vec![event("source", "a.example")],
+                observations: vec![observation("source", "a.example")],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(legacy.observations.len(), 1);
+        assert!(!legacy.truncated);
     }
 
     #[test]
