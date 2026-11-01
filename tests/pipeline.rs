@@ -459,3 +459,57 @@ fn receipt_metadata_is_not_combined_with_raw_response_attributes() {
         Some("response-provider")
     );
 }
+
+#[test]
+fn raw_attribute_prefix_is_escaped_without_merging_distinct_fields() {
+    let mut raw = observation("receipt-collector", None, EntityKind::Domain, "example.com");
+    for (key, value) in [
+        ("collector", "response-collector"),
+        ("raw_attribute:collector", "literal-prefixed"),
+        ("raw_attribute:raw_attribute:collector", "double-prefixed"),
+    ] {
+        raw.attributes.insert(key.into(), value.into());
+    }
+    let snapshot = normalize_observations(batch(vec![raw]), &PipelineLimits::default())
+        .expect("normalization");
+    let attrs = &snapshot.entities[0].evidence[0].attributes;
+    for (key, expected) in [
+        ("collector", "receipt-collector"),
+        ("raw_attribute:collector", "response-collector"),
+        ("raw_attribute:raw_attribute:collector", "literal-prefixed"),
+        (
+            "raw_attribute:raw_attribute:raw_attribute:collector",
+            "double-prefixed",
+        ),
+    ] {
+        assert_eq!(attrs.get(key).map(String::as_str), Some(expected), "{key}");
+    }
+}
+
+#[test]
+fn mixed_legacy_and_attributed_receipts_keep_their_exact_scan_ids() {
+    let legacy = observation("shared", None, EntityKind::Domain, "legacy.example");
+    let attributed = observation(
+        "shared",
+        Some(origin("upstream", "source")),
+        EntityKind::Domain,
+        "attributed.example",
+    );
+    let mut collected = batch(vec![legacy, attributed]);
+    assert_eq!(collected.events.len(), 2);
+    collected.events[0].scan_id = "legacy-execution".into();
+    collected.events[1].scan_id = "attributed-execution".into();
+    let snapshot = normalize_observations(collected, &PipelineLimits::default())
+        .expect("exact receipt association");
+    for (domain, expected) in [
+        ("legacy.example", "legacy-execution"),
+        ("attributed.example", "attributed-execution"),
+    ] {
+        let entity = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.value == domain)
+            .expect("retained domain");
+        assert_eq!(entity.evidence[0].provenance.scan_id.as_deref(), Some(expected));
+    }
+}
