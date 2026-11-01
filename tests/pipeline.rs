@@ -38,19 +38,34 @@ fn observation(
 }
 
 fn batch(observations: Vec<RawObservation>) -> ObservationBatch {
+    // Every fixture observation must have an independent collector execution
+    // receipt. This preserves the intended identity/corroboration assertions
+    // while exercising the fail-closed orphan-observation check.
+    let mut events: Vec<CollectionEvent> = Vec::new();
+    for observation in &observations {
+        if let Some(event) = events.iter_mut().find(|event| {
+            event.provider_id == observation.provider_id
+                && event.target == observation.target
+                && event.upstream == observation.upstream
+        }) {
+            event.finding_count += 1;
+        } else {
+            events.push(CollectionEvent {
+                scan_id: "scan-test".to_string(),
+                provider_id: observation.provider_id.clone(),
+                target: observation.target.clone(),
+                outcome: SourceOutcomeKind::Success,
+                finding_count: 1,
+                truncated: false,
+                started_at_unix: 9,
+                finished_at_unix: 10,
+                credential_fingerprint: None,
+                upstream: observation.upstream.clone(),
+            });
+        }
+    }
     ObservationBatch {
-        events: vec![CollectionEvent {
-            scan_id: "scan-test".to_string(),
-            provider_id: "seeknow".to_string(),
-            target: Target::new(TargetKind::Email, "ada@example.com"),
-            outcome: SourceOutcomeKind::Success,
-            finding_count: observations.len(),
-            truncated: false,
-            started_at_unix: 9,
-            finished_at_unix: 10,
-            credential_fingerprint: None,
-            upstream: None,
-        }],
+        events,
         observations,
         independence_assertions: Vec::new(),
         truncated: false,
@@ -258,6 +273,45 @@ fn independent_upstream_roots_can_raise_corroboration() {
             .expect("ancestry"),
         2
     );
+}
+
+#[test]
+fn observations_from_distinct_upstreams_keep_their_own_scan_receipts() {
+    let mut collected = batch(vec![
+        observation(
+            "registry",
+            Some(origin("registry", "first-source")),
+            EntityKind::Domain,
+            "first.example",
+        ),
+        observation(
+            "registry",
+            Some(origin("registry", "second-source")),
+            EntityKind::Domain,
+            "second.example",
+        ),
+    ]);
+    assert_eq!(collected.events.len(), 2);
+    collected.events[0].scan_id = "scan-first".to_string();
+    collected.events[1].scan_id = "scan-second".to_string();
+
+    let snapshot = normalize_observations(collected, &PipelineLimits::default())
+        .expect("provenance-aware snapshot");
+    for (domain, expected_scan) in [
+        ("first.example", "scan-first"),
+        ("second.example", "scan-second"),
+    ] {
+        let entity = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.value == domain)
+            .expect("both observations survive bounded collection");
+        assert_eq!(
+            entity.evidence[0].provenance.scan_id.as_deref(),
+            Some(expected_scan),
+            "{domain} must retain its own execution receipt"
+        );
+    }
 }
 
 #[test]

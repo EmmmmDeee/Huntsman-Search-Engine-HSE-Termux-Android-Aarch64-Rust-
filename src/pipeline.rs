@@ -213,7 +213,16 @@ fn scan_id_for(batch: &ObservationBatch, observation: &RawObservation) -> String
         .events
         .iter()
         .find(|event| {
-            event.provider_id == observation.provider_id && event.target == observation.target
+            event.provider_id == observation.provider_id
+                && event.target == observation.target
+                && event.upstream == observation.upstream
+        })
+        // Older collection receipts can lack upstream provenance. Preserve
+        // their provider/target association only when no exact receipt exists.
+        .or_else(|| {
+            batch.events.iter().find(|event| {
+                event.provider_id == observation.provider_id && event.target == observation.target
+            })
         })
         .or_else(|| batch.events.first())
         .map_or_else(|| "collection".to_string(), |event| event.scan_id.clone())

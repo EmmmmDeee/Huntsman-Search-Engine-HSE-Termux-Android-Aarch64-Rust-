@@ -83,6 +83,10 @@ fn captured_public_fixture(
     let profile = origin("public_profile", "professional_profile", "profile-capture");
     let project = origin("project_document", "nook_bess", "nook-project-document");
 
+    let mut events = vec![
+        event("profile_collector", profile.clone(), 2),
+        event("project_collector", project.clone(), 2),
+    ];
     let mut observations = vec![
         observation(
             "profile_collector",
@@ -114,13 +118,18 @@ fn captured_public_fixture(
         ),
     ];
     if include_wrong_identity {
+        // The unrelated observation must have its own execution receipt.
+        // Otherwise bounded_batch correctly discards it as orphan evidence,
+        // making this negative identity-resolution benchmark vacuous.
+        let unrelated = origin(
+            "other_public_record",
+            "unrelated_record",
+            "unrelated-capture",
+        );
+        events.push(event("other_record_collector", unrelated.clone(), 1));
         observations.push(observation(
             "other_record_collector",
-            origin(
-                "other_public_record",
-                "unrelated_record",
-                "unrelated-capture",
-            ),
+            unrelated,
             EntityKind::Person,
             "Different Talia Bacot",
             "deliberately unrelated identity",
@@ -147,10 +156,7 @@ fn captured_public_fixture(
     };
 
     ObservationBatch {
-        events: vec![
-            event("profile_collector", profile, 2),
-            event("project_collector", project, 2),
-        ],
+        events,
         observations,
         independence_assertions,
         truncated: false,

@@ -65,8 +65,27 @@ pub struct ObservationBatch {
     pub truncated: bool,
 }
 
+// Keep coverage in sync when evidence is rejected after bounding. The raw
+// observation schema has no scan ID, so provider/target is the precise scope
+// available for conservative attribution of an incomplete execution.
+fn mark_rejected_executions(
+    events: &mut [CollectionEvent],
+    rejected_sources: &BTreeSet<(String, crate::dependency::TargetKind, String)>,
+) {
+    for event in events {
+        if rejected_sources.contains(&(
+            event.provider_id.clone(),
+            event.target.kind,
+            event.target.value.clone(),
+        )) {
+            event.truncated = true;
+        }
+    }
+}
+
 #[must_use]
 pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> ObservationBatch {
+    let original_observation_count = batch.observations.len();
     let overflow = batch.observations.len() > limits.max_entities
         || batch.events.len() > limits.max_dispatches;
 
@@ -97,6 +116,90 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
     }
     batch.observations.truncate(limits.max_entities);
     batch.events.truncate(limits.max_dispatches);
+
+    // A retained observation must have a retained execution receipt. Otherwise
+    // the evidence pipeline could consume findings from a provider whose outcome
+    // disappeared when the dispatch budget was enforced. Raw observations do not
+    // carry scan IDs, so match conservatively by provider and target.
+    let retained_sources: BTreeSet<_> = batch
+        .events
+        .iter()
+        .map(|event| {
+            (
+                event.provider_id.as_str(),
+                event.target.kind,
+                event.target.value.as_str(),
+            )
+        })
+        .collect();
+    // Where the execution receipt declares an upstream origin, require an
+    // observation with declared provenance to match it. Provider/target alone
+    // cannot distinguish two executions of the same source.
+    let mut retained_origins: BTreeMap<_, Vec<&UpstreamOrigin>> = BTreeMap::new();
+    let mut unprovenanced_sources = BTreeSet::new();
+    for event in &batch.events {
+        if let Some(origin) = event.upstream.as_ref() {
+            retained_origins
+                .entry((
+                    event.provider_id.as_str(),
+                    event.target.kind,
+                    event.target.value.as_str(),
+                ))
+                .or_default()
+                .push(origin);
+        } else {
+            unprovenanced_sources.insert((
+                event.provider_id.as_str(),
+                event.target.kind,
+                event.target.value.as_str(),
+            ));
+        }
+    }
+    let before = batch.observations.len();
+    let mut rejected_sources = BTreeSet::new();
+    batch.observations.retain(|observation| {
+        let key = (
+            observation.provider_id.as_str(),
+            observation.target.kind,
+            observation.target.value.as_str(),
+        );
+        let keep = retained_sources.contains(&key)
+            && match observation.upstream.as_ref() {
+                Some(origin) => retained_origins
+                    .get(&key)
+                    .is_none_or(|origins| origins.contains(&origin)),
+                // An attributed execution receipt must not authorise evidence
+                // that omits the provenance necessary to identify its source.
+                None => unprovenanced_sources.contains(&key),
+            };
+        if !keep {
+            rejected_sources.insert((
+                observation.provider_id.clone(),
+                observation.target.kind,
+                observation.target.value.clone(),
+            ));
+        }
+        keep
+    });
+    // An execution cannot remain a complete success after its evidence was
+    // rejected. With no observation scan ID, conservatively mark every retained
+    // receipt for the affected provider/target incomplete, not unrelated sources.
+    mark_rejected_executions(&mut batch.events, &rejected_sources);
+    if batch.observations.len() < original_observation_count {
+        // An independence assertion cannot survive the removal of the
+        // observations establishing either upstream root. Exact provenance
+        // matching is conservative: never invent an equivalence between origins.
+        let retained_origins: Vec<_> = batch
+            .observations
+            .iter()
+            .filter_map(|observation| observation.upstream.as_ref())
+            .collect();
+        batch.independence_assertions.retain(|assertion| {
+            retained_origins.contains(&&assertion.left)
+                && retained_origins.contains(&&assertion.right)
+        });
+    }
+    batch.truncated |= batch.observations.len() != before;
     batch.truncated |= overflow;
     batch
 }
@@ -138,4 +241,239 @@ pub fn coverage_events(batch: &ObservationBatch) -> Vec<Event> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dependency::TargetKind;
+
+    fn target(value: &str) -> Target {
+        Target::new(TargetKind::Domain, value)
+    }
+
+    fn event(provider: &str, value: &str) -> CollectionEvent {
+        CollectionEvent {
+            scan_id: "scan".into(),
+            provider_id: provider.into(),
+            target: target(value),
+            outcome: SourceOutcomeKind::Success,
+            finding_count: 1,
+            truncated: false,
+            started_at_unix: 1,
+            finished_at_unix: 2,
+            credential_fingerprint: None,
+            upstream: None,
+        }
+    }
+
+    fn observation(provider: &str, value: &str) -> RawObservation {
+        RawObservation {
+            provider_id: provider.into(),
+            upstream: None,
+            target: target(value),
+            kind: EntityKind::Domain,
+            value: value.into(),
+            summary: "fixture".into(),
+            attributes: BTreeMap::new(),
+            observed_at_unix: None,
+        }
+    }
+
+    #[test]
+    fn discarded_dispatch_cannot_leave_orphan_evidence() {
+        let batch = ObservationBatch {
+            events: vec![event("kept", "a.example"), event("dropped", "b.example")],
+            observations: vec![
+                observation("kept", "a.example"),
+                observation("dropped", "b.example"),
+            ],
+            independence_assertions: Vec::new(),
+            truncated: false,
+        };
+        let limits = PipelineLimits {
+            max_dispatches: 1,
+            ..PipelineLimits::default()
+        };
+        let bounded = bounded_batch(batch, &limits);
+        assert_eq!(bounded.events.len(), 1);
+        assert_eq!(bounded.observations.len(), 1);
+        assert_eq!(bounded.observations[0].provider_id, "kept");
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn dropped_observations_cannot_leave_dangling_independence_assertions() {
+        fn origin(name: &str) -> UpstreamOrigin {
+            UpstreamOrigin {
+                provider: Some(name.into()),
+                dataset: Some("primary".into()),
+                artifact: None,
+            }
+        }
+        fn assertion(left: &str, right: &str) -> UpstreamIndependenceAssertion {
+            UpstreamIndependenceAssertion {
+                left: origin(left),
+                right: origin(right),
+                basis: IndependenceBasis::ExplicitUpstreamProvenance,
+                method_id: "fixture".into(),
+                method_version: 1,
+                supporting_artifact_ids: Vec::new(),
+                observed_at_unix: 1,
+            }
+        }
+        let mut first = observation("a", "a.example");
+        first.upstream = Some(origin("a"));
+        let mut second = observation("b", "b.example");
+        second.upstream = Some(origin("b"));
+        let mut dropped = observation("c", "c.example");
+        dropped.upstream = Some(origin("c"));
+        let batch = ObservationBatch {
+            events: vec![
+                event("a", "a.example"),
+                event("b", "b.example"),
+                event("c", "c.example"),
+            ],
+            observations: vec![first, second, dropped],
+            independence_assertions: vec![assertion("a", "b"), assertion("a", "c")],
+            truncated: false,
+        };
+        let bounded = bounded_batch(
+            batch,
+            &PipelineLimits {
+                max_dispatches: 2,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.observations.len(), 2);
+        assert_eq!(bounded.independence_assertions.len(), 1);
+        assert_eq!(bounded.independence_assertions[0].right, origin("b"));
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn dropped_dispatch_cannot_retain_evidence_from_a_different_upstream() {
+        fn origin(name: &str) -> UpstreamOrigin {
+            UpstreamOrigin {
+                provider: Some(name.into()),
+                dataset: Some("primary".into()),
+                artifact: None,
+            }
+        }
+        let mut kept_event = event("source", "a.example");
+        kept_event.upstream = Some(origin("kept"));
+        let mut dropped_event = event("source", "a.example");
+        dropped_event.scan_id = "different-scan".into();
+        dropped_event.upstream = Some(origin("discarded"));
+
+        let mut kept_observation = observation("source", "a.example");
+        kept_observation.upstream = Some(origin("kept"));
+        let mut dropped_observation = observation("source", "a.example");
+        dropped_observation.upstream = Some(origin("discarded"));
+
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![kept_event, dropped_event],
+                observations: vec![kept_observation, dropped_observation],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits {
+                max_dispatches: 1,
+                ..PipelineLimits::default()
+            },
+        );
+        assert_eq!(bounded.events.len(), 1);
+        assert_eq!(bounded.observations.len(), 1);
+        assert_eq!(bounded.observations[0].upstream, Some(origin("kept")));
+        assert!(bounded.truncated);
+    }
+
+    #[test]
+    fn rejected_evidence_marks_only_its_retained_execution_incomplete() {
+        let source_origin = UpstreamOrigin {
+            provider: Some("upstream".into()),
+            dataset: Some("reference".into()),
+            artifact: None,
+        };
+        let mut source = event("source", "a.example");
+        source.upstream = Some(source_origin.clone());
+        source.finding_count = 2;
+        let unrelated = event("unrelated", "b.example");
+
+        let mut supported = observation("source", "a.example");
+        supported.upstream = Some(source_origin);
+        let rejected = observation("source", "a.example");
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![source, unrelated],
+                observations: vec![supported, rejected],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(bounded.truncated);
+        assert!(bounded.events[0].truncated);
+        assert!(!bounded.events[1].truncated);
+        let coverage = coverage_events(&bounded);
+        assert!(matches!(coverage[0].kind, EventKind::ModuleError { .. }));
+        assert!(matches!(coverage[1].kind, EventKind::ModuleDone { .. }));
+        // Reapplying the bounding pass cannot silently turn the execution
+        // back into a complete success after the rejected finding is gone.
+        let again = bounded_batch(bounded.clone(), &PipelineLimits::default());
+        assert_eq!(again, bounded);
+    }
+
+    #[test]
+    fn attributed_receipt_cannot_authorise_unattributed_observation() {
+        let origin = UpstreamOrigin {
+            provider: Some("verified_source".into()),
+            dataset: Some("dataset".into()),
+            artifact: Some("capture".into()),
+        };
+        let mut receipt = event("source", "a.example");
+        receipt.upstream = Some(origin.clone());
+        let missing_origin = observation("source", "a.example");
+        let mut matching = observation("source", "a.example");
+        matching.upstream = Some(origin);
+        let bounded = bounded_batch(
+            ObservationBatch {
+                events: vec![receipt],
+                observations: vec![missing_origin, matching],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(bounded.observations.len(), 1);
+        assert!(bounded.observations[0].upstream.is_some());
+        assert!(bounded.truncated);
+
+        let legacy = bounded_batch(
+            ObservationBatch {
+                events: vec![event("source", "a.example")],
+                observations: vec![observation("source", "a.example")],
+                independence_assertions: Vec::new(),
+                truncated: false,
+            },
+            &PipelineLimits::default(),
+        );
+        assert_eq!(legacy.observations.len(), 1);
+        assert!(!legacy.truncated);
+    }
+
+    #[test]
+    fn unmatched_observation_is_not_accepted_as_evidence() {
+        let batch = ObservationBatch {
+            events: vec![event("source", "a.example")],
+            observations: vec![observation("source", "b.example")],
+            independence_assertions: Vec::new(),
+            truncated: false,
+        };
+        let bounded = bounded_batch(batch, &PipelineLimits::default());
+        assert!(bounded.observations.is_empty());
+        assert!(bounded.truncated);
+    }
 }
