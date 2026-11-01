@@ -32,7 +32,8 @@ pub const ASK_FAILURES_BEFORE_ABORT: usize = 4;
 
 /// `ask` for each item, [`ASK_WORKERS`] at a time, each answer at its item's index. Once
 /// [`ASK_FAILURES_BEFORE_ABORT`] answers are `failed` before any other came back, no further item
-/// is asked and those items' answers are `None`; so is the answer of a worker that panicked.
+/// is asked and those items' answers are `None`. The item that panicked remains `None`,
+/// while completed answers from that worker are retained.
 pub fn ask_all<I, R, F, B>(items: &[I], ask: F, failed: B) -> Vec<Option<R>>
 where
     I: Sync,
@@ -43,8 +44,11 @@ where
     let next = AtomicUsize::new(0);
     let failures = AtomicUsize::new(0);
     let answered = AtomicUsize::new(0);
+    // Publish each completed result immediately. A worker may panic while processing a
+    // later item; collecting a per-worker Vec only after join() would silently lose all
+    // of that worker's earlier successful results as well.
+    let (results_tx, results_rx) = std::sync::mpsc::channel();
     let work = || {
-        let mut mine = Vec::new();
         loop {
             if answered.load(Ordering::SeqCst) == 0
                 && failures.load(Ordering::SeqCst) >= ASK_FAILURES_BEFORE_ABORT
@@ -62,21 +66,23 @@ where
                 &answered
             };
             counter.fetch_add(1, Ordering::SeqCst);
-            mine.push((index, result));
+            // The receiver outlives all scoped workers, so delivery cannot fail.
+            let _ = results_tx.send((index, result));
         }
-        mine
     };
-    let mut out: Vec<Option<R>> = items.iter().map(|_| None).collect();
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..ASK_WORKERS.min(items.len()))
             .map(|_| scope.spawn(work))
             .collect();
         for worker in workers {
-            for (index, result) in worker.join().unwrap_or_default() {
-                out[index] = Some(result);
-            }
+            let _ = worker.join();
         }
     });
+    drop(results_tx);
+    let mut out: Vec<Option<R>> = items.iter().map(|_| None).collect();
+    for (index, result) in results_rx {
+        out[index] = Some(result);
+    }
     out
 }
 
@@ -918,6 +924,38 @@ mod tests {
                 })
             })
         }
+    }
+
+    #[test]
+    fn a_panicking_worker_does_not_discard_earlier_completed_answers() {
+        use std::sync::{Arc, Barrier};
+
+        // The first eight tasks occupy all workers. After all have answered,
+        // one of those same workers necessarily takes item eight and panics.
+        // Previously that worker would lose its earlier result on join().
+        let first_wave = Arc::new(Barrier::new(ASK_WORKERS));
+        let items: Vec<usize> = (0..=ASK_WORKERS).collect();
+        let answers = ask_all(
+            &items,
+            |index| {
+                assert_ne!(
+                    *index, ASK_WORKERS,
+                    "simulated provider parser panic after a successful lookup"
+                );
+                first_wave.wait();
+                *index
+            },
+            |_| false,
+        );
+
+        assert_eq!(answers.len(), ASK_WORKERS + 1);
+        for (index, answer) in answers.iter().take(ASK_WORKERS).enumerate() {
+            assert_eq!(*answer, Some(index), "completed item {index} was lost");
+        }
+        assert_eq!(
+            answers[ASK_WORKERS], None,
+            "panicking item is not an answer"
+        );
     }
 
     #[test]
