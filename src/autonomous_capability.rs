@@ -221,5 +221,4 @@ mod tests {
             Availability::TransientFailure
         );
     }
-
 }
