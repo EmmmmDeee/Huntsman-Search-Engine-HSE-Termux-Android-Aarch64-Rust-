@@ -3,11 +3,12 @@ use std::fs;
 const CI: &str = ".github/workflows/ci.yml";
 const WORKFLOWS: &str = ".github/workflows";
 
-/// The runner image every job names. A `-latest` label moves to a new release on GitHub's
-/// schedule, changing the compilers, the container runtime and the preinstalled Android NDK the
-/// release binaries link against without a commit here. Moving to a new image is a reviewed
-/// change: update this and every `runs-on:` together.
+/// All release and CI jobs stay on the pinned x86 runner, except the
+/// explicitly reviewed native ARM64 SHA-256 performance measurement.
+/// No `-latest` runner labels may silently change compilers or the NDK.
 const RUNNER: &str = "ubuntu-24.04";
+const ARM_BENCHMARK: &str = ".github/workflows/sha256-native-arm64-benchmark.yml";
+const ARM_RUNNER: &str = "ubuntu-24.04-arm";
 
 #[test]
 fn main_pushes_must_have_a_merged_pr_association() {
@@ -65,13 +66,42 @@ fn every_job_runs_on_the_pinned_runner_image() {
             .map(str::trim)
             .collect();
         assert!(!runners.is_empty(), "{} names no runner", path.display());
+        // The benchmark requires an actual ARM64 CPU; every other job must
+        // keep its reviewed x86 image, so performance measurement cannot alter
+        // deployment, security, browser or release environments.
+        let expected = if path == std::path::Path::new(ARM_BENCHMARK) {
+            ARM_RUNNER
+        } else {
+            RUNNER
+        };
         for runner in runners {
             assert_eq!(
                 runner,
-                RUNNER,
-                "{}: every job must name the runner image {RUNNER}",
+                expected,
+                "{}: unexpected runner image; expected {expected}",
                 path.display()
             );
         }
     }
+}
+
+#[test]
+fn native_arm64_benchmark_is_read_only_and_scoped() {
+    let workflow = fs::read_to_string(ARM_BENCHMARK).expect("native ARM64 benchmark");
+    for required in [
+        "runs-on: ubuntu-24.04-arm",
+        "contents: read",
+        "pull_request:",
+        "workflow_dispatch:",
+        "cargo test --locked --lib sha256::tests",
+        "cargo test --locked --example sha256_arm64_bench",
+        "cargo run --release --locked --example sha256_arm64_bench",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "ARM64 benchmark requires {required:?}"
+        );
+    }
+    assert!(!workflow.contains("push:"));
+    assert!(!workflow.contains("pull-requests: write"));
 }
