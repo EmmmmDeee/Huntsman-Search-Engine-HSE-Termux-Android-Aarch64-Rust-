@@ -15,6 +15,7 @@ pub mod analysis;
 pub mod api_leg;
 pub mod apk_intel;
 pub mod application;
+pub mod autonomous_capability;
 pub mod archived_page;
 pub mod artifacts;
 pub mod asic_director;
