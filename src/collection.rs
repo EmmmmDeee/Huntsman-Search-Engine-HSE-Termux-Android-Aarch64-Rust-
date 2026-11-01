@@ -526,7 +526,10 @@ mod tests {
         assert_eq!(bounded.observations[0].value, "valid.example");
         assert!(bounded.truncated);
         assert!(!bounded.events[0].truncated);
-        assert!(matches!(coverage_events(&bounded)[0].kind, EventKind::ModuleDone { .. }));
+        assert!(matches!(
+            coverage_events(&bounded)[0].kind,
+            EventKind::ModuleDone { .. }
+        ));
     }
 
     #[test]
@@ -550,7 +553,9 @@ mod tests {
         assert_eq!(bounded.observations.len(), 1);
         assert!(bounded.truncated);
         assert!(bounded.events[0].truncated);
-        assert!(matches!(coverage_events(&bounded)[0].kind, EventKind::ModuleError { .. }));
+        assert!(matches!(
+            coverage_events(&bounded)[0].kind,
+            EventKind::ModuleError { .. }
+        ));
     }
-
 }
