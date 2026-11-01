@@ -126,7 +126,7 @@
     {
       "id": "scan-people",
       "name": "People scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/people_cli.rs"
@@ -151,7 +151,7 @@
     {
       "id": "scan-email",
       "name": "Email scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/email_cli.rs"
@@ -176,7 +176,7 @@
     {
       "id": "scan-exposure",
       "name": "Breach exposure scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/exposure_cli.rs"
@@ -201,7 +201,7 @@
     {
       "id": "scan-username",
       "name": "Username scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/username_cli.rs"
@@ -226,7 +226,7 @@
     {
       "id": "scan-phone",
       "name": "Phone scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/phone_cli.rs"
@@ -251,7 +251,7 @@
     {
       "id": "scan-domain",
       "name": "Domain scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/domain_cli.rs"
@@ -276,7 +276,7 @@
     {
       "id": "scan-ip",
       "name": "IP address scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/ip_cli.rs"
@@ -301,7 +301,7 @@
     {
       "id": "scan-netblock",
       "name": "Netblock scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/netblock_cli.rs"
@@ -326,7 +326,7 @@
     {
       "id": "scan-asn",
       "name": "Autonomous system scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/asn_cli.rs"
@@ -351,7 +351,7 @@
     {
       "id": "scan-network",
       "name": "Network scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/network_cli.rs"
@@ -376,7 +376,7 @@
     {
       "id": "scan-crypto",
       "name": "Cryptocurrency address scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/crypto_cli.rs"
@@ -401,7 +401,7 @@
     {
       "id": "scan-geocode",
       "name": "Geocoding scan route",
-      "status": "implemented",
+      "status": "partial",
       "implementation": [
         "src/scan_route.rs",
         "src/nominatim_cli.rs"
