@@ -111,8 +111,10 @@ pub fn sensitive_field_name(name: &str) -> bool {
     matches!(
         compact.as_str(),
         "apikey" | "privatekey" | "accesskey" | "recoverycode" | "recoverycodes"
-    ) || compact.starts_with("password") || compact.ends_with("password")
-        || compact.starts_with("passwd") || compact.ends_with("passwd")
+    ) || compact.starts_with("password")
+        || compact.ends_with("password")
+        || compact.starts_with("passwd")
+        || compact.ends_with("passwd")
 }
 
 /// Replace every occurrence of every secret in `text` with [`REDACTED`].
