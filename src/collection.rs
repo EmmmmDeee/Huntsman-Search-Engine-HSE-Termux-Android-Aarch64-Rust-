@@ -147,7 +147,7 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
         let keep = retained_receipts
             .get(&key)
             .is_some_and(|origins| origins.contains(&observation.upstream.as_ref()));
-    if !keep {
+        if !keep {
             rejected_sources.insert((
                 observation.provider_id.clone(),
                 observation.target.kind,
@@ -475,7 +475,10 @@ mod tests {
             coverage_events(&bounded)[0].kind,
             EventKind::ModuleError { .. }
         ));
-        assert_eq!(bounded_batch(bounded.clone(), &PipelineLimits::default()), bounded);
+        assert_eq!(
+            bounded_batch(bounded.clone(), &PipelineLimits::default()),
+            bounded
+        );
     }
 
     #[test]
