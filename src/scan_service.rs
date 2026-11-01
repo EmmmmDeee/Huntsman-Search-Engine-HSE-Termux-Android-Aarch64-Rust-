@@ -565,7 +565,6 @@ impl SelectorCollector for ScanCollector<'_> {
         if seen == self.checkpointed {
             return;
         }
-        self.checkpointed = seen;
         let mut entities = progress.entities.to_vec();
         merge_by_uid(&mut entities);
         let found = LookupOutput {
@@ -597,6 +596,11 @@ impl SelectorCollector for ScanCollector<'_> {
                     progress.dispatches, progress.generation
                 ),
             );
+        } else {
+            // Advance only after both the result and scan row are persisted.
+            // Otherwise a transient I/O error would make an identical wave
+            // appear checkpointed and suppress its retry.
+            self.checkpointed = seen;
         }
     }
 
@@ -2018,6 +2022,74 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn a_failed_checkpoint_retries_identical_progress_after_storage_recovers() {
+        let (service, dir) = with_lookup(
+            "checkpoint-retry",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+        );
+        let (record, scan_plan) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let options = record.options.clone();
+        let selection = chosen(&options).unwrap();
+        let mut collector =
+            ScanCollector::new(&service, &record.id, &scan_plan, &options, &selection);
+
+        let entities = vec![
+            Entity::builder(EntityKind::IpAddress, "8.8.8.8", 0.95, "test")
+                .evidence(Evidence::new(
+                    EvidenceProvenance::for_scan("checkpoint-test", "scan"),
+                    "observed address",
+                ))
+                .build(),
+        ];
+        let outcomes = vec![SourceExecutionOutcome::success("checkpoint-test", 1, 1)];
+        let progress = CrawlProgress {
+            entities: &entities,
+            edges: &[],
+            outcomes: &outcomes,
+            generation: 0,
+            dispatches: 1,
+        };
+
+        // A directory at the destination prevents the atomic rename, even
+        // when tests run as root. Restoring the path makes the next save work.
+        let blocker = dir.join(&record.id).join("results.json");
+        std::fs::create_dir(&blocker).unwrap();
+        collector.progressed(&progress);
+        assert_eq!(
+            collector.checkpointed,
+            (0, 0),
+            "a failed result write must never be counted as durable"
+        );
+        std::fs::remove_dir(&blocker).unwrap();
+        assert!(service.store().results(&record.id).unwrap().is_none());
+
+        // The exact same wave must retry without requiring an extra lookup.
+        collector.progressed(&progress);
+        assert_eq!(collector.checkpointed, (1, 1));
+        let saved = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(saved.entities.len(), 1);
+        assert_eq!(saved.outcomes.len(), 1);
+        assert_eq!(saved.outcomes[0].module, "checkpoint-test");
+        assert_eq!(
+            service.store().get(&record.id).unwrap().modules_run,
+            ["checkpoint-test"]
+        );
+        let logs = service.store().log(&record.id).unwrap();
+        assert!(
+            logs.iter().any(|entry| entry
+                .message
+                .contains("could not save what the scan has found")),
+            "the transient failure must also be observable"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn full_scan_store_is_a_conflict_not_a_bad_request() {
