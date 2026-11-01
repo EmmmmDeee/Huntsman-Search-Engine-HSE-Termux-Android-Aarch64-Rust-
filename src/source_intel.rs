@@ -78,9 +78,7 @@ fn normalise_url(input: &str) -> Option<String> {
     } else {
         return None;
     };
-    let boundary = rest
-        .find(|c| matches!(c, '/' | '?' | '#'))
-        .unwrap_or(rest.len());
+    let boundary = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..boundary];
     if authority.is_empty()
         || !authority.is_ascii()
@@ -116,12 +114,12 @@ fn normalise_url(input: &str) -> Option<String> {
         (host, parse_port(&suffix)?)
     };
     let effective_port = match (scheme, port) {
-        ("http", Some(80)) | ("https", Some(443)) | (_, None) => String::new(),
-        (_, Some(port)) => format!(":{port}"),
+        ("http", 80) | ("https", 443) | (_, 0) => String::new(),
+        (_, port) => format!(":{port}"),
     };
     let tail = &rest[boundary..];
     let path = if tail.starts_with('/') {
-        let end = tail.find(|c| matches!(c, '?' | '#')).unwrap_or(tail.len());
+        let end = tail.find(['?', '#']).unwrap_or(tail.len());
         &tail[..end]
     } else {
         "/"
@@ -132,17 +130,17 @@ fn normalise_url(input: &str) -> Option<String> {
     Some(format!("{scheme}://{host}{effective_port}{path}"))
 }
 
-/// Parse an explicit numeric port. Empty suffix means the URL omitted its port.
-fn parse_port(suffix: &str) -> Option<Option<u16>> {
+/// Parse an explicit numeric port; zero represents an omitted port only.
+fn parse_port(suffix: &str) -> Option<u16> {
     if suffix.is_empty() {
-        return Some(None);
+        return Some(0);
     }
     let digits = suffix.strip_prefix(':')?;
     if digits.is_empty() || digits.len() > 5 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let port = digits.parse::<u16>().ok()?;
-    (port != 0).then_some(Some(port))
+    (port != 0).then_some(port)
 }
 
 fn from_urls(
