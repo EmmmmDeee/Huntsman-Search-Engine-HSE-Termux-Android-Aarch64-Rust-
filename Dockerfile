@@ -4,10 +4,10 @@
 FROM rust:1.99-trixie@sha256:6ff07edce8775d0f64be7aba9197229407301bddf2054d62c27b541a6238a181 AS builder
 WORKDIR /build
 
-# An explicit SHA (CI) wins; otherwise Railway's Git-trigger metadata identifies the source.
+# An explicit SHA wins; otherwise a configured, provider-neutral source SHA identifies it.
 # A manual/image build without either value stays "unknown" and fails exact-SHA acceptance.
 ARG HUNTSMAN_BUILD_SHA=unknown
-ARG RAILWAY_GIT_COMMIT_SHA
+ARG HUNTSMAN_SOURCE_SHA
 ENV HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}
 
 COPY Cargo.toml Cargo.lock capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
@@ -17,8 +17,8 @@ COPY src ./src
 COPY xtask/Cargo.toml ./xtask/Cargo.toml
 COPY xtask/src ./xtask/src
 
-RUN if [ "$HUNTSMAN_BUILD_SHA" = "unknown" ] && [ -n "${RAILWAY_GIT_COMMIT_SHA:-}" ]; then \
-      export HUNTSMAN_BUILD_SHA="$RAILWAY_GIT_COMMIT_SHA"; \
+RUN if [ "$HUNTSMAN_BUILD_SHA" = "unknown" ] && [ -n "${HUNTSMAN_SOURCE_SHA:-}" ]; then \
+      export HUNTSMAN_BUILD_SHA="$HUNTSMAN_SOURCE_SHA"; \
     fi; \
     cargo build --release --locked --bin huntsman-recon
 
