@@ -100,21 +100,17 @@ mod tests {
 
     const OK: CapabilityProbe = CapabilityProbe {
         platform_supported: true,
-
-        permission_granted: true, network_available: true,
+        permission_granted: true,
+        network_available: true,
         credentials_available: true,
-
         resource_budget_available: true,
         provider_healthy: true,
-
         fallback_available: false,
     };
     const SCOPE: Scope = Scope {
         target_authorised: true,
-
         passive_allowed: true,
         low_impact_active_allowed: false,
-
         intrusive_explicitly_approved: false,
     };
 
