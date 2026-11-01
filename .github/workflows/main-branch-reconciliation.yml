@@ -1,0 +1,56 @@
+name: Canonical main branch reconciliation
+
+on:
+  pull_request:
+    paths:
+      - 'tools/branch_reconciliation.rs'
+      - 'docs/MAIN_BRANCH_CONSOLIDATION.md'
+      - '.github/workflows/main-branch-reconciliation.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-branch-reconciliation-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  inventory:
+    name: Audit remote code branches against main (read-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: '1.87'
+      - name: Validate inventory classification tests
+        run: |
+          set -euo pipefail
+          rustc --edition=2021 --test tools/branch_reconciliation.rs -o "$RUNNER_TEMP/branch-inventory-tests"
+          "$RUNNER_TEMP/branch-inventory-tests"
+      - name: Fetch every branch without mutating the remote
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          git rev-parse --verify origin/main
+      - name: Classify all remote branch tips against canonical main
+        run: |
+          set -euo pipefail
+          rustc --edition=2021 -O tools/branch_reconciliation.rs -o "$RUNNER_TEMP/branch-inventory"
+          "$RUNNER_TEMP/branch-inventory" "$RUNNER_TEMP/branch-reconciliation.tsv"
+          test -s "$RUNNER_TEMP/branch-reconciliation.tsv"
+          head -n 2 "$RUNNER_TEMP/branch-reconciliation.tsv"
+      - name: Upload provenance-preserving branch inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: canonical-main-branch-reconciliation
+          path: ${{ runner.temp }}/branch-reconciliation.tsv
+          if-no-files-found: error
+          retention-days: 14
