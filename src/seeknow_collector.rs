@@ -488,6 +488,12 @@ fn evidence_from_row(row: &SeekNowRow, row_index: usize, scan_id: &str, now_unix
     if let Some(record_id) = row.upstream.record_id.as_deref() {
         evidence = evidence.with_attr("record_id", record_id);
     }
+    // A parsed provider row is not just a pivot list: retain every bounded,
+    // non-credential scalar in the saved evidence. Namespace the keys so a
+    // provider cannot override canonical source, dataset or record identity.
+    for (key, value) in &row.fields {
+        evidence = evidence.with_attr(format!("provider_field.{key}"), value);
+    }
     if !row.sensitive_fields.is_empty() {
         evidence = evidence.with_attr(
             "sensitive_fields_present",

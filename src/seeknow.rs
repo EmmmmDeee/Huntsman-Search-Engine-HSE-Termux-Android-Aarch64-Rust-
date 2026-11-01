@@ -735,48 +735,7 @@ fn value_as_u64(value: &Value) -> Option<u64> {
 }
 
 fn is_sensitive_result_field(key: &str) -> bool {
-    // Provider schemas use snake_case, camelCase, PascalCase, hyphens and dots
-    // for the same secrets. Compare ASCII-alphanumeric names without separators
-    // so `accessToken`, `access-token` and `access_token` all stay private.
-    // Deliberately prefer dropping an ambiguous field to storing credentials.
-    let normalized: String = key
-        .bytes()
-        .filter(u8::is_ascii_alphanumeric)
-        .map(|byte| char::from(byte.to_ascii_lowercase()))
-        .collect();
-
-    matches!(
-        normalized.as_str(),
-        "pwd"
-            | "pass"
-            | "secret"
-            | "token"
-            | "apikey"
-            | "cookie"
-            | "cookies"
-            | "session"
-            | "sessionid"
-            | "authorization"
-            | "jwt"
-            | "otp"
-            | "totp"
-            | "privatekey"
-            | "accesskey"
-            | "recoverycode"
-            | "recoverycodes"
-    ) || [
-        "password",
-        "passwd",
-        "token",
-        "secret",
-        "cookie",
-        "apikey",
-        "privatekey",
-        "credential",
-    ]
-    .into_iter()
-    .any(|fragment| normalized.contains(fragment))
-        || normalized.starts_with("session")
+    crate::redact::sensitive_field_name(key)
 }
 
 fn bounded_scalar_string(value: &Value) -> Option<String> {

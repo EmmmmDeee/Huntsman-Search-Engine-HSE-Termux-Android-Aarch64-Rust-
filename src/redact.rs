@@ -34,6 +34,111 @@ pub fn coarsen_latlon(raw: &str) -> Option<String> {
     Some(format!("{},{}", round1(lat), round1(lon)))
 }
 
+/// Whether a provider field name identifies an authentication secret rather than an
+/// ordinary intelligence attribute. Parse separator-delimited and camel-case words
+/// instead of substring matching: `secretary`, `session_count` and `tokenomics`
+/// are not credentials. Operator secrets still must never enter exported evidence.
+///
+/// This classifies names, never values. Callers that handle known credential
+/// payloads must still enforce their provider-specific protections.
+#[must_use]
+pub fn sensitive_field_name(name: &str) -> bool {
+    let chars: Vec<char> = name.chars().collect();
+    let mut words = Vec::<String>::new();
+    let mut word = String::new();
+    for (index, &ch) in chars.iter().enumerate() {
+        if !ch.is_ascii_alphanumeric() {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            continue;
+        }
+        let previous = index.checked_sub(1).and_then(|i| chars.get(i));
+        let next = chars.get(index + 1);
+        let camel_boundary = ch.is_ascii_uppercase()
+            && !word.is_empty()
+            && (previous.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                || (previous.is_some_and(char::is_ascii_uppercase)
+                    && next.is_some_and(char::is_ascii_lowercase)));
+        if camel_boundary {
+            words.push(std::mem::take(&mut word));
+        }
+        word.push(ch.to_ascii_lowercase());
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+
+    // Known public metrics are not authentication material merely because
+    // the field name includes a security-related word.
+    if words.len() == 2
+        && ((words[0] == "session" && words[1] == "count")
+            || (words[0] == "token" && words[1] == "sale"))
+    {
+        return false;
+    }
+    if words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "password"
+                | "passwords"
+                | "passwd"
+                | "pwd"
+                | "pass"
+                | "passphrase"
+                | "passcode"
+                | "token"
+                | "tokens"
+                | "secret"
+                | "secrets"
+                | "cookie"
+                | "cookies"
+                | "credential"
+                | "credentials"
+                | "authorization"
+                | "jwt"
+                | "otp"
+                | "totp"
+                | "apikey"
+                | "privatekey"
+                | "accesskey"
+                | "sessionid"
+                | "recoverycode"
+                | "recoverycodes"
+        )
+    }) {
+        return true;
+    }
+    if words.iter().any(|word| word == "session") {
+        return true;
+    }
+    // A credential label can have a non-secret suffix: `apiKeyValue`,
+    // `accessKeyId` and `privateKeyPem` must not become exportable merely
+    // because their complete normalized names no longer equal `apiKey` etc.
+    if words.windows(2).any(|pair| {
+        matches!(
+            (pair[0].as_str(), pair[1].as_str()),
+            ("api" | "access" | "private", "key") | ("recovery", "code" | "codes")
+        )
+    }) {
+        return true;
+    }
+    let compact = words.concat();
+    matches!(
+        compact.as_str(),
+        "apikey" | "privatekey" | "accesskey" | "recoverycode" | "recoverycodes"
+    ) || ["apikey", "accesskey", "privatekey", "recoverycode"]
+        .into_iter()
+        .any(|prefix| compact.starts_with(prefix))
+        || compact.starts_with("password")
+        || compact.ends_with("password")
+        || compact.starts_with("passwd")
+        || compact.ends_with("passwd")
+        || ["token", "secret", "cookie", "credential"]
+            .into_iter()
+            .any(|suffix| compact.ends_with(suffix))
+}
+
 /// Replace every occurrence of every secret in `text` with [`REDACTED`].
 /// Overlapping or touching matches become one mask, so no fragment of a secret
 /// survives next to another. Matching is exact and case-sensitive.
@@ -159,6 +264,55 @@ mod tests {
             "héllo [redacted] ünï"
         );
         assert_eq!(scrub_secrets(text, &[]), text);
+    }
+
+    #[test]
+    fn source_field_names_do_not_conflate_ordinary_evidence_with_secrets() {
+        for safe in [
+            "secretary",
+            "session_count",
+            "sessionCount",
+            "tokenomics",
+            "token_sale",
+            "secretary_general",
+            "api_version",
+            "public_key",
+            "organisation",
+            "company_name",
+        ] {
+            assert!(!sensitive_field_name(safe), "false positive: {safe}");
+        }
+        for secret in [
+            "password",
+            "passwordHash",
+            "password.hint",
+            "user_password",
+            "accessToken",
+            "refresh-token",
+            "sessionCookie",
+            "session_id",
+            "apiKey",
+            "api_key",
+            "privateKey",
+            "recoveryCodes",
+            "jwt",
+            "api_token",
+            "accesstoken",
+            "refreshtoken",
+            "authtoken",
+            "sessioncookie",
+            "clientsecret",
+            "credential",
+            "usercredential",
+            "apiKeyValue",
+            "api_key_value",
+            "apikeyvalue",
+            "accessKeyId",
+            "privateKeyPem",
+            "recoveryCodeHint",
+        ] {
+            assert!(sensitive_field_name(secret), "missed credential: {secret}");
+        }
     }
 
     #[test]
