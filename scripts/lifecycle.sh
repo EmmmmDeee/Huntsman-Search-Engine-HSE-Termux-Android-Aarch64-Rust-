@@ -223,8 +223,10 @@ sync_cmd() {
   git remote get-url origin >/dev/null 2>&1 || die "no origin remote"
   # Verify the live remote main: local tracking refs can be stale.
   local remote_main
-  remote_main="$(git ls-remote --exit-code origin refs/heads/main)" ||
+  remote_main="$(git ls-remote --exit-code origin refs/heads/main)" || {
+    write_state sync failed "could not verify current origin/main"
     die "could not verify current origin/main; refusing sync"
+  }
   remote_main="${remote_main%%[[:space:]]*}"
   if [[ "$remote_main" == "$verified_commit" ]]; then
     log "already integrated on origin/main: $verified_commit"
