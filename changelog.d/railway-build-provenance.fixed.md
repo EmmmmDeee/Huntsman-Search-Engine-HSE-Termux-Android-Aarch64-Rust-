@@ -1,0 +1,1 @@
+- Add a provider-neutral source-commit build argument fallback to the canonical container and enforce an exact embedded SHA during authenticated live acceptance; CI validates both matching and deliberately mismatching revisions. Railway production settings are unchanged.

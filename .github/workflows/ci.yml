@@ -131,7 +131,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build current Huntsman Recon image
-        run: bash scripts/container-build-retry.sh --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
+        # Exercise the generic source-SHA fallback, not merely CI's explicit build argument.
+        run: bash scripts/container-build-retry.sh --pull --build-arg HUNTSMAN_SOURCE_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
       - name: Exercise self-hosted container runtime
         shell: bash
         run: |
@@ -152,7 +153,22 @@ jobs:
 
           HUNTSMAN_CONTAINER_URL=http://127.0.0.1:18080 \
           HSE_AUTH_TOKEN=ci-huntsman-token \
+          HUNTSMAN_EXPECTED_SHA="$GITHUB_SHA" \
             bash scripts/container-live-acceptance.sh
+
+          # A healthy but wrong revision must never satisfy deployment acceptance.
+          wrong_sha=0000000000000000000000000000000000000000
+          if HUNTSMAN_CONTAINER_URL=http://127.0.0.1:18080 \
+            HSE_AUTH_TOKEN=ci-huntsman-token \
+            HUNTSMAN_EXPECTED_SHA="$wrong_sha" \
+              bash scripts/container-live-acceptance.sh > "$RUNNER_TEMP/negative-sha.log" 2>&1; then
+            echo "::error::wrong build SHA passed container acceptance"
+            exit 1
+          fi
+          grep -q 'build SHA mismatch or missing build_sha' "$RUNNER_TEMP/negative-sha.log" || {
+            echo "::error::negative SHA test failed for an unexpected reason"
+            exit 1
+          }
 
   # Termux runs on aarch64, where open flags differ from x86_64 (there O_NOFOLLOW has
   # O_LARGEFILE's value), so a host-only test run cannot see a wrong flag. qemu-user runs the

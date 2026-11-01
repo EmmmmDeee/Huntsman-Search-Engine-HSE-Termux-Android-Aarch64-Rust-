@@ -17,6 +17,7 @@ Health: `http://127.0.0.1:18080/api/health`. To verify authenticated endpoints, 
 
 ```sh
 HUNTSMAN_CONTAINER_URL=http://127.0.0.1:18080 HSE_AUTH_TOKEN="YOUR_SECRET_TOKEN" \
+HUNTSMAN_EXPECTED_SHA="$(git rev-parse HEAD)" \
   bash scripts/container-live-acceptance.sh
 ```
 

@@ -128,7 +128,22 @@ fn main_push_exposes_the_cross_built_binary_for_handset_testing() {
 fn ci_and_container_builds_carry_exact_source_commit_provenance() {
     let ci = fs::read_to_string(CI).expect("active CI workflow must be readable");
     let docker = fs::read_to_string(DOCKERFILE).expect("Dockerfile must be readable");
-    assert!(ci.contains("--build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\""));
+    // CI exercises the generic build metadata path, then authenticates the actual running
+    // container by checking its exact embedded commit SHA. A wrong healthy build must fail.
+    assert!(ci.contains("--build-arg HUNTSMAN_SOURCE_SHA=\"$GITHUB_SHA\""));
+    assert!(ci.contains("HUNTSMAN_EXPECTED_SHA=\"$GITHUB_SHA\""));
+    let release = fs::read_to_string(".github/workflows/release.yml")
+        .expect("release workflow must be readable");
+    assert!(release.contains("HUNTSMAN_EXPECTED_SHA=\"$GITHUB_SHA\""));
+    assert!(ci.contains("HUNTSMAN_EXPECTED_SHA=\"$wrong_sha\""));
+    assert!(ci.contains("wrong build SHA passed container acceptance"));
     assert!(docker.contains("ARG HUNTSMAN_BUILD_SHA=unknown"));
+    assert!(docker.contains("ARG HUNTSMAN_SOURCE_SHA"));
     assert!(docker.contains("HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}"));
+    assert!(docker.contains("export HUNTSMAN_BUILD_SHA=\"$HUNTSMAN_SOURCE_SHA\""));
+    let acceptance = fs::read_to_string("scripts/container-live-acceptance.sh")
+        .expect("live container acceptance script must be readable");
+    assert!(acceptance.contains("build SHA mismatch or missing build_sha"));
+    assert!(acceptance.contains("expected_sha"));
+    assert!(acceptance.contains("HUNTSMAN_EXPECTED_SHA"));
 }
