@@ -112,11 +112,26 @@ pub fn sensitive_field_name(name: &str) -> bool {
     if words.iter().any(|word| word == "session") {
         return true;
     }
+    // A credential label can have a non-secret suffix: `apiKeyValue`,
+    // `accessKeyId` and `privateKeyPem` must not become exportable merely
+    // because their complete normalized names no longer equal `apiKey` etc.
+    if words.windows(2).any(|pair| {
+        matches!(
+            (pair[0].as_str(), pair[1].as_str()),
+            ("api", "key") | ("access", "key") | ("private", "key")
+                | ("recovery", "code") | ("recovery", "codes")
+        )
+    }) {
+        return true;
+    }
     let compact = words.concat();
     matches!(
         compact.as_str(),
         "apikey" | "privatekey" | "accesskey" | "recoverycode" | "recoverycodes"
-    ) || compact.starts_with("password")
+    ) || ["apikey", "accesskey", "privatekey", "recoverycode"]
+        .into_iter()
+        .any(|prefix| compact.starts_with(prefix))
+        || compact.starts_with("password")
         || compact.ends_with("password")
         || compact.starts_with("passwd")
         || compact.ends_with("passwd")
@@ -290,6 +305,12 @@ mod tests {
             "clientsecret",
             "credential",
             "usercredential",
+            "apiKeyValue",
+            "api_key_value",
+            "apikeyvalue",
+            "accessKeyId",
+            "privateKeyPem",
+            "recoveryCodeHint",
         ] {
             assert!(sensitive_field_name(secret), "missed credential: {secret}");
         }
