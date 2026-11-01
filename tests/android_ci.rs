@@ -132,6 +132,9 @@ fn ci_and_container_builds_carry_exact_source_commit_provenance() {
     // container by checking its exact embedded commit SHA. A wrong healthy build must fail.
     assert!(ci.contains("--build-arg HUNTSMAN_SOURCE_SHA=\"$GITHUB_SHA\""));
     assert!(ci.contains("HUNTSMAN_EXPECTED_SHA=\"$GITHUB_SHA\""));
+    let release = fs::read_to_string(".github/workflows/release.yml")
+        .expect("release workflow must be readable");
+    assert!(release.contains("HUNTSMAN_EXPECTED_SHA=\"$GITHUB_SHA\""));
     assert!(ci.contains("HUNTSMAN_EXPECTED_SHA=\"$wrong_sha\""));
     assert!(ci.contains("wrong build SHA passed container acceptance"));
     assert!(docker.contains("ARG HUNTSMAN_BUILD_SHA=unknown"));
