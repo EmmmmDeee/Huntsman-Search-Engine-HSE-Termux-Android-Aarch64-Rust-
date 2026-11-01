@@ -116,7 +116,7 @@ pub fn sensitive_field_name(name: &str) -> bool {
         || compact.starts_with("passwd")
         || compact.ends_with("passwd")
         || ["token", "secret", "cookie", "credential"]
-            .iter()
+            .into_iter()
             .any(|suffix| compact.ends_with(suffix))
 }
 
