@@ -46,7 +46,7 @@ fn main() {
 
     for (case_index, size) in BENCHMARK_SIZES.into_iter().enumerate() {
         let input = (0..size)
-            .map(|index| (index.wrapping_mul(113).wrapping_add(17) & 255) as u8)
+            .map(|index| index.to_le_bytes()[0].wrapping_mul(113).wrapping_add(17))
             .collect::<Vec<_>>();
         assert_eq!(portable_hash(&input), sha256(&input), "digest mismatch");
         let repeats = (16 * 1024 * 1024 / size).clamp(16, 100_000);
