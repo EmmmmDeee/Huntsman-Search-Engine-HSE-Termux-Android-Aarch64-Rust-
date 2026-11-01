@@ -44,7 +44,8 @@ jobs:
           BIN="target/aarch64-linux-android/release/examples/sha256_arm64_bench"
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           test -x "$BIN"
-          "$TOOLCHAIN/llvm-readelf" -h "$BIN" | grep -Eq 'Machine:[[:space:]]+AArch64'
+          "$TOOLCHAIN/llvm-readelf" -h "$BIN" > "$RUNNER_TEMP/sha256-arm64-elf-header.txt"
+          grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/sha256-arm64-elf-header.txt"
           "$TOOLCHAIN/llvm-readelf" -l "$BIN" > "$RUNNER_TEMP/sha256-arm64-elf-program.txt"
           grep -F '/system/bin/linker64' "$RUNNER_TEMP/sha256-arm64-elf-program.txt"
           for align in $(awk '$1 == "LOAD" { print $NF }' "$RUNNER_TEMP/sha256-arm64-elf-program.txt"); do
