@@ -176,6 +176,22 @@ esac
         self.remote_files(&format!("refs/heads/lifecycle/{}", self.head()))
     }
 
+    fn review_branch_exists(&self) -> bool {
+        self.command("git", &self.root)
+            .arg("--git-dir")
+            .arg(&self.origin)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/lifecycle/{}", self.head()),
+            ])
+            .output()
+            .expect("check remote review ref")
+            .status
+            .success()
+    }
+
     /// Runs the sync and asserts that it stopped for `reason`, committed nothing and pushed nothing.
     fn assert_stopped(&self, reason: &str) {
         let head = self.head();
@@ -308,7 +324,7 @@ fn ordinary_changes_are_committed_to_a_review_branch_without_pushing_main() {
 }
 
 #[test]
-fn repeating_a_clean_sync_reuses_the_same_review_branch_without_mutating_main() {
+fn repeating_a_clean_sync_does_not_create_an_empty_review_branch() {
     let sandbox = Sandbox::new("repeat");
     let initial = sandbox.head();
     let main_before = sandbox.pushed();
@@ -321,7 +337,16 @@ fn repeating_a_clean_sync_reuses_the_same_review_branch_without_mutating_main() 
         );
         assert_eq!(sandbox.head(), initial, "clean sync must not commit");
         assert_eq!(sandbox.pushed(), main_before, "sync must not push main");
-        assert_eq!(sandbox.staged(), main_before, "staged tree changed");
+        assert!(
+            !sandbox.review_branch_exists(),
+            "clean main must not generate a redundant review branch"
+        );
+        let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
+        assert!(state.contains("phase=sync\nstatus=ok\n"), "{state}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("already on main"),
+            "a clean checkout should report remote acceptance"
+        );
     }
 }
 
