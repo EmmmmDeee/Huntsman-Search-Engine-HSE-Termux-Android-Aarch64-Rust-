@@ -4,6 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 usage: HUNTSMAN_CONTAINER_URL=https://service.example HSE_AUTH_TOKEN=... \
+       HUNTSMAN_EXPECTED_SHA=<40-character-lowercase-commit> \
        bash scripts/container-live-acceptance.sh
 
 Runs the same HTTP acceptance contract used by CI against a live self-hosted container
@@ -29,6 +30,11 @@ case "$base" in
   http://127.0.0.1:*|http://localhost:*) ;;
   *) die "URL must use HTTPS (HTTP is allowed only for loopback CI)" ;;
 esac
+
+expected_sha="${HUNTSMAN_EXPECTED_SHA:-}"
+if [[ -n "$expected_sha" && ! "$expected_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  die "HUNTSMAN_EXPECTED_SHA must be exactly 40 lowercase hexadecimal characters"
+fi
 
 if [[ -z "${HSE_AUTH_TOKEN:-}" ]]; then
   die "HSE_AUTH_TOKEN is required for full live acceptance"
@@ -81,6 +87,13 @@ done
 grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$health" \
   || die "health endpoint returned 200 without status=ok"
 
+# Exact build identity is a separate proof obligation from a 200/ok response.
+# Match the whole JSON string value rather than accepting a SHA prefix.
+if [[ -n "$expected_sha" ]]; then
+  grep -Eq "\"build_sha\"[[:space:]]*:[[:space:]]*\"${expected_sha}\"[[:space:]]*[,}]" "$health" \
+    || die "build SHA mismatch or missing build_sha in /api/health"
+fi
+
 unauth="$tmpdir/modules-unauth.json"
 unauth_code="$(request "$unauth" "$base/api/modules" || true)"
 [[ "$unauth_code" == "401" ]] \
@@ -106,3 +119,8 @@ printf 'health=200 status=ok\n'
 printf 'unauthenticated_modules=401\n'
 printf 'authenticated_modules=200\n'
 printf 'authenticated_command=200\n'
+if [[ -n "$expected_sha" ]]; then
+  printf 'build_sha=%s\n' "$expected_sha"
+else
+  printf 'build_sha=UNVERIFIED (set HUNTSMAN_EXPECTED_SHA for release acceptance)\n'
+fi
