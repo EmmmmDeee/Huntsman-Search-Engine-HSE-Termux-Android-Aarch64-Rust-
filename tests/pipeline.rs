@@ -398,3 +398,60 @@ fn a_controlled_organisation_is_owned_by_its_controller_in_the_graph() {
         .collect();
     assert_eq!(owns, [(parent.as_str(), licensee.as_str())]);
 }
+
+#[test]
+fn receipt_metadata_is_not_combined_with_raw_response_attributes() {
+    let mut raw = observation(
+        "verified-collector",
+        Some(origin("verified-provider", "verified-dataset")),
+        EntityKind::Domain,
+        "example.com",
+    );
+    for (key, value) in [
+        ("collector", "response-collector"),
+        ("upstream_provider", "response-provider"),
+        ("upstream_dataset", "response-dataset"),
+        ("upstream_artifact", "response-artifact"),
+    ] {
+        raw.attributes.insert(key.to_string(), value.to_string());
+    }
+    raw.attributes.insert("note".into(), "retained".into());
+
+    let snapshot = normalize_observations(batch(vec![raw]), &PipelineLimits::default())
+        .expect("normalized snapshot");
+    let attrs = &snapshot.entities[0].evidence[0].attributes;
+    for (key, expected) in [
+        ("collector", Some("verified-collector")),
+        ("upstream_provider", Some("verified-provider")),
+        ("upstream_dataset", Some("verified-dataset")),
+        ("upstream_artifact", None),
+    ] {
+        assert_eq!(attrs.get(key).map(String::as_str), expected, "{key}");
+    }
+    for (key, expected) in [
+        ("collector", "response-collector"),
+        ("upstream_provider", "response-provider"),
+        ("upstream_dataset", "response-dataset"),
+        ("upstream_artifact", "response-artifact"),
+    ] {
+        assert_eq!(
+            attrs.get(&format!("raw_attribute:{key}")).map(String::as_str),
+            Some(expected),
+            "{key} remains visible as untrusted raw data"
+        );
+    }
+    assert_eq!(attrs.get("note").map(String::as_str), Some("retained"));
+
+    let mut legacy = observation("legacy", None, EntityKind::Domain, "example.org");
+    legacy
+        .attributes
+        .insert("upstream_provider".into(), "response-provider".into());
+    let snapshot = normalize_observations(batch(vec![legacy]), &PipelineLimits::default())
+        .expect("legacy snapshot");
+    let attrs = &snapshot.entities[0].evidence[0].attributes;
+    assert!(!attrs.contains_key("upstream_provider"));
+    assert_eq!(
+        attrs.get("raw_attribute:upstream_provider").map(String::as_str),
+        Some("response-provider")
+    );
+}
