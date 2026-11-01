@@ -351,6 +351,35 @@ fn repeating_a_clean_sync_does_not_create_an_empty_review_branch() {
 }
 
 #[test]
+fn unreadable_remote_main_records_a_failed_sync_without_touching_remote() {
+    let sandbox = Sandbox::new("origin-main-unreadable");
+    sandbox.write("docs/pending.md", "valid offline changes\n");
+    let remote_before = sandbox.pushed();
+    let unreachable = sandbox.root.join("unavailable-origin.git");
+    sandbox.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        unreachable.to_str().expect("test path is UTF-8"),
+    ]);
+
+    let output = sandbox.run_with_mock_cargo("sync", 0);
+    assert!(!output.status.success(), "unreachable remote was accepted");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("could not verify current origin/main"),
+        "sync failed for the wrong reason"
+    );
+    assert_eq!(sandbox.pushed(), remote_before, "remote main was mutated");
+    let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
+    assert!(state.contains("phase=sync\nstatus=failed\n"), "{state}");
+    assert!(
+        state.contains("could not verify current origin/main"),
+        "missing recovery reason: {state}"
+    );
+}
+
+#[test]
 fn direct_sync_with_failed_tests_never_commits_or_pushes() {
     let sandbox = Sandbox::new("direct-sync-failed-tests");
     sandbox.write("docs/pending.md", "must not be published\n");
