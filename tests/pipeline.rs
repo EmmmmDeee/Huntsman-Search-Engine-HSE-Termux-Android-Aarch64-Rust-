@@ -536,5 +536,8 @@ fn distinct_scan_receipts_with_identical_source_do_not_emit_misattributed_eviden
         snapshot.entities.is_empty(),
         "an observation without an execution ID cannot be assigned to either scan"
     );
-    assert!(snapshot.truncated, "ambiguous evidence must not appear complete");
+    assert!(
+        snapshot.truncated,
+        "ambiguous evidence must not appear complete"
+    );
 }
