@@ -366,8 +366,7 @@ fn unreadable_remote_main_records_a_failed_sync_without_touching_remote() {
     let output = sandbox.run_with_mock_cargo("sync", 0);
     assert!(!output.status.success(), "unreachable remote was accepted");
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("could not verify current origin/main"),
+        String::from_utf8_lossy(&output.stderr).contains("could not verify current origin/main"),
         "sync failed for the wrong reason"
     );
     assert_eq!(sandbox.pushed(), remote_before, "remote main was mutated");
