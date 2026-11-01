@@ -31,6 +31,12 @@ pub struct CapabilityProbe {
     pub resource_budget_available: bool,
     pub provider_healthy: bool,
     pub fallback_available: bool,
+    /// True only for operations that actually need remote connectivity.
+    #[serde(default)]
+    pub requires_network: bool,
+    /// True only when the operation needs an external provider credential.
+    #[serde(default)]
+    pub requires_credentials: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,14 +76,28 @@ pub const fn negotiate(probe: CapabilityProbe, scope: Scope, impact: Impact) -> 
             retryable: false,
         };
     }
-    if !probe.permission_granted || !probe.credentials_available {
+    if !probe.permission_granted || (probe.requires_credentials && !probe.credentials_available) {
         return Decision {
             status: Availability::Unavailable,
             use_fallback: false,
             retryable: false,
         };
     }
-    if !probe.resource_budget_available || !probe.network_available || !probe.provider_healthy {
+    if !probe.resource_budget_available {
+        return Decision {
+            status: Availability::TransientFailure,
+            use_fallback: false,
+            retryable: true,
+        };
+    }
+    if (probe.requires_network && !probe.network_available) || !probe.provider_healthy {
+        if probe.fallback_available {
+            return Decision {
+                status: Availability::Degraded,
+                use_fallback: true,
+                retryable: false,
+            };
+        }
         return Decision {
             status: Availability::TransientFailure,
             use_fallback: false,
@@ -85,12 +105,8 @@ pub const fn negotiate(probe: CapabilityProbe, scope: Scope, impact: Impact) -> 
         };
     }
     Decision {
-        status: if probe.fallback_available {
-            Availability::Degraded
-        } else {
-            Availability::Available
-        },
-        use_fallback: probe.fallback_available,
+        status: Availability::Available,
+        use_fallback: false,
         retryable: false,
     }
 }
@@ -107,6 +123,8 @@ mod tests {
         resource_budget_available: true,
         provider_healthy: true,
         fallback_available: false,
+        requires_network: true,
+        requires_credentials: true,
     };
     const SCOPE: Scope = Scope {
         target_authorised: true,
@@ -158,8 +176,8 @@ mod tests {
         let mut probe = OK;
         probe.fallback_available = true;
         let d = negotiate(probe, SCOPE, Impact::Passive);
-        assert_eq!(d.status, Availability::Degraded);
-        assert!(d.use_fallback);
+        assert_eq!(d.status, Availability::Available);
+        assert!(!d.use_fallback);
     }
 
     #[test]
@@ -171,4 +189,37 @@ mod tests {
             Availability::Unsupported
         );
     }
+    #[test]
+    fn offline_local_operation_remains_available() {
+        let mut probe = OK;
+        probe.requires_network = false;
+        probe.requires_credentials = false;
+        probe.network_available = false;
+        probe.credentials_available = false;
+        assert_eq!(
+            negotiate(probe, SCOPE, Impact::Passive).status,
+            Availability::Available
+        );
+    }
+
+    #[test]
+    fn failed_primary_selects_healthy_fallback() {
+        let mut probe = OK;
+        probe.provider_healthy = false;
+        probe.fallback_available = true;
+        let decision = negotiate(probe, SCOPE, Impact::Passive);
+        assert_eq!(decision.status, Availability::Degraded);
+        assert!(decision.use_fallback);
+    }
+
+    #[test]
+    fn offline_network_task_is_retryable_without_fallback() {
+        let mut probe = OK;
+        probe.network_available = false;
+        assert_eq!(
+            negotiate(probe, SCOPE, Impact::Passive).status,
+            Availability::TransientFailure
+        );
+    }
+
 }
