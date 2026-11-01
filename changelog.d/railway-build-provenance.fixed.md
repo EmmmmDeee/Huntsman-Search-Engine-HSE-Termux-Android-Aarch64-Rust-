@@ -1,1 +1,1 @@
-- Embed Railway Git-trigger SHA in the canonical container image when an explicit CI build SHA is not supplied; require exact embedded SHA in CI's authenticated live-container acceptance and reject a mismatched healthy response. Railway production settings are unchanged.
+- Add a provider-neutral source-commit build argument fallback to the canonical container and enforce an exact embedded SHA during authenticated live acceptance; CI validates both matching and deliberately mismatching revisions. Railway production settings are unchanged.
