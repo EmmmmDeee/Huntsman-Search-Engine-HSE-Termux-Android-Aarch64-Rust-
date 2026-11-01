@@ -22,6 +22,9 @@ pub enum Availability {
     Unsupported,
 }
 
+// Independent runtime observations are intentionally orthogonal; grouping them into
+// enums would introduce invalid coupling between availability dimensions.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityProbe {
     pub platform_supported: bool,
@@ -37,6 +40,8 @@ pub struct CapabilityProbe {
     pub requires_credentials: bool,
 }
 
+// Authorisation dimensions are independent, not mutually exclusive states.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
     pub target_authorised: bool,
