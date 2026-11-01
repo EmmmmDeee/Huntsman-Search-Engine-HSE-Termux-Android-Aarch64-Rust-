@@ -254,5 +254,4 @@ mod tests {
             Availability::Available
         );
     }
-
 }
