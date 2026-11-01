@@ -1,6 +1,6 @@
-//! `scripts/lifecycle.sh sync` commits the worktree and pushes `main`, and CANONICAL.md promises
-//! that it refuses secret-looking paths. Each test runs the real script in a scratch clone against a
-//! local bare remote, so a secret that slips through shows up as a file on that remote's `main`.
+//! `scripts/lifecycle.sh sync` commits verified work to a review branch without pushing `main`,
+//! and CANONICAL.md promises that it refuses secret-looking paths. Each test runs the real script
+//! against a local bare remote; the source tree on `main` must never change during sync.
 //! Unix only: the script is bash.
 #![cfg(unix)]
 
@@ -148,13 +148,13 @@ esac
             .unwrap()
     }
 
-    /// The files on the remote's `main`, names unquoted.
-    fn pushed(&self) -> Vec<String> {
+    /// The files on a remote ref, names unquoted.
+    fn remote_files(&self, reference: &str) -> Vec<String> {
         let output = self
             .command("git", &self.root)
             .arg("--git-dir")
             .arg(&self.origin)
-            .args(["ls-tree", "-r", "-z", "--name-only", "main"])
+            .args(["ls-tree", "-r", "-z", "--name-only", reference])
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -166,6 +166,30 @@ esac
             .collect();
         names.sort();
         names
+    }
+
+    fn pushed(&self) -> Vec<String> {
+        self.remote_files("main")
+    }
+
+    fn staged(&self) -> Vec<String> {
+        self.remote_files(&format!("refs/heads/lifecycle/{}", self.head()))
+    }
+
+    fn review_branch_exists(&self) -> bool {
+        self.command("git", &self.root)
+            .arg("--git-dir")
+            .arg(&self.origin)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/lifecycle/{}", self.head()),
+            ])
+            .output()
+            .expect("check remote review ref")
+            .status
+            .success()
     }
 
     /// Runs the sync and asserts that it stopped for `reason`, committed nothing and pushed nothing.
@@ -260,9 +284,10 @@ fn a_listing_that_fails_stops_the_sync() {
 }
 
 #[test]
-fn ordinary_changes_are_committed_and_pushed() {
+fn ordinary_changes_are_committed_to_a_review_branch_without_pushing_main() {
     let sandbox = Sandbox::new("ordinary");
     let before = sandbox.head();
+    let main_before = sandbox.pushed();
     sandbox.write("notes.txt", "ordinary\n");
     sandbox.write("docs/guide.md", "also ordinary\n");
     let output = sandbox.run_with_mock_cargo("sync", 0);
@@ -278,12 +303,78 @@ fn ordinary_changes_are_committed_and_pushed() {
     assert_ne!(sandbox.head(), before, "nothing was committed");
     assert_eq!(
         sandbox.pushed(),
+        main_before,
+        "direct sync changed remote main"
+    );
+    assert_eq!(
+        sandbox.staged(),
         [
             "README.md",
             "docs/guide.md",
             "notes.txt",
             "scripts/lifecycle.sh"
         ]
+    );
+    let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
+    assert!(state.contains("phase=sync\nstatus=pending\n"), "{state}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("open a pull request to main"),
+        "review is required before integration"
+    );
+}
+
+#[test]
+fn repeating_a_clean_sync_does_not_create_an_empty_review_branch() {
+    let sandbox = Sandbox::new("repeat");
+    let initial = sandbox.head();
+    let main_before = sandbox.pushed();
+    for _ in 0..2 {
+        let output = sandbox.run_with_mock_cargo("sync", 0);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(sandbox.head(), initial, "clean sync must not commit");
+        assert_eq!(sandbox.pushed(), main_before, "sync must not push main");
+        assert!(
+            !sandbox.review_branch_exists(),
+            "clean main must not generate a redundant review branch"
+        );
+        let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
+        assert!(state.contains("phase=sync\nstatus=ok\n"), "{state}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("already on main"),
+            "a clean checkout should report remote acceptance"
+        );
+    }
+}
+
+#[test]
+fn unreadable_remote_main_records_a_failed_sync_without_touching_remote() {
+    let sandbox = Sandbox::new("origin-main-unreadable");
+    sandbox.write("docs/pending.md", "valid offline changes\n");
+    let remote_before = sandbox.pushed();
+    let unreachable = sandbox.root.join("unavailable-origin.git");
+    sandbox.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        unreachable.to_str().expect("test path is UTF-8"),
+    ]);
+
+    let output = sandbox.run_with_mock_cargo("sync", 0);
+    assert!(!output.status.success(), "unreachable remote was accepted");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("could not verify current origin/main"),
+        "sync failed for the wrong reason"
+    );
+    assert_eq!(sandbox.pushed(), remote_before, "remote main was mutated");
+    let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
+    assert!(state.contains("phase=sync\nstatus=failed\n"), "{state}");
+    assert!(
+        state.contains("could not verify current origin/main"),
+        "missing recovery reason: {state}"
     );
 }
 
