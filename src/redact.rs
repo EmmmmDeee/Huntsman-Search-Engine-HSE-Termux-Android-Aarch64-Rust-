@@ -118,11 +118,7 @@ pub fn sensitive_field_name(name: &str) -> bool {
     if words.windows(2).any(|pair| {
         matches!(
             (pair[0].as_str(), pair[1].as_str()),
-            ("api", "key")
-                | ("access", "key")
-                | ("private", "key")
-                | ("recovery", "code")
-                | ("recovery", "codes")
+            ("api" | "access" | "private", "key") | ("recovery", "code" | "codes")
         )
     }) {
         return true;
