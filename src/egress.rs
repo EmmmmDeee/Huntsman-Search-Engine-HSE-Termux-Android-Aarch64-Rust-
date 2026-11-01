@@ -82,7 +82,9 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         || (seg[0] == 0x3fff && seg[1] < 0x1000) // documentation 3fff::/20 (RFC 9637)
         || (seg[0] == 0x2001 && seg[1] == 2 && seg[2] == 0) // benchmarking 2001:2::/48
         || seg[..3] == [0x64, 0xff9b, 1] // local-use NAT64 64:ff9b:1::/48 (RFC 8215)
-        || (seg[0] == 0x0100 && seg[1..4] == [0, 0, 0])) // discard-only 100::/64
+        || (seg[0] == 0x0100 && seg[1..4] == [0, 0, 0]) // discard-only 100::/64
+        || (seg[0] == 0x0100 && seg[1..4] == [0, 0, 1]) // dummy 100:0:0:1::/64 (RFC 9780)
+        || seg[0] == 0x5f00) // non-global SRv6 SID prefix 5f00::/16 (RFC 9602)
 }
 
 fn embedded_v4(hi: u16, lo: u16) -> Ipv4Addr {
@@ -155,6 +157,24 @@ mod tests {
             "3fff:fff:ffff::1",
         ] {
             assert!(!is_public_ip(ip(s)), "{s} must not be public");
+        }
+    }
+
+    #[test]
+    fn iana_non_global_dummy_and_srv6_sid_addresses_are_refused() {
+        // IANA's IPv6 Special-Purpose Address Registry marks both ranges
+        // as not globally reachable. Refuse them in the default egress policy.
+        for address in [
+            "100:0:0:1::",
+            "100:0:0:1::1",
+            "100:0:0:1:ffff:ffff:ffff:ffff",
+            "5f00::",
+            "5f00::1",
+            "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        ] {
+            assert!(!is_public_ip(ip(address)), "{address} must not be public");
+            assert!(!EgressPolicy::PublicOnly.permits(ip(address)));
+            assert!(EgressPolicy::Unrestricted.permits(ip(address)));
         }
     }
 
