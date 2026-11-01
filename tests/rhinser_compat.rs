@@ -119,3 +119,21 @@ fn workspace_roundtrip_and_nfc_are_read_only() {
     assert!(String::from_utf8_lossy(&nfc.stdout).contains("\"data_bytes\": 2"));
     std::fs::remove_file(path).unwrap();
 }
+
+
+#[test]
+fn rhinser_sources_are_accessible_from_the_analysis_web_view() {
+    let page = include_str!("../src/web_ui.html");
+    for marker in [
+        "id=\"rhinser-sources-panel\"",
+        "id=\"rhinser-source-category\"",
+        "id=\"rhinser-source-search\"",
+        "id=\"rhinser-source-list\"",
+        "api('/api/rhinser/catalog')",
+        "else if(v==='analyze')loadRhinserCatalog();",
+        "link.rel='noopener noreferrer'",
+        "link.referrerPolicy='no-referrer'",
+    ] {
+        assert!(page.contains(marker), "missing Rhinser Web UI integration: {marker}");
+    }
+}
