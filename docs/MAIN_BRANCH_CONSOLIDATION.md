@@ -22,6 +22,11 @@ Each row records:
 - One of `same_tip`, `already_ancestor`, `ahead_only_review` or
   `diverged_review`.
 
+The job summary also surfaces the 20 most recently committed divergent or
+ahead-only branch tips, sorting equal timestamps by how far behind `main` they
+are. This is a **review queue**, never a missing-functionality score or permission
+to merge. Always examine current canonical equivalents and source history first.
+
 This is a **Git ancestry inventory**, not proof of distinct capabilities:
 squash merges, partial ports and independent rewrites can make a divergent
 branch semantically redundant. Conversely, an ancestral branch may still
