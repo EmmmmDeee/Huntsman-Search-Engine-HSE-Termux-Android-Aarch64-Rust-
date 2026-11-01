@@ -3,8 +3,9 @@
 //! can hold text that the model chose. The tail is therefore posted only as a code block, with
 //! backticks replaced and each line cut to 400 bytes. The model's own summary is never posted here.
 
-use std::fs;
-use std::io::Write;
+use std::collections::VecDeque;
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
@@ -38,7 +39,7 @@ fn report(number: &str, gate_log: Option<&Path>) -> Result<()> {
         _ => return Err(Error::Refused("REPO must be set".to_owned())),
     };
     let gate_tail = match gate_log {
-        Some(path) if has_content(path) => Some(gate_tail(&read_log(path)?)),
+        Some(path) if has_content(path) => Some(read_log_tail(path)?),
         _ => None,
     };
     let body = render(
@@ -64,8 +65,12 @@ fn has_content(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.len() > 0)
 }
 
-fn read_log(path: &Path) -> Result<Vec<u8>> {
-    fs::read(path).map_err(|source| Error::Io {
+fn read_log_tail(path: &Path) -> Result<Vec<u8>> {
+    let file = File::open(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    gate_tail(file).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,
     })
@@ -94,25 +99,53 @@ fn render(fix: &str, gate: &str, publish: &str, gate_tail: Option<&[u8]>) -> Vec
     body
 }
 
-/// The last GATE_TAIL_LINES lines of LOG. Backticks become single quotes, and each line is cut to
-/// GATE_LINE_BYTES bytes, which is what `tail | tr | cut -c1-400` produced. Each line ends with a
-/// newline, so a log that lacks a final newline still ends its last line, as cut wrote it.
-fn gate_tail(log: &[u8]) -> Vec<u8> {
-    let mut lines: Vec<&[u8]> = log.split(|&byte| byte == b'\n').collect();
-    if log.ends_with(b"\n") {
-        lines.pop();
+/// Stream the final GATE_TAIL_LINES lines without loading the entire gate log.
+/// Each retained line is truncated to GATE_LINE_BYTES, so memory use stays bounded
+/// even when a failed command emits an enormous log or a single unterminated line.
+fn gate_tail<R: Read>(mut log: R) -> io::Result<Vec<u8>> {
+    let mut lines = VecDeque::with_capacity(GATE_TAIL_LINES);
+    let mut current = Vec::with_capacity(GATE_LINE_BYTES);
+    let mut has_unterminated_line = false;
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let count = match log.read(&mut chunk) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if count == 0 {
+            break;
+        }
+        for &byte in &chunk[..count] {
+            if byte == b'\n' {
+                lines.push_back(std::mem::take(&mut current));
+                if lines.len() > GATE_TAIL_LINES {
+                    lines.pop_front();
+                }
+                has_unterminated_line = false;
+            } else {
+                has_unterminated_line = true;
+                if current.len() < GATE_LINE_BYTES {
+                    current.push(if byte == b'\x60' { b'\'' } else { byte });
+                }
+            }
+        }
     }
-    let start = lines.len().saturating_sub(GATE_TAIL_LINES);
-    let mut out = Vec::new();
-    for line in lines.get(start..).unwrap_or_default() {
-        out.extend(
-            line.iter()
-                .take(GATE_LINE_BYTES)
-                .map(|&byte| if byte == b'`' { b'\'' } else { byte }),
-        );
+
+    if has_unterminated_line {
+        lines.push_back(current);
+        if lines.len() > GATE_TAIL_LINES {
+            lines.pop_front();
+        }
+    }
+
+    let mut out = Vec::with_capacity(GATE_TAIL_LINES * (GATE_LINE_BYTES + 1));
+    for line in lines {
+        out.extend_from_slice(&line);
         out.push(b'\n');
     }
-    out
+    Ok(out)
 }
 
 /// Posts BODY as a comment on issue NUMBER through gh, with the body read from standard input.
@@ -180,7 +213,7 @@ mod tests {
     #[test]
     fn the_tail_keeps_the_last_forty_lines() {
         let log: String = (1..=50).map(|n| format!("line {n}\n")).collect();
-        let tail = gate_tail(log.as_bytes());
+        let tail = gate_tail(log.as_bytes()).expect("the gate log can be read");
         let text = String::from_utf8(tail).expect("utf-8 tail");
         assert_eq!(text.lines().count(), 40);
         assert!(text.starts_with("line 11\n"));
@@ -191,7 +224,7 @@ mod tests {
     fn backticks_become_quotes_and_lines_are_cut_to_400_bytes() {
         let mut long = "`".repeat(300);
         long.push_str(&"x".repeat(200));
-        let tail = gate_tail(format!("{long}\n").as_bytes());
+        let tail = gate_tail(format!("{long}\n").as_bytes()).expect("the gate log can be read");
         assert_eq!(tail.len(), 401);
         assert_eq!(tail.first(), Some(&b'\''));
         assert_eq!(tail.last(), Some(&b'\n'));
@@ -199,9 +232,64 @@ mod tests {
 
     #[test]
     fn a_log_without_a_final_newline_still_ends_its_last_line() {
-        assert_eq!(gate_tail(b"a\nb"), b"a\nb\n");
-        assert_eq!(gate_tail(b"a\n"), b"a\n");
-        assert_eq!(gate_tail(b"\n"), b"\n");
+        assert_eq!(gate_tail(&b"a\nb"[..]).unwrap(), b"a\nb\n");
+        assert_eq!(gate_tail(&b"a\n"[..]).unwrap(), b"a\n");
+        assert_eq!(gate_tail(&b"\n"[..]).unwrap(), b"\n");
+    }
+
+    #[test]
+    fn an_enormous_unterminated_line_is_streamed_and_bounded() {
+        // A reader produces two million bytes without storing them in memory.
+        // The report must retain only the first 400 bytes of the final line.
+        let log = std::io::repeat(b'x').take(2_000_000);
+        let tail = gate_tail(log).expect("the gate log can be streamed");
+        assert_eq!(tail.len(), GATE_LINE_BYTES + 1);
+        assert!(tail[..GATE_LINE_BYTES].iter().all(|&b| b == b'x'));
+        assert_eq!(tail.last(), Some(&b'\n'));
+    }
+
+    #[test]
+    fn the_tail_discards_old_lines_after_a_large_log() {
+        let log: String = (0..10_000).map(|n| format!("line {n}\n")).collect();
+        let tail = gate_tail(log.as_bytes()).expect("the gate log can be streamed");
+        let text = String::from_utf8(tail).expect("utf-8 tail");
+        assert_eq!(text.lines().count(), GATE_TAIL_LINES);
+        assert!(text.starts_with("line 9960\n"));
+        assert!(text.ends_with("line 9999\n"));
+    }
+
+    struct ErrorOnce {
+        kind: Option<io::ErrorKind>,
+        bytes: &'static [u8],
+    }
+
+    impl Read for ErrorOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if let Some(kind) = self.kind.take() {
+                return Err(io::Error::new(kind, "injected read failure"));
+            }
+            self.bytes.read(buffer)
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_retried_without_losing_the_tail() {
+        let log = ErrorOnce {
+            kind: Some(io::ErrorKind::Interrupted),
+            bytes: b"first\nlast `line`",
+        };
+        assert_eq!(gate_tail(log).unwrap(), b"first\nlast 'line'\n");
+    }
+
+    #[test]
+    fn a_non_interrupted_read_error_is_propagated_after_partial_input() {
+        let log = (&b"first\n"[..]).chain(ErrorOnce {
+            kind: Some(io::ErrorKind::PermissionDenied),
+            bytes: b"unreachable\n",
+        });
+        let error = gate_tail(log).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "injected read failure");
     }
 
     #[test]
