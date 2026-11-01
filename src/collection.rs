@@ -138,13 +138,14 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
         }
     }
     let before = batch.observations.len();
+    let mut rejected_sources = BTreeSet::new();
     batch.observations.retain(|observation| {
         let key = (
             observation.provider_id.as_str(),
             observation.target.kind,
             observation.target.value.as_str(),
         );
-        retained_sources.contains(&key)
+        let keep = retained_sources.contains(&key)
             && match observation.upstream.as_ref() {
                 Some(origin) => retained_origins
                     .get(&key)
@@ -152,8 +153,28 @@ pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> Ob
                 // An attributed execution receipt must not authorise evidence
                 // that omits the provenance necessary to identify its source.
                 None => unprovenanced_sources.contains(&key),
-            }
+            };
+        if !keep {
+            rejected_sources.insert((
+                observation.provider_id.clone(),
+                observation.target.kind,
+                observation.target.value.clone(),
+            ));
+        }
+        keep
     });
+    // An execution cannot remain a complete success after its evidence was
+    // rejected. With no observation scan ID, conservatively mark every retained
+    // receipt for the affected provider/target incomplete, not unrelated sources.
+    for event in &mut batch.events {
+        if rejected_sources.contains(&(
+            event.provider_id.clone(),
+            event.target.kind,
+            event.target.value.clone(),
+        )) {
+            event.truncated = true;
+        }
+    }
     if batch.observations.len() < original_observation_count {
         // An independence assertion cannot survive the removal of the
         // observations establishing either upstream root. Exact provenance
