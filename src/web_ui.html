@@ -1434,8 +1434,7 @@ function stopped(s){
   const why=t==='max_depth'?(d?'depth '+d+' reached; a deeper scan would look up more of its findings':'depth 0 follows nothing it finds; a deeper scan would look up its findings in turn'):STOP[t];
   return why?t+': '+why:t;
 }
-// New Scan filled in, to change before it runs: Spiderfoot's Clone of a scan, or a scan of a value
-// a scan found.
+// Prefill New Scan for review or pivot; never start it implicitly.
 async function prefill(f){
   const types=f.types||[],mods=(f.modules||[]).map(m=>String(m).toLowerCase());
   $('sname').value=f.name;$('starget').value=f.target;$('skind').value=f.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(f.depth||0);
@@ -1446,7 +1445,7 @@ async function prefill(f){
     for(const i of $('typelist').querySelectorAll('input'))i.checked=types.includes(i.value);
     ntab='types';
   }
-  // A scan may have chosen a module by a Spiderfoot name standing for several (sfp_whois).
+  // A SpiderFoot module alias may select multiple sources.
   if(mods.length){
     if(!loaded.modules)await loadMods();
     for(const i of $('modlist').querySelectorAll('input'))i.checked=(i.dataset.names||i.value).split(' ').some(n=>mods.includes(n));
