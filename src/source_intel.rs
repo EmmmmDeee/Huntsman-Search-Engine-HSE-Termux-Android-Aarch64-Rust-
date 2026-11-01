@@ -72,7 +72,7 @@ fn normalise_url(input: &str) -> Option<String> {
     } else {
         return None;
     };
-    let boundary = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let boundary = rest.find(|c| matches!(c, '/' | '?' | '#')).unwrap_or(rest.len());
     let authority = &rest[..boundary];
     if authority.is_empty()
         || !authority.is_ascii()
@@ -112,7 +112,7 @@ fn normalise_url(input: &str) -> Option<String> {
     };
     let tail = &rest[boundary..];
     let path = if tail.starts_with('/') {
-        let end = tail.find(['?', '#']).unwrap_or(tail.len());
+        let end = tail.find(|c| matches!(c, '?' | '#')).unwrap_or(tail.len());
         &tail[..end]
     } else {
         "/"
@@ -163,7 +163,7 @@ fn from_urls(
         }
         let id = format!(
             "sha256:{}",
-            hex32(&sha256(format!("hse-source-endpoint/1\\0{endpoint}").as_bytes()))
+            hex32(&sha256(format!("hse-source-endpoint/v1:{endpoint}").as_bytes()))
         );
         candidates.insert(
             endpoint.clone(),
@@ -229,12 +229,12 @@ mod tests {
     #[test]
     fn canonical_identity_ignores_query_values_default_port_and_case_of_host() {
         let report = project(&[
-            "HTTPS://API.EXAMPLE.COM:443/v1/lookup?token=PRIVATE",
-            "https://api.example.com/v1/lookup?token=DIFFERENT#frag",
+            "HTTPS://API.GITHUB.COM:443/v1/lookup?token=PRIVATE",
+            "https://api.github.com/v1/lookup?token=DIFFERENT#frag",
         ]);
         assert_eq!(report.candidates.len(), 1);
         let item = &report.candidates[0];
-        assert_eq!(item.endpoint, "https://api.example.com/v1/lookup");
+        assert_eq!(item.endpoint, "https://api.github.com/v1/lookup");
         assert_eq!(item.references_in_artifact, 2);
         assert_eq!(item.access, "unknown");
         assert_eq!(item.method, None);
@@ -245,22 +245,22 @@ mod tests {
     #[test]
     fn invalid_and_non_web_references_are_not_promoted() {
         let report = project(&[
-            "https://user:pass@api.example.com/upload",
+            "https://user:pass@api.github.com/upload",
             "file:///private/notes",
-            "http://api.example.com:0/path",
-            "https://api.example.com\\@internal/",
-            "http://api.example.com:99999/",
-            "https://api.example.com:443/a",
+            "http://api.github.com:0/path",
+            "https://api.github.com\\@internal/",
+            "http://api.github.com:99999/",
+            "https://api.github.com:443/a",
         ]);
         assert_eq!(report.urls_rejected, 5);
         assert_eq!(report.candidates.len(), 1);
-        assert_eq!(report.candidates[0].endpoint, "https://api.example.com/a");
+        assert_eq!(report.candidates[0].endpoint, "https://api.github.com/a");
     }
 
     #[test]
     fn sorting_and_identity_are_input_order_independent() {
-        let a = project(&["https://z.example.com/a", "https://a.example.com/b"]);
-        let b = project(&["https://a.example.com/b", "https://z.example.com/a"]);
+        let a = project(&["https://z.github.com/a", "https://a.github.com/b"]);
+        let b = project(&["https://a.github.com/b", "https://z.github.com/a"]);
         assert_eq!(a, b);
         assert!(a.candidates.iter().all(|c| c.evidence.byte_range.is_none()));
     }
@@ -277,11 +277,11 @@ mod tests {
     #[test]
     fn preserves_non_default_port_and_ipv6_without_claiming_public_access() {
         let report = project(&[
-            "http://api.example.com:8080/data?key=secret",
+            "http://api.github.com:8080/data?key=secret",
             "https://[2001:db8::1]:8443/a",
         ]);
         assert_eq!(report.candidates.len(), 2);
-        assert!(report.candidates.iter().any(|c| c.endpoint == "http://api.example.com:8080/data"));
+        assert!(report.candidates.iter().any(|c| c.endpoint == "http://api.github.com:8080/data"));
         assert!(report.candidates.iter().any(|c| c.endpoint == "https://[2001:db8::1]:8443/a"));
         assert!(report.candidates.iter().all(|c| c.access == "unknown"));
     }
