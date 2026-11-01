@@ -1469,6 +1469,8 @@ pub fn spiderfoot_names(module: &str) -> Vec<String> {
         "kickbox" => &["sfp_debounce"],
         "greynoise" => &["sfp_greynoise_community"],
         "hostdomain" => &["sfp_dnsresolve"],
+        "common_crawl" => &["sfp_commoncrawl"],
+        "nominatim" => &["sfp_openstreetmap"],
         _ => &[],
     };
     let mut names = vec![module.to_owned(), format!("sfp_{module}")];
@@ -1876,5 +1878,20 @@ mod tests {
         let kept = use_case_selection("footprint", &chosen);
         assert!(kept.runs("rdap") && !kept.runs("spamhaus") && !kept.runs("mnemonic"));
         assert_eq!(use_case_selection("all", &chosen), chosen);
+    }
+
+    /// Spiderfoot's `sfp_commoncrawl` (Common Crawl index URLs for a domain) and
+    /// `sfp_openstreetmap` (Nominatim geocoding of an address) choose the Huntsman modules that do
+    /// that same work, and only those, so a Spiderfoot module list naming them still scans.
+    #[test]
+    fn spiderfoot_commoncrawl_and_openstreetmap_choose_their_rebuilt_modules() {
+        for (spiderfoot, module) in [
+            ("sfp_commoncrawl", "common_crawl"),
+            ("SFP_OpenStreetMap", "nominatim"),
+        ] {
+            let chosen = selection(&[spiderfoot.to_owned()])
+                .unwrap_or_else(|why| panic!("{spiderfoot} is unknown: {why}"));
+            assert_eq!(chosen, Selection::only([module]), "{spiderfoot}");
+        }
     }
 }
