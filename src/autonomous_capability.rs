@@ -118,7 +118,9 @@ pub const fn negotiate_with_fallback(
     scope: Scope,
     impact: Impact,
 ) -> Decision {
-    let first = negotiate(primary, scope, impact);
+    let mut primary_only = primary;
+    primary_only.fallback_available = false;
+    let first = negotiate(primary_only, scope, impact);
     if !matches!(first.status, Availability::TransientFailure) || !primary.fallback_available {
         return first;
     }
