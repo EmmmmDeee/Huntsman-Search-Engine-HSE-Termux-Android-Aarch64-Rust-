@@ -256,7 +256,8 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <input id="uresearch-q" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Any term, phrase, domain or public identifier">
 <button class="btn btn-primary" id="uresearch-go" type="submit">Research</button>
 </form>
-<p class="help">General terms run bounded keyless web discovery. Recognised identifiers fill the scan form below for review; they do not start a scan or spend configured provider keys.</p>
+<div class="toolbar"><button class="btn" id="uresearch-mission" type="button" disabled>Start bounded autonomous mission</button></div>
+<p class="help">Phrases search keylessly. One-hop saved missions may contact configured sources; manage them under Scans.</p>
 <p class="help" id="uresearch-status" role="status"></p>
 <div id="uresearch-hits" class="help"></div>
 </div></div>
@@ -884,16 +885,29 @@ $('nattackapply').onclick=()=>{
 };
 function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))if(!i.disabled)i.checked=on}
 $('nall').onclick=()=>setAll(true);$('nnone').onclick=()=>setAll(false);
-// Universal research: one typed Rust router for both CLI and mobile UI.
+let missionSeed=null;
+$('uresearch-q').oninput=()=>{missionSeed=null;$('uresearch-mission').disabled=true};
+$('uresearch-mission').onclick=async()=>{
+  const q=$('uresearch-q').value.trim();if(!missionSeed||missionSeed!==q)return;
+  const b=$('uresearch-mission');b.disabled=true;
+  $('uresearch-status').textContent='Starting…';
+  try{
+    const result=await api('/api/research/mission?'+new URLSearchParams({q}),{method:'POST'});
+    if(!result.scan)throw new Error('Missing scan ID');
+    location.hash='#/scan/'+enc(result.scan)+'/summary';
+  }catch(e){$('uresearch-status').textContent='Error: '+e.message;b.disabled=false}
+};
 $('uresearch').onsubmit=async ev=>{
   ev.preventDefault();
   const q=$('uresearch-q').value.trim();if(!q)return;
+  missionSeed=null;$('uresearch-mission').disabled=true;
   const b=$('uresearch-go');b.disabled=true;
   $('uresearch-status').textContent='Researching…';$('uresearch-hits').replaceChildren();
   try{
     const result=await api('/api/research?'+new URLSearchParams({q}));
     if(result.route==='scan'){
       $('uresearch-status').textContent='Recognised '+result.kind+'. Review the scan options and select Run Scan Now to collect.';
+      missionSeed=q;$('uresearch-mission').disabled=false;
       await prefill({name:q,target:result.selector,kind:result.kind,depth:0});
       $('starget').focus();
     }else{
