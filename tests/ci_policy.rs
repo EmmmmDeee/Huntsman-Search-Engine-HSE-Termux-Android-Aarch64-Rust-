@@ -96,7 +96,10 @@ fn native_arm64_benchmark_is_read_only_and_scoped() {
         "cargo test --locked --lib sha256::tests",
         "cargo run --release --locked --example sha256_arm64_bench",
     ] {
-        assert!(workflow.contains(required), "ARM64 benchmark requires {required:?}");
+        assert!(
+            workflow.contains(required),
+            "ARM64 benchmark requires {required:?}"
+        );
     }
     assert!(!workflow.contains("push:"));
     assert!(!workflow.contains("pull-requests: write"));
