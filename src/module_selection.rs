@@ -39,6 +39,22 @@ impl Selection {
         }
     }
 
+    /// Restrict an existing selection to modules with an independently approved
+    /// capability decision. An empty approval set disables all modules.
+    #[must_use]
+    pub fn restrict_to_approved<I, S>(&self, approved: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let approved: BTreeSet<String> = approved.into_iter().map(Into::into).collect();
+        let only = match &self.only {
+            Some(selected) => selected.intersection(&approved).cloned().collect(),
+            None => approved,
+        };
+        Self { only: Some(only) }
+    }
+
     /// Whether `module` runs. **Pure.**
     #[must_use]
     pub fn runs(&self, module: &str) -> bool {
@@ -123,6 +139,21 @@ mod tests {
         assert!(some.runs("spamhaus") && some.runs("crtsh"));
         assert!(!some.runs("shodan") && !some.runs("spamhaus.zen"));
         assert!(!Selection::only(Vec::<String>::new()).runs("crtsh"));
+    }
+
+    #[test]
+    fn capability_approval_intersects_selection_and_fails_closed() {
+        let selected = Selection::only(["crtsh", "shodan"]);
+        let approved = selected.restrict_to_approved(["crtsh", "unselected"]);
+        assert!(approved.runs("crtsh"));
+        assert!(!approved.runs("shodan"));
+        assert!(!approved.runs("unselected"));
+        let denied = selected.restrict_to_approved(Vec::<String>::new());
+        assert!(!denied.runs("crtsh"));
+        assert!(!denied.runs("shodan"));
+        let all_approved = Selection::all().restrict_to_approved(["crtsh"]);
+        assert!(all_approved.runs("crtsh"));
+        assert!(!all_approved.runs("shodan"));
     }
 
     #[test]
