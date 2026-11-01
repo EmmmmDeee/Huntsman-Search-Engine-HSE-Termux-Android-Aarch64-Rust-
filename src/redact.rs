@@ -58,8 +58,8 @@ pub fn sensitive_field_name(name: &str) -> bool {
         let camel_boundary = ch.is_ascii_uppercase()
             && !word.is_empty()
             && (previous.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-                || (previous.is_some_and(|c| c.is_ascii_uppercase())
-                    && next.is_some_and(|c| c.is_ascii_lowercase())));
+                || (previous.is_some_and(char::is_ascii_uppercase)
+                    && next.is_some_and(char::is_ascii_lowercase)));
         if camel_boundary {
             words.push(std::mem::take(&mut word));
         }
