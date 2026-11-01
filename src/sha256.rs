@@ -154,12 +154,26 @@ impl Sha256 {
 }
 
 /// SHA-256 of a single byte slice, compatible with the incremental hasher.
-/// Hashing does not allocate input-sized copies or padding.
+///
+/// Large payloads reuse the already-linked `ring` backend, which dispatches to
+/// CPU SHA instructions on supported AArch64 hardware. The in-tree Rust hasher
+/// remains the small-payload path and the portable streaming implementation.
+/// Neither path allocates a copy of the input.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize()
+    // Short evidence identifiers and ledger preimages avoid a native dispatch.
+    // Benchmark this boundary on the target handset before tuning it further.
+    const ACCELERATED_MIN_BYTES: usize = 1024;
+    if data.len() >= ACCELERATED_MIN_BYTES {
+        let digest = ring::digest::digest(&ring::digest::SHA256, data);
+        let mut output = [0u8; 32];
+        output.copy_from_slice(digest.as_ref());
+        output
+    } else {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize()
+    }
 }
 
 fn compress(h: &mut [u32; 8], chunk: &[u8]) {
@@ -214,6 +228,31 @@ pub fn hex32(bytes: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accelerated_and_portable_sha256_match_on_all_size_boundaries() {
+        // This covers the one-shot switch, SHA-256 block/padding transitions,
+        // and larger evidence payloads with non-repeating bytes.
+        for size in [
+            0, 1, 55, 56, 63, 64, 65, 119, 120, 127, 128, 129, 1023, 1024, 1025,
+            4095, 4096, 4097, 65536, 1_048_576,
+        ] {
+            let input = (0..size)
+                .map(|n| (n.wrapping_mul(47).wrapping_add(29) & 255) as u8)
+                .collect::<Vec<_>>();
+            let mut portable = Sha256::new();
+            for chunk in input.chunks(37) {
+                portable.update(chunk);
+            }
+            let expected = portable.finalize();
+            assert_eq!(sha256(&input), expected, "SHA-256 mismatch at {size} bytes");
+            assert_eq!(
+                ring::digest::digest(&ring::digest::SHA256, &input).as_ref(),
+                expected.as_slice(),
+                "independent backend mismatch at {size} bytes"
+            );
+        }
+    }
 
     #[test]
     fn nist_empty_and_abc() {
