@@ -303,12 +303,17 @@ mod tests {
         second.upstream = Some(origin("b"));
         let mut dropped = observation("c", "c.example");
         dropped.upstream = Some(origin("c"));
+        // Execution receipts must describe the same upstream as their findings.
+        // The old fixture gave all three receipts None, relying on the now
+        // forbidden attribution fallback instead of testing dispatch truncation.
+        let mut first_receipt = event("a", "a.example");
+        first_receipt.upstream = Some(origin("a"));
+        let mut second_receipt = event("b", "b.example");
+        second_receipt.upstream = Some(origin("b"));
+        let mut dropped_receipt = event("c", "c.example");
+        dropped_receipt.upstream = Some(origin("c"));
         let batch = ObservationBatch {
-            events: vec![
-                event("a", "a.example"),
-                event("b", "b.example"),
-                event("c", "c.example"),
-            ],
+            events: vec![first_receipt, second_receipt, dropped_receipt],
             observations: vec![first, second, dropped],
             independence_assertions: vec![assertion("a", "b"), assertion("a", "c")],
             truncated: false,
