@@ -949,9 +949,16 @@ mod tests {
 
         assert_eq!(answers.len(), ASK_WORKERS + 1);
         for index in 0..ASK_WORKERS {
-            assert_eq!(answers[index], Some(index), "completed item {index} was lost");
+            assert_eq!(
+                answers[index],
+                Some(index),
+                "completed item {index} was lost"
+            );
         }
-        assert_eq!(answers[ASK_WORKERS], None, "panicking item is not an answer");
+        assert_eq!(
+            answers[ASK_WORKERS], None,
+            "panicking item is not an answer"
+        );
     }
 
     #[test]
