@@ -253,7 +253,7 @@ case "$cmd" in
     test_cmd
     SYNC_VERIFIED=1
     sync_cmd
-    printf 'lifecycle staged revision=%s\n' "$(git rev-parse --short HEAD)"
+    printf 'lifecycle sync revision=%s\n' "$(git rev-parse --short HEAD)"
     printf 'state=%s\n' "$STATE"
     ;;
   *)
