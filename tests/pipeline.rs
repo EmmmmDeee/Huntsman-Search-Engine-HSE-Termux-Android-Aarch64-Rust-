@@ -510,6 +510,9 @@ fn mixed_legacy_and_attributed_receipts_keep_their_exact_scan_ids() {
             .iter()
             .find(|entity| entity.value == domain)
             .expect("retained domain");
-        assert_eq!(entity.evidence[0].provenance.scan_id.as_deref(), Some(expected));
+        assert_eq!(
+            entity.evidence[0].provenance.scan_id.as_deref(),
+            Some(expected)
+        );
     }
 }
