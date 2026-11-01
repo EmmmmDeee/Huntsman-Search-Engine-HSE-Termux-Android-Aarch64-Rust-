@@ -614,19 +614,6 @@ fn fetch_hops_inner<T: Transport + ?Sized>(
             return Ok(refusal.finish(module, now_unix, &current, response, &scrub));
         };
         if let Some(next) = next {
-            // A 307/308 (or any other redirect retaining a request body) must not
-            // forward that body to a different origin. It may contain provider
-            // secrets or personal data that header stripping cannot protect.
-            // A scheme downgrade is also an origin change. Bodyless redirects
-            // and same-origin 307/308 requests retain their existing behaviour.
-            if !next.body.is_empty() && origin_of(&next.url) != origin_of(&current.url) {
-                return Ok(Refusal {
-                    why: "redirect refused: request body would cross origin",
-                    redirects,
-                    sent,
-                }
-                .finish(module, now_unix, &current, response, &scrub));
-            }
             if redirects >= options.max_redirects {
                 return Ok(finish(
                     module,
@@ -646,6 +633,19 @@ fn fetch_hops_inner<T: Transport + ?Sized>(
                     sent,
                 };
                 return Ok(refusal.finish(module, now_unix, &current, response, &scrub));
+            }
+            // A 307/308 (or any other redirect retaining a request body) must not
+            // forward that body to a different origin. It may contain provider
+            // secrets or personal data that header stripping cannot protect.
+            // A scheme downgrade is also an origin change. Bodyless redirects
+            // and same-origin 307/308 requests retain their existing behaviour.
+            if !next.body.is_empty() && origin_of(&next.url) != origin_of(&current.url) {
+                return Ok(Refusal {
+                    why: "redirect refused: request body would cross origin",
+                    redirects,
+                    sent,
+                }
+                .finish(module, now_unix, &current, response, &scrub));
             }
             redirects += 1;
             current = next;
