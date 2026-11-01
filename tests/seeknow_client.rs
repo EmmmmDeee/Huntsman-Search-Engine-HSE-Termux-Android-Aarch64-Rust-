@@ -359,3 +359,37 @@ fn variant_secret_field_names_are_dropped_without_losing_safe_evidence() {
     let serialized = serde_json::to_string(&result).unwrap();
     assert!(!serialized.contains("must-not-retain-"));
 }
+
+
+#[test]
+fn ordinary_provider_attributes_survive_sensitive_field_filtering() {
+    let body = serde_json::json!({
+        "success": true,
+        "data": [{
+            "email": "alice@example.com",
+            "source": "Public Dataset",
+            "secretary": "Jane Citizen",
+            "session_count": 4,
+            "sessionCount": 5,
+            "tokenomics": "public analysis",
+            "passwordHash": "must-not-retain-credential",
+            "accessToken": "must-not-retain-token"
+        }]
+    })
+    .to_string();
+    let transport = ScriptedTransport::new(vec![response(&body)]);
+    let result = search_fast(&transport, &credential(), &auto_search(), 17).unwrap();
+    assert_eq!(result.outcome.kind, SourceOutcomeKind::Success);
+    let row = &result.rows[0];
+    for key in ["secretary", "session_count", "sessionCount", "tokenomics"] {
+        assert!(row.fields.contains_key(key), "ordinary field was dropped: {key}");
+        assert!(!row.sensitive_fields.contains(key));
+    }
+    for key in ["passwordHash", "accessToken"] {
+        assert!(!row.fields.contains_key(key), "secret was exported: {key}");
+        assert!(row.sensitive_fields.contains(key));
+    }
+    let serialized = serde_json::to_string(&result).unwrap();
+    assert!(serialized.contains("Jane Citizen"));
+    assert!(!serialized.contains("must-not-retain"));
+}
