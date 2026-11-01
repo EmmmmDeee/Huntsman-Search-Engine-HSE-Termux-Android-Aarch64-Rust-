@@ -276,6 +276,45 @@ fn independent_upstream_roots_can_raise_corroboration() {
 }
 
 #[test]
+fn observations_from_distinct_upstreams_keep_their_own_scan_receipts() {
+    let mut collected = batch(vec![
+        observation(
+            "registry",
+            Some(origin("registry", "first-source")),
+            EntityKind::Domain,
+            "first.example",
+        ),
+        observation(
+            "registry",
+            Some(origin("registry", "second-source")),
+            EntityKind::Domain,
+            "second.example",
+        ),
+    ]);
+    assert_eq!(collected.events.len(), 2);
+    collected.events[0].scan_id = "scan-first".to_string();
+    collected.events[1].scan_id = "scan-second".to_string();
+
+    let snapshot = normalize_observations(collected, &PipelineLimits::default())
+        .expect("provenance-aware snapshot");
+    for (domain, expected_scan) in [
+        ("first.example", "scan-first"),
+        ("second.example", "scan-second"),
+    ] {
+        let entity = snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.value == domain)
+            .expect("both observations survive bounded collection");
+        assert_eq!(
+            entity.evidence[0].provenance.scan_id.as_deref(),
+            Some(expected_scan),
+            "{domain} must retain its own execution receipt"
+        );
+    }
+}
+
+#[test]
 fn missing_upstream_origin_stays_unknown_not_independent() {
     let snapshot = normalize_observations(
         batch(vec![
