@@ -311,9 +311,7 @@ mod tests {
                 .flatten()
                 .unwrap_or_else(|| panic!("valid confidence boundary must decode: {wire}"));
             assert!(
-                finding
-                    .attrs
-                    .contains(&("confidence", expected.to_owned())),
+                finding.attrs.contains(&("confidence", expected.to_owned())),
                 "unexpected confidence for {wire}"
             );
         }
