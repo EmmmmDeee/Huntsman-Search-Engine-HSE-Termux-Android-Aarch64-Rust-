@@ -521,7 +521,7 @@ fn read_record<T: Transport + ?Sized>(
         return Err("record names another URL".to_owned());
     }
     archived_page::web_page(&page.content_type, page.body.len())?;
-    Ok(archived_page::contacts(
+    Ok(archived_page::findings(
         &String::from_utf8_lossy(page.body),
         capture,
         &Archive {
