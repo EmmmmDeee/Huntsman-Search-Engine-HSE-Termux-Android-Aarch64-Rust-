@@ -118,7 +118,7 @@ fn live_collector_smoke_is_manual_read_only_and_secret_free() {
         "peeringdb",
     ] {
         assert!(
-            script.contains(&format!("|{module}|")),
+            script.contains(&format!("|{module}\"")),
             "no probe for {module}"
         );
     }
@@ -174,6 +174,14 @@ fn live_smoke_verdict_requires_actual_source_success() {
         7
     );
 
+    // A success row cannot override a failed CLI process.
+    fs::write(out.join("user-jcs.exit"), "1\n").expect("nonzero exit fixture");
+    let nonzero = run();
+    assert!(!nonzero.status.success(), "nonzero exit must invalidate success");
+    let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("exit verdict");
+    assert!(verdict.contains("lobsters\tuser-jcs\tFAIL\texit=1"));
+    fs::write(out.join("user-jcs.exit"), "0\n").expect("restore success exit");
+
     fs::write(out.join("wikidata-q42.out"), "Q42 lookup failed\n").expect("negative wikidata");
     fs::write(out.join("asn-13335.out"), "PeeringDB unavailable\n").expect("negative peeringdb");
     let negative = run();
@@ -181,5 +189,12 @@ fn live_smoke_verdict_requires_actual_source_success() {
     let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("negative verdict");
     assert!(verdict.contains("wikidata\twikidata-q42\tFAIL\t"));
     assert!(verdict.contains("peeringdb\tasn-13335\tFAIL\t"));
+    fs::write(
+        out.join("wikidata-q42.out"),
+        "other_wikidata\tsuccess\tQ42\nwikidata\tfailure\tQ42\n",
+    )
+    .expect("mismatched module/status fixture");
+    let mismatched = run();
+    assert!(!mismatched.status.success(), "wrong source/status must fail");
     fs::remove_dir_all(&out).expect("remove fixture");
 }
