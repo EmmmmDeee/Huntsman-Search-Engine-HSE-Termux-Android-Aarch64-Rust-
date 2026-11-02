@@ -1276,13 +1276,14 @@ mod tests {
         assert_eq!(report.hits.len(), 2);
     }
     #[test]
-    fn query_rejects_oversized_utf8_after_normalization() {
-        // Lowercasing and Unicode folding may expand a query after its input byte check.
-        let input = "İ".repeat(200);
-        let normalized = canonical_whitespace(&input);
-        if normalized.len() > MAX_SEARCH_QUERY_BYTES {
-            assert!(checked_query(&input, "query").is_err());
-        }
+    fn query_budget_and_canonicalization_are_enforced() {
+        let valid = "A".repeat(MAX_SEARCH_QUERY_BYTES);
+        assert_eq!(checked_query(&valid, "query").unwrap(), valid.to_ascii_lowercase());
+        let invalid = "A".repeat(MAX_SEARCH_QUERY_BYTES + 1);
+        assert!(checked_query(&invalid, "query").is_err());
+        assert_eq!(checked_query("  ADA   LOVELACE  ", "query").unwrap(), "ada lovelace");
+        assert!(checked_query("   ", "query").is_err());
+        assert!(checked_query("ada\\n", "query").is_err());
     }
 
     #[test]
