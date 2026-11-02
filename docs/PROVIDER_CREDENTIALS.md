@@ -51,9 +51,9 @@ quota charges before enabling a service.
 
 | Provider | Runtime slot | Use |
 | --- | --- | --- |
-| Google Cloud Vision | `HSE_GOOGLE_VISION_API_KEY` | Web Detection via pinned `vision.googleapis.com` |
-| Lenso.ai | `HSE_LENSO_API_KEY` | Duplicate-index search via pinned `api.lenso.ai` |
-| SauceNAO | `HSE_SAUCENAO_API_KEY` | Image-index search via pinned `saucenao.com` |
+| Google Cloud Vision | `HUNTSMAN_GOOGLE_VISION_KEY` | Web Detection via pinned `vision.googleapis.com` |
+| Lenso.ai | `HUNTSMAN_LENSO_KEY` | Duplicate-index search via pinned `api.lenso.ai` |
+| SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | Image-index search via pinned `saucenao.com` |
 
 `huntsman-recon reverse-image IMAGE --live --provider google_vision --json`
 queries exactly one configured provider. Omitting `--provider` deliberately runs
@@ -139,9 +139,9 @@ Copy only the slots you actually use into `$HOME/.huntsman.env` and set the
 file mode to 600.
 
 ```dotenv
-HSE_GOOGLE_VISION_API_KEY=
-HSE_LENSO_API_KEY=
-HSE_SAUCENAO_API_KEY=
+HUNTSMAN_GOOGLE_VISION_KEY=
+HUNTSMAN_LENSO_KEY=
+HUNTSMAN_SAUCENAO_KEY=
 HUNTSMAN_WIGLE_USER=
 HUNTSMAN_WIGLE_TOKEN=
 HUNTSMAN_BRAVE_KEY=
