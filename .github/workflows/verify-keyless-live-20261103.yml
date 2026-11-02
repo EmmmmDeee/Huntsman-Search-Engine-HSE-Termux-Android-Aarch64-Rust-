@@ -1,0 +1,92 @@
+name: One-shot keyless live acceptance (verification branch)
+
+# Read-only, branch-scoped binary execution against public hosts. No secrets or deployment.
+on:
+  push:
+    branches:
+      - verify/hse-keyless-live-20261103
+
+permissions:
+  contents: read
+
+jobs:
+  real-binary-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Fetch exact commit anonymously
+        run: |
+          set -euo pipefail
+          git init -q source
+          git -C source fetch --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          git -C source checkout -q FETCH_HEAD
+          test "$(git -C source rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Build actual release binary
+        working-directory: source
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo --version
+          cargo build --locked --release
+          test -x target/release/huntsman-recon
+          file target/release/huntsman-recon
+          sha256sum target/release/huntsman-recon
+      - name: Exercise CLI and local HTTP API with actual binary
+        working-directory: source
+        run: |
+          set -euo pipefail
+          bin=./target/release/huntsman-recon
+          "$bin" --help > "$RUNNER_TEMP/help.txt"
+          "$bin" modules > "$RUNNER_TEMP/modules.txt"
+          "$bin" serve --bind 127.0.0.1:18080 > "$RUNNER_TEMP/server.log" 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ok=0
+          for attempt in $(seq 1 30); do
+            if curl --noproxy '*' -fsS --connect-timeout 2 http://127.0.0.1:18080/api/health > "$RUNNER_TEMP/health.json"; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            cat "$RUNNER_TEMP/server.log"
+            exit 1
+          fi
+          grep -q 'huntsman-recon' "$RUNNER_TEMP/health.json"
+          curl --noproxy '*' -fsS http://127.0.0.1:18080/api/modules > "$RUNNER_TEMP/modules.json"
+          curl --noproxy '*' -fsS http://127.0.0.1:18080/ > "$RUNNER_TEMP/index.html"
+          test -s "$RUNNER_TEMP/modules.json"
+          test -s "$RUNNER_TEMP/index.html"
+          echo 'PASS: --help, modules, HTTP /, /api/health, /api/modules'
+          printf 'health: '; head -c 250 "$RUNNER_TEMP/health.json"; echo
+      - name: Execute real internet collectors using the compiled binary
+        if: always()
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test -x ./target/release/huntsman-recon
+          bash .github/scripts/verify-keyless-live-20261103.sh \
+            ./target/release/huntsman-recon "$RUNNER_TEMP/keyless-smoke"
+      - name: Publish bounded evidence summary
+        if: always()
+        run: |
+          {
+            echo "## Huntsman real-binary keyless verification"
+            echo "Commit: $GITHUB_SHA"
+            echo "Runner: ubuntu-24.04 (not physical Termux)"
+            echo '~~~'
+            if [ -f "$RUNNER_TEMP/keyless-smoke/verdict.tsv" ]; then
+              cat "$RUNNER_TEMP/keyless-smoke/verdict.tsv"
+            else
+              echo 'No live verdict produced'
+            fi
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for f in "$RUNNER_TEMP"/keyless-smoke/*.out; do
+            [ -f "$f" ] || continue
+            echo "::group::$(basename "$f")"
+            head -c 4000 "$f"
+            echo
+            echo "::endgroup::"
+          done
