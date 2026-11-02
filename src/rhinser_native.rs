@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn refuse_untrusted_or_unbounded_envelopes() {
         for data in [
-            br#"{}"#.as_slice(),
+            br"{}".as_slice(),
             br#"{"schema_version":2,"captured_unix_ms":1,"operator_consented":true,"events":[]}"#,
             br#"{"schema_version":1,"captured_unix_ms":1,"operator_consented":false,"events":[{"kind":"apdu","hex":"9000"}]}"#,
             br#"{"schema_version":1,"captured_unix_ms":1,"operator_consented":true,"events":[{"kind":"bluetooth","transport":"ble","rssi_dbm":-999,"bonded":false,"randomized_address":true}]}"#,
