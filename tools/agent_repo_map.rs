@@ -21,6 +21,7 @@ struct Coverage {
     matched: usize,
     inspected: usize,
     displayed_symbols_truncated: usize,
+    omitted_paths: Vec<String>,
 }
 
 fn is_symbol(line: &str) -> bool {
@@ -65,6 +66,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize
         } else if ty.is_file() && e.path().extension().is_some_and(|x| x == "rs") { 
             if e.metadata()?.len() > MAX_FILE_BYTES {
                 coverage.oversized += 1;
+                coverage.omitted_paths.push(e.path().display().to_string());
                 continue;
             }
             require_room(out.len(), MAX_FILES, "Rust file")?;
@@ -107,7 +109,11 @@ fn main() -> io::Result<()> {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 "Rust source exceeded file size limit during read"));
         }
-        let Ok(src) = String::from_utf8(bytes) else { coverage.non_utf8 += 1; continue };
+        let Ok(src) = String::from_utf8(bytes) else {
+            coverage.non_utf8 += 1;
+            coverage.omitted_paths.push(path.display().to_string());
+            continue;
+        };
         coverage.inspected += 1;
         let symbol_count = src.lines().filter(|line| is_symbol(line)).count();
         if symbol_count > MAX_SYMBOLS { coverage.symbol_truncated += 1; }
@@ -125,6 +131,9 @@ fn main() -> io::Result<()> {
     }
     coverage.displayed_symbols_truncated = matches.iter().filter(|(_, _, symbols)| symbols.len() > 35).count();
     println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated);
+    for omitted in &coverage.omitted_paths {
+        eprintln!("# Omitted Rust file: {omitted}");
+    }
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
