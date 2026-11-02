@@ -142,6 +142,33 @@ else
 fi
 
 WORK_DIR="$(mktemp -d "$STATE_DIR/termux-acceptance.XXXXXX")"
+
+# Exercise the native Rhinser offline interface in BOTH host CI and physical Termux.
+# This tests Rust parsers and process execution; it does not test Bluetooth/NFC radio APIs.
+RHINSER_FIXTURE="$WORK_DIR/rhinser-native.json"
+printf '%s\n' '{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"ndef","hex":"D101055402656E4869"},{"kind":"apdu","hex":"00A40400023F00"},{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}' > "$RHINSER_FIXTURE"
+if timeout "$TIMEOUT_SECS" "$HSE_BIN" osint native "$RHINSER_FIXTURE" > "$WORK_DIR/rhinser-native-output.json" 2>> "$REPORT" \
+  && jq -e '.evidence_role == "operator_submitted_unverified" and .radio_access == false and .device_attested == false and (.observations | length) == 3 and .observations[2].signal_class == "medium"' "$WORK_DIR/rhinser-native-output.json" >/dev/null; then
+  pass 'Rhinser offline NFC/Bluetooth Rust fixture inspected without claiming live radio'
+else
+  fail 'Rhinser native Rust fixture parsing or evidence status is incorrect'
+fi
+
+if timeout "$TIMEOUT_SECS" "$HSE_BIN" osint nfc tlv 6F0784021234500141 > "$WORK_DIR/rhinser-tlv-output.json" 2>> "$REPORT" \
+  && jq -e '.fields == 3 and .constructed_fields == 1 and .tag_names_hex == ["6F","84","50"]' "$WORK_DIR/rhinser-tlv-output.json" >/dev/null \
+  && ! grep -q '1234' "$WORK_DIR/rhinser-tlv-output.json"; then
+  pass 'Rhinser offline BER-TLV parsing exposes structure but not raw values'
+else
+  fail 'Rhinser BER-TLV read-only output is invalid'
+fi
+
+if timeout "$TIMEOUT_SECS" "$HSE_BIN" osint demo 42 > "$WORK_DIR/rhinser-demo-output.json" 2>> "$REPORT" \
+  && jq -e '.mode == "simulation_only" and .evidence_role == "not_evidence" and .sensor_observation == false and .elapsed_seconds >= 11 and .elapsed_seconds <= 17' "$WORK_DIR/rhinser-demo-output.json" >/dev/null; then
+  pass 'Rhinser entertainment simulation cannot be mistaken for sensor evidence'
+else
+  fail 'Rhinser simulation status or score is invalid'
+fi
+
 if (
   cd "$WORK_DIR" &&
   timeout "$TIMEOUT_SECS" "$HSE_BIN" check >>"$REPORT" 2>&1 &&
