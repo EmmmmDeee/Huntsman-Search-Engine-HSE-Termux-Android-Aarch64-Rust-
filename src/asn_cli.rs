@@ -149,7 +149,7 @@ pub fn run<T: Transport + ?Sized + Sync>(transport: &T, asn: &str, now_unix: u64
     {
         return run;
     }
-    match lookup_report::render(&report.entities, &report.outcomes) {
+    match lookup_report::render_front_end("asn_cli", &report.entities, &report.outcomes) {
         Ok(text) => AsnRun::Printed { text, report },
         Err(message) => AsnRun::Failed(message),
     }
