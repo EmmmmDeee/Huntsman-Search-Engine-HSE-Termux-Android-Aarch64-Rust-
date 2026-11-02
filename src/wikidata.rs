@@ -522,11 +522,13 @@ fn eligible_rank(statement: &Value) -> bool {
 
 fn eligible_for_pivot(statement: &Value) -> bool {
     eligible_rank(statement)
-        && statement.get("qualifiers").is_none_or(|qualifiers| match qualifiers {
-            Value::Object(entries) => entries.is_empty(),
-            Value::Array(entries) => entries.is_empty(),
-            _ => false,
-        })
+        && statement
+            .get("qualifiers")
+            .is_none_or(|qualifiers| match qualifiers {
+                Value::Object(entries) => entries.is_empty(),
+                Value::Array(entries) => entries.is_empty(),
+                _ => false,
+            })
 }
 
 /// P805 (statement is subject of) is non-restrictive. Wikibase REST v1 exposes qualifiers
@@ -534,24 +536,26 @@ fn eligible_for_pivot(statement: &Value) -> bool {
 /// Both forms permit only P805 for P31 classification, never temporal or unknown qualifiers.
 fn eligible_for_classification(statement: &Value) -> bool {
     eligible_rank(statement)
-        && statement.get("qualifiers").is_none_or(|qualifiers| match qualifiers {
-            Value::Object(entries) => entries.iter().all(|(pid, values)| {
-                pid == "P805" && values.as_array().is_some_and(|items| !items.is_empty())
-            }),
-            Value::Array(entries) => entries.iter().all(|entry| {
-                entry
-                    .get("property")
-                    .and_then(|property| property.get("id"))
-                    .and_then(Value::as_str)
-                    == Some("P805")
-                    && entry
-                        .get("value")
-                        .and_then(|value| value.get("type"))
+        && statement
+            .get("qualifiers")
+            .is_none_or(|qualifiers| match qualifiers {
+                Value::Object(entries) => entries.iter().all(|(pid, values)| {
+                    pid == "P805" && values.as_array().is_some_and(|items| !items.is_empty())
+                }),
+                Value::Array(entries) => entries.iter().all(|entry| {
+                    entry
+                        .get("property")
+                        .and_then(|property| property.get("id"))
                         .and_then(Value::as_str)
-                        == Some("value")
-            }),
-            _ => false,
-        })
+                        == Some("P805")
+                        && entry
+                            .get("value")
+                            .and_then(|value| value.get("type"))
+                            .and_then(Value::as_str)
+                            == Some("value")
+                }),
+                _ => false,
+            })
 }
 
 /// Share the bounded value decoder while retaining property-specific eligibility.
@@ -1135,9 +1139,12 @@ mod tests {
                 .any(|s| s.contains("P805"))
         );
         entity(&report, &EntityKind::Domain, "live.example");
-        assert!(!report.entities.iter().any(|e| {
-            e.kind == EntityKind::Domain && e.raw_value == "dated.example"
-        }));
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|e| { e.kind == EntityKind::Domain && e.raw_value == "dated.example" })
+        );
     }
 
     #[test]
@@ -1192,5 +1199,4 @@ mod tests {
         });
         assert!(eligible_for_pivot(&empty));
     }
-
 }
