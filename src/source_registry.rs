@@ -252,7 +252,7 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
         return Vec::new();
     }
     let encoded = crate::http::percent_encode_unreserved(value);
-    SOURCES
+    let mut routes: Vec<SourceRoute> = SOURCES
         .iter()
         .filter(|source| {
             source
@@ -269,7 +269,36 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
             reference_url: source.reference_url,
             evidence_role: source.evidence_role,
         })
-        .collect()
+        .collect();
+
+    // One canonical engine registry owns both live search and actionable
+    // discovery links. Never submit credentials, API keys, devices, or arbitrary
+    // private selectors to public search engines as implicit pivots.
+    if matches!(
+        kind,
+        EntityKind::Person
+            | EntityKind::Organisation
+            | EntityKind::Email
+            | EntityKind::Username
+            | EntityKind::Domain
+            | EntityKind::IpAddress
+            | EntityKind::AbnAcn
+    ) {
+        routes.extend(
+            crate::web_query::EXTENDED_ENGINES
+                .iter()
+                .map(|engine| SourceRoute {
+                    source_id: engine.name,
+                    source_name: engine.name,
+                    execution: ExecutionMode::SearchUrl,
+                    access: SourceAccess::Public,
+                    url: crate::web_query::search_url(*engine, value),
+                    reference_url: engine.base_url,
+                    evidence_role: EvidenceRole::LeadOnly,
+                }),
+        );
+    }
+    routes
 }
 
 #[cfg(test)]
@@ -287,6 +316,49 @@ mod tests {
             assert!(source.reference_url.starts_with("https://"));
             assert_eq!(source.url_template.matches("{value}").count(), 1);
             assert_ne!(source.accepted_kinds, []);
+        }
+    }
+
+    #[test]
+    fn keyless_pivots_derive_from_live_engine_registry_and_remain_leads() {
+        for kind in [
+            EntityKind::Person,
+            EntityKind::Organisation,
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Domain,
+            EntityKind::IpAddress,
+            EntityKind::AbnAcn,
+        ] {
+            let routes = routes_for(&kind, "Example Research");
+            let indexed: Vec<_> = routes
+                .iter()
+                .filter(|route| {
+                    crate::web_query::EXTENDED_ENGINES
+                        .iter()
+                        .any(|engine| engine.name == route.source_id)
+                })
+                .collect();
+            assert_eq!(indexed.len(), crate::web_query::EXTENDED_ENGINES.len());
+            assert!(indexed.iter().all(|route| {
+                route.evidence_role == EvidenceRole::LeadOnly
+                    && route.access == SourceAccess::Public
+                    && route.url.starts_with("https://")
+            }));
+            let yahoo = indexed
+                .iter()
+                .find(|route| route.source_id == "yahoo")
+                .expect("yahoo pivot");
+            assert!(yahoo.url.contains("?p=Example%20Research"));
+        }
+        for kind in [
+            EntityKind::Credential,
+            EntityKind::ApiKey,
+            EntityKind::DeviceId,
+            EntityKind::MacAddress,
+            EntityKind::Other,
+        ] {
+            assert!(routes_for(&kind, "sensitive-input").is_empty());
         }
     }
 
