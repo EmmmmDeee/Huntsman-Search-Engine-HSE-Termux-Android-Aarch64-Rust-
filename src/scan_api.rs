@@ -165,6 +165,20 @@ fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
     })
 }
 
+/// Keep the raw recorded verdict for audit and separately flag contradictory counts.
+fn source_execution_row(outcome: &SourceExecutionOutcome) -> Value {
+    json!({
+        "module": outcome.module,
+        "outcome": outcome.kind,
+        "outcome_count_conflict": outcome.kind.is_accepted() && !outcome.is_accepted(),
+        "observed_at_unix": outcome.observed_at_unix,
+        "found": outcome.found,
+        "http_status": outcome.http_status,
+        "retry_after_secs": outcome.retry_after_secs,
+        "detail": outcome.detail,
+    })
+}
+
 fn ok(status: u16, value: &Value) -> ApiResponse {
     ApiResponse {
         status,
@@ -750,17 +764,7 @@ impl ScanApi {
                 results
                     .outcomes
                     .iter()
-                    .map(|outcome| {
-                        json!({
-                            "module": outcome.module,
-                            "outcome": outcome.kind,
-                            "observed_at_unix": outcome.observed_at_unix,
-                            "found": outcome.found,
-                            "http_status": outcome.http_status,
-                            "retry_after_secs": outcome.retry_after_secs,
-                            "detail": outcome.detail,
-                        })
-                    })
+                    .map(source_execution_row)
                     .collect()
             })
             .unwrap_or_default();
@@ -1549,6 +1553,12 @@ mod tests {
         assert_eq!(summary["unresolved"], 2);
         assert_eq!(summary["inconsistent_accepted_count"], 2);
         assert_eq!(summary["all_recorded_sources_accepted"], false);
+        let contradictory = source_execution_row(&outcomes[1]);
+        assert_eq!(contradictory["outcome"], "valid_zero");
+        assert_eq!(contradictory["outcome_count_conflict"], true);
+        assert_eq!(contradictory["found"], 3);
+        let ordinary = source_execution_row(&outcomes[0]);
+        assert_eq!(ordinary["outcome_count_conflict"], false);
     }
 
     use crate::module_selection::Selection;
