@@ -25,11 +25,19 @@ fn offline_reverse_image_runs_real_binary_and_reports_no_external_queries() {
     let image_path = home.join("photo.gif");
     fs::write(&image_path, image_fixture()).expect("image fixture");
     let out = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
-        .args(["reverse-image", image_path.to_str().expect("path"), "--json"])
+        .args([
+            "reverse-image",
+            image_path.to_str().expect("path"),
+            "--json",
+        ])
         .env("HOME", &home)
         .output()
         .expect("run image search");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("report JSON");
     assert_eq!(report["bytes"].as_u64(), Some(image_fixture().len() as u64));
     assert_eq!(report["live_requested"], false);
