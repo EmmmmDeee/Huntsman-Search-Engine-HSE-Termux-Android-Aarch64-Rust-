@@ -238,3 +238,68 @@ fn live_smoke_verdict_requires_actual_source_success() {
     );
     fs::remove_dir_all(&out).expect("remove fixture");
 }
+
+/// A status token may carry digits (`upstream_4xx`, `upstream_5xx`); the sweep must read those
+/// rows as the module's FAIL, never report the module as having printed no status at all.
+#[test]
+fn live_smoke_sweep_reads_status_tokens_with_digits() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("huntsman-sweep-{}-{nonce}", std::process::id()));
+    let out = dir.join("out");
+    fs::create_dir_all(&out).expect("output directory");
+    let fake = dir.join("fake-binary");
+    fs::write(
+        &fake,
+        r#"#!/usr/bin/env bash
+case "$1" in
+  modules) printf '%s' '{"count":3,"modules":[
+    {"name":"submd","network":true,"access":"keyless"},
+    {"name":"common_crawl","network":true,"access":"keyless"},
+    {"name":"crtsh","network":true,"access":"keyless"}]}' ;;
+  domain) printf 'submd\tupstream_4xx\tfound=none\tdetail=HTTP 429\n'
+          printf 'common_crawl\tupstream_5xx\tfound=none\n'
+          printf 'crtsh\tsuccess\tfound=3\n' ;;
+  serve) exit 0 ;;
+esac
+exit 0
+"#,
+    )
+    .expect("fake binary");
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("executable");
+
+    Command::new("bash")
+        .arg(".github/scripts/live-collector-smoke.sh")
+        .arg(&fake)
+        .arg(&out)
+        .output()
+        .expect("sweep");
+    let sweep = fs::read_to_string(out.join("sweep.tsv")).expect("sweep table");
+    let row = |module: &str| {
+        sweep
+            .lines()
+            .find(|line| line.starts_with(&format!("{module}\t")))
+            .unwrap_or_else(|| panic!("no {module} row in\n{sweep}"))
+            .to_owned()
+    };
+    assert!(
+        row("submd").starts_with("submd\tFAIL\tupstream_4xx\t"),
+        "{sweep}"
+    );
+    assert!(
+        row("common_crawl").starts_with("common_crawl\tFAIL\tupstream_5xx\t"),
+        "{sweep}"
+    );
+    assert!(
+        row("crtsh").starts_with("crtsh\tPASS\tsuccess\t"),
+        "{sweep}"
+    );
+    assert!(sweep.contains("live-PASS: 1/3"), "{sweep}");
+    fs::remove_dir_all(&dir).ok();
+}

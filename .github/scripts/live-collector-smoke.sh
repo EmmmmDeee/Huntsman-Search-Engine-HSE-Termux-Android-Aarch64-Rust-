@@ -91,16 +91,16 @@ for f in sorted(out.glob("*.out")):
     found = []
     for line in text.splitlines():
         # `module<TAB>status<TAB>` and `module.part<TAB>status<TAB>` (one leg of a module)
-        m = re.match(r"^([a-z0-9_]+)(?:\.[a-z0-9_]+)?\t([a-z_]+)\t", line)
+        m = re.match(r"^([a-z0-9_]+)(?:\.[a-z0-9_]+)?\t([a-z0-9_]+)\t", line)
         if m and m.group(1) in mods:
             found.append((*m.groups(), line))
         # web_query's per-engine lines: `engine=NAME<TAB>outcome=STATUS`
-        m = re.match(r"^engine=([a-z0-9_]+)\toutcome=([a-z_]+)", line)
+        m = re.match(r"^engine=([a-z0-9_]+)\toutcome=([a-z0-9_]+)", line)
         if m:
             found.append(("web_query", m.group(2), line))
             found.append(("engine:" + m.group(1), m.group(2), line))
     # JSON reports (public-osint): {"module": NAME, "kind": STATUS, ...} outcome objects
-    for m in re.finditer(r'"module":\s*"([a-z0-9_]+)",\s*"kind":\s*"([a-z_]+)"', text):
+    for m in re.finditer(r'"module":\s*"([a-z0-9_]+)",\s*"kind":\s*"([a-z0-9_]+)"', text):
         found.append((*m.groups(), m.group(0)))
     for name, status, line in found:
         ok = status in ("success", "valid_zero")
