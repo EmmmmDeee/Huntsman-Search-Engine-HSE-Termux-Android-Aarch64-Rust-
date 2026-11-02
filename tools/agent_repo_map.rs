@@ -21,6 +21,7 @@ struct Coverage {
     matched: usize,
     inspected: usize,
     displayed_symbols_truncated: usize,
+    symbol_free_matches: usize,
     omitted_paths: Vec<String>,
 }
 
@@ -129,11 +130,12 @@ fn main() -> io::Result<()> {
         if symbol_count > MAX_SYMBOLS { coverage.symbol_truncated += 1; }
         if rank > 0 {
             coverage.matched += 1;
+            if symbols.is_empty() { coverage.symbol_free_matches += 1; }
             keep_best(&mut matches, rank, relative, symbols);
         }
     }
     coverage.displayed_symbols_truncated = matches.iter().filter(|(_, _, symbols)| symbols.len() > 35).count();
-    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated);
+    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={} symbol_free_matches={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated, coverage.symbol_free_matches);
     coverage.omitted_paths.sort();
     for omitted in &coverage.omitted_paths {
         let relative = Path::new(omitted).strip_prefix(&root).unwrap_or(Path::new(omitted));
