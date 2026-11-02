@@ -332,7 +332,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Search,
         attack_techniques: &["T1593.002"],
-        description: "bounded Bing, Brave, and Mojeek meta-search",
+        description: "bounded 16-engine keyless meta-search (three-engine fast fallback)",
     },
     ReachableModule {
         name: "web_server",
