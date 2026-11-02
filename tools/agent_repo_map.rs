@@ -204,6 +204,25 @@ mod tests {
         assert_eq!(score("src/EVIDENCE.rs", "let evidence_marker = 1;", &["evidence".into()]), 12);
         assert_eq!(score("src/other.rs", "let evidence_marker = 1;", &["absent".into()]), 0);
     }
+    #[test] fn directory_skip_coverage_is_counted() {
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-mapper-test-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("target").join("ignored.rs"), "fn ignored() {}").unwrap();
+        fs::write(root.join("src").join("included.rs"), "fn included() {}").unwrap();
+        let mut paths = Vec::new();
+        let mut visited = 0;
+        let mut coverage = Coverage::default();
+        let result = collect(&root, &mut paths, &mut visited, 0, &mut coverage);
+        fs::remove_dir_all(&root).unwrap();
+        result.unwrap();
+        assert_eq!(coverage.skipped_directories, 1);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().unwrap(), "included.rs");
+    }
     #[test] fn exclusions() {
         assert!(!allowed_dir(".git"));
         assert!(!allowed_dir("target"));
