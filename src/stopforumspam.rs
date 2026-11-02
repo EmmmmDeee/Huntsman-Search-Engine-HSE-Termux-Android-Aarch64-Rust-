@@ -62,10 +62,12 @@ where
                     .parse::<f64>()
                     .map_err(|_| D::Error::custom("invalid StopForumSpam confidence decimal"))?,
             };
-            if value.is_finite() {
-                Ok(value)
-            } else {
+            if !value.is_finite() {
                 Err(D::Error::custom("non-finite StopForumSpam confidence"))
+            } else if !(0.0..=100.0).contains(&value) {
+                Err(D::Error::custom("StopForumSpam confidence outside 0..=100"))
+            } else {
+                Ok(value)
             }
         })
         .transpose()
@@ -269,7 +271,17 @@ mod tests {
 
     #[test]
     fn malformed_confidence_cannot_be_silently_accepted_as_absence() {
-        for malformed in [r#""invalid""#, r#""NaN""#, "true", "{}", "[]"] {
+        for malformed in [
+            r#""invalid""#,
+            r#""NaN""#,
+            "true",
+            "{}",
+            "[]",
+            "-0.01",
+            "100.01",
+            r#""-0.01""#,
+            r#""100.01""#,
+        ] {
             let body = format!(
                 r#"{{"success":1,"email":{{"appears":1,"frequency":3,"confidence":{malformed}}}}}"#
             );
@@ -279,6 +291,30 @@ mod tests {
                     Err(LegError::Decode(_))
                 ),
                 "malformed confidence must fail closed: {malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_range_boundaries_preserve_both_wire_formats() {
+        for (wire, expected) in [
+            ("0", "0.00"),
+            (r#""0""#, "0.00"),
+            ("100", "100.00"),
+            (r#""100.00""#, "100.00"),
+        ] {
+            let body = format!(
+                r#"{{"success":1,"email":{{"appears":1,"frequency":3,"confidence":{wire}}}}}"#
+            );
+            let finding = decode(body.as_bytes(), Indicator::Email("test@example.com"))
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| panic!("valid confidence boundary must decode: {wire}"));
+            assert!(
+                finding
+                    .attrs
+                    .contains(&("confidence", expected.to_owned())),
+                "unexpected confidence for {wire}"
             );
         }
     }
