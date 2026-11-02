@@ -161,7 +161,6 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configu
     assert!(text.contains(wigle::USER_SLOT), "{text}");
 }
 
-
 #[test]
 fn local_bssid_reports_address_bits_not_unobserved_randomisation() {
     for bssid in ["d6:92:5e:af:76:c9", "02:11:22:33:44:55"] {
