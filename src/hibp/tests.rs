@@ -56,6 +56,44 @@ fn keyed() -> (HibpClient, Arc<Fake>) {
     client(Auth::ApiKey(ApiKey::new("private-key-never-log").unwrap()))
 }
 
+#[test]
+fn password_range_rejects_duplicate_suffixes_before_dropping_padding() {
+    for (mode, length) in [(PasswordHashMode::Sha1, 35), (PasswordHashMode::Ntlm, 27)] {
+        let suffix = "A".repeat(length);
+        for counts in [(0, 42), (42, 0), (42, 42)] {
+            let body = format!(
+                "{suffix}:{}\r\n{}:{}\r\n",
+                counts.0,
+                suffix.to_lowercase(),
+                counts.1
+            );
+            for drop_padding in [false, true] {
+                assert!(
+                    matches!(
+                        passwords::parse_range(body.as_bytes(), mode, drop_padding),
+                        Err(HibpError::Decode(_))
+                    ),
+                    "duplicate suffix must not become an authoritative count"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn conflicting_password_range_is_an_error_not_a_count() {
+    let (client, fake) = client(Auth::None);
+    for mode in [PasswordHashMode::Sha1, PasswordHashMode::Ntlm] {
+        let hash = passwords::hash_password("public-test-vector", mode);
+        let suffix = &hash[5..];
+        fake.push(200, &format!("{suffix}:7\r\n{suffix}:42\r\n"));
+        assert!(matches!(
+            client.check_password("public-test-vector", mode),
+            Err(HibpError::Decode(_))
+        ));
+    }
+}
+
 fn status(fake: &Fake, stealer: bool, kanon: bool) {
     fake.push(200, &format!(r#"{{"SubscriptionName":"private-key-never-log","IncludesStealerLogs":{stealer},"IncludesKAnon":{kanon}}}"#));
 }

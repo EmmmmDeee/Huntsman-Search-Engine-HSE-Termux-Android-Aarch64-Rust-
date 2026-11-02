@@ -28,17 +28,21 @@ pub fn parse_range(
         PasswordHashMode::Ntlm => 27,
     };
     let mut entries = Vec::new();
+    // Validate all suffixes, including padding, before filtering. Otherwise a duplicate
+    // can silently turn conflicting source counts into whichever record appeared first.
+    let mut seen = std::collections::BTreeSet::new();
     for line in text.lines() {
         let (suffix, count) = line.trim().split_once(':').ok_or_else(invalid)?;
         if suffix.len() != length || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(invalid());
         }
         let count = count.parse().map_err(|_| invalid())?;
+        let suffix = suffix.to_ascii_uppercase();
+        if !seen.insert(suffix.clone()) {
+            return Err(invalid());
+        }
         if count != 0 || !drop_padding {
-            entries.push(RangeEntry {
-                suffix: suffix.to_ascii_uppercase(),
-                count,
-            });
+            entries.push(RangeEntry { suffix, count });
         }
     }
     if text.is_empty() {
