@@ -166,9 +166,7 @@ impl BreakerRegistry {
             let victim = self
                 .hosts
                 .iter()
-                .min_by_key(|(_, (breaker, tick))| {
-                    (breaker.state() != BreakerState::Closed, *tick)
-                })
+                .min_by_key(|(_, (breaker, tick))| (breaker.state() != BreakerState::Closed, *tick))
                 .map(|(host, _)| host.clone());
             if let Some(victim) = victim {
                 self.hosts.remove(&victim);
@@ -435,7 +433,10 @@ mod tests {
         registry.entry("host-0.example");
         registry.entry("new.example");
         assert_eq!(registry.hosts.len(), MAX_BREAKER_HOSTS);
-        assert_eq!(registry.state("throttled.example"), Some(BreakerState::Open));
+        assert_eq!(
+            registry.state("throttled.example"),
+            Some(BreakerState::Open)
+        );
         assert_eq!(registry.state("host-0.example"), Some(BreakerState::Closed));
         assert_eq!(registry.state("host-1.example"), None);
         assert_eq!(registry.state("new.example"), Some(BreakerState::Closed));
