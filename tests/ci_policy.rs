@@ -118,8 +118,89 @@ fn live_collector_smoke_is_manual_read_only_and_secret_free() {
         "peeringdb",
     ] {
         assert!(
-            script.contains(&format!("|{module}|")),
+            script.contains(&format!("|{module}\"")),
             "no probe for {module}"
         );
     }
+}
+
+#[test]
+fn live_smoke_verdict_requires_actual_source_success() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let out = std::env::temp_dir().join(format!("huntsman-smoke-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&out).expect("output directory");
+
+    for (probe, text) in [
+        (
+            "user-dtolnay",
+            "github_user\tsuccess\t1\ncrates_io\tsuccess\t1\n",
+        ),
+        ("user-pg", "hacker_news\tsuccess\t1\n"),
+        ("user-jcs", "lobsters\tsuccess\t1\n"),
+        ("user-torvalds", "docker_hub_user\tsuccess\t1\n"),
+        ("wikidata-q42", "wikidata\tsuccess\t1\n"),
+        ("asn-13335", "peeringdb\tsuccess\t1\n"),
+    ] {
+        fs::write(out.join(format!("{probe}.out")), text).expect("fixture");
+        fs::write(out.join(format!("{probe}.exit")), "0\n").expect("status");
+    }
+
+    let run = || {
+        Command::new("bash")
+            .arg(".github/scripts/live-collector-smoke.sh")
+            .arg("unused-binary")
+            .arg(&out)
+            .output()
+            .expect("Bash verdict")
+    };
+    let positive = run();
+    assert!(
+        positive.status.success(),
+        "{}",
+        String::from_utf8_lossy(&positive.stdout)
+    );
+    let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("verdict");
+    assert_eq!(
+        verdict
+            .lines()
+            .filter(|row| row.contains("\tPASS\t"))
+            .count(),
+        7
+    );
+
+    // A success row cannot override a failed CLI process.
+    fs::write(out.join("user-jcs.exit"), "1\n").expect("nonzero exit fixture");
+    let nonzero = run();
+    assert!(
+        !nonzero.status.success(),
+        "nonzero exit must invalidate success"
+    );
+    let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("exit verdict");
+    assert!(verdict.contains("lobsters\tuser-jcs\tFAIL\texit=1"));
+    fs::write(out.join("user-jcs.exit"), "0\n").expect("restore success exit");
+
+    fs::write(out.join("wikidata-q42.out"), "Q42 lookup failed\n").expect("negative wikidata");
+    fs::write(out.join("asn-13335.out"), "PeeringDB unavailable\n").expect("negative peeringdb");
+    let negative = run();
+    assert!(!negative.status.success(), "false positives are not PASS");
+    let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("negative verdict");
+    assert!(verdict.contains("wikidata\twikidata-q42\tFAIL\t"));
+    assert!(verdict.contains("peeringdb\tasn-13335\tFAIL\t"));
+    fs::write(
+        out.join("wikidata-q42.out"),
+        "other_wikidata\tsuccess\tQ42\nwikidata\tfailure\tQ42\n",
+    )
+    .expect("mismatched module/status fixture");
+    let mismatched = run();
+    assert!(
+        !mismatched.status.success(),
+        "wrong source/status must fail"
+    );
+    fs::remove_dir_all(&out).expect("remove fixture");
 }
