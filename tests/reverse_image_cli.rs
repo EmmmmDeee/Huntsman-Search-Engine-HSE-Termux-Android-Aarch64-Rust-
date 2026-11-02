@@ -9,9 +9,9 @@ fn image_fixture() -> Vec<u8> {
     b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;".to_vec()
 }
 
-fn scratch() -> std::path::PathBuf {
+fn scratch(tag: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "huntsman-reverse-image-cli-{}",
+        "huntsman-reverse-image-cli-{tag}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&path);
@@ -21,7 +21,7 @@ fn scratch() -> std::path::PathBuf {
 
 #[test]
 fn offline_reverse_image_runs_real_binary_and_reports_no_external_queries() {
-    let home = scratch();
+    let home = scratch("offline");
     let image_path = home.join("photo.gif");
     fs::write(&image_path, image_fixture()).expect("image fixture");
     let out = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
@@ -51,7 +51,7 @@ fn offline_reverse_image_runs_real_binary_and_reports_no_external_queries() {
 #[test]
 fn reverse_image_cli_refuses_symlink_input_without_following_it() {
     use std::os::unix::fs::symlink;
-    let home = scratch();
+    let home = scratch("symlink");
     let image_path = home.join("original.gif");
     let linked = home.join("linked.gif");
     fs::write(&image_path, image_fixture()).expect("fixture");
