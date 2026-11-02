@@ -537,10 +537,7 @@ fn eligible_for_classification(statement: &Value) -> bool {
         && statement.get("qualifiers").is_none_or(|qualifiers| {
             qualifiers.as_object().is_some_and(|entries| {
                 entries.iter().all(|(pid, values)| {
-                    pid == "P805"
-                        && values
-                            .as_array()
-                            .is_some_and(|items| !items.is_empty())
+                    pid == "P805" && values.as_array().is_some_and(|items| !items.is_empty())
                 })
             })
         })
@@ -1110,8 +1107,18 @@ mod tests {
         }"#;
         let report = report_of(item, "Q42");
         let person = entity(&report, &EntityKind::Person, "Douglas Adams");
-        assert_eq!(person.evidence[0].attributes.get("instance_of").map(String::as_str), Some("Q5"));
-        assert!(person.evidence[0].attr_values("statement_json").any(|s| s.contains("P805")));
+        assert_eq!(
+            person.evidence[0]
+                .attributes
+                .get("instance_of")
+                .map(String::as_str),
+            Some("Q5")
+        );
+        assert!(
+            person.evidence[0]
+                .attr_values("statement_json")
+                .any(|s| s.contains("P805"))
+        );
         assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Domain));
     }
 
@@ -1144,5 +1151,4 @@ mod tests {
             assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Person));
         }
     }
-
 }
