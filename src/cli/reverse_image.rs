@@ -13,6 +13,10 @@ use super::fail;
 const USAGE: &str = "usage: huntsman-recon reverse-image IMAGE-FILE [--live] [--provider google_vision|lenso|saucenao] [--json]\n--live: send image to configured Google Vision, Lenso and SauceNAO indexes (may incur charges)\nWithout --live: compute local SHA-256 only; no network requests.";
 
 pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
+    if args.len() == 1 && args[0] == "--help" {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     if args.is_empty() {
         return fail(EX_USAGE, USAGE);
     }
