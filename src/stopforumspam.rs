@@ -76,9 +76,8 @@ where
 /// One queried value's record; `value` echoes the query and is not kept.
 #[derive(Deserialize)]
 struct Entry {
-    #[serde(default)]
+    // Both counters are required: an absent field must not manufacture a valid zero.
     appears: u8,
-    #[serde(default)]
     frequency: u64,
     #[serde(default)]
     lastseen: Option<String>,
@@ -148,6 +147,13 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
             "answer has no record for the value".into(),
         ));
     };
+    // The provider's documented no-match response is exactly appears=0/frequency=0.
+    // Inconsistent flags or unsupported appears values establish neither presence nor absence.
+    if entry.appears > 1 || (entry.appears == 0) != (entry.frequency == 0) {
+        return Err(LegError::Decode(
+            "StopForumSpam: contradictory appears/frequency counters".into(),
+        ));
+    }
     if entry.appears == 0 {
         return Ok(None);
     }
@@ -329,6 +335,27 @@ mod tests {
             decode(failed.as_bytes(), Indicator::Ip("8.8.8.8")),
             Err(LegError::Decode(m)) if m.contains("invalid ip")
         ));
+    }
+
+    #[test]
+    fn missing_or_conflicting_report_counters_are_not_evidence() {
+        for record in [
+            r#"{"appears":0,"frequency":2}"#,
+            r#"{"appears":1,"frequency":0}"#,
+            r#"{"appears":2,"frequency":3}"#,
+            r#"{"appears":0}"#,
+            r#"{"frequency":0}"#,
+            r#"{}"#,
+        ] {
+            let body = format!(r#"{{"success":1,"ip":{record}}}"#);
+            assert!(
+                matches!(
+                    decode(body.as_bytes(), Indicator::Ip("8.8.8.8")),
+                    Err(LegError::Decode(_))
+                ),
+                "missing or contradictory provider counters must fail closed: {record}"
+            );
+        }
     }
 
     #[test]
