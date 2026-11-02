@@ -257,7 +257,34 @@ fn known_generator(value: &str) -> Option<&'static str> {
     })
 }
 
-/// Technologies declared by HTML <meta name="generator">, not verified live deployments.
+/// Technology names from a bounded, explicitly declared metadata value. WayTrace accepts
+/// comma, semicolon and " and " delimiters; keep that useful coverage while restricting
+/// persisted findings to Huntsman's reviewed allowlist. The raw value is never returned.
+fn declared_generators(value: &str) -> Vec<&'static str> {
+    const MAX_META_BYTES: usize = 4096;
+    if value.len() > MAX_META_BYTES {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    for group in value.split([',', ';']) {
+        // ASCII lowercasing preserves byte offsets, including in UTF-8 values.
+        let lowered = group.to_ascii_lowercase();
+        let mut start = 0;
+        for (at, _) in lowered.match_indices(" and ") {
+            if let Some(known) = known_generator(&group[start..at]) {
+                names.push(known);
+            }
+            start = at + " and ".len();
+        }
+        if let Some(known) = known_generator(&group[start..]) {
+            names.push(known);
+        }
+    }
+    names
+}
+
+/// Technologies declared by HTML <meta name="generator"> or "powered-by" metadata,
+/// including multiple names in one declaration; not verified live deployments.
 /// The raw generator string and version are never persisted. No scripts execute, and no
 /// associated URLs are fetched. At most eight unique allowlisted names are emitted per page.
 #[must_use]
@@ -278,22 +305,22 @@ pub fn technologies(
         else {
             continue;
         };
-        if !name.eq_ignore_ascii_case("meta")
-            || !attribute(attrs, "name")
-                .is_some_and(|value| value.trim().eq_ignore_ascii_case("generator"))
-        {
+        if !name.eq_ignore_ascii_case("meta") {
             continue;
         }
+        let signal = match attribute(attrs, "name").map(str::trim) {
+            Some(name) if name.eq_ignore_ascii_case("generator") => "html_meta_generator",
+            Some(name) if name.eq_ignore_ascii_case("powered-by") => "html_meta_powered_by",
+            _ => continue,
+        };
         let Some(value) = attribute(attrs, "content") else {
             continue;
         };
-        let Some(technology) = known_generator(value) else {
-            continue;
-        };
-        if !seen.insert(technology) {
-            continue;
-        }
-        let evidence = Evidence::new(
+        for technology in declared_generators(value) {
+            if !seen.insert(technology) {
+                continue;
+            }
+            let evidence = Evidence::new(
             EvidenceProvenance::for_scan(archive.source, scan_id),
             format!(
                 "archived HTML generator metadata declared {technology} on {} at {} UTC; historical self-declaration, not proof of a current deployment",
@@ -304,20 +331,24 @@ pub fn technologies(
         .with_attr("capture_timestamp_utc", &capture.timestamp)
         .with_attr("original_url", &capture.url)
         .with_attr("archive_snapshot_url", &archive.snapshot_url)
-        .with_attr("signal", "html_meta_generator");
-        push_entity(
-            &mut entities,
-            EntityKind::Other,
-            &format!("technology:{technology}"),
-            0.5,
-            scan_id,
-            evidence,
-            &[
-                archive.source,
-                "historical_content",
-                "historical_technology",
-            ],
-        );
+            .with_attr("signal", signal);
+            push_entity(
+                &mut entities,
+                EntityKind::Other,
+                &format!("technology:{technology}"),
+                0.5,
+                scan_id,
+                evidence,
+                &[
+                    archive.source,
+                    "historical_content",
+                    "historical_technology",
+                ],
+            );
+            if seen.len() == 8 {
+                break;
+            }
+        }
         if seen.len() == 8 {
             break;
         }
@@ -573,6 +604,73 @@ mod tests {
                 .any(|e| e.kind == EntityKind::Other && e.value == "technology:ghost")
         );
         assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn composite_generator_and_powered_by_metadata_extract_multiple_distinct_products() {
+        let archive = Archive {
+            source: "wayback_cdx",
+            dataset: "Wayback archived HTML",
+            holder: "the Internet Archive",
+            snapshot_url: "https://web.archive.org/web/20240101000000/https://example.org"
+                .to_owned(),
+        };
+        let capture = capture("20240101000000", "https://example.org");
+        let html = r#"<html><head>
+          <meta name="generator" content="WordPress 6.4; Joomla 4.3, Drupal (10) AnD Ghost 5.0">
+          <meta name="powered-by" content="Hugo 0.9 and Jekyll 4.2">
+          <meta name="powered-by" content="Ghost 5.0">
+          <meta name="generator" content="WordPressSpoof; Ghostly and Drupal">
+          <meta name="description" content="MediaWiki 1.0">
+          <script><meta name="powered-by" content="TYPO3"></script>
+          <!-- <meta name="generator" content="TYPO3"> -->
+        </head><body>MediaWiki appears as normal prose.</body></html>"#;
+        let found = technologies(html, &capture, &archive, "scan");
+        assert_eq!(found.len(), 6, "{found:?}");
+        for product in ["wordpress", "joomla", "drupal", "ghost", "hugo", "jekyll"] {
+            assert!(
+                found.iter().any(|e| e.value == format!("technology:{product}")),
+                "{product}: {found:?}"
+            );
+        }
+        assert_eq!(
+            found.iter()
+                .filter(|entity| entity.evidence[0]
+                    .attr_values("signal")
+                    .next() == Some("html_meta_powered_by"))
+                .count(),
+            2
+        );
+        assert!(found.iter().all(|e| {
+            e.evidence[0]
+                .attr_values("capture_timestamp_utc")
+                .next() == Some("20240101000000")
+        }));
+        let json = serde_json::to_string(&found).expect("serialisable evidence");
+        for absent in ["6.4", "4.3", "WordPressSpoof", "Ghostly", "MediaWiki 1.0"] {
+            assert!(!json.contains(absent), "{absent}");
+        }
+    }
+
+    #[test]
+    fn oversized_metadata_is_discarded_without_retaining_raw_values() {
+        let archive = Archive {
+            source: "common_crawl",
+            dataset: "WARC capture",
+            holder: "Common Crawl",
+            snapshot_url: "https://data.commoncrawl.org/test".to_owned(),
+        };
+        let oversized = format!(
+            "<meta name='generator' content='WordPress {}'>",
+            "private-value".repeat(400)
+        );
+        let found = technologies(
+            &oversized,
+            &capture("20240202000000", "https://example.org/"),
+            &archive,
+            "scan",
+        );
+        assert!(found.is_empty());
     }
 
     #[test]
