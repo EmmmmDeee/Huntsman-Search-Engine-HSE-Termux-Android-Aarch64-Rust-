@@ -170,7 +170,7 @@ impl SearchReport {
     }
 }
 
-/// Query the rebuilt keyless engine subset.
+/// Search all 16 public keyless HTML engines by default.
 ///
 /// # Errors
 /// Returns only network-boundary errors that prevent a request from being sent.
@@ -181,11 +181,23 @@ pub fn search<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    let (report, _) = search_with_observations(transport, &query, now_unix)?;
+    let (report, _) =
+        search_with_observations_for(transport, &query, now_unix, &EXTENDED_ENGINES)?;
     Ok(report)
 }
 
-/// Exhaustive, opt-in keyless search across every configured public HTML engine.
+/// Fast fallback for resource-constrained searches, preserving the original three engines.
+pub fn search_fast<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    now_unix: u64,
+) -> Result<SearchReport, Error> {
+    let query = checked_query(query, "query")?;
+    let (report, _) = search_with_observations_for(transport, &query, now_unix, &ENGINES)?;
+    Ok(report)
+}
+
+/// Compatibility alias for all-engine search; this is also the default.
 /// A provider may reject automation. Failure remains explicit and does not
 /// suppress the other providers' observations.
 pub fn search_all<T: Transport + ?Sized>(
@@ -194,8 +206,7 @@ pub fn search_all<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    let (report, _) = search_with_observations_for(transport, &query, now_unix, &EXTENDED_ENGINES)?;
-    Ok(report)
+    search(transport, query, now_unix)
 }
 
 /// Validate before allocating provider URLs or sending any network request.
@@ -214,14 +225,6 @@ fn checked_query(input: &str, label: &str) -> Result<String, Error> {
 
 /// Keep every engine's URL observation before compatibility-preserving deduplication.
 /// An engine discovery is a lead, not independent corroboration of the page's claims.
-fn search_with_observations<T: Transport + ?Sized>(
-    transport: &T,
-    query: &str,
-    now_unix: u64,
-) -> Result<(SearchReport, Vec<SearchHit>), Error> {
-    search_with_observations_for(transport, query, now_unix, &ENGINES)
-}
-
 fn search_with_observations_for<T: Transport + ?Sized>(
     transport: &T,
     query: &str,
@@ -315,8 +318,8 @@ fn has_viable_provider(round: &AdaptiveRound) -> bool {
     })
 }
 
-/// An opt-in, deterministic, outcome-adaptive multi-query search.
-/// Each of at most three rounds asks at most three guarded search engines.
+/// Default deterministic, outcome-adaptive multi-query search across 16 engines.
+/// At most three rounds, with every provider independently accounted for.
 ///
 /// URL overlap between engines is discoverability metadata, NEVER proof that
 /// two independent primary documents agree. Query variants produce leads only.
@@ -325,6 +328,15 @@ fn has_viable_provider(round: &AdaptiveRound) -> bool {
 /// Rejects empty, oversized or control-character-bearing queries. Transport
 /// boundary setup errors propagate; individual engine errors remain outcomes.
 pub fn adaptive_search<T: Transport + ?Sized>(
+    transport: &T,
+    input: &str,
+    now_unix: u64,
+) -> Result<AdaptiveSearchReport, Error> {
+    adaptive_search_for(transport, input, now_unix, &EXTENDED_ENGINES)
+}
+
+/// Original three-engine adaptive mode for explicit low-cost/fast requests.
+pub fn adaptive_search_fast<T: Transport + ?Sized>(
     transport: &T,
     input: &str,
     now_unix: u64,
@@ -340,7 +352,7 @@ pub fn adaptive_search_all<T: Transport + ?Sized>(
     input: &str,
     now_unix: u64,
 ) -> Result<AdaptiveSearchReport, Error> {
-    adaptive_search_for(transport, input, now_unix, &EXTENDED_ENGINES)
+    adaptive_search(transport, input, now_unix)
 }
 
 fn adaptive_search_for<T: Transport + ?Sized>(
@@ -1078,7 +1090,7 @@ mod tests {
             Ok(response(200, "<html><body>no links</body></html>")),
             Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
-        let report = search(&fake, "alice citizen", 1).unwrap();
+        let report = search_fast(&fake, "alice citizen", 1).unwrap();
         assert_eq!(report.hits.len(), 2);
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
         assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ZeroYieldAnomaly);
@@ -1139,7 +1151,7 @@ mod tests {
             Ok(response(200, body)),
             Ok(response(200, body)),
         ]);
-        let report = search(&fake, "alice duplicate-url-dedupe", 1).unwrap();
+        let report = search_fast(&fake, "alice duplicate-url-dedupe", 1).unwrap();
         assert_eq!(report.hits.len(), 1);
     }
 
@@ -1156,7 +1168,7 @@ mod tests {
             Ok(response(200, shared)),
             Ok(response(200, second)),
         ]);
-        let report = adaptive_search(&fake, "unique-adaptive-trial alpha", 123).unwrap();
+        let report = adaptive_search_fast(&fake, "unique-adaptive-trial alpha", 123).unwrap();
         assert_eq!(report.rounds.len(), 2);
         assert_eq!(report.rounds[0].novel_url_count, 2);
         assert_eq!(report.rounds[1].novel_url_count, 1);
@@ -1192,7 +1204,7 @@ mod tests {
             Ok(empty.clone()),
             Ok(empty),
         ]);
-        let report = adaptive_search(&fake, "needle rare threeword", 456).unwrap();
+        let report = adaptive_search_fast(&fake, "needle rare threeword", 456).unwrap();
         assert_eq!(report.rounds.len(), 3);
         assert_eq!(report.rounds[2].strategy, "broader_low_confidence_recall");
         assert_eq!(report.rounds[2].query, "needle rare");
@@ -1211,10 +1223,10 @@ mod tests {
     fn plain_search_rejects_oversized_and_control_queries_before_any_request() {
         let fake = Fake::new(vec![]);
         for query in ["", "   ", "line\nfeed", "nul\0byte", "carriage\rreturn"] {
-            assert!(search(&fake, query, 100).is_err(), "accepted {query:?}");
+            assert!(search_fast(&fake, query, 100).is_err(), "accepted {query:?}");
         }
-        assert!(search(&fake, &"a".repeat(MAX_SEARCH_QUERY_BYTES + 1), 100).is_err());
-        assert!(search(&fake, &"🙂".repeat(MAX_SEARCH_QUERY_BYTES / 4 + 1), 100).is_err());
+        assert!(search_fast(&fake, &"a".repeat(MAX_SEARCH_QUERY_BYTES + 1), 100).is_err());
+        assert!(search_fast(&fake, &"🙂".repeat(MAX_SEARCH_QUERY_BYTES / 4 + 1), 100).is_err());
         assert_eq!(
             checked_query(&"a".repeat(MAX_SEARCH_QUERY_BYTES), "query")
                 .unwrap()
@@ -1235,7 +1247,7 @@ mod tests {
         ]);
         let query = format!("{} b", "a".repeat(MAX_SEARCH_QUERY_BYTES - 2));
         assert_eq!(query.len(), MAX_SEARCH_QUERY_BYTES);
-        let report = adaptive_search(&fake, &query, 42).unwrap();
+        let report = adaptive_search_fast(&fake, &query, 42).unwrap();
         assert_eq!(report.rounds.len(), 1);
         assert_eq!(report.stop_reason, "query_variant_budget_exhausted");
         assert_eq!(report.hits.len(), 1);
@@ -1252,7 +1264,7 @@ mod tests {
             Ok(response(403, "<html>Cloudflare Just a moment</html>")),
             Ok(response(403, "<html>Cloudflare Just a moment</html>")),
         ]);
-        let report = adaptive_search(&fake, "unique-provider-block alpha", 789).unwrap();
+        let report = adaptive_search_fast(&fake, "unique-provider-block alpha", 789).unwrap();
         assert_eq!(report.rounds.len(), 1);
         assert!(report.hits.is_empty());
         assert_eq!(report.stop_reason, "all_engines_unavailable_or_unparseable");
@@ -1437,7 +1449,7 @@ mod tests {
             Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
             Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
-        let report = search(&fake, "alice challenge-page", 1).unwrap();
+        let report = search_fast(&fake, "alice challenge-page", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
     }
