@@ -320,7 +320,10 @@ fn get(
         ));
     }
     parse_response(&raw).ok_or_else(|| {
-        std::io::Error::new(ErrorKind::InvalidData, "incomplete or invalid HTTP/1.1 response")
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            "incomplete or invalid HTTP/1.1 response",
+        )
     })
 }
 
@@ -502,7 +505,10 @@ mod tests {
             &b"HTTP/1.2 200 OK\r\nContent-Length: 5\r\n\r\nhello"[..],
             &b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n\xff"[..],
         ] {
-            assert!(parse_response(raw).is_none(), "accepted malformed HTTP response: {raw:?}");
+            assert!(
+                parse_response(raw).is_none(),
+                "accepted malformed HTTP response: {raw:?}"
+            );
         }
     }
 
@@ -514,21 +520,46 @@ mod tests {
         assert!(parse_response(wrong.as_bytes()).is_none());
     }
 
-    #[test]
-    fn doctor_transport_rejects_a_truncated_http_body_on_a_real_socket() {
+    // Read the complete request before closing: unread request bytes can cause
+    // TCP reset, hiding the response-parser verdict behind a transport error.
+    fn reply_once(reply: &'static [u8]) -> (SocketAddr, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request);
             stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort")
-                .expect("write incomplete reply");
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("request deadline");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(request.len() < 16 * 1024, "request headers too large");
+                let mut byte = [0_u8; 1];
+                stream.read_exact(&mut byte).expect("complete request head");
+                request.push(byte[0]);
+            }
+            stream.write_all(reply).expect("write reply");
         });
-        assert!(get(addr, "/api/health", None, Duration::from_secs(2))
-            .is_err_and(|error| error.kind() == ErrorKind::InvalidData));
+        (addr, server)
+    }
+
+    #[test]
+    fn doctor_transport_rejects_a_truncated_http_body_on_a_real_socket() {
+        let (addr, server) =
+            reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
+        let result = get(addr, "/api/health", None, Duration::from_secs(2));
         server.join().expect("server");
+        assert!(result.is_err_and(|error| error.kind() == ErrorKind::InvalidData));
+    }
+
+    #[test]
+    fn doctor_transport_accepts_a_complete_http_body_on_a_real_socket() {
+        let (addr, server) =
+            reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        let result = get(addr, "/api/health", None, Duration::from_secs(2));
+        server.join().expect("server");
+        let response = result.expect("complete HTTP response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "hello");
     }
 
     #[test]
@@ -542,14 +573,7 @@ mod tests {
 
     #[test]
     fn another_program_on_the_port_is_foreign() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut buf = [0_u8; 1024];
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
-        });
+        let (addr, server) = reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
         let found = probe(addr, None, Duration::from_secs(2), AddrSource::Flag);
         server.join().expect("server");
         assert_eq!(found.state, ServeState::Foreign);
