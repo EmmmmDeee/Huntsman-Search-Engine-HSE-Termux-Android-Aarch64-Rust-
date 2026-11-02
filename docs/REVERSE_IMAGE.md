@@ -18,9 +18,9 @@ resolution; store the file with mode 600. Slots:
 
 | Provider | Credential slot | Search | Provenance |
 | --- | --- | --- | --- |
-| Google Cloud Vision | `HSE_GOOGLE_VISION_API_KEY` | WEB_DETECTION | [Google documentation](https://docs.cloud.google.com/vision/docs/detecting-web) |
-| Lenso.ai | `HSE_LENSO_API_KEY` | duplicates | [Lenso API](https://github.com/lenso-ai/reverse-image-search-api) |
-| SauceNAO | `HSE_SAUCENAO_API_KEY` | db 999 | [SauceNAO](https://saucenao.com/) |
+| Google Cloud Vision | `HUNTSMAN_GOOGLE_VISION_KEY` | WEB_DETECTION | [Google documentation](https://docs.cloud.google.com/vision/docs/detecting-web) |
+| Lenso.ai | `HUNTSMAN_LENSO_KEY` | duplicates | [Lenso API](https://github.com/lenso-ai/reverse-image-search-api) |
+| SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | db 999 | [SauceNAO](https://saucenao.com/) |
 
 Only configure services for which the operator has authorized API access and accepted
 applicable terms. Third-party providers receive image bytes when called. Do not submit
