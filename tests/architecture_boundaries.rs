@@ -670,6 +670,25 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// The Wi-Fi radar takes the serving cell as a plain label; it never reaches into the cell radar
+/// for it, so either radar builds and changes without the other (R-08).
+#[test]
+fn the_wifi_radar_does_not_depend_on_the_cell_radar() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| {
+            source.path == "src/wifi_radar.rs" || under(&source.path, "src/wifi_radar")
+        })
+        .filter(|source| {
+            production_tokens(&source.text)
+                .iter()
+                .any(|t| t == "cell_radar")
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(found.is_empty(), "wifi_radar names cell_radar: {found:?}");
+}
+
 #[test]
 fn the_wigle_collector_does_not_depend_on_scan_routing() {
     let found: Vec<String> = production_sources()
