@@ -2875,6 +2875,45 @@ fn upload(addr: SocketAddr, head: &str, body: &[u8]) -> String {
     String::from_utf8_lossy(&answer).into_owned()
 }
 
+#[test]
+fn reverse_image_upload_uses_the_inspect_gate_and_stays_offline_by_default() {
+    let (addr, inspection_calls) = inspect_server(None, "127.0.0.1:0");
+    let image = b"GIF89a";
+    let head = format!(
+        "POST /api/reverse-image HTTP/1.1\\r\\nHost: localhost\\r\\n{HEADER}Content-Length: {}\\r\\n\\r\\n",
+        image.len()
+    );
+    let answer = upload(addr, &head, image);
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let (_, data) = answer.split_once("\\r\\n\\r\\n").unwrap();
+    let report: serde_json::Value = serde_json::from_str(data).unwrap();
+    assert_eq!(report["bytes"], 6);
+    assert_eq!(report["live_requested"], false);
+    assert_eq!(report["statuses"].as_array().unwrap().len(), 3);
+    assert!(report["statuses"].as_array().unwrap().iter().all(|s| s["state"] == "not_requested"));
+    assert_eq!(inspection_calls.load(Ordering::SeqCst), 0);
+
+    let denied = upload(
+        addr,
+        &format!(
+            "POST /api/reverse-image HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Length: {}\\r\\n\\r\\n",
+            image.len()
+        ),
+        image,
+    );
+    assert!(denied.starts_with("HTTP/1.1 403"), "{denied}");
+    let wrong = upload(
+        addr,
+        &format!(
+            "POST /api/reverse-image?live=1 HTTP/1.1\\r\\nHost: localhost\\r\\n{HEADER}Content-Length: {}\\r\\n\\r\\n",
+            image.len()
+        ),
+        image,
+    );
+    assert!(wrong.starts_with("HTTP/1.1 400"), "{wrong}");
+    assert_eq!(inspection_calls.load(Ordering::SeqCst), 0);
+}
+
 fn inspect_head(name: &str, length: usize, extra: &str) -> String {
     format!(
         "POST /api/inspect?name={name} HTTP/1.1\r\nHost: localhost\r\n{extra}Content-Length: {length}\r\n\r\n"
