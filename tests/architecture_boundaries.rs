@@ -670,6 +670,26 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// Lower-case hex in the APK parsers is `base64::base16_lower`, whose test pins it to `{:02x}` for
+/// every byte; no APK module keeps its own `hex` formatter.
+#[test]
+fn apk_parsers_use_the_canonical_base16_encoder() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| under(&source.path, "src/apk_intel") || source.path == "src/apk_intel.rs")
+        .filter(|source| {
+            production_tokens(&source.text)
+                .windows(2)
+                .any(|w| w[0] == "fn" && w[1] == "hex")
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(
+        found.is_empty(),
+        "APK hex formatter redefined in: {found:?}"
+    );
+}
+
 /// The APK readers share one set of bounds-checked little-endian field readers: `le16`, `le32` and
 /// `le64` in `src/apk_intel.rs`, and the index-typed `le32` in `src/apk_intel/signer.rs`.
 #[test]
