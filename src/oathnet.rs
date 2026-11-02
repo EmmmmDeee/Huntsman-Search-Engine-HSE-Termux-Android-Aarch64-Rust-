@@ -133,7 +133,7 @@ pub enum OathnetError {
     Unauthorized,
     #[error("oathnet: forbidden (HTTP 403): the plan or the daily lookup quota does not allow it")]
     Forbidden,
-    #[error("oathnet: rate or quota limit reached (HTTP 429){}", describe_retry(*.retry_after))]
+    #[error("oathnet: rate or quota limit reached (HTTP 429){}", crate::http::describe_retry_after(*.retry_after))]
     RateLimited { retry_after: Option<u64> },
     #[error("oathnet: server error (HTTP {0})")]
     Server(u16),
@@ -145,10 +145,6 @@ pub enum OathnetError {
     Decode(String),
     #[error("oathnet: success=false: {0}")]
     Provider(String),
-}
-
-fn describe_retry(retry_after: Option<u64>) -> String {
-    retry_after.map_or_else(String::new, |secs| format!(", retry after {secs}s"))
 }
 
 impl OathnetError {

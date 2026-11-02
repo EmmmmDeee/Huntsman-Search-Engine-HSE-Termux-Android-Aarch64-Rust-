@@ -30,16 +30,14 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::cell_radar::CellScan;
 use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
 use crate::module::reachable_modules;
-use crate::radar::TrackReport;
 use crate::scan_api::ScanApi;
 use crate::serve_events::EventHub;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::wifi_radar::WifiScan;
+use crate::web_api_types::{CellScan, TrackReport, WifiScan};
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 

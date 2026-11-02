@@ -14,6 +14,7 @@
 //! bounds-checked; a file that is not a little-endian ELF, or whose headers do not fit, yields
 //! `None` rather than a misread.
 
+use super::{le16, le32, le64};
 /// `PT_LOAD`: a loadable segment, used to translate a virtual address to a file offset.
 const PT_LOAD: u32 = 1;
 /// `PT_DYNAMIC`: the segment holding the dynamic-linking array.
@@ -38,21 +39,6 @@ const MAX_DYNAMIC_ENTRIES: usize = 8192;
 const MAX_NEEDED: usize = 64;
 /// A `SONAME` or needed-library name longer than this is refused as malformed.
 const MAX_LIB_NAME_BYTES: usize = 256;
-
-fn u16_le(data: &[u8], at: usize) -> Option<u16> {
-    let field = data.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes([field[0], field[1]]))
-}
-
-fn u32_le(data: &[u8], at: usize) -> Option<u32> {
-    let field = data.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes([field[0], field[1], field[2], field[3]]))
-}
-
-fn u64_le(data: &[u8], at: usize) -> Option<u64> {
-    let field = data.get(at..at.checked_add(8)?)?;
-    Some(u64::from_le_bytes(field.try_into().ok()?))
-}
 
 fn index(value: u64) -> Option<usize> {
     usize::try_from(value).ok()
@@ -89,15 +75,15 @@ fn layout(data: &[u8]) -> Option<Layout> {
     match class {
         1 => Some(Layout {
             is_64: false,
-            phoff: index(u32_le(data, 28)?.into())?,
-            phentsize: usize::from(u16_le(data, 42)?),
-            phnum: usize::from(u16_le(data, 44)?),
+            phoff: index(le32(data, 28)?.into())?,
+            phentsize: usize::from(le16(data, 42)?),
+            phnum: usize::from(le16(data, 44)?),
         }),
         2 => Some(Layout {
             is_64: true,
-            phoff: index(u64_le(data, 32)?)?,
-            phentsize: usize::from(u16_le(data, 54)?),
-            phnum: usize::from(u16_le(data, 56)?),
+            phoff: index(le64(data, 32)?)?,
+            phentsize: usize::from(le16(data, 54)?),
+            phnum: usize::from(le16(data, 56)?),
         }),
         _ => None,
     }
@@ -106,17 +92,17 @@ fn layout(data: &[u8]) -> Option<Layout> {
 fn program_header(data: &[u8], at: usize, is_64: bool) -> Option<ProgramHeader> {
     if is_64 {
         Some(ProgramHeader {
-            kind: u32_le(data, at)?,
-            offset: index(u64_le(data, at + 8)?)?,
-            vaddr: u64_le(data, at + 16)?,
-            size: index(u64_le(data, at + 32)?)?,
+            kind: le32(data, at)?,
+            offset: index(le64(data, at + 8)?)?,
+            vaddr: le64(data, at + 16)?,
+            size: index(le64(data, at + 32)?)?,
         })
     } else {
         Some(ProgramHeader {
-            kind: u32_le(data, at)?,
-            offset: index(u32_le(data, at + 4)?.into())?,
-            vaddr: u32_le(data, at + 8)?.into(),
-            size: index(u32_le(data, at + 16)?.into())?,
+            kind: le32(data, at)?,
+            offset: index(le32(data, at + 4)?.into())?,
+            vaddr: le32(data, at + 8)?.into(),
+            size: index(le32(data, at + 16)?.into())?,
         })
     }
 }
@@ -183,9 +169,9 @@ pub fn build_id(data: &[u8]) -> Option<String> {
 fn build_id_in_notes(notes: &[u8]) -> Option<String> {
     let mut at = 0;
     while at + 12 <= notes.len() {
-        let namesz = index(u32_le(notes, at)?.into())?;
-        let descsz = index(u32_le(notes, at + 4)?.into())?;
-        let kind = u32_le(notes, at + 8)?;
+        let namesz = index(le32(notes, at)?.into())?;
+        let descsz = index(le32(notes, at + 4)?.into())?;
+        let kind = le32(notes, at + 8)?;
         let name_at = at + 12;
         let name_end = name_at.checked_add(namesz)?;
         let desc_at = name_end.checked_add((4 - namesz % 4) % 4)?;
@@ -234,9 +220,9 @@ fn dynamic_entry_size(is_64: bool) -> usize {
 /// Reads one dynamic-array entry (`d_tag`, `d_un`) at `at`, by ELF class.
 fn dynamic_entry(data: &[u8], at: usize, is_64: bool) -> Option<(u64, u64)> {
     if is_64 {
-        Some((u64_le(data, at)?, u64_le(data, at + 8)?))
+        Some((le64(data, at)?, le64(data, at + 8)?))
     } else {
-        Some((u32_le(data, at)?.into(), u32_le(data, at + 4)?.into()))
+        Some((le32(data, at)?.into(), le32(data, at + 4)?.into()))
     }
 }
 

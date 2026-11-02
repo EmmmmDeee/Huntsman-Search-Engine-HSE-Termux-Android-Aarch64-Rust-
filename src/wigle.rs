@@ -121,7 +121,7 @@ pub enum WigleError {
     Forbidden(u16),
     #[error("wigle: query failed (HTTP 410)")]
     QueryFailed,
-    #[error("wigle: daily query limit reached (HTTP 429){}", describe_retry(*.retry_after))]
+    #[error("wigle: daily query limit reached (HTTP 429){}", crate::http::describe_retry_after(*.retry_after))]
     RateLimited { retry_after: Option<u64> },
     #[error("wigle: server error (HTTP {0})")]
     Server(u16),
@@ -133,10 +133,6 @@ pub enum WigleError {
     Decode(String),
     #[error("wigle: success=false: {0}")]
     Provider(String),
-}
-
-fn describe_retry(retry_after: Option<u64>) -> String {
-    retry_after.map_or_else(String::new, |secs| format!(", retry after {secs}s"))
 }
 
 impl WigleError {

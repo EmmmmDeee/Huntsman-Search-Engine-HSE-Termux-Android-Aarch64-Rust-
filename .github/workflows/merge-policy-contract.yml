@@ -51,5 +51,7 @@ jobs:
           persist-credentials: false
       - name: Detect policy drift without any write credentials
         env:
-          GH_TOKEN: ${{ github.token }}
+          # bypass_actors is only returned to a token with Administration:read. Without the
+          # optional MERGE_POLICY_AUDIT_TOKEN secret the check fails closed as UNVERIFIABLE.
+          GH_TOKEN: ${{ secrets.MERGE_POLICY_AUDIT_TOKEN || github.token }}
         run: bash scripts/github/merge-policy.sh check

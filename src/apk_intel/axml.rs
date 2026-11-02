@@ -7,6 +7,7 @@
 //! known obfuscation, still reads as Android reads it. Only the manifest facts an investigator
 //! pivots on are kept; nothing is executed or resolved against the app's own resources.
 
+use super::{le16, le32};
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -133,16 +134,6 @@ pub struct Manifest {
     pub intent_filters: Vec<IntentFilterDef>,
     /// Count of intent filters omitted when list exceeds capacity.
     pub intent_filters_omitted: usize,
-}
-
-fn le16(data: &[u8], at: usize) -> Option<u16> {
-    let field = data.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes([field[0], field[1]]))
-}
-
-fn le32(data: &[u8], at: usize) -> Option<u32> {
-    let field = data.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes([field[0], field[1], field[2], field[3]]))
 }
 
 fn index(value: u32) -> Option<usize> {

@@ -6,6 +6,7 @@
 //! A URL in code is a lead, not an observation: it names an endpoint the app may contact, an SDK's
 //! default, documentation or dead code alike, and nothing here contacts it.
 
+use super::signer::le32;
 use std::collections::BTreeSet;
 
 use serde::Serialize;
@@ -53,11 +54,6 @@ pub struct CodeUrls {
     host_set: BTreeSet<String>,
     #[serde(skip)]
     tracker_set: BTreeSet<&'static str>,
-}
-
-fn le32(data: &[u8], at: usize) -> Option<usize> {
-    let field = data.get(at..at.checked_add(4)?)?;
-    usize::try_from(u32::from_le_bytes([field[0], field[1], field[2], field[3]])).ok()
 }
 
 /// The bytes of the string at `offset`: past its ULEB128 length, up to its NUL.
