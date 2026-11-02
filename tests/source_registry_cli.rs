@@ -108,7 +108,10 @@ fn sources_routes_a_handle_as_written() {
         assert!(route_count >= 3, "{stdout}");
         assert_eq!(
             route_count,
-            stdout.lines().filter(|line| line.starts_with("source=")).count(),
+            stdout
+                .lines()
+                .filter(|line| line.starts_with("source="))
+                .count(),
             "{stdout}"
         );
         assert!(
