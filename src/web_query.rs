@@ -232,7 +232,7 @@ pub fn search_all<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    search(transport, query, now_unix)
+    search(transport, &query, now_unix)
 }
 
 /// Validate before allocating provider URLs or sending any network request.
