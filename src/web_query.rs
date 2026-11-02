@@ -54,6 +54,40 @@ pub const ENGINES: [EngineSpec; 3] = [
     },
 ];
 
+/// Opt-in exhaustive keyless discovery. Every source uses a public web search page,
+/// not an API or a paid credential. Some sources require JavaScript or challenge
+/// automated clients: those are reported as typed failures, not silently discarded.
+/// Multiple engines may share an upstream index; URL overlap is never independent
+/// corroboration of a document or personal identity.
+pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
+    ENGINES[0],
+    ENGINES[1],
+    ENGINES[2],
+    EngineSpec { name: "duckduckgo", base_url: "https://html.duckduckgo.com/html/" },
+    EngineSpec { name: "google", base_url: "https://www.google.com/search" },
+    EngineSpec { name: "yahoo", base_url: "https://search.yahoo.com/search" },
+    EngineSpec { name: "ecosia", base_url: "https://www.ecosia.org/search" },
+    EngineSpec { name: "startpage", base_url: "https://www.startpage.com/sp/search" },
+    EngineSpec { name: "qwant", base_url: "https://www.qwant.com/" },
+    EngineSpec { name: "swisscows", base_url: "https://swisscows.com/en/web" },
+    EngineSpec { name: "yandex", base_url: "https://yandex.com/search/" },
+    EngineSpec { name: "yep", base_url: "https://yep.com/web" },
+    EngineSpec { name: "lilo", base_url: "https://search.lilo.org/" },
+    EngineSpec { name: "you", base_url: "https://you.com/search" },
+    EngineSpec { name: "wiby", base_url: "https://wiby.me/" },
+    EngineSpec { name: "marginalia", base_url: "https://search.marginalia.nu/search" },
+];
+
+/// Public search forms have different parameter names.
+fn search_parameter(engine: &str) -> &'static str {
+    match engine {
+        "yahoo" => "p",
+        "swisscows" | "marginalia" => "query",
+        "yandex" => "text",
+        _ => "q",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchHit {
     pub engine: String,
@@ -112,6 +146,20 @@ pub fn search<T: Transport + ?Sized>(
     Ok(report)
 }
 
+
+/// Exhaustive, opt-in keyless search across every configured public HTML engine.
+/// A provider may reject automation. Failure remains explicit and does not
+/// suppress the other providers' observations.
+pub fn search_all<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    now_unix: u64,
+) -> Result<SearchReport, Error> {
+    let query = checked_query(query, "query")?;
+    let (report, _) = search_with_observations_for(transport, &query, now_unix, &EXTENDED_ENGINES)?;
+    Ok(report)
+}
+
 /// Validate before allocating provider URLs or sending any network request.
 fn checked_query(input: &str, label: &str) -> Result<String, Error> {
     if input.len() > MAX_SEARCH_QUERY_BYTES || input.chars().any(char::is_control) {
@@ -133,9 +181,18 @@ fn search_with_observations<T: Transport + ?Sized>(
     query: &str,
     now_unix: u64,
 ) -> Result<(SearchReport, Vec<SearchHit>), Error> {
+    search_with_observations_for(transport, query, now_unix, &ENGINES)
+}
+
+fn search_with_observations_for<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    now_unix: u64,
+    engines: &[EngineSpec],
+) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
-    for engine in ENGINES {
+    for &engine in engines {
         let result = search_engine(transport, engine, query, now_unix)?;
         hits.extend(result.hits);
         outcomes.push(result.outcome);
@@ -184,10 +241,12 @@ fn append_round<T: Transport + ?Sized>(
     query: &str,
     strategy: &'static str,
     now_unix: u64,
+    engines: &[EngineSpec],
     reports: &mut Vec<AdaptiveRound>,
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
-    let (report, observations) = search_with_observations(transport, query, now_unix)?;
+    let (report, observations) =
+        search_with_observations_for(transport, query, now_unix, engines)?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
@@ -233,6 +292,26 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     input: &str,
     now_unix: u64,
 ) -> Result<AdaptiveSearchReport, Error> {
+    adaptive_search_for(transport, input, now_unix, &ENGINES)
+}
+
+/// Use all 16 keyless web engines for each bounded adaptive round.
+/// This can make up to 48 independently paced requests (three rounds).
+/// It is opt-in because some search sites block non-browser clients.
+pub fn adaptive_search_all<T: Transport + ?Sized>(
+    transport: &T,
+    input: &str,
+    now_unix: u64,
+) -> Result<AdaptiveSearchReport, Error> {
+    adaptive_search_for(transport, input, now_unix, &EXTENDED_ENGINES)
+}
+
+fn adaptive_search_for<T: Transport + ?Sized>(
+    transport: &T,
+    input: &str,
+    now_unix: u64,
+    engines: &[EngineSpec],
+) -> Result<AdaptiveSearchReport, Error> {
     let normalized_query = checked_query(input, "adaptive query")?;
     let mut rounds = Vec::new();
     let mut discovery_index = BTreeMap::new();
@@ -241,6 +320,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
         &normalized_query,
         "baseline",
         now_unix,
+        engines,
         &mut rounds,
         &mut discovery_index,
     )?;
@@ -270,6 +350,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
                 &refined,
                 strategy,
                 now_unix,
+                engines,
                 &mut rounds,
                 &mut discovery_index,
             )?;
@@ -285,6 +366,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
                     &broader,
                     "broader_low_confidence_recall",
                     now_unix,
+                    engines,
                     &mut rounds,
                     &mut discovery_index,
                 )?;
@@ -336,7 +418,7 @@ fn search_engine<T: Transport + ?Sized>(
     query: &str,
     now_unix: u64,
 ) -> Result<EngineReport, Error> {
-    let url = append_query_param(engine.base_url, "q", query);
+    let url = append_query_param(engine.base_url, search_parameter(engine.name), query);
     if let Some(cached) = cached_response(&url, now_unix) {
         return Ok(parse_engine_response(engine, &cached, now_unix));
     }
@@ -494,8 +576,7 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
     let mut seen = BTreeSet::new();
     let mut hits = Vec::new();
     for href in href_values(html) {
-        let decoded = decode_html_entities(href);
-        let Some(url) = canonical_url(&decoded) else {
+        let Some(url) = extract_result_url(href, engine) else {
             continue;
         };
         if is_engine_or_navigation_url(&url) {
@@ -512,6 +593,41 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
         }
     }
     hits
+}
+
+
+/// Follow only known *result-link* wrappers, without making another network
+/// request. Reject malformed percent-encoding or non-http(s) destinations.
+/// Avoid using an engine redirect URL as a separate document identity.
+fn extract_result_url(href: &str, engine: &str) -> Option<String> {
+    let decoded = decode_html_entities(href);
+    let value = if engine == "duckduckgo"
+        && (decoded.starts_with("//duckduckgo.com/l/?")
+            || decoded.starts_with("/l/?")
+            || decoded.starts_with("https://duckduckgo.com/l/?"))
+    {
+        let query = decoded.split_once('?')?.1;
+        let target = query.split('&').filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == "uddg")?.1;
+        crate::value_syntax::percent_decode_strict(target)?
+    } else if engine == "google"
+        && (decoded.starts_with("/url?")
+            || decoded.starts_with("https://www.google.com/url?"))
+    {
+        let query = decoded.split_once('?')?.1;
+        let target = query.split('&').filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == "q" || *key == "url")?.1;
+        crate::value_syntax::percent_decode_strict(target)?
+    } else if engine == "yahoo"
+        && decoded.starts_with("https://r.search.yahoo.com/")
+        && decoded.contains("/RU=")
+    {
+        let target = decoded.split_once("/RU=")?.1.split('/').next()?;
+        crate::value_syntax::percent_decode_strict(target)?
+    } else {
+        decoded
+    };
+    canonical_url(&value)
 }
 
 fn href_values(html: &str) -> Vec<&str> {
@@ -666,6 +782,19 @@ fn is_engine_or_navigation_url(url: &str) -> bool {
         "mojeek.com",
         "microsoft.com",
         "msn.com",
+        "duckduckgo.com",
+        "google.com",
+        "yahoo.com",
+        "ecosia.org",
+        "startpage.com",
+        "qwant.com",
+        "swisscows.com",
+        "yandex.com",
+        "yep.com",
+        "lilo.org",
+        "you.com",
+        "wiby.me",
+        "marginalia.nu",
     ];
     ENGINE_HOSTS.iter().any(|known| {
         host == *known
@@ -1270,6 +1399,66 @@ mod tests {
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
     }
+
+    #[test]
+    fn exhaustive_registry_is_keyless_unique_and_has_sixteen_providers() {
+        assert_eq!(EXTENDED_ENGINES.len(), 16);
+        let mut names = BTreeSet::new();
+        for engine in EXTENDED_ENGINES {
+            assert!(names.insert(engine.name), "duplicate engine {}", engine.name);
+            assert!(engine.base_url.starts_with("https://"));
+            assert!(!engine.base_url.contains('?'));
+        }
+        for engine in ENGINES {
+            assert!(names.contains(engine.name));
+        }
+        assert_eq!(search_parameter("yahoo"), "p");
+        assert_eq!(search_parameter("yandex"), "text");
+        assert_eq!(search_parameter("swisscows"), "query");
+    }
+
+    #[test]
+    fn wrapped_search_results_decode_once_without_confusing_engine_navigation() {
+        let html = r#"
+            <a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fnews%3Fx%3D1%26y%3D2">A</a>
+            <a href="/l/?uddg=javascript%3Aalert%281%29">not a URL</a>
+            <a href="https://duckduckgo.com/?q=another">navigation</a>
+        "#;
+        let hits = parse_hits(html, "duckduckgo");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://example.org/news?x=1&y=2");
+        assert_eq!(parse_hits(
+            r#"<a href="/url?q=https%3A%2F%2Fexample.net%2Farticle&amp;sa=U">x</a>"#,
+            "google",
+        )[0].url, "https://example.net/article");
+        assert_eq!(parse_hits(
+            r#"<a href="https://r.search.yahoo.com/_ylt=z/RU=https%3A%2F%2Fexample.com%2Fa/RK=1">x</a>"#,
+            "yahoo",
+        )[0].url, "https://example.com/a");
+    }
+
+    #[test]
+    fn expanded_search_uses_correct_parameters_and_isolates_failures() {
+        struct Capture {
+            urls: RefCell<Vec<String>>,
+        }
+        impl Transport for Capture {
+            fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+                self.urls.borrow_mut().push(request.url.clone());
+                Ok(response(200, r#"<a href="https://example.org/article">Article</a>"#))
+            }
+        }
+        let fake = Capture { urls: RefCell::new(Vec::new()) };
+        let report = search_all(&fake, "test all engines", 2000).unwrap();
+        assert_eq!(report.outcomes.len(), 16);
+        assert_eq!(report.hits.len(), 1);
+        let urls = fake.urls.borrow();
+        assert_eq!(urls.len(), 16);
+        assert!(urls.iter().any(|url| url.starts_with("https://search.yahoo.com/search?p=")));
+        assert!(urls.iter().any(|url| url.starts_with("https://yandex.com/search/?text=")));
+        assert!(urls.iter().any(|url| url.starts_with("https://swisscows.com/en/web?query=")));
+    }
+
     #[test]
     fn query_is_canonical_before_search_setup() {
         assert_eq!(canonical_whitespace("  Ada   Lovelace "), "ada lovelace");
