@@ -234,7 +234,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       }));
       check('late research reply cannot replace newer term or enable old mission',
         state.term === 'fresh term' && state.hits.includes('fresh.example') &&
-        !state.hits.includes('example.org') && state.status.includes('Unverified') &&
+        !state.hits.includes('example.org') && /\bunverified\b/i.test(state.status) &&
         state.missionDisabled && state.target !== 'example.org', state);
       await ctx.close();
     }
