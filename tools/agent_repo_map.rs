@@ -19,6 +19,7 @@ struct Coverage {
     non_utf8: usize,
     symbol_truncated: usize,
     matched: usize,
+    inspected: usize,
 }
 
 fn is_symbol(line: &str) -> bool {
@@ -102,6 +103,7 @@ fn main() -> io::Result<()> {
                 "Rust source exceeded file size limit during read"));
         }
         let Ok(src) = String::from_utf8(bytes) else { coverage.non_utf8 += 1; continue };
+        coverage.inspected += 1;
         let symbol_count = src.lines().filter(|line| is_symbol(line)).count();
         if symbol_count > MAX_SYMBOLS { coverage.symbol_truncated += 1; }
         let symbols: Vec<(usize, String)> = src.lines().enumerate()
@@ -110,13 +112,26 @@ fn main() -> io::Result<()> {
             .map(|(n, s)| (n + 1, s.trim().chars().take(180).collect()))
             .collect();
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        let rank = score(&relative, &symbols, &terms);
+        // Search the complete source body; symbol extraction is only a navigation aid.
+        // Avoid allocating a second lowercased copy of the entire source at once.
+        let rank = if terms.is_empty() { 1 } else {
+            let path_lower = relative.to_ascii_lowercase();
+            let mut rank = 0;
+            for term in &terms {
+                if path_lower.contains(term) {
+                    rank += 12;
+                } else if src.to_ascii_lowercase().contains(term) {
+                    rank += 3;
+                }
+            }
+            rank
+        };
         if rank > 0 {
             coverage.matched += 1;
             keep_best(&mut matches, rank, relative, symbols);
         }
     }
-    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len());
+    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected);
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
@@ -135,6 +150,11 @@ mod tests {
         assert!(is_symbol("pub(crate) unsafe fn probe() {}"));
         assert!(!is_symbol("let x = 3;"));
         assert!(!is_symbol("// fn fake()"));
+    }
+    #[test] fn full_body_terms_are_not_symbol_only() {
+        let source = "fn unrelated() {}\nlet evidence_marker = 1;";
+        assert!(source.to_ascii_lowercase().contains("evidence_marker"));
+        assert_eq!(score("src/other.rs", &[(1, "fn unrelated() {}".into())], &["evidence_marker".into()]), 0);
     }
     #[test] fn rankings() {
         let s = vec![(1, "fn correlate()".to_string())];
