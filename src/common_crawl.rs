@@ -883,7 +883,7 @@ mod tests {
             "https://example.org/contact",
             "200",
             "text/html; charset=UTF-8",
-            r#"<meta name="generator" content="Drupal 10.2"><p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
+            r#"<meta name="generator" content="Drupal 10.2"><meta name="powered-by" content="Ghost 5.0"><p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
         );
         let root = warc("https://elsewhere.example/", "200", "text/html", "<p>x</p>");
         let index = [
@@ -932,6 +932,15 @@ mod tests {
         assert!(
             seen.iter()
                 .all(|r| r.header_value("authorization").is_none())
+        );
+        let second = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Other && e.value == "technology:ghost")
+            .expect("historical Ghost powered-by evidence");
+        assert_eq!(
+            second.evidence[0].attr_values("signal").next(),
+            Some("html_meta_powered_by")
         );
         let technology = report
             .entities
