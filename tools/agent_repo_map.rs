@@ -73,11 +73,15 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize
     }
     Ok(())
 }
-fn score(path: &str, lines: &[(usize, String)], terms: &[String]) -> usize {
+fn score(path: &str, source: &str, terms: &[String]) -> usize {
     if terms.is_empty() { return 1; }
-    let p = path.to_ascii_lowercase();
-    let body = lines.iter().map(|(_, s)| s.to_ascii_lowercase()).collect::<Vec<_>>().join(" ");
-    terms.iter().map(|t| if p.contains(t) { 12 } else if body.contains(t) { 3 } else { 0 }).sum()
+    let path_lower = path.to_ascii_lowercase();
+    let source_lower = source.to_ascii_lowercase();
+    terms.iter().map(|term| {
+        if path_lower.contains(term) { 12 }
+        else if source_lower.contains(term) { 3 }
+        else { 0 }
+    }).sum()
 }
 // Keep only the results that can be emitted: retaining every matched file could
 // otherwise accumulate millions of source symbols on a memory-limited phone.
@@ -113,27 +117,13 @@ fn main() -> io::Result<()> {
             .map(|(n, s)| (n + 1, s.trim().chars().take(180).collect()))
             .collect();
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        // Search the complete source body; symbol extraction is only a navigation aid.
-        // Lowercase the source once per file, not once per query term.
-        let rank = if terms.is_empty() { 1 } else {
-            let path_lower = relative.to_ascii_lowercase();
-            let source_lower = src.to_ascii_lowercase();
-            let mut rank = 0;
-            for term in &terms {
-                if path_lower.contains(term) {
-                    rank += 12;
-                } else if source_lower.contains(term) {
-                    rank += 3;
-                }
-            }
-            rank
-        };
+        let rank = score(&relative, &src, &terms);
         if rank > 0 {
-            if symbols.len() > 35 { coverage.displayed_symbols_truncated += 1; }
             coverage.matched += 1;
             keep_best(&mut matches, rank, relative, symbols);
         }
     }
+    coverage.displayed_symbols_truncated = matches.iter().filter(|(_, _, symbols)| symbols.len() > 35).count();
     println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated);
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
@@ -158,13 +148,13 @@ mod tests {
     }
     #[test] fn full_body_terms_are_not_symbol_only() {
         let source = "fn unrelated() {}\nlet evidence_marker = 1;";
-        assert!(source.to_ascii_lowercase().contains("evidence_marker"));
-        assert_eq!(score("src/other.rs", &[(1, "fn unrelated() {}".into())], &["evidence_marker".into()]), 0);
+        assert_eq!(score("src/other.rs", source, &["evidence_marker".into()]), 3);
     }
     #[test] fn rankings() {
-        let s = vec![(1, "fn correlate()".to_string())];
-        assert_eq!(score("src/correlator.rs", &s, &["correlat".into()]), 12);
-        assert_eq!(score("src/other.rs", &s, &["correlat".into()]), 3);
+        let source = "fn correlate() {}";
+        assert_eq!(score("src/correlator.rs", source, &["correlat".into()]), 12);
+        assert_eq!(score("src/other.rs", source, &["correlat".into()]), 3);
+        assert_eq!(score("src/other.rs", source, &[]), 1);
     }
     #[test] fn budgets_fail_closed() {
         assert!(require_room(0, 1, "item").is_ok());
