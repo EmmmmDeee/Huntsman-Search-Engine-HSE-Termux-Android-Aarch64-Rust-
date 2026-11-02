@@ -133,10 +133,7 @@ fn live_smoke_verdict_requires_actual_source_success() {
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_nanos();
-    let out = std::env::temp_dir().join(format!(
-        "huntsman-smoke-{}-{nonce}",
-        std::process::id()
-    ));
+    let out = std::env::temp_dir().join(format!("huntsman-smoke-{}-{nonce}", std::process::id()));
     fs::create_dir_all(&out).expect("output directory");
 
     for (probe, text) in [
@@ -170,14 +167,15 @@ fn live_smoke_verdict_requires_actual_source_success() {
     );
     let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("verdict");
     assert_eq!(
-        verdict.lines().filter(|row| row.contains("\tPASS\t")).count(),
+        verdict
+            .lines()
+            .filter(|row| row.contains("\tPASS\t"))
+            .count(),
         7
     );
 
-    fs::write(out.join("wikidata-q42.out"), "Q42 lookup failed\n")
-        .expect("negative wikidata");
-    fs::write(out.join("asn-13335.out"), "PeeringDB unavailable\n")
-        .expect("negative peeringdb");
+    fs::write(out.join("wikidata-q42.out"), "Q42 lookup failed\n").expect("negative wikidata");
+    fs::write(out.join("asn-13335.out"), "PeeringDB unavailable\n").expect("negative peeringdb");
     let negative = run();
     assert!(!negative.status.success(), "false positives are not PASS");
     let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("negative verdict");
