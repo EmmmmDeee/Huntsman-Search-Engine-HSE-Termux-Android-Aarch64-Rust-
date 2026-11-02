@@ -134,6 +134,7 @@ fn main() -> io::Result<()> {
     }
     coverage.displayed_symbols_truncated = matches.iter().filter(|(_, _, symbols)| symbols.len() > 35).count();
     println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated);
+    coverage.omitted_paths.sort();
     for omitted in &coverage.omitted_paths {
         let relative = Path::new(omitted).strip_prefix(&root).unwrap_or(Path::new(omitted));
         eprintln!("# Omitted Rust file: {}", relative.display());
@@ -192,6 +193,11 @@ mod tests {
         assert_eq!(matches.last().unwrap().1, format!("src/{:04}.rs", MAX_RESULTS - 1));
         keep_best(&mut matches, 10, "src/high.rs".to_string(), Vec::new());
         assert_eq!(matches.first().unwrap().1, "src/high.rs");
+    }
+    #[test] fn full_source_ranking_is_case_insensitive() {
+        assert_eq!(score("src/other.rs", "let Evidence_Marker = 1;", &["evidence_marker".into()]), 3);
+        assert_eq!(score("src/EVIDENCE.rs", "let evidence_marker = 1;", &["evidence".into()]), 12);
+        assert_eq!(score("src/other.rs", "let evidence_marker = 1;", &["absent".into()]), 0);
     }
     #[test] fn exclusions() {
         assert!(!allowed_dir(".git"));
