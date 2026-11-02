@@ -63,13 +63,19 @@ pub struct Archive<'a> {
     pub snapshot_url: String,
 }
 
-/// At most [`MAX_PAGES`] distinct captures, by URL: contact-like pages first, then the site
-/// root, then the rest, each group newest first. **Pure.**
+/// At most [`MAX_PAGES`] distinct captures, by URL: keep the newest timestamp for each
+/// URL regardless of index row order, then prioritize contact-like pages, the site root,
+/// and the remaining paths, newest first within each group. **Pure.**
 #[must_use]
 pub fn choose(captures: impl IntoIterator<Item = Capture>) -> Vec<Capture> {
     let mut ranked: Vec<(u8, Capture)> = Vec::new();
     for capture in captures {
-        if ranked.iter().any(|(_, seen)| seen.url == capture.url) {
+        if let Some((_, seen)) = ranked.iter_mut().find(|(_, seen)| seen.url == capture.url) {
+            // Archive indexes need not return captures in timestamp order. Keep the latest
+            // capture for this URL rather than whichever appeared first in the response.
+            if capture.timestamp > seen.timestamp {
+                *seen = capture;
+            }
             continue;
         }
         let path = capture
@@ -443,8 +449,20 @@ mod tests {
                 "https://example.org"
             ]
         );
-        // The first capture of a URL is kept; a later duplicate is not a second page.
-        assert_eq!(chosen[0].timestamp, "20230101000000");
+        // Duplicates do not consume a page slot; the newest capture is selected.
+        assert_eq!(chosen[0].timestamp, "20250101000000");
+    }
+
+    #[test]
+    fn newest_capture_is_selected_regardless_of_index_order() {
+        let old = capture("20190101000000", "https://example.org/contact");
+        let new = capture("20250501000000", "https://example.org/contact");
+        let other = capture("20240101000000", "https://example.org/about");
+        let first_old = choose([old.clone(), other.clone(), new.clone()]);
+        let first_new = choose([new.clone(), other, old]);
+        assert_eq!(first_old, first_new);
+        assert_eq!(first_old.len(), 2);
+        assert_eq!(first_old[0], new);
     }
 
     #[test]
