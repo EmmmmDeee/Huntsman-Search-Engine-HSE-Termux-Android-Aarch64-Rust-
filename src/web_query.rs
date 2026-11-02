@@ -1289,7 +1289,7 @@ mod tests {
             "ada lovelace"
         );
         assert!(checked_query("   ", "query").is_err());
-        assert!(checked_query("ada\\n", "query").is_err());
+        assert!(checked_query("ada\n", "query").is_err());
     }
 
     #[test]
