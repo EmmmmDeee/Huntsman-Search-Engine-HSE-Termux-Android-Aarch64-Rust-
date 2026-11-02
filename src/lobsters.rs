@@ -22,7 +22,7 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::github_user::valid_login_shape as valid_github_handle;
-use crate::http::{DEFAULT_USER_AGENT, Request, Transport, percent_encode_unreserved};
+use crate::http::{Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::decode_html_entities;
 
@@ -87,9 +87,7 @@ fn profile_url(handle: &str) -> String {
 }
 
 fn request(url: String) -> Request {
-    Request::get(url)
-        .header("accept", "application/json")
-        .header("user-agent", DEFAULT_USER_AGENT)
+    Request::get_json(url)
 }
 
 /// Look up one Lobsters account, keyless.

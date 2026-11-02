@@ -94,6 +94,15 @@ impl Request {
         }
     }
 
+    /// A keyless JSON `GET`: `accept: application/json` plus the default Huntsman user agent.
+    #[inline]
+    #[must_use]
+    pub fn get_json(url: impl Into<String>) -> Self {
+        Self::get(url)
+            .header("accept", "application/json")
+            .header("user-agent", DEFAULT_USER_AGENT)
+    }
+
     #[must_use]
     pub fn post(url: impl Into<String>, body: Vec<u8>) -> Self {
         Self {
@@ -1238,6 +1247,22 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn get_json_sends_accept_json_and_the_default_user_agent() {
+        let request = Request::get_json("https://example.test/x");
+        assert_eq!(request.method, Method::Get);
+        assert_eq!(request.url, "https://example.test/x");
+        assert_eq!(
+            request.headers,
+            vec![
+                ("accept".to_owned(), "application/json".to_owned()),
+                ("user-agent".to_owned(), DEFAULT_USER_AGENT.to_owned()),
+            ]
+        );
+        assert!(request.body.is_empty());
+        assert_eq!(request.timeout, None);
+    }
 
     #[test]
     fn the_two_encoders_differ_only_in_how_a_space_is_written() {

@@ -29,7 +29,7 @@ use crate::error::Error;
 use crate::fetch::{
     FetchOptions, Fetched, answer, decode_json, fetch, mediawiki_api_error, whole_response,
 };
-use crate::http::{DEFAULT_USER_AGENT, Request, Transport, percent_encode_unreserved};
+use crate::http::{Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE: &str = "wikidata";
@@ -296,9 +296,7 @@ struct SearchHit {
 }
 
 fn request(url: String) -> Request {
-    Request::get(url)
-        .header("accept", "application/json")
-        .header("user-agent", DEFAULT_USER_AGENT)
+    Request::get_json(url)
 }
 
 /// Look up one Wikidata item for `query`: a `Q`-number, or free text resolved to its top match.
