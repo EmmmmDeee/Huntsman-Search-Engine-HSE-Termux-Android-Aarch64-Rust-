@@ -479,7 +479,10 @@ fn read_contents<T: Transport + ?Sized>(
         records.len()
     );
     if technologies > 0 {
-        let _ = write!(detail, "; {technologies} archived technology signal(s) found");
+        let _ = write!(
+            detail,
+            "; {technologies} archived technology signal(s) found"
+        );
     }
     if !unread.is_empty() {
         detail.push_str("; not read: ");
