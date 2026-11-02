@@ -1473,7 +1473,7 @@ fn route(
             json_ok(&body, head)
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
-        RHINSER_NATIVE_PATH => rhinser_native_response(parsed),
+        RHINSER_NATIVE_PATH => rhinser_native_response(parsed, config),
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
