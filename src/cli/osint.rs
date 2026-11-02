@@ -17,8 +17,8 @@ use huntsman_recon::keys::Keys;
 use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
 use huntsman_recon::rhinser_catalog::Catalog;
-use huntsman_recon::rhinser_nfc;
 use huntsman_recon::rhinser_native;
+use huntsman_recon::rhinser_nfc;
 use huntsman_recon::rhinser_workspace::{MAX_WORKSPACE_BYTES, Workspace};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 

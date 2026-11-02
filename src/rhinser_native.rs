@@ -212,7 +212,11 @@ mod tests {
         ));
         assert!(matches!(
             &report.observations[2],
-            NativeObservation::Bluetooth { transport: "ble", signal_class: "medium", .. }
+            NativeObservation::Bluetooth {
+                transport: "ble",
+                signal_class: "medium",
+                ..
+            }
         ));
         let rendered = serde_json::to_string(&report).unwrap();
         assert!(!rendered.contains("D1010554"));

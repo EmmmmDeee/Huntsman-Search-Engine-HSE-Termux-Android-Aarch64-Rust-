@@ -19,7 +19,11 @@ fn fixture_from_operator_is_classified_without_claiming_live_hardware() {
     std::fs::write(&path, fixture).unwrap();
     let shown = run(&["osint", "native", path.to_str().unwrap()]);
     std::fs::remove_file(&path).unwrap();
-    assert!(shown.status.success(), "{}", String::from_utf8_lossy(&shown.stderr));
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
     let report: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
     assert_eq!(report["evidence_role"], "operator_submitted_unverified");
     assert_eq!(report["radio_access"], false);
