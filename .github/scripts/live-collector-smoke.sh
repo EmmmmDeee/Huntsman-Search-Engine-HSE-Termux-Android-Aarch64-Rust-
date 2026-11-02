@@ -94,34 +94,34 @@ for f in sorted(out.glob("*.out")):
     for line in text.splitlines():
         # `module<TAB>status<TAB>` and `module.part<TAB>status<TAB>` (one leg of a module)
         m = re.match(r"^([a-z0-9_]+)(?:\.[a-z0-9_]+)?\t([a-z_]+)\t", line)
-        if m:
-            found.append(m.groups())
+        if m and m.group(1) in mods:
+            found.append((*m.groups(), line))
         # web_query's per-engine lines: `engine=NAME<TAB>outcome=STATUS`
         m = re.match(r"^engine=([a-z0-9_]+)\toutcome=([a-z_]+)", line)
         if m:
-            found.append(("web_query", m.group(2)))
-            found.append(("engine:" + m.group(1), m.group(2)))
+            found.append(("web_query", m.group(2), line))
+            found.append(("engine:" + m.group(1), m.group(2), line))
     # JSON reports (public-osint): {"module": NAME, "kind": STATUS, ...} outcome objects
     for m in re.finditer(r'"module":\s*"([a-z0-9_]+)",\s*"kind":\s*"([a-z_]+)"', text):
-        found.append(m.groups())
-    for name, status in found:
+        found.append((*m.groups(), m.group(0)))
+    for name, status, line in found:
         ok = status in ("success", "valid_zero")
         prev = seen.get(name)
         if prev is None or (ok and not prev[0]):
-            seen[name] = (ok, status, f.stem)
-rows = ["module\tverdict\tstatus\tprobe"]
+            seen[name] = (ok, status, f.stem, " ".join(line.split())[:140])
+rows = ["module\tverdict\tstatus\tprobe\tevidence"]
 passed = 0
 for name in keyless:
     if name in seen:
-        ok, status, probe = seen[name]
+        ok, status, probe, line = seen[name]
         passed += ok
-        rows.append(f"{name}\t{'PASS' if ok else 'FAIL'}\t{status}\t{probe}")
+        rows.append(f"{name}\t{'PASS' if ok else 'FAIL'}\t{status}\t{probe}\t{line}")
     else:
         rows.append(f"{name}\tNO-SIGNAL\t-\t-")
 rows.append(f"# keyless networked modules live-PASS: {passed}/{len(keyless)}")
 for name in sorted(n for n in seen if n not in keyless):
-    ok, status, probe = seen[name]
-    rows.append(f"extra:{name}\t{'PASS' if ok else 'FAIL'}\t{status}\t{probe}")
+    ok, status, probe, line = seen[name]
+    rows.append(f"extra:{name}\t{'PASS' if ok else 'FAIL'}\t{status}\t{probe}\t{line}")
 (out / "sweep.tsv").write_text("\n".join(rows) + "\n")
 print("\n".join(rows))
 PY
