@@ -22,8 +22,8 @@ probes=(
   "user-pg|username pg|hacker_news|^hacker_news	success	"
   "user-jcs|username jcs|lobsters|^lobsters	success	"
   "user-torvalds|username torvalds|docker_hub_user|^docker_hub_user	success	"
-  "wikidata-q42|wikidata Q42|wikidata|Q42"
-  "asn-13335|asn 13335|peeringdb|[Pp]eering[Dd][Bb]"
+  "wikidata-q42|wikidata Q42|wikidata|^wikidata	success	"
+  "asn-13335|asn 13335|peeringdb|^peeringdb	success	"
 )
 
 printf 'module\tprobe\tverdict\tevidence\n' > "$out/verdict.tsv"
