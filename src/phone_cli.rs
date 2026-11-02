@@ -109,7 +109,11 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
         ),
     );
 
-    let mut outcomes = vec![SourceExecutionOutcome::success(phone_intl::SOURCE, now_unix, 1)];
+    let mut outcomes = vec![SourceExecutionOutcome::success(
+        phone_intl::SOURCE,
+        now_unix,
+        1,
+    )];
 
     // Every plan is consulted for every number and answers for its own, so a phone scan's Sources
     // table names all three plans, and a plan that does not hold the number says so in its row

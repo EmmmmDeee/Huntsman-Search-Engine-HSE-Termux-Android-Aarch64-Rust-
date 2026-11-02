@@ -54,8 +54,7 @@ fn phone_offline_labels_match_the_catalogue_outcomes_and_evidence() {
         assert_eq!(lookup_modules::lookups_running_offline(source), ["phone"]);
     }
 
-    let phone_cli::PhoneRun::Printed { text, report } =
-        phone_cli::run("+44 20 7183 8750", 1)
+    let phone_cli::PhoneRun::Printed { text, report } = phone_cli::run("+44 20 7183 8750", 1)
     else {
         panic!("offline phone lookup must run without keys or network");
     };
