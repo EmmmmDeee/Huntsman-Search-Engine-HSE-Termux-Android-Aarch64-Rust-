@@ -6,7 +6,7 @@ This document records **observed APK structures and functional equivalents**, no
 
 | APK component | Evidence (static) | Huntsman equivalent | Status / limitation |
 | --- | --- | --- | --- |
-| Australian OSINT catalogue | `assets/osint_catalog.json`: 11 categories, 83 tools | `osint catalog`, `--find`, `--category`, `--tool`, `--url` | Implemented: searchable finite offline catalogue; entries are unverified public links, not 83 live collectors |
+| Australian OSINT catalogue | `assets/osint_catalog.json`: 11 categories, 83 tools | `osint catalog`, `--find`, `--category`, `--tool`, `--url`; Web UI's Multi-hop Analysis source directory | Implemented in source: searchable finite offline catalogue with local API-backed filtering and user-opened HTTPS links; entries are unverified public links, not 83 live collectors |
 | Cases | `CaseDao` / `CaseEntity` | `osint workspace FILE case ID TITLE`; existing `osint case FILE` reviewer | Implemented: local persistence and existing evidence review; no Android UI replication |
 | Case notes | `NoteDao` / `NoteEntity` | `osint workspace FILE note CASE TEXT` | Implemented: bounded local notes |
 | Evidence | `EvidenceDao` / `EvidenceEntity` | `osint workspace FILE lead CASE ID HTTPS_URL SUMMARY`; existing source-first receipts | Implemented: user-supplied unverified links; external claims not automatically verified |
@@ -22,6 +22,9 @@ This document records **observed APK structures and functional equivalents**, no
 | Standalone EMV utility | `Rhinser.apk` package `com.emv.nfcreader` | Offline read-only APDU classification | Partial: no NFC brute force, payment-card track-writing, or card credential emulation |
 
 ## Local HTTP interface
+
+The browser's read-only directory appears under **Multi-hop Analysis**. It lazily retrieves the 83-entry JSON from `/api/rhinser/catalog` through the existing authentication helper, supports local category/text filtering, and opens permitted HTTPS source URLs only after explicit clicks. Listing a link is not collecting or validating evidence. Static JavaScript validation and a browser-logic harness passed; native Android/Termux rendering remains unverified.
+
 
 - `GET /api/rhinser/catalog` returns exactly the same typed, unverified, bounded directory as `osint catalog --json`.
 - Requests inherit the Huntsman server's host, bearer-token and no-cache protections; it is read-only and never fetches remote sites.
@@ -60,10 +63,16 @@ huntsman-recon osint nfc ndef "D1 01 05 54 02 65 6E 48 69"
 - `cargo fmt --check`, `cargo clippy`, unit/integration suite and Android ARM64 cross-build must pass before the branch may merge.
 - Rootless Termux device execution and Android companion behaviour require **physical-device tests**; passing CI cannot substitute for them.
 
+## Independent source-quality observation (2 November 2026)
+
+The retained historical source ID `emailosint` at `https://emailosint.com/` returned a parked/domain-for-sale page in the available web retrieval. This is an observation at the time of review, not proof of permanent unavailability. The original source entry remains in the 83-reference catalogue for provenance, but its email-bearing query template has been disabled, and the Web UI shows a non-clickable **Parked at last review** record. This prevents accidental submission of an email address to a parked domain. The `.org` service advertises a separate active product; common ownership, data reliability, and lookup-URL functionality have not been independently established.
+
+Other sampled results: ABN Lookup rendered its public page; automated retrieval of NAA RecordSearch returned 403 and ASIC Connect a redirect loop. Those failures are not evidence that either public service is down. A complete 83-source live availability audit remains outstanding.
+
 ## Remaining engineering work
 
 1. Verify directory URL freshness independently and identify official live collection APIs for high-priority sources.
-2. Integrate the catalogue and workspace into the existing Web UI without duplicating ledger, correlation or search architecture.
+2. Complete the case workspace's existing Web UI integration without duplicating ledger, correlation or search architecture. The catalogue now has a read-only browser directory; stored casework is still CLI-only.
 3. Build a separately permissioned Android NFC/Bluetooth companion with on-device user consent and explicit read-only scanning, then bridge into Huntsman via bounded local receipts.
 4. For remote operations, use a visible, authenticated, opt-in device-health protocol limited to approved diagnostics rather than an unconsented remote-execution agent.
 5. Treat the prank application as clearly labelled entertainment if its interface is included.

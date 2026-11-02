@@ -34,13 +34,24 @@ fn all_catalogue_entries_are_accessible_without_network() {
         "osint",
         "catalog",
         "--query",
-        "emailosint",
+        "emailosint_dashboard",
         "abc+test@example.org",
     ]);
     assert!(template.status.success());
     assert_eq!(
         String::from_utf8_lossy(&template.stdout).trim(),
-        "https://emailosint.com/?q=abc%2Btest%40example.org"
+        "https://www.emailosint.org/dashboard/lookup?email=abc%2Btest%40example.org"
+    );
+    let parked = run(&[
+        "osint",
+        "catalog",
+        "--query",
+        "emailosint",
+        "example@example.org",
+    ]);
+    assert!(
+        !parked.status.success(),
+        "parked domains must never generate email-bearing URLs"
     );
 }
 
@@ -118,4 +129,24 @@ fn workspace_roundtrip_and_nfc_are_read_only() {
     );
     assert!(String::from_utf8_lossy(&nfc.stdout).contains("\"data_bytes\": 2"));
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn rhinser_sources_are_accessible_from_the_analysis_web_view() {
+    let page = include_str!("../src/web_ui.html");
+    for marker in [
+        "id=\"rhinser-sources-panel\"",
+        "id=\"rhinser-source-category\"",
+        "id=\"rhinser-source-search\"",
+        "id=\"rhinser-source-list\"",
+        "api('/api/rhinser/catalog')",
+        "else if(v==='analyze')loadRhinserCatalog();",
+        "link.rel='noopener noreferrer'",
+        "link.referrerPolicy='no-referrer'",
+    ] {
+        assert!(
+            page.contains(marker),
+            "missing Rhinser Web UI integration: {marker}"
+        );
+    }
 }

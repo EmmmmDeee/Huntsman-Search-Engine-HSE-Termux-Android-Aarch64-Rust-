@@ -67,7 +67,7 @@
           "id": "emailosint",
           "name": "EmailOSINT",
           "url": "https://emailosint.com/",
-          "query_template": "https://emailosint.com/?q={q}"
+          "disposition": "parked_at_last_review"
         },
         {
           "id": "emailosint_dashboard",
