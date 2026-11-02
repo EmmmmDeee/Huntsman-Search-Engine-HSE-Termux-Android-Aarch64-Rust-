@@ -245,6 +245,20 @@ fn missing_people_source_issues(
         .collect()
 }
 
+/// Record an ambiguous *text routing*, never assert the target's actual identity.
+fn target_interpretation_issue(record: &ScanRecord) -> Option<UncertaintyItem> {
+    (record.kind == "people").then(|| {
+        general(
+            "scope:human_name_identity_unverified",
+            2,
+            "target_interpretation",
+            "scan.json#target_type",
+            "HUMAN_NAME is a lookup route, not verified proof of a person's legal identity; the text could also name an alias, organisation or brand.",
+            "Corroborate the target type independently. Use an explicit alternate lookup only for evidenced selectors; never equate profiles by spelling alone.",
+        )
+    })
+}
+
 /// Derive the register solely from saved scan evidence. Never infer an unrecorded
 /// source failure, an unobserved target, or an identity from the absence of findings.
 #[must_use]
@@ -324,17 +338,8 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
 
     items.extend(missing_people_source_issues(record, results));
 
-    // Routing a free-text selector to the people lookup is not an identity finding.
-    // In particular, two-word aliases and brand names can satisfy the name syntax.
-    if record.kind == "people" {
-        items.push(general(
-            "scope:human_name_identity_unverified",
-            2,
-            "target_interpretation",
-            "scan.json#target_type",
-            "HUMAN_NAME is a lookup route, not verified proof of a person's legal identity; the text could also name an alias, organisation or brand.",
-            "Corroborate the target type independently. Use an explicit alternate lookup only for evidenced selectors; never equate profiles by spelling alone.",
-        ));
+    if let Some(issue) = target_interpretation_issue(record) {
+        items.push(issue);
     }
 
     items.push(general(
