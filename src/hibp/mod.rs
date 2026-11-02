@@ -2,6 +2,9 @@
 //! Passwords and account hashes are computed locally; tests use fake transports.
 //! The binary reaches the client only through the explicit `hibp` command ([`cli`]).
 
+/// Source label the HIBP breached-account search records its evidence and outcome under.
+pub const ACCOUNT_SOURCE: &str = "hibp_account";
+
 pub mod cli;
 pub mod client;
 pub mod error;

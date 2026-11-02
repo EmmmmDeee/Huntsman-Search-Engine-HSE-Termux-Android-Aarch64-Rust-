@@ -623,7 +623,7 @@ fn identity_pivots_carry_correlation_evidence_at_medium() {
         out[0].evidence[0].summary,
         "Exposed in breach: correlated with user@example.com"
     );
-    assert_eq!(out[0].evidence[0].provenance.source, SRC);
+    assert_eq!(out[0].evidence[0].provenance.source, SOURCE);
 }
 
 #[test]
