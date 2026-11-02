@@ -27,7 +27,9 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
             file => path = Some(file),
         }
     }
-    let Some(path) = path else { return fail(EX_USAGE, USAGE) };
+    let Some(path) = path else {
+        return fail(EX_USAGE, USAGE);
+    };
     let path = Path::new(path);
     let metadata = match fs::metadata(path) {
         Ok(meta) if meta.is_file() => meta,
@@ -56,24 +58,39 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
             Err(_) => return fail(EX_UNAVAILABLE, "could not serialise image report"),
         }
     } else {
-        println!("sha256={} bytes={} live={}", report.image_sha256, report.bytes,
-            report.live_requested);
+        println!(
+            "sha256={} bytes={} live={}",
+            report.image_sha256, report.bytes, report.live_requested
+        );
         for status in &report.statuses {
-            println!("provider={} state={} results={} detail={}",
-                status.provider, status.state, status.results, status.detail);
+            println!(
+                "provider={} state={} results={} detail={}",
+                status.provider, status.state, status.results, status.detail
+            );
         }
         for matched in &report.matches {
-            println!("provider={} match={} source={} image={} score={}",
-                matched.provider, matched.match_type,
+            println!(
+                "provider={} match={} source={} image={} score={}",
+                matched.provider,
+                matched.match_type,
                 matched.source_url.as_deref().unwrap_or("none"),
                 matched.image_url.as_deref().unwrap_or("none"),
-                matched.provider_score.map_or_else(|| "none".to_owned(), |v| v.to_string()));
+                matched
+                    .provider_score
+                    .map_or_else(|| "none".to_owned(), |v| v.to_string())
+            );
         }
     }
     if live && report.statuses.iter().all(|s| s.state == "unconfigured") {
-        fail(EX_NOINPUT, "no reverse-image provider credentials configured")
+        fail(
+            EX_NOINPUT,
+            "no reverse-image provider credentials configured",
+        )
     } else if report.statuses.iter().any(|s| s.state == "failed") {
-        fail(EX_UNAVAILABLE, "reverse-image provider(s) failed; inspect per-provider status")
+        fail(
+            EX_UNAVAILABLE,
+            "reverse-image provider(s) failed; inspect per-provider status",
+        )
     } else {
         ExitCode::SUCCESS
     }
