@@ -61,7 +61,7 @@ sweep=(
   "sw-ip|ip 1.1.1.1"
   "sw-email|email test@example.com"
   "sw-netblock|netblock 1.1.1.0/24"
-  "sw-btc|crypto 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+  "sw-btc|crypto 1111111111111111111114oLvT2"
   "sw-sol|crypto sol:11111111111111111111111111111111"
   "sw-geopoint|geocode -27.4698,153.0251"
   "sw-geocode|geocode Brisbane"
