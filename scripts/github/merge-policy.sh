@@ -106,7 +106,9 @@ if ! jq -e --slurpfile expected "$policy" '
   . as $got | $expected[0] as $want |
   ($got.target == $want.target) and
   ($got.enforcement == "active") and
-  ($got.bypass_actors == []) and
+  # A token without Administration:read gets no `bypass_actors` key at all; that case is
+  # handled below as UNVERIFIABLE, never as an empty list. A present key must be exactly [].
+  (if ($got | has("bypass_actors")) then $got.bypass_actors == [] else true end) and
   ($got.conditions.ref_name == $want.conditions.ref_name) and
   (([$got.rules[].type] | sort) == ([$want.rules[].type] | sort)) and
   (all($want.rules[]; . as $w |
@@ -124,6 +126,15 @@ if ! jq -e --slurpfile expected "$policy" '
   ))
 ' <<< "$actual" >/dev/null; then
   echo "DRIFT: $repo ruleset $id differs from the required safe policy" >&2
+  exit 1
+fi
+
+# Fail closed when bypass actors cannot be read. GitHub omits `bypass_actors` from the
+# ruleset response for tokens without repository Administration:read (for example the
+# read-only Actions GITHUB_TOKEN or an anonymous request). Absence is not evidence of
+# an empty list, so the check cannot report VERIFIED.
+if ! jq -e 'has("bypass_actors")' <<< "$actual" >/dev/null; then
+  echo "UNVERIFIABLE: $repo ruleset $id matches every visible field, but this token cannot read bypass_actors (needs Administration:read); refusing to report zero bypass actors" >&2
   exit 1
 fi
 

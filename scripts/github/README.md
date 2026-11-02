@@ -37,6 +37,21 @@ The repository app integration can read rulesets but currently does not have
 permission to change them (branch-protection detail returned HTTP 403). `apply`
 must run through an administrator-authorized GitHub CLI outside that integration.
 
+## Read-only drift check and bypass actors
+
+GitHub returns `bypass_actors` on a ruleset only to a token with repository
+**Administration:read**. The Actions `GITHUB_TOKEN` (`contents: read`) and anonymous
+requests receive the ruleset without that key. `check` never treats the missing key as
+an empty list: it still verifies every visible field (enforcement, target, rules,
+the 12 required contexts and their app ID, strict mode) and reports `DRIFT:` for any
+mismatch, but when everything visible matches and `bypass_actors` is absent it exits 1
+with `UNVERIFIABLE:`. A present `bypass_actors` must be exactly `[]` (`null` is drift).
+
+The scheduled `Verify enforced main ruleset (read-only)` job uses the optional
+`MERGE_POLICY_AUDIT_TOKEN` secret (a fine-grained token with Administration:read and
+nothing else) when it exists and falls back to `GITHUB_TOKEN`, in which case it fails
+closed as `UNVERIFIABLE`.
+
 ## Enable GraphQL auto-merge on an eligible PR
 
 After the main ruleset is active, a PR is out of draft and has its reviewed

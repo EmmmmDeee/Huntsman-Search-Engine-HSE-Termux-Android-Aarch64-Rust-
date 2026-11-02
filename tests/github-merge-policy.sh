@@ -29,7 +29,7 @@ case "$p" in
     fi
     if [[ "${MOCK_SCENARIO:-}" == duplicate ]]; then
       jq -n --arg name "$(jq -r .name "$POLICY_FILE")" '[{id:501,name:$name},{id:502,name:$name}]'
-    elif [[ -f "$MOCK_STATE" || "${MOCK_SCENARIO:-}" == installed || "${MOCK_SCENARIO:-}" == drift_bypass || "${MOCK_SCENARIO:-}" == drift_context || "${MOCK_SCENARIO:-}" == drift_strict || "${MOCK_SCENARIO:-}" == drift_app || "${MOCK_SCENARIO:-}" == drift_target || "${MOCK_SCENARIO:-}" == unprotected || "${MOCK_SCENARIO:-}" == auto_disabled ]]; then
+    elif [[ -f "$MOCK_STATE" || "${MOCK_SCENARIO:-}" == installed || "${MOCK_SCENARIO:-}" == drift_bypass || "${MOCK_SCENARIO:-}" == readonly_view || "${MOCK_SCENARIO:-}" == readonly_drift_context || "${MOCK_SCENARIO:-}" == null_bypass || "${MOCK_SCENARIO:-}" == drift_context || "${MOCK_SCENARIO:-}" == drift_strict || "${MOCK_SCENARIO:-}" == drift_app || "${MOCK_SCENARIO:-}" == drift_target || "${MOCK_SCENARIO:-}" == unprotected || "${MOCK_SCENARIO:-}" == auto_disabled ]]; then
       jq -n --arg name "$(jq -r .name "$POLICY_FILE")" '[{id:501,name:$name}]'
     else
       echo '[]'
@@ -38,6 +38,9 @@ case "$p" in
   "repos/$GH_REPO/rulesets/501")
     case "${MOCK_SCENARIO:-}" in
       drift_bypass) jq '. + {id:501} | .bypass_actors=[{"actor_id":1,"actor_type":"RepositoryRole","bypass_mode":"always"}]' "$POLICY_FILE" ;;
+      readonly_view) jq '. + {id:501} | del(.bypass_actors)' "$POLICY_FILE" ;;
+      readonly_drift_context) jq '. + {id:501} | del(.bypass_actors) | .rules |= map(if .type == "required_status_checks" then .parameters.required_status_checks |= .[1:] else . end)' "$POLICY_FILE" ;;
+      null_bypass) jq '. + {id:501} | .bypass_actors=null' "$POLICY_FILE" ;;
       drift_context) jq '. + {id:501} | .rules |= map(if .type == "required_status_checks" then .parameters.required_status_checks[0].context="unrelated" else . end)' "$POLICY_FILE" ;;
       drift_strict) jq '. + {id:501} | .rules |= map(if .type == "required_status_checks" then .parameters.strict_required_status_checks_policy=false else . end)' "$POLICY_FILE" ;;
       drift_app) jq '. + {id:501} | .rules |= map(if .type == "required_status_checks" then .parameters.required_status_checks[0].integration_id=999 else . end)' "$POLICY_FILE" ;;
@@ -101,6 +104,9 @@ check_case 'API read 403 aborts without writing' forbidden apply fail 0 'HTTP 40
 check_case 'API create 403 fails closed' post_denied apply fail 1 'HTTP 403'
 check_case 'protected branch with foreign policy is not overwritten' protected_other apply fail 0 'already protected differently'
 check_case 'ruleset admin bypass is rejected' drift_bypass check fail 0 'DRIFT:'
+check_case 'read-only view without bypass_actors fails closed as unverifiable' readonly_view check fail 0 'UNVERIFIABLE:'
+check_case 'read-only view still reports a dropped required check as drift' readonly_drift_context check fail 0 'DRIFT:'
+check_case 'null bypass_actors is drift, not empty' null_bypass check fail 0 'DRIFT:'
 check_case 'required check name drift is rejected' drift_context check fail 0 'DRIFT:'
 check_case 'weak stale-branch policy is rejected' drift_strict check fail 0 'DRIFT:'
 check_case 'unexpected check provider is rejected' drift_app check fail 0 'DRIFT:'
