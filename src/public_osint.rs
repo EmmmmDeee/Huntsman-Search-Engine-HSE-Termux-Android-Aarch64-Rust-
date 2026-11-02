@@ -497,16 +497,17 @@ mod tests {
 
     #[test]
     fn preserves_partial_results_and_source_failures() {
-        let transport = ScriptedTransport::new(vec![
+        let mut responses = vec![
             Ok(reply(
                 200,
                 r#"{"articles":[{"title":"Headline","url":"https://example.org/a"}]}"#,
             )),
             Ok(reply(503, "failure")),
-            Ok(reply(403, "blocked")),
-            Ok(reply(403, "blocked")),
-            Ok(reply(403, "blocked")),
-        ]);
+        ];
+        responses.extend(
+            (0..crate::web_query::EXTENDED_ENGINES.len()).map(|_| Ok(reply(403, "blocked"))),
+        );
+        let transport = ScriptedTransport::new(responses);
         let report = search(&transport, Source::All, "story", "s", 1).unwrap();
         assert!(!report.entities.is_empty());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
