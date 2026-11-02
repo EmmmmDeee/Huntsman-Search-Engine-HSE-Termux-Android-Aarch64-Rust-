@@ -187,7 +187,9 @@ resolve	leaf	conservative automatic merge application for supplied decisions
 retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
 rf	leaf	radio-frequency model utility
 rhinser_catalog	leaf	offline source-labelled Rhinser tool directory reached by the shipped rhinser catalogue CLI and Web UI catalogue endpoint
+rhinser_native	leaf	bounded read-only operator-provided NFC and Bluetooth observation fixtures reached by osint native, plus explicitly simulated demo
 rhinser_nfc	leaf	bounded read-only APDU and NDEF byte inspection reached by the shipped rhinser NFC CLI
+rhinser_tlv	leaf	bounded read-only BER-TLV tag inspection reached by osint nfc tlv, with no raw card values
 rhinser_workspace	leaf	bounded persistent local casework model reached by the shipped rhinser workspace CLI
 ripestat	adapter	RIPEstat prefix-overview, RPKI and routing-history legs reached through ip_cli, netblock_cli and routing_context from ip, netblock, scan and /api/lookup
 peeringdb	adapter	keyless PeeringDB network profile and Internet-exchange peering addresses reached through asn_cli from asn, scan and /api/lookup

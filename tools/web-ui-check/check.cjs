@@ -38,7 +38,8 @@ if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs p
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter; four more the
 // Radar tab's cell intelligence (PCI, site, timing advance, neighbours, anomaly indicators).
-const PAGE_BUDGET = 136 * 1024;
+// Six more KiB cover the read-only Rhinser source directory.
+const PAGE_BUDGET = 142 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -793,6 +794,29 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
 
       // Analysis through the form, kept for the tab across a reload.
       await page.goto(base + '/#/analyze', { waitUntil: 'networkidle' });
+      // Exercise the local Rhinser directory in the real phone-sized browser.
+      await page.waitForFunction(() => document.getElementById('rhinser-source-list-n').textContent === '83', null, { timeout: 15000 });
+      check(`${scheme}: Rhinser directory shows all 83 source leads`, await page.locator('#rhinser-source-list tr').count() === 83,
+        await page.textContent('#rhinser-source-list-n'));
+      await page.selectOption('#rhinser-source-category', 'au_email');
+      check(`${scheme}: Rhinser email category has three references`, await page.locator('#rhinser-source-list tr').count() === 3,
+        await page.textContent('#rhinser-source-list-n'));
+      await page.selectOption('#rhinser-source-category', '');
+      await page.fill('#rhinser-source-search', 'EmailOSINT');
+      check(`${scheme}: Rhinser source-text filtering`, await page.locator('#rhinser-source-list tr').count() === 3,
+        await page.textContent('#rhinser-source-list-n'));
+      const parkedEntry = await page.locator('#rhinser-source-list tr').first().evaluate(row => ({
+        links: row.querySelectorAll('a').length, text: row.textContent,
+      }));
+      check(`${scheme}: parked EmailOSINT source cannot leak queries by link`,
+        parkedEntry.links === 0 && parkedEntry.text.includes('Parked at last review'), parkedEntry);
+      const rhinserLink = await page.locator('#rhinser-source-list a').first().evaluate(a => ({
+        href: a.href, target: a.target, rel: a.rel, referrerPolicy: a.referrerPolicy,
+      }));
+      check(`${scheme}: Rhinser links are explicit and suppress the referrer`,
+        rhinserLink.href.startsWith('https://') && rhinserLink.target === '_blank' &&
+        rhinserLink.rel === 'noopener noreferrer' && rhinserLink.referrerPolicy === 'no-referrer', rhinserLink);
+      await page.fill('#rhinser-source-search', '');
       await page.fill('#seeds', SEEDS);
       const t = Date.now();
       await page.click('#arun');
