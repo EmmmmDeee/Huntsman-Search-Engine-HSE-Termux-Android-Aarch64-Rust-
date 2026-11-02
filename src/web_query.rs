@@ -140,6 +140,12 @@ pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
 ];
 
 /// Public search forms have different parameter names.
+/// Canonical search-link builder shared by live fetch and entity-source pivots.
+#[must_use]
+pub fn search_url(engine: EngineSpec, query: &str) -> String {
+    append_query_param(engine.base_url, search_parameter(engine.name), query)
+}
+
 fn search_parameter(engine: &str) -> &'static str {
     match engine {
         "yahoo" => "p",
@@ -530,7 +536,7 @@ fn search_engine_bounded<T: Transport + ?Sized>(
     now_unix: u64,
     budget: Option<&SearchBudget>,
 ) -> Result<EngineReport, Error> {
-    let url = append_query_param(engine.base_url, search_parameter(engine.name), query);
+    let url = search_url(engine, query);
     if let Some(cached) = cached_response(&url, now_unix) {
         return Ok(parse_engine_response(engine, &cached, now_unix));
     }
