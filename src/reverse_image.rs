@@ -609,7 +609,10 @@ mod tests {
         assert!(web_url("https://user:password@example.org/a").is_none());
         assert!(web_url("https://example.org/space here").is_none());
         assert!(web_url("javascript:alert(1)").is_none());
-        assert_eq!(web_url("https://example.org/x?a=1"), Some("https://example.org/x?a=1".into()));
+        assert_eq!(
+            web_url("https://example.org/x?a=1"),
+            Some("https://example.org/x?a=1".into())
+        );
     }
 
     #[test]
@@ -623,5 +626,4 @@ mod tests {
         assert_eq!(result.statuses[0].state, "failed");
         assert!(result.matches.is_empty());
     }
-
 }
