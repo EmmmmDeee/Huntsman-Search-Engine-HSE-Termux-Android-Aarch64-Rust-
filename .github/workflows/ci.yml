@@ -301,7 +301,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all
-          git show HEAD^:.github/workflows/ci.yml > .github/workflows/ci.yml
+          git fetch --depth=1 origin main
+          git show FETCH_HEAD:.github/workflows/ci.yml > .github/workflows/ci.yml
           git add src/reverse_image.rs src/cli/reverse_image.rs src/cli/mod.rs src/lib.rs .github/workflows/ci.yml
           if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
