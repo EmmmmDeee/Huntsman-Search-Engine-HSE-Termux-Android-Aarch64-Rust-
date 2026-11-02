@@ -2890,7 +2890,13 @@ fn reverse_image_upload_uses_the_inspect_gate_and_stays_offline_by_default() {
     assert_eq!(report["bytes"], 6);
     assert_eq!(report["live_requested"], false);
     assert_eq!(report["statuses"].as_array().unwrap().len(), 3);
-    assert!(report["statuses"].as_array().unwrap().iter().all(|s| s["state"] == "not_requested"));
+    assert!(
+        report["statuses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["state"] == "not_requested")
+    );
     assert_eq!(inspection_calls.load(Ordering::SeqCst), 0);
 
     let denied = upload(
