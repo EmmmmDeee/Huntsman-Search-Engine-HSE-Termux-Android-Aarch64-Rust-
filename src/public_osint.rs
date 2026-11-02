@@ -494,7 +494,7 @@ mod tests {
     fn rejects_control_characters_in_upstream_urls() {
         let fake = OneResponse::json(
             200,
-            r#"{"articles":[{"title":"Headline","url":"https://example.org/a\\nInjected"}]}"#,
+            r#"{"articles":[{"title":"Headline","url":"https://example.org/a\nInjected"}]}"#,
         );
         let report = search(&fake, Source::News, "test", "s", 1).unwrap();
         assert!(report.entities.is_empty());
@@ -505,7 +505,7 @@ mod tests {
     fn rejects_control_characters_in_upstream_titles() {
         let fake = OneResponse::json(
             200,
-            r#"{"articles":[{"title":"Headline\\nInjected","url":"https://example.org/a"}]}"#,
+            r#"{"articles":[{"title":"Headline\nInjected","url":"https://example.org/a"}]}"#,
         );
         let report = search(&fake, Source::News, "test", "s", 1).unwrap();
         assert!(report.entities.is_empty());
