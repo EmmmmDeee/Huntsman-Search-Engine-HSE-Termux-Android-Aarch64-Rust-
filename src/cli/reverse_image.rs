@@ -42,12 +42,20 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
     // Refuse symlinks and changed inodes; never allocate beyond the image ceiling,
     // even when a file grows during the read.
     let Ok(bytes) = read_bounded(path, MAX_REVERSE_IMAGE_BYTES as u64) else {
-        return fail(EX_NOINPUT, "image is unreadable, linked or larger than 4 MiB");
+        return fail(
+            EX_NOINPUT,
+            "image is unreadable, linked or larger than 4 MiB",
+        );
     };
     let keys = super::credentials::lookup_keys();
     let transport = UreqTransport::new(&TransportConfig::default());
     let report = match reverse_image::search_selected(
-        &transport, &bytes, &keys, clock::unix_now(), live, provider,
+        &transport,
+        &bytes,
+        &keys,
+        clock::unix_now(),
+        live,
+        provider,
     ) {
         Ok(report) => report,
         Err(reason) => return fail(EX_DATAERR, reason),
