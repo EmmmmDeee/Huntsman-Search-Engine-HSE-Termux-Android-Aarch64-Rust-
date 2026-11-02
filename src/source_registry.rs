@@ -330,7 +330,15 @@ mod tests {
             EntityKind::IpAddress,
             EntityKind::AbnAcn,
         ] {
-            let routes = routes_for(&kind, "Example Research");
+            let (selector, expected_yahoo_query) = match kind {
+                EntityKind::Username => ("@example_handle", "?p=example_handle"),
+                EntityKind::Domain => ("example.org", "?p=example.org"),
+                EntityKind::IpAddress => ("8.8.8.8", "?p=8.8.8.8"),
+                EntityKind::Email => ("research@example.org", "?p=research%40example.org"),
+                EntityKind::AbnAcn => ("12345678901", "?p=12345678901"),
+                _ => ("Example Research", "?p=Example%20Research"),
+            };
+            let routes = routes_for(&kind, selector);
             let indexed: Vec<_> = routes
                 .iter()
                 .filter(|route| {
@@ -349,7 +357,7 @@ mod tests {
                 .iter()
                 .find(|route| route.source_id == "yahoo")
                 .expect("yahoo pivot");
-            assert!(yahoo.url.contains("?p=Example%20Research"));
+            assert!(yahoo.url.contains(expected_yahoo_query));
         }
         for kind in [
             EntityKind::Credential,
