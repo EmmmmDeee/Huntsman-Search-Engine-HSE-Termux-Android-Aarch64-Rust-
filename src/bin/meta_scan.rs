@@ -901,7 +901,10 @@ mod tests {
         assert_eq!(report.profile.state, "observed");
         let sent = fake.sent.lock().unwrap();
         assert_eq!(sent.iter().filter(|r| r.url.contains(API_HOST)).count(), 4);
-        assert_eq!(sent.iter().filter(|r| !r.url.contains(API_HOST)).count(), web_query::EXTENDED_ENGINES.len());
+        assert_eq!(
+            sent.iter().filter(|r| !r.url.contains(API_HOST)).count(),
+            web_query::EXTENDED_ENGINES.len()
+        );
     }
 
     #[test]
