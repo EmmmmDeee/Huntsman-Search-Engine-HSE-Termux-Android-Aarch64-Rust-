@@ -880,7 +880,7 @@ mod tests {
             "https://example.org/contact",
             "200",
             "text/html; charset=UTF-8",
-            r#"<p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
+            r#"<meta name="generator" content="Drupal 10.2"><p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
         );
         let root = warc("https://elsewhere.example/", "200", "text/html", "<p>x</p>");
         let index = [
@@ -929,6 +929,22 @@ mod tests {
         assert!(
             seen.iter()
                 .all(|r| r.header_value("authorization").is_none())
+        );
+        let technology = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Other && e.value == "technology:Drupal")
+            .expect("historical Drupal generator evidence");
+        assert!(technology.has_tag("historical_technology"));
+        assert_eq!(
+            technology.evidence[0]
+                .attr_values("capture_timestamp_utc")
+                .next(),
+            Some("20261003000000")
+        );
+        assert_eq!(
+            technology.evidence[0].attr_values("signal").next(),
+            Some("html_meta_generator")
         );
         let email = report
             .entities
