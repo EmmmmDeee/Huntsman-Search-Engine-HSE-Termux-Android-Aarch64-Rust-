@@ -891,7 +891,14 @@ pub fn this_process() -> (u32, Option<u64>) {
 /// parentheses and may hold spaces and `)`, so the fields are counted after the last `)`.
 #[must_use]
 pub fn process_start_ticks(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    // `self` resolves to this process even when procfs belongs to an outer PID
+    // namespace. Do not cache: forked children must read their own start time.
+    let process = if pid == std::process::id() {
+        "self".to_owned()
+    } else {
+        pid.to_string()
+    };
+    let stat = fs::read_to_string(Path::new("/proc").join(process).join("stat")).ok()?;
     start_ticks_from_stat(&stat)
 }
 

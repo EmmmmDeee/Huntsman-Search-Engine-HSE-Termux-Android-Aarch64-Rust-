@@ -473,6 +473,11 @@ fn is_private(_meta: &fs::Metadata) -> bool {
 /// be alive, so it does not count as exited.
 #[cfg(any(target_os = "android", target_os = "linux"))]
 fn process_has_exited(pid: u32) -> bool {
+    // Our own process is necessarily alive. A procfs mounted from an outer PID
+    // namespace need not expose it under the PID returned in this namespace.
+    if pid == std::process::id() {
+        return false;
+    }
     matches!(
         fs::metadata(Path::new("/proc").join(pid.to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound
