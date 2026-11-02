@@ -688,7 +688,10 @@ mod tests {
         };
         assert_eq!(report.outcomes.len(), 13);
         let peak = slow.2.load(Ordering::SeqCst);
-        assert!(peak >= 4, "fewer than four source requests overlapped: peak={peak}");
+        assert!(
+            peak >= 4,
+            "fewer than four source requests overlapped: peak={peak}"
+        );
     }
 
     #[test]
