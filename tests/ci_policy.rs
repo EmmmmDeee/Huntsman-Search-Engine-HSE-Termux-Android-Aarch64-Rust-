@@ -239,7 +239,7 @@ fn live_smoke_verdict_requires_actual_source_success() {
     fs::remove_dir_all(&out).expect("remove fixture");
 }
 
-/// A status token may carry digits (`upstream_4xx`, `upstream_5xx`); the sweep must read those
+/// A status token may carry digits (`upstream4xx`, `upstream5xx`); the sweep must read those
 /// rows as the module's FAIL, never report the module as having printed no status at all.
 #[test]
 fn live_smoke_sweep_reads_status_tokens_with_digits() {
@@ -263,8 +263,8 @@ case "$1" in
     {"name":"submd","network":true,"access":"keyless"},
     {"name":"common_crawl","network":true,"access":"keyless"},
     {"name":"crtsh","network":true,"access":"keyless"}]}' ;;
-  domain) printf 'submd\tupstream_4xx\tfound=none\tdetail=HTTP 429\n'
-          printf 'common_crawl\tupstream_5xx\tfound=none\n'
+  domain) printf 'submd\tupstream4xx\tfound=none\tdetail=HTTP 429\n'
+          printf 'common_crawl\tupstream5xx\tfound=none\n'
           printf 'crtsh\tsuccess\tfound=3\n' ;;
   serve) exit 0 ;;
 esac
@@ -289,11 +289,11 @@ exit 0
             .to_owned()
     };
     assert!(
-        row("submd").starts_with("submd\tFAIL\tupstream_4xx\t"),
+        row("submd").starts_with("submd\tFAIL\tupstream4xx\t"),
         "{sweep}"
     );
     assert!(
-        row("common_crawl").starts_with("common_crawl\tFAIL\tupstream_5xx\t"),
+        row("common_crawl").starts_with("common_crawl\tFAIL\tupstream5xx\t"),
         "{sweep}"
     );
     assert!(
