@@ -43,3 +43,14 @@ fn prank_simulator_outputs_unmistakable_non_evidence() {
     assert_eq!(report["sensor_observation"], false);
     assert!(!run(&["osint", "demo", "not_an_integer"]).status.success());
 }
+
+#[test]
+fn ber_tlv_cli_reports_only_public_structure() {
+    let output = run(&["osint", "nfc", "tlv", "6F0784021234500141"]);
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["fields"], 3);
+    assert_eq!(value["tag_names_hex"][0], "6F");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("1234"));
+    assert!(!run(&["osint", "nfc", "tlv", "5A8000"]).status.success());
+}

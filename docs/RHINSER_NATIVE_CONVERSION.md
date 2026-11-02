@@ -50,3 +50,7 @@ Demo: \`huntsman-recon osint demo 42\` emits the original scanner's approximate 
 A genuinely functioning NFC/Bluetooth bridge requires an Android UI/permission layer using Android NFC/Bluetooth APIs, with an explicit opt-in export to this Rust schema. A pure Termux CLI cannot acquire those framework callbacks solely by parsing code. The companion must authenticate the observation source and record permissions, collection timestamps, manufacturer capabilities, SDK compatibility and cryptographic provenance separately.
 
 Run \`cargo fmt --all -- --check\`, \`cargo clippy --all-targets -- -D warnings\`, \`cargo test --locked\`, Android aarch64 cross-build, host-browser/UI checks, and **actual physical Termux acceptance**. Cross-compilation or a JSON fixture alone does not establish 100% application conversion.
+
+## Read-only BER-TLV compatibility
+
+`huntsman-recon osint nfc tlv HEX` inspects nested BER-TLV metadata from operator-supplied frames, with an 8192-byte limit, 128-field limit and 8-level maximum nesting. The Rust parser outputs tag names and counts only; it does not expose card values, transmit APDUs or authenticate hardware observations. This covers a previously missing structure-inspection capability without claiming full EMV card-reader parity.
