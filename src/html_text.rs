@@ -240,9 +240,17 @@ impl<'a> Markup<'a> {
         let name_len = inner.bytes().take_while(u8::is_ascii_alphanumeric).count();
         let name = inner.get(..name_len)?;
         let attrs = inner.get(name_len..)?;
-        let raw_text = ["script", "style"]
-            .into_iter()
-            .find(|element| name.eq_ignore_ascii_case(element));
+        // A raw-text element must have a complete tag name. A prefix such
+        // as <script-widget> or <style:widget> is an ordinary element,
+        // not a script/style start tag that may suppress visible evidence.
+        let raw_text = ["script", "style"].into_iter().find(|element| {
+            name.eq_ignore_ascii_case(element)
+                && (attrs.is_empty()
+                    || attrs
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|&byte| byte.is_ascii_whitespace() || byte == b'/'))
+        });
         if let (Some(element), false) = (raw_text, end_tag) {
             // The element's content is not text: skip to its end tag, or to the end of input.
             // Only an appropriate end tag ends raw text. A prefix such as
@@ -339,6 +347,20 @@ mod integrated_evidence_regressions {
             .as_deref(),
             Some("Visible")
         );
+    }
+
+    #[test]
+    fn raw_text_start_tag_prefixes_preserve_visible_evidence() {
+        for html in [
+            "Before<script-widget>Visible</script-widget>After",
+            "Before<style-widget>Visible</style-widget>After",
+            "Before<script:widget>Visible</script:widget>After",
+        ] {
+            assert_eq!(
+                html_to_text(html, 200).as_deref(),
+                Some("BeforeVisibleAfter")
+            );
+        }
     }
 
     #[test]
