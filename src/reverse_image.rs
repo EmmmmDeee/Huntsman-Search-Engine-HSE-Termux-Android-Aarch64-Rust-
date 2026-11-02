@@ -66,13 +66,17 @@ fn is_image(bytes: &[u8]) -> bool {
 fn web_url(value: &str) -> Option<String> {
     if value.len() > 2048
         || !value.is_ascii()
-        || value.bytes().any(|byte| byte.is_ascii_control() || byte == b'\\' || byte == b' ')
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b'\\' || byte == b' ')
     {
         return None;
     }
-    let authority = value.strip_prefix("https://")
+    let authority = value
+        .strip_prefix("https://")
         .or_else(|| value.strip_prefix("http://"))?
-        .split(['/', '?', '#']).next()?;
+        .split(['/', '?', '#'])
+        .next()?;
     if authority.is_empty() || authority.contains('@') || authority.starts_with(':') {
         return None;
     }
@@ -335,7 +339,8 @@ fn perform<T: Transport + ?Sized>(
         ));
     }
     // A 200 can be a WAF/CAPTCHA or provider refusal, not a valid image search.
-    answer(&fetched, name).map_err(|failure| format!("provider outcome: {}", failure.kind.as_str()))?;
+    answer(&fetched, name)
+        .map_err(|failure| format!("provider outcome: {}", failure.kind.as_str()))?;
     let response = whole_response(&fetched, name)
         .map_err(|failure| format!("provider response: {}", failure.kind.as_str()))?;
     let json: Value = serde_json::from_slice(&response.body)
@@ -448,12 +453,16 @@ pub fn search_selected<T: Transport + ?Sized>(
     let mut sources: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for item in &report.matches {
         if let Some(url) = item.image_url.as_ref() {
-            sources.entry(url.clone()).or_default().insert(item.provider.clone());
+            sources
+                .entry(url.clone())
+                .or_default()
+                .insert(item.provider.clone());
         }
     }
-    report.shared_image_urls = sources.into_iter().filter_map(|(url, providers)| {
-        (providers.len() > 1).then_some(url)
-    }).collect();
+    report.shared_image_urls = sources
+        .into_iter()
+        .filter_map(|(url, providers)| (providers.len() > 1).then_some(url))
+        .collect();
     Ok(report)
 }
 
@@ -531,7 +540,16 @@ mod tests {
     fn malformed_and_oversized_input_rejected_before_network() {
         let keys = Keys::parse("").unwrap();
         assert!(search(&NoNetwork, b"not image", &keys, 1, true).is_err());
-        assert!(search(&NoNetwork, &vec![0xff; MAX_REVERSE_IMAGE_BYTES + 1], &keys, 1, true).is_err());
+        assert!(
+            search(
+                &NoNetwork,
+                &vec![0xff; MAX_REVERSE_IMAGE_BYTES + 1],
+                &keys,
+                1,
+                true
+            )
+            .is_err()
+        );
     }
     struct ScriptedTransport {
         requests: std::sync::Mutex<Vec<Request>>,
@@ -558,11 +576,12 @@ mod tests {
         let network = ScriptedTransport {
             requests: std::sync::Mutex::new(Vec::new()),
             body: serde_json::to_vec(&json!({"responses":[{"webDetection":{
-                "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]})).unwrap(),
+                "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]}))
+            .unwrap(),
         };
         let keys = Keys::parse("HSE_GOOGLE_VISION_API_KEY=testing_provider_secret_123").unwrap();
-        let report = search_selected(&network, b"GIF89a", &keys, 123, true, Some("google_vision"))
-            .unwrap();
+        let report =
+            search_selected(&network, b"GIF89a", &keys, 123, true, Some("google_vision")).unwrap();
         assert_eq!(report.observed_at_unix, 123);
         assert_eq!(report.statuses.len(), 1);
         assert_eq!(report.statuses[0].state, "completed");
@@ -571,12 +590,22 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
         assert_eq!(request.method, crate::http::Method::Post);
-        assert_eq!(request.url, "https://vision.googleapis.com/v1/images:annotate");
-        assert_eq!(request.header_value("X-goog-api-key"), Some("testing_provider_secret_123"));
+        assert_eq!(
+            request.url,
+            "https://vision.googleapis.com/v1/images:annotate"
+        );
+        assert_eq!(
+            request.header_value("X-goog-api-key"),
+            Some("testing_provider_secret_123")
+        );
         assert!(!format!("{request:?}").contains("testing_provider_secret_123"));
         let payload: Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(payload.pointer("/requests/0/features/0/type").and_then(Value::as_str),
-            Some("WEB_DETECTION"));
+        assert_eq!(
+            payload
+                .pointer("/requests/0/features/0/type")
+                .and_then(Value::as_str),
+            Some("WEB_DETECTION")
+        );
     }
 
     #[test]
