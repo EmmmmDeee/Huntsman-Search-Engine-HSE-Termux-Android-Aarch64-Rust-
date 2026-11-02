@@ -336,7 +336,10 @@ mod tests {
 
     struct NoNetwork;
     impl Transport for NoNetwork {
-        fn send(&self, _: &Request) -> Result<crate::http::Response, crate::http::TransportFailure> {
+        fn send(
+            &self,
+            _: &Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
             panic!("offline image search must not access the network");
         }
     }
