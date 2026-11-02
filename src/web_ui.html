@@ -329,12 +329,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <form class="toolbar" id="inspect"><input type="file" id="ifile" class="grow" aria-label="File to inspect"><button class="btn btn-primary" id="irun" type="submit">Inspect</button></form>
 <p class="alert" id="ierror" role="alert" hidden></p>
 <p class="note" id="istatus" role="status">No file inspected.</p>
-<div class="panel"><div class="panel-heading">Reverse-image search</div>
-<p class="help">Compare an actual photograph, not its profile QR code. Offline mode fingerprints the image without uploading it to other services. Selecting a live provider sends the image to that provider and may consume paid credits. A visual match does not establish identity.</p>
-<form class="toolbar" id="reverseimage"><input type="file" id="rifile" class="grow" accept="image/jpeg,image/png,image/gif,image/webp" aria-label="Image to reverse search">
-<select id="riprovider" aria-label="Reverse-image provider"><option value="">Offline fingerprint only</option><option value="google_vision">LIVE · Google Vision</option><option value="lenso">LIVE · Lenso.ai</option><option value="saucenao">LIVE · SauceNAO</option></select><button class="btn btn-primary" id="rirun" type="submit">Run image search</button></form>
-<p id="rierror" class="alert" role="alert" hidden></p><p id="ristatus" class="note" role="status">No reverse-image search run.</p>
-<details id="riresults" hidden><summary>Image evidence and provider matches</summary><pre id="rireport"></pre></details></div>
+<div class="panel"><div class="panel-heading">Reverse-image search</div><p class="help">Offline stays local. LIVE uploads to one provider; charges may apply. Matches do not prove identity.</p><form class="toolbar" id="reverseimage"><input type="file" id="rifile" class="grow" accept="image/*" aria-label="Photo"><select id="riprovider" aria-label="Provider"><option value="">Offline</option><option value="google_vision">Google LIVE</option><option value="lenso">Lenso LIVE</option><option value="saucenao">SauceNAO LIVE</option></select><button class="btn btn-primary" id="rirun">Search</button></form><p id="ristatus" class="note" role="status">Ready.</p><details id="riresults" hidden><summary>Results</summary><pre id="rireport"></pre></details></div>
 <p class="note" id="ikept" role="status" hidden></p>
 <div id="iresult" hidden>
 <div class="panel"><div class="panel-heading">Entities <span class="badge" id="ientities-n"></span></div>
@@ -789,22 +784,12 @@ $('inspect').onsubmit=async ev=>{
   }catch(e){inspectFailed(e.message)}
   finally{run.disabled=false}
 };
-$('reverseimage').onsubmit=async ev=>{
-  ev.preventDefault();$('rierror').hidden=true;
-  const file=$('rifile').files[0]||$('ifile').files[0];
-  if(!file||file.size===0||file.size>(4<<20)){
-    fail('rierror',!file?'Choose a photograph.':'Image must be between 1 byte and 4 MiB.');return;
-  }
-  const provider=$('riprovider').value,button=$('rirun');
-  button.disabled=true;$('ristatus').textContent='Checking image…';
-  try{
-    const query=provider?'?live=1&provider='+enc(provider):'';
-    const result=await api('/api/reverse-image'+query,{method:'POST',body:file});
-    $('riresults').hidden=false;$('rireport').textContent=JSON.stringify(result,null,2);
-    $('ristatus').textContent='SHA-256 '+result.image_sha256+' · '+(result.matches||[]).length+' indexed leads · '+(result.statuses||[]).map(s=>s.provider+': '+s.state).join(', ');
-  }catch(error){$('riresults').hidden=true;$('ristatus').textContent='Image search failed';fail('rierror',error.message)}
-  finally{button.disabled=false}
-};
+$('reverseimage').onsubmit=async e=>{e.preventDefault();const f=$('rifile').files[0],p=$('riprovider').value,b=$('rirun'),s=$('ristatus');
+if(!f||!f.size||f.size>4194304){s.textContent='Choose a photo up to 4 MiB';return}
+b.disabled=true;s.className='note';s.textContent='Searching…';
+try{const r=await api('/api/reverse-image'+(p?'?live=1&provider='+enc(p):''),{method:'POST',body:f});$('riresults').hidden=false;$('rireport').textContent=JSON.stringify(r,null,2);s.textContent=r.matches.length+' leads; see results'}
+catch(err){$('riresults').hidden=true;s.className='alert';s.textContent=err.message}
+finally{b.disabled=false}};
 let scans=[];const picked=new Set();
 const FILTERS={running:s=>live(s.status),finished:s=>s.status==='FINISHED',failed:s=>/ABORT|FAIL/.test(s.status)};
 async function loadScans(){
