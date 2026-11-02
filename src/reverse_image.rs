@@ -293,8 +293,14 @@ pub fn search<T: Transport + ?Sized>(
         report.statuses.push(status);
     }
     let mut seen = BTreeSet::new();
-    report.matches.retain(|m| seen.insert((m.provider.clone(), m.match_type.clone(),
-        m.source_url.clone(), m.image_url.clone())));
+    report.matches.retain(|m| {
+        seen.insert((
+            m.provider.clone(),
+            m.match_type.clone(),
+            m.source_url.clone(),
+            m.image_url.clone(),
+        ))
+    });
     report.matches.truncate(MAX_MATCHES);
     Ok(report)
 }
@@ -313,7 +319,11 @@ mod tests {
         let results = parse_google(&v).unwrap();
         assert_eq!(results.len(), 3);
         assert!(results.iter().any(|m| m.match_type == "full_image"));
-        assert!(results.iter().any(|m| m.source_url.as_deref() == Some("https://pages.example/p")));
+        assert!(
+            results
+                .iter()
+                .any(|m| m.source_url.as_deref() == Some("https://pages.example/p"))
+        );
     }
 
     #[test]
@@ -322,7 +332,10 @@ mod tests {
             {"sourceUrl":"https://source.example/p","imageUrl":"https://img.example/a"}]}]});
         let result = parse_lenso(&v).unwrap();
         assert_eq!(result[0].provider_score, Some(92.0));
-        assert_eq!(result[0].source_url.as_deref(), Some("https://source.example/p"));
+        assert_eq!(
+            result[0].source_url.as_deref(),
+            Some("https://source.example/p")
+        );
     }
 
     #[test]
@@ -330,7 +343,8 @@ mod tests {
         assert!(parse_saucenao(&json!({"header":{"status":-2},"results":[]})).is_err());
         let result = parse_saucenao(&json!({"header":{"status":0},"results":[
             {"header":{"similarity":"93.4","thumbnail":"https://img.example/t"},
-             "data":{"ext_urls":["https://source.example/a"]}}]})).unwrap();
+             "data":{"ext_urls":["https://source.example/a"]}}]}))
+        .unwrap();
         assert_eq!(result[0].provider_score, Some(93.4));
     }
 
