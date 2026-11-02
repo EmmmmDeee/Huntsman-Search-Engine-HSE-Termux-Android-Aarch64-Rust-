@@ -274,7 +274,10 @@ mod tests {
                 r#"{{"success":1,"email":{{"appears":1,"frequency":3,"confidence":{malformed}}}}}"#
             );
             assert!(
-                matches!(decode(body.as_bytes(), Indicator::Email("test@example.com")), Err(LegError::Decode(_))),
+                matches!(
+                    decode(body.as_bytes(), Indicator::Email("test@example.com")),
+                    Err(LegError::Decode(_))
+                ),
                 "malformed confidence must fail closed: {malformed}"
             );
         }
