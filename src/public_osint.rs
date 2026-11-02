@@ -224,23 +224,66 @@ fn parse(
     Ok((entities, skipped))
 }
 
+/// GDELT's documented pacing notice, sent as a 429 body without a `retry-after` header.
+const GDELT_PACING_NOTICE: &[u8] = b"Please limit requests to one every 5 seconds";
+const GDELT_PACING_SECS: u64 = 5;
+/// The longest pause one bounded GDELT retry will sleep through.
+const GDELT_MAX_RETRY_PAUSE_SECS: u64 = 10;
+
+/// The pause before one retry of a rate-limited GDELT answer: its `retry-after`, or the
+/// pacing its notice documents, and only when that is short. `None` means do not retry.
+fn gdelt_retry_pause(source: Source, fetched: &crate::fetch::Fetched) -> Option<u64> {
+    if source != Source::News || fetched.outcome.kind != SourceOutcomeKind::RateLimited {
+        return None;
+    }
+    let response = fetched.response.as_ref()?;
+    let pause = fetched.outcome.retry_after_secs.or_else(|| {
+        response
+            .body
+            .starts_with(GDELT_PACING_NOTICE)
+            .then_some(GDELT_PACING_SECS)
+    })?;
+    (pause <= GDELT_MAX_RETRY_PAUSE_SECS).then_some(pause)
+}
+
 fn collect<T: Transport + ?Sized>(
     transport: &T,
     source: Source,
     query: &str,
     scan_id: &str,
     now: u64,
+    clock: &dyn crate::deadline::Clock,
 ) -> (Vec<Entity>, SourceExecutionOutcome) {
     let label = name(source);
-    let request = Request::get(endpoint(source, query)).with_timeout(Duration::from_secs(16));
-    let Ok(fetched) = fetch(
-        transport,
-        request,
-        None,
-        &FetchOptions::no_redirects().paced(),
-        label,
-        now,
-    ) else {
+    let attempt = |at: u64| {
+        let request = Request::get(endpoint(source, query)).with_timeout(Duration::from_secs(16));
+        fetch(
+            transport,
+            request,
+            None,
+            &FetchOptions::no_redirects().paced(),
+            label,
+            at,
+        )
+    };
+    let mut fetched = attempt(now);
+    if let Ok(first) = &fetched {
+        if let Some(pause) = gdelt_retry_pause(source, first) {
+            if let Some(host) = crate::circuit::host_of(GDELT_URL) {
+                crate::circuit::record_rate_limited(&host, now, pause);
+            }
+            clock.sleep(Duration::from_secs(pause));
+            fetched = attempt(now + pause);
+            if let Ok(second) = &mut fetched {
+                if second.outcome.kind == SourceOutcomeKind::RateLimited
+                    && second.outcome.retry_after_secs.is_none()
+                {
+                    second.outcome.retry_after_secs = Some(pause);
+                }
+            }
+        }
+    }
+    let Ok(fetched) = fetched else {
         return (
             Vec::new(),
             SourceExecutionOutcome::refused_before_sending(
@@ -400,6 +443,25 @@ pub fn search<T: Transport + ?Sized>(
     scan_id: &str,
     now: u64,
 ) -> Result<Report, &'static str> {
+    search_with_clock(
+        transport,
+        source,
+        raw_query,
+        scan_id,
+        now,
+        &crate::deadline::SystemClock,
+    )
+}
+
+/// [`search`] with the clock a bounded rate-limit pause sleeps on, injectable for tests.
+fn search_with_clock<T: Transport + ?Sized>(
+    transport: &T,
+    source: Source,
+    raw_query: &str,
+    scan_id: &str,
+    now: u64,
+    clock: &dyn crate::deadline::Clock,
+) -> Result<Report, &'static str> {
     let query = checked_query(raw_query)?;
     let mut entities = Vec::new();
     let mut outcomes = Vec::new();
@@ -409,7 +471,7 @@ pub fn search<T: Transport + ?Sized>(
         Source::Web => &[][..],
         Source::All => &[Source::News, Source::Notices][..],
     } {
-        let (mut found, outcome) = collect(transport, *provider, &query, scan_id, now);
+        let (mut found, outcome) = collect(transport, *provider, &query, scan_id, now, clock);
         entities.append(&mut found);
         outcomes.push(outcome);
     }
@@ -443,6 +505,73 @@ mod tests {
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.as_bytes().to_vec(),
             truncated: false,
+        }
+    }
+
+    const PACING: &str =
+        "Please limit requests to one every 5 seconds or contact the project for larger queries.";
+
+    fn paced_reply(status: u16, body: &str, headers: &[(&str, &str)]) -> Response {
+        Response {
+            status,
+            headers: headers
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect(),
+            body: body.as_bytes().to_vec(),
+            truncated: false,
+        }
+    }
+
+    /// GDELT answers a burst with a 429 and no `retry-after`, its body naming the pause it
+    /// enforces: one request every 5 seconds. One retry after that pause is the documented use.
+    #[test]
+    fn gdelt_pacing_429_is_retried_once_after_its_documented_pause() {
+        let clock = crate::deadline::FakeClock::new();
+        let transport = ScriptedTransport::new(vec![
+            Ok(paced_reply(429, PACING, &[])),
+            Ok(reply(200, r#"{"articles":[]}"#)),
+        ]);
+        let report =
+            search_with_clock(&transport, Source::News, "story", "s", 1_000, &clock).unwrap();
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+        assert_eq!(transport.seen.borrow().len(), 2);
+        assert_eq!(clock.elapsed(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_second_gdelt_429_stops_with_the_pause_it_asked_for() {
+        let clock = crate::deadline::FakeClock::new();
+        let transport = ScriptedTransport::new(vec![
+            Ok(paced_reply(429, PACING, &[])),
+            Ok(paced_reply(429, PACING, &[])),
+            Ok(reply(200, r#"{"articles":[]}"#)),
+        ]);
+        let report =
+            search_with_clock(&transport, Source::News, "story", "s", 2_000, &clock).unwrap();
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::RateLimited);
+        assert_eq!(report.outcomes[0].retry_after_secs, Some(5));
+        assert_eq!(transport.seen.borrow().len(), 2, "one bounded retry only");
+    }
+
+    #[test]
+    fn a_429_without_a_known_or_short_pause_is_not_retried() {
+        // Distinct clocks: the first case's 429 opens this thread's breaker for 60 s.
+        for (headers, body, carried, now) in [
+            (&[][..], "slow down", None, 3_000),
+            (&[("retry-after", "120")][..], "", Some(120), 4_000),
+        ] {
+            let clock = crate::deadline::FakeClock::new();
+            let transport = ScriptedTransport::new(vec![
+                Ok(paced_reply(429, body, headers)),
+                Ok(reply(200, r#"{"articles":[]}"#)),
+            ]);
+            let report =
+                search_with_clock(&transport, Source::News, "story", "s", now, &clock).unwrap();
+            assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::RateLimited);
+            assert_eq!(report.outcomes[0].retry_after_secs, carried);
+            assert_eq!(transport.seen.borrow().len(), 1);
+            assert_eq!(clock.elapsed(), Duration::ZERO);
         }
     }
 
