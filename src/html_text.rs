@@ -251,21 +251,27 @@ impl<'a> Markup<'a> {
                 .lower
                 .get(next..)
                 .and_then(|rest| {
-                    rest.match_indices(&end_marker).find_map(|(offset, _)| {
-                        let after_marker = next + offset + end_marker.len();
-                        let boundary = self.lower.as_bytes().get(after_marker).copied()?;
-                        let boundary_ok = matches!(
-                            boundary,
-                            b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'/' | b'>'
-                        );
-                        if !boundary_ok {
-                            return None;
-                        }
-                        self.html
-                            .get(after_marker..)
-                            .and_then(tag_close)
-                            .map(|end| after_marker + end + 1)
-                    })
+                    rest.match_indices(&end_marker)
+                        .map(|(offset, _)| next + offset + end_marker.len())
+                        .find(|&after_marker| {
+                            self.lower
+                                .as_bytes()
+                                .get(after_marker)
+                                .is_some_and(|&byte| {
+                                    matches!(
+                                        byte,
+                                        b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'/' | b'>'
+                                    )
+                                })
+                        })
+                })
+                // Parse at most one candidate close, preserving linear scanning
+                // even if its attribute quote never terminates.
+                .and_then(|after_marker| {
+                    self.html
+                        .get(after_marker..)
+                        .and_then(tag_close)
+                        .map(|end| after_marker + end + 1)
                 })
                 .unwrap_or(self.html.len());
             return Some((Piece::Ignored, resume));
