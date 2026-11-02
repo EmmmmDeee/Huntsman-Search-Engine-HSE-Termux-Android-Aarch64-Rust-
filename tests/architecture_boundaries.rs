@@ -670,6 +670,28 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// The APK readers share one set of bounds-checked little-endian field readers: `le16`, `le32` and
+/// `le64` in `src/apk_intel.rs`, and the index-typed `le32` in `src/apk_intel/signer.rs`.
+#[test]
+fn apk_little_endian_readers_have_one_definition() {
+    const READERS: [&str; 6] = ["le16", "le32", "le64", "u16_le", "u32_le", "u64_le"];
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| under(&source.path, "src/apk_intel"))
+        .filter(|source| source.path != "src/apk_intel/signer.rs")
+        .filter(|source| {
+            production_tokens(&source.text)
+                .windows(2)
+                .any(|w| w[0] == "fn" && READERS.contains(&w[1].as_str()))
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(
+        found.is_empty(),
+        "little-endian reader redefined in: {found:?}"
+    );
+}
+
 /// `one_line` names exactly two renderings: `textnorm::one_line` (escape for one terminal row) and
 /// `x509::one_line` (a distinguished name on one line). The credential probe's control-stripping
 /// truncation has its own name, so the three different behaviours never share one (R-04).
