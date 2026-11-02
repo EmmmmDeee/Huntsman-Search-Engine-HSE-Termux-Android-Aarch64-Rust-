@@ -162,7 +162,7 @@ ui_get() {
 } > "$out/serve.tsv"
 # Every UI request answered 200, the scan finished, and it holds more than its seed.
 ui_ok=1
-grep -vE '^(POST|scan-state) ' "$out/serve.tsv" | grep -vq ' 200 ' && ui_ok=0
+awk '!/^(POST|scan-state) / && !/ 200 / { bad = 1 } END { exit !bad }' "$out/serve.tsv" && ui_ok=0
 grep -q '^POST /api/scans NO-ID' "$out/serve.tsv" && ui_ok=0
 grep -qE '^scan-state FINISHED ([2-9]|[1-9][0-9]+)$' "$out/serve.tsv" || ui_ok=0
 printf 'web-ui-flow %s\n' "$([ "$ui_ok" = 1 ] && echo PASS || echo FAIL)" >> "$out/serve.tsv"
