@@ -1,7 +1,6 @@
-use std::sync::Mutex;
-
 use super::*;
-use crate::http::{Method, TransportFailure};
+use crate::http::Method;
+use crate::test_support::{CannedRecorder as Recorder, json_status as status};
 
 const USER: &str = "AIDtest0123456789abcdef";
 const TOKEN: &str = "wigle-test-token-0123456789abcdef";
@@ -195,54 +194,6 @@ fn each_selector_is_one_query_on_the_search_endpoint() {
     .unwrap();
     assert!(edge.contains("latrange2=90.000000"), "{edge}");
     assert!(edge.contains("longrange1=-180.000000"), "{edge}");
-}
-
-/// Answers each request with the next canned response and records what was sent.
-struct Recorder {
-    responses: Mutex<Vec<Response>>,
-    sent: Mutex<Vec<Request>>,
-}
-
-impl Recorder {
-    fn new(responses: Vec<Response>) -> Self {
-        Self {
-            responses: Mutex::new(responses),
-            sent: Mutex::default(),
-        }
-    }
-
-    fn sent(&self) -> Vec<Request> {
-        self.sent
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-}
-
-impl Transport for Recorder {
-    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        self.sent
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request.clone());
-        let mut responses = self
-            .responses
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if responses.is_empty() {
-            return Ok(status(500, ""));
-        }
-        Ok(responses.remove(0))
-    }
-}
-
-fn status(code: u16, body: &str) -> Response {
-    Response {
-        status: code,
-        headers: vec![("content-type".into(), "application/json".into())],
-        body: body.as_bytes().to_vec(),
-        truncated: false,
-    }
 }
 
 #[test]
