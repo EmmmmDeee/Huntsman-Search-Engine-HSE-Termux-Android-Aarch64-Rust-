@@ -78,6 +78,12 @@ pub const X_BEARER_TOKEN_ENV: &str = "HUNTSMAN_X_BEARER_TOKEN";
 pub const EXA_KEY_ENV: &str = "HUNTSMAN_EXA_KEY";
 pub const FULLCONTACT_KEY_ENV: &str = "HUNTSMAN_FULLCONTACT_KEY";
 pub const GEMINI_KEY_ENV: &str = "HUNTSMAN_GEMINI_KEY";
+/// Google Cloud Vision Web Detection credential, opt-in reverse-image searches only.
+pub const GOOGLE_VISION_KEY_ENV: &str = "HUNTSMAN_GOOGLE_VISION_KEY";
+/// Lenso duplicate-image API credential, opt-in reverse-image searches only.
+pub const LENSO_KEY_ENV: &str = "HUNTSMAN_LENSO_KEY";
+/// SauceNAO indexed-image API credential, opt-in reverse-image searches only.
+pub const SAUCENAO_KEY_ENV: &str = "HUNTSMAN_SAUCENAO_KEY";
 pub const GITHUB_TOKEN_ENV: &str = "HUNTSMAN_GITHUB_TOKEN";
 pub const GREYNOISE_KEY_ENV: &str = "HUNTSMAN_GREYNOISE_KEY";
 pub const HLR_KEY_ENV: &str = "HUNTSMAN_HLR_KEY";
@@ -154,6 +160,9 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     EXA_KEY_ENV,
     FULLCONTACT_KEY_ENV,
     GEMINI_KEY_ENV,
+    GOOGLE_VISION_KEY_ENV,
+    LENSO_KEY_ENV,
+    SAUCENAO_KEY_ENV,
     GITHUB_TOKEN_ENV,
     GREYNOISE_KEY_ENV,
     HLR_KEY_ENV,
