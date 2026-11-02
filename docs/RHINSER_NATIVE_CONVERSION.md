@@ -45,6 +45,28 @@ Save this locally, then run \`huntsman-recon osint native CAPTURE.json\`. A Blue
 
 Demo: \`huntsman-recon osint demo 42\` emits the original scanner's approximate timing and score range but is hard-labelled \`simulation_only\` / \`not_evidence\`.
 
+## Loopback browser import and redacted export
+
+The Multi-hop Analysis page accepts a **locally selected** JSON capture file or pasted JSON.
+The browser file picker limits imports to 20,000 bytes, a conservative subset of the
+64 KiB offline CLI parser bound because the existing HSE HTTP server admits smaller
+POST bodies. Select **Inspect local capture** to submit it to the local
+`POST /api/rhinser/native` endpoint. The request requires the existing
+`X-Huntsman-Lookup: 1` same-origin guard, and is **refused for non-loopback
+server binds** even with a valid bearer token. Larger capture files must use
+`huntsman-recon osint native CAPTURE.json` in Termux.
+
+The HTTP handler calls the **same Rust parser** as the CLI and never persists
+the raw APDU/NDEF capture. On successful validation, the page can export
+**only the redacted Rust report** as a JSON file; export remains disabled
+until successful parsing and is invalidated on input edits or new file selection.
+This does not provide an Android radio callback, verify a capture's origin or
+authenticate the operator-supplied consent flag or timestamp.
+
+Do **not** expose capture imports through a public web bind or treat exported
+reports as cardholder identity, EMV issuer authentication or live Bluetooth
+proximity evidence.
+
 ## Real-device dependencies and verification
 
 A genuinely functioning NFC/Bluetooth bridge requires an Android UI/permission layer using Android NFC/Bluetooth APIs, with an explicit opt-in export to this Rust schema. A pure Termux CLI cannot acquire those framework callbacks solely by parsing code. The companion must authenticate the observation source and record permissions, collection timestamps, manufacturer capabilities, SDK compatibility and cryptographic provenance separately.
