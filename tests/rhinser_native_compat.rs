@@ -54,3 +54,27 @@ fn ber_tlv_cli_reports_only_public_structure() {
     assert!(!String::from_utf8_lossy(&output.stdout).contains("1234"));
     assert!(!run(&["osint", "nfc", "tlv", "5A8000"]).status.success());
 }
+
+#[test]
+fn saved_tlv_capture_reuses_the_direct_inspector_without_exporting_values() {
+    let path = std::env::temp_dir().join(format!("hse-rhinser-tlv-{}.json", std::process::id()));
+    let fixture = br#"{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"tlv","hex":"6F0784021234500141"}]}"#;
+    std::fs::write(&path, fixture).unwrap();
+    let output = run(&["osint", "native", path.to_str().unwrap()]);
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let direct = run(&["osint", "nfc", "tlv", "6F0784021234500141"]);
+    assert!(direct.status.success());
+    let expected: serde_json::Value = serde_json::from_slice(&direct.stdout).unwrap();
+    assert_eq!(report["observations"][0]["kind"], "tlv");
+    assert_eq!(report["observations"][0]["inspection"], expected);
+    assert_eq!(report["evidence_role"], "operator_submitted_unverified");
+    assert_eq!(report["radio_access"], false);
+    assert_eq!(report["device_attested"], false);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("1234"));
+}

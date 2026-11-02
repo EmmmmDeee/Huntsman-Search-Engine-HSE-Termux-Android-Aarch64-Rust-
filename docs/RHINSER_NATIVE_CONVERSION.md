@@ -53,4 +53,11 @@ Run \`cargo fmt --all -- --check\`, \`cargo clippy --all-targets -- -D warnings\
 
 ## Read-only BER-TLV compatibility
 
+Saved capture envelopes also accept `{"kind":"tlv","hex":"6F0784021234500141"}`
+in their `events` array. The `osint native FILE` path reuses the same bounded
+BER-TLV inspector as `osint nfc tlv HEX` and emits only its structural report.
+Malformed TLV rejects the complete envelope; successful parsing still leaves
+the capture explicitly operator-submitted and unverified. Existing version-one
+NDEF, APDU and Bluetooth fixtures remain accepted.
+
 `huntsman-recon osint nfc tlv HEX` inspects nested BER-TLV metadata from operator-supplied frames, with an 8192-byte limit, 128-field limit and 8-level maximum nesting. The Rust parser outputs tag names and counts only; it does not expose card values, transmit APDUs or authenticate hardware observations. This covers a previously missing structure-inspection capability without claiming full EMV card-reader parity.
