@@ -115,6 +115,9 @@ fn main() -> io::Result<()> {
             continue;
         };
         coverage.inspected += 1;
+        let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        let rank = score(&relative, &src, &terms);
+        if rank == 0 { continue; }
         let mut symbol_count = 0;
         let mut symbols = Vec::new();
         for (line_number, line) in src.lines().enumerate() {
@@ -125,8 +128,6 @@ fn main() -> io::Result<()> {
             }
         }
         if symbol_count > MAX_SYMBOLS { coverage.symbol_truncated += 1; }
-        let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        let rank = score(&relative, &src, &terms);
         if rank > 0 {
             coverage.matched += 1;
             keep_best(&mut matches, rank, relative, symbols);
