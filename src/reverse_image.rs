@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::credential_origin::AuthenticationAuthority;
-use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
+use crate::fetch::{AuthStyle, Credential, FetchOptions, answer, fetch, whole_response};
 use crate::http::{Request, Transport};
 use crate::keys::{Keys, Secret};
 use crate::sha256::{hex32, sha256};
@@ -59,8 +59,20 @@ fn is_image(bytes: &[u8]) -> bool {
 }
 
 fn web_url(value: &str) -> Option<String> {
-    (value.len() <= 2048 && (value.starts_with("https://") || value.starts_with("http://")))
-        .then(|| value.to_owned())
+    if value.len() > 2048
+        || !value.is_ascii()
+        || value.bytes().any(|byte| byte.is_ascii_control() || byte == b'\\' || byte == b' ')
+    {
+        return None;
+    }
+    let authority = value.strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?
+        .split(['/', '?', '#']).next()?;
+    if authority.is_empty() || authority.contains('@') || authority.starts_with(':') {
+        return None;
+    }
+    crate::http::parse_http_uri(value).ok()?;
+    Some(value.to_owned())
 }
 
 fn insert(
@@ -262,10 +274,9 @@ fn perform<T: Transport + ?Sized>(
     secret: &Secret,
     now: u64,
 ) -> Result<Vec<ImageMatch>, String> {
-    let b64 = crate::base64::standard(image);
     let (request, credential) = match name {
         "google_vision" => {
-            let body = json!({"requests": [{"image": {"content": b64},
+            let body = json!({"requests": [{"image": {"content": crate::base64::standard(image)},
                 "features": [{"type": "WEB_DETECTION", "maxResults": 20}]}]});
             let request = Request::post(
                 "https://vision.googleapis.com/v1/images:annotate",
@@ -284,7 +295,7 @@ fn perform<T: Transport + ?Sized>(
             (request, Some(cred))
         }
         "lenso" => {
-            let body = json!({"image": b64, "category": "duplicates",
+            let body = json!({"image": crate::base64::standard(image), "category": "duplicates",
                 "sortType": "QUALITY_DESCENDING", "page": 1});
             let request = Request::post(
                 "https://api.lenso.ai/search",
@@ -311,15 +322,17 @@ fn perform<T: Transport + ?Sized>(
         now,
     )
     .map_err(|_| "network policy or request refused")?;
-    let response = fetched
-        .response
-        .ok_or_else(|| format!("transport: {}", fetched.outcome.kind.as_str()))?;
-    if response.truncated {
-        return Err("provider response truncated".into());
+    let status = fetched.response.as_ref().map(|response| response.status);
+    if status != Some(200) {
+        return Err(status.map_or_else(
+            || format!("transport: {}", fetched.outcome.kind.as_str()),
+            |code| format!("HTTP {code}: {}", fetched.outcome.kind.as_str()),
+        ));
     }
-    if response.status != 200 {
-        return Err(format!("HTTP {}", response.status));
-    }
+    // A 200 can be a WAF/CAPTCHA or provider refusal, not a valid image search.
+    answer(&fetched, name).map_err(|failure| format!("provider outcome: {}", failure.kind.as_str()))?;
+    let response = whole_response(&fetched, name)
+        .map_err(|failure| format!("provider response: {}", failure.kind.as_str()))?;
     let json: Value = serde_json::from_slice(&response.body)
         .map_err(|_| "provider response is not valid JSON")?;
     match name {
