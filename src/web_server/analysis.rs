@@ -18,6 +18,74 @@ use super::{
     MAX_SELECTOR_BYTES, Method, ParsedRequest, Routes, Upload, json_error, json_ok, page_refusal,
 };
 
+/// Search by uploaded image using the existing authenticated and origin-checked Inspect
+/// upload pipeline. Live calls are restricted to one explicitly named provider so a browser
+/// action cannot unexpectedly spend credits across multiple configured services.
+pub(super) fn reverse_image_response(
+    parsed: &ParsedRequest<'_>,
+    upload: Option<&Upload>,
+    routes: &Routes,
+) -> String {
+    if routes.inspect.is_none() {
+        return json_error(404, "file uploads are disabled on this server");
+    }
+    if parsed.method != Method::Post {
+        return json_error(405, "reverse-image search requires a POST image upload");
+    }
+    if let Some(refused) = page_refusal(parsed, "reverse-image search", true) {
+        return refused;
+    }
+    let Some(length) = parsed.content_length else {
+        return json_error(400, "reverse-image upload needs a Content-Length");
+    };
+    if length == 0 || length > crate::reverse_image::MAX_REVERSE_IMAGE_BYTES {
+        return json_error(413, "reverse-image upload exceeds 4 MiB or is empty");
+    }
+    let mut live = false;
+    let mut selected = None;
+    for pair in parsed.query.split('&').filter(|pair| !pair.is_empty()) {
+        if pair == "live=1" && !live {
+            live = true;
+        } else if let Some(name) = pair.strip_prefix("provider=") {
+            if selected.replace(name).is_some() {
+                return json_error(400, "reverse-image provider cannot be repeated");
+            }
+        } else {
+            return json_error(400, "unsupported reverse-image search option");
+        }
+    }
+    if live != selected.is_some() {
+        return json_error(400, "live reverse-image search requires one explicit provider");
+    }
+    let Some(upload) = upload else {
+        if parsed.body.is_none() {
+            return json_error(400, "reverse-image upload header was incomplete");
+        }
+        return json_error(503, "image upload busy; retry later");
+    };
+    if upload.body.len() != length {
+        return json_error(400, "reverse-image upload length mismatch");
+    }
+    let keys = if live {
+        match crate::keys::Keys::resolve(None, std::env::var_os("HOME").as_deref()) {
+            Ok(resolved) => resolved.keys,
+            Err(_) => return json_error(503, "reverse-image provider credentials unavailable"),
+        }
+    } else {
+        crate::keys::Keys::default()
+    };
+    let transport = crate::http::UreqTransport::new(&crate::http::TransportConfig::default());
+    match crate::reverse_image::search_selected(
+        &transport, &upload.body, &keys, crate::clock::unix_now(), live, selected,
+    ) {
+        Ok(report) => match serde_json::to_string(&report) {
+            Ok(json) => json_ok(&json, false),
+            Err(_) => json_error(500, "reverse-image report encoding failed"),
+        },
+        Err(_) => json_error(400, "invalid image or provider selection"),
+    }
+}
+
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
 /// seeds, one per line. It is refused cross-site like a lookup, but needs no lookup header: it
 /// makes no network request and spends no key.
