@@ -324,6 +324,19 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
 
     items.extend(missing_people_source_issues(record, results));
 
+    // Routing a free-text selector to the people lookup is not an identity finding.
+    // In particular, two-word aliases and brand names can satisfy the name syntax.
+    if record.kind == "people" {
+        items.push(general(
+            "scope:human_name_identity_unverified",
+            2,
+            "target_interpretation",
+            "scan.json#target_type",
+            "HUMAN_NAME is a lookup route, not verified proof of a person's legal identity; the text could also name an alias, organisation or brand.",
+            "Corroborate the target type independently. Use an explicit alternate lookup only for evidenced selectors; never equate profiles by spelling alone.",
+        ));
+    }
+
     items.push(general(
         "scope:exhaustiveness_unverified",
         3,
@@ -534,6 +547,33 @@ mod tests {
                 .items
                 .iter()
                 .any(|item| item.id == "scan:termination_unrecorded")
+        );
+    }
+
+    #[test]
+    fn a_free_text_people_route_never_establishes_person_identity() {
+        let mut people = record(ScanStatus::Finished);
+        people.kind = "people".into();
+        people.target_type = "HUMAN_NAME".into();
+        people.target = "mr iconic".into();
+        let observations = saved(vec![SourceExecutionOutcome::valid_zero("wikidata", 1)]);
+        let people_register = derive(&people, Some(&observations));
+        let issue = people_register
+            .items
+            .iter()
+            .find(|item| item.id == "scope:human_name_identity_unverified")
+            .expect("textual people routing must preserve target ambiguity");
+        assert_eq!(issue.category, "target_interpretation");
+        assert_eq!(issue.evidence_path, "scan.json#target_type");
+        assert!(issue.uncertainty.contains("alias, organisation or brand"));
+        assert!(issue.next_action.contains("never equate profiles"));
+
+        let domain_register = derive(&record(ScanStatus::Finished), Some(&observations));
+        assert!(
+            !domain_register
+                .items
+                .iter()
+                .any(|item| item.id == "scope:human_name_identity_unverified")
         );
     }
 
