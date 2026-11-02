@@ -11,3 +11,15 @@ curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HS
 It ends by printing `Web UI: running at http://127.0.0.1:8080`; open that address in the phone's browser (if it is not running, `huntsman start`).
 
 Full usage, commands and reference: [docs/USAGE.md](docs/USAGE.md). Installation details: [docs/INSTALL.md](docs/INSTALL.md).
+
+
+Reverse-image search (offline by default):
+
+```sh
+huntsman-recon reverse-image /sdcard/Pictures/photo.jpg --json
+huntsman-recon reverse-image /sdcard/Pictures/photo.jpg --live --provider google_vision --json
+```
+
+The Inspect tab also accepts an image upload and can run one explicitly selected
+live provider. Configure your own provider key first; live searches can incur
+charges and transmit the image externally. See [reverse-image documentation](docs/REVERSE_IMAGE.md).
