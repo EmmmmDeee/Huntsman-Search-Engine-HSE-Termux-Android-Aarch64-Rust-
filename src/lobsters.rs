@@ -21,6 +21,7 @@ use serde::Deserialize;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
+use crate::github_user::valid_login_shape as valid_github_handle;
 use crate::http::{DEFAULT_USER_AGENT, Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::decode_html_entities;
@@ -72,20 +73,6 @@ pub fn valid_handle(handle: &str) -> bool {
         && handle
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-}
-
-/// Whether `handle` is a plausible GitHub username: 1-39 ASCII letters, digits or single interior
-/// hyphens. A self-declared handle outside this shape is junk, not a lead. **Pure.**
-#[must_use]
-fn valid_github_handle(handle: &str) -> bool {
-    !handle.is_empty()
-        && handle.len() <= 39
-        && !handle.starts_with('-')
-        && !handle.ends_with('-')
-        && !handle.contains("--")
-        && handle
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// The `~{username}.json` URL. **Pure.**

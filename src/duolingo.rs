@@ -5,6 +5,7 @@
 //! request. An empty `users` list is a validated absence; a body without that list
 //! is drift, never "not found".
 
+use crate::textnorm::nonblank;
 use serde::Deserialize;
 
 use crate::canonical::canonical_email;
@@ -216,10 +217,6 @@ fn build_entities(user: &User, scan_id: &str, entities: &mut Vec<Entity>) {
             &evidence,
         );
     }
-}
-
-fn nonblank(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn add_entity(

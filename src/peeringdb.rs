@@ -24,6 +24,7 @@
 //! associations without asserting facility ownership or physical device location. Public points
 //! of contact (`poc`) remain a separate, deliberately unimplemented follow-up.
 
+use crate::textnorm::nonblank as trimmed;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
@@ -590,11 +591,6 @@ fn facility_entities<T: Transport + ?Sized>(
         entities.push(entity);
     }
     Ok((entities, count))
-}
-
-/// `value` trimmed, when it is present and not blank. **Pure.**
-fn trimmed(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|text| !text.is_empty())
 }
 
 #[cfg(test)]
