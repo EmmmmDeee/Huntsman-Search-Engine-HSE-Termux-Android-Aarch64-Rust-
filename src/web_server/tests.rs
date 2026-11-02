@@ -173,6 +173,12 @@ fn rhinser_native_browser_submission_matches_protected_http_contract() {
         "id=\"rhinser-native-form\"",
         "id=\"rhinser-native-input\"",
         "id=\"rhinser-native-output\"",
+        "id=\"rhinser-native-file\"",
+        "id=\"rhinser-native-export\"",
+        "Export redacted report",
+        "Import authorized capture file (JSON, maximum 20 KB)",
+        "let rhinserNativeReport=null;",
+        "if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');",
         "osintOffline('/api/rhinser/native'",
         "This is not live NFC or Bluetooth scanning.",
     ] {
