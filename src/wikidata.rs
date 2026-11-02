@@ -522,27 +522,35 @@ fn eligible_rank(statement: &Value) -> bool {
 
 fn eligible_for_pivot(statement: &Value) -> bool {
     eligible_rank(statement)
-        && statement.get("qualifiers").is_none_or(|qualifiers| {
-            qualifiers
-                .as_object()
-                .is_some_and(serde_json::Map::is_empty)
+        && statement.get("qualifiers").is_none_or(|qualifiers| match qualifiers {
+            Value::Object(entries) => entries.is_empty(),
+            Value::Array(entries) => entries.is_empty(),
+            _ => false,
         })
 }
 
-/// P805 (statement is subject of) merely points to an item describing the claim. It is
-/// explicitly non-restrictive, unlike start/end-time or jurisdiction qualifiers. Permit it
-/// for P31 classification only; other properties still require unqualified values.
+/// P805 (statement is subject of) is non-restrictive. Wikibase REST v1 exposes qualifiers
+/// as a list of {property, value} pairs; older fixture/Action shapes use property-keyed maps.
+/// Both forms permit only P805 for P31 classification, never temporal or unknown qualifiers.
 fn eligible_for_classification(statement: &Value) -> bool {
     eligible_rank(statement)
-        && statement.get("qualifiers").is_none_or(|qualifiers| {
-            qualifiers.as_object().is_some_and(|entries| {
-                entries.iter().all(|(pid, values)| {
-                    pid == "P805"
-                        && values
-                            .as_array()
-                            .is_some_and(|items| !items.is_empty())
-                })
-            })
+        && statement.get("qualifiers").is_none_or(|qualifiers| match qualifiers {
+            Value::Object(entries) => entries.iter().all(|(pid, values)| {
+                pid == "P805" && values.as_array().is_some_and(|items| !items.is_empty())
+            }),
+            Value::Array(entries) => entries.iter().all(|entry| {
+                entry
+                    .get("property")
+                    .and_then(|property| property.get("id"))
+                    .and_then(Value::as_str)
+                    == Some("P805")
+                    && entry
+                        .get("value")
+                        .and_then(|value| value.get("type"))
+                        .and_then(Value::as_str)
+                        == Some("value")
+            }),
+            _ => false,
         })
 }
 
@@ -1103,16 +1111,33 @@ mod tests {
           "type":"item","id":"Q42","labels":{"en":"Douglas Adams"},
           "statements":{
             "P31":[{"rank":"normal","value":{"type":"value","content":"Q5"},
-                    "qualifiers":{"P805":[{"value":{"type":"value","content":"Q42395533"}}]}}],
+                    "qualifiers":[{"property":{"id":"P805","data_type":"wikibase-item"},
+                                   "value":{"type":"value","content":"Q42395533"}}]}],
             "P856":[{"rank":"normal","value":{"type":"value","content":"https://dated.example/"},
-                     "qualifiers":{"P805":[{"value":{"type":"value","content":"Q1"}}]}}]
+                     "qualifiers":[{"property":{"id":"P805"},
+                                    "value":{"type":"value","content":"Q1"}}]},
+                    {"rank":"normal","value":{"type":"value","content":"https://live.example/"},
+                     "qualifiers":[]}]
           }
         }"#;
         let report = report_of(item, "Q42");
         let person = entity(&report, &EntityKind::Person, "Douglas Adams");
-        assert_eq!(person.evidence[0].attributes.get("instance_of").map(String::as_str), Some("Q5"));
-        assert!(person.evidence[0].attr_values("statement_json").any(|s| s.contains("P805")));
-        assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Domain));
+        assert_eq!(
+            person.evidence[0]
+                .attributes
+                .get("instance_of")
+                .map(String::as_str),
+            Some("Q5")
+        );
+        assert!(
+            person.evidence[0]
+                .attr_values("statement_json")
+                .any(|s| s.contains("P805"))
+        );
+        entity(&report, &EntityKind::Domain, "live.example");
+        assert!(!report.entities.iter().any(|e| {
+            e.kind == EntityKind::Domain && e.raw_value == "dated.example"
+        }));
     }
 
     #[test]
@@ -1124,6 +1149,11 @@ mod tests {
             serde_json::json!({
                 "rank":"normal","value":{"type":"value","content":"Q5"},
                 "qualifiers":{"P580":[{"value":{"type":"value","content":"+1990-01-01"}}]}
+            }),
+            serde_json::json!({
+                "rank":"normal","value":{"type":"value","content":"Q5"},
+                "qualifiers":[{"property":{"id":"P580","data_type":"time"},
+                               "value":{"type":"value","content":"+1990-01-01"}}]
             }),
             serde_json::json!({
                 "rank":"normal","value":{"type":"value","content":"Q5"},
@@ -1143,6 +1173,24 @@ mod tests {
             entity(&report, &EntityKind::Other, "Example Subject");
             assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Person));
         }
+    }
+    #[test]
+    fn p805_qualifier_map_remains_supported_and_malformed_qualifiers_are_rejected() {
+        let old = serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"Q5"},
+            "qualifiers":{"P805":[{"value":{"type":"value","content":"Q1"}}]}
+        });
+        assert!(eligible_for_classification(&old));
+        let invalid = serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"Q5"},
+            "qualifiers":[{"property":{"id":"P805"}}]
+        });
+        assert!(!eligible_for_classification(&invalid));
+        let empty = serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"https://example.com/"},
+            "qualifiers":[]
+        });
+        assert!(eligible_for_pivot(&empty));
     }
 
 }
