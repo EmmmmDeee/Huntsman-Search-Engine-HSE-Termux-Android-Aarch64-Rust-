@@ -22,6 +22,7 @@ struct Coverage {
     inspected: usize,
     displayed_symbols_truncated: usize,
     symbol_free_matches: usize,
+    skipped_directories: usize,
     omitted_paths: Vec<String>,
 }
 
@@ -63,6 +64,8 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize
         if ty.is_dir() {
             if allowed_dir(&e.file_name().to_string_lossy()) {
                 collect(&e.path(), out, visited, depth + 1, coverage)?;
+            } else {
+                coverage.skipped_directories += 1;
             }
         } else if ty.is_file() && e.path().extension().is_some_and(|x| x == "rs") { 
             if e.metadata()?.len() > MAX_FILE_BYTES {
@@ -135,7 +138,7 @@ fn main() -> io::Result<()> {
         }
     }
     coverage.displayed_symbols_truncated = matches.iter().filter(|(_, _, symbols)| symbols.len() > 35).count();
-    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={} symbol_free_matches={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated, coverage.symbol_free_matches);
+    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={} symbol_free_matches={} skipped_directories={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated, coverage.symbol_free_matches, coverage.skipped_directories);
     coverage.omitted_paths.sort();
     for omitted in &coverage.omitted_paths {
         let relative = Path::new(omitted).strip_prefix(&root).unwrap_or(Path::new(omitted));
