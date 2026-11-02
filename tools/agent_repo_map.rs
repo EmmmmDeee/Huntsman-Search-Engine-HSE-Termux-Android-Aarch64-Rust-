@@ -25,10 +25,10 @@ struct Coverage {
 
 fn is_symbol(line: &str) -> bool {
     let s = line.trim_start();
-    ["pub fn ", "pub(crate) fn ", "fn ", "pub async fn ", "async fn ",
-     "pub(crate) async fn ", "pub const fn ", "const fn ",
-     "pub(crate) const fn ", "pub unsafe fn ", "unsafe fn ",
-     "pub(crate) unsafe fn ", "pub extern ", "extern ",
+    ["pub fn ", "pub(crate) fn ", "pub(super) fn ", "fn ", "pub async fn ", "async fn ",
+     "pub(crate) async fn ", "pub(super) async fn ", "pub const fn ", "const fn ",
+     "pub(crate) const fn ", "pub(super) const fn ", "pub unsafe fn ", "unsafe fn ",
+     "pub(crate) unsafe fn ", "pub(super) unsafe fn ", "pub extern ", "extern ",
      "pub struct ", "struct ",
      "pub enum ", "enum ", "pub trait ", "trait ", "impl ", "pub type ",
      "type ", "pub mod ", "mod "].iter().any(|p| s.starts_with(p))
@@ -138,6 +138,7 @@ fn main() -> io::Result<()> {
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
+        if symbols.len() > 35 { println!("# {} additional symbols not displayed", symbols.len() - 35); }
     }
     Ok(())
 }
@@ -151,6 +152,7 @@ mod tests {
         assert!(is_symbol("pub async fn fetch() {}"));
         assert!(is_symbol("const fn limit() -> usize { 2 }"));
         assert!(is_symbol("pub(crate) unsafe fn probe() {}"));
+        assert!(is_symbol("pub(super) fn helper() {}"));
         assert!(!is_symbol("let x = 3;"));
         assert!(!is_symbol("// fn fake()"));
     }
