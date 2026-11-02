@@ -441,6 +441,39 @@ pub fn adaptive_search_all<T: Transport + ?Sized>(
 /// Baseline access refusal is not fixed by quote or recall variants.
 /// Suppress these repeated requests only within this invocation; preserve a
 /// typed outcome for each skipped engine in every subsequent round.
+/// Finalise discovery provenance separately from bounded network scheduling.
+/// URLs remain leads even when seen by multiple indexes or query variants.
+fn finalize_adaptive_report(
+    input: String,
+    rounds: Vec<AdaptiveRound>,
+    discovery_index: BTreeMap<String, HitObservation>,
+    stop_reason: &'static str,
+) -> AdaptiveSearchReport {
+    let hits = discovery_index
+        .into_iter()
+        .map(|(url, observation)| AdaptiveHit {
+            url,
+            discovered_by_engines: observation.engines.into_iter().collect(),
+            found_in_queries: observation.queries.into_iter().collect(),
+            appearances: observation.appearances,
+            evidence_status: "search_discovery_only_not_independent_fact_verification",
+        })
+        .collect();
+    AdaptiveSearchReport {
+        input,
+        rounds,
+        hits,
+        stop_reason,
+        limitations: vec![
+            "search_results_are_leads_not_evidence_of_page_claims",
+            "engine_overlap_does_not_establish_independent_primary_sources",
+            "search_index_and_html_parser_coverage_are_incomplete",
+            "no_live_page_authenticity_or_claim_verification",
+            "no_cross_run_learning_or_persistent_adaptation",
+        ],
+    }
+}
+
 fn blocked_provider_names(round: &AdaptiveRound) -> BTreeSet<String> {
     round
         .outcomes
@@ -552,29 +585,12 @@ fn adaptive_search_for<T: Transport + ?Sized>(
     } else {
         "all_engines_unavailable_or_unparseable"
     };
-    let hits = discovery_index
-        .into_iter()
-        .map(|(url, observation)| AdaptiveHit {
-            url,
-            discovered_by_engines: observation.engines.into_iter().collect(),
-            found_in_queries: observation.queries.into_iter().collect(),
-            appearances: observation.appearances,
-            evidence_status: "search_discovery_only_not_independent_fact_verification",
-        })
-        .collect();
-    Ok(AdaptiveSearchReport {
-        input: normalized_query,
+    Ok(finalize_adaptive_report(
+        normalized_query,
         rounds,
-        hits,
+        discovery_index,
         stop_reason,
-        limitations: vec![
-            "search_results_are_leads_not_evidence_of_page_claims",
-            "engine_overlap_does_not_establish_independent_primary_sources",
-            "search_index_and_html_parser_coverage_are_incomplete",
-            "no_live_page_authenticity_or_claim_verification",
-            "no_cross_run_learning_or_persistent_adaptation",
-        ],
-    })
+    ))
 }
 
 struct EngineReport {
