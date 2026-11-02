@@ -126,15 +126,19 @@ const JSON: &str = "application/json; charset=utf-8";
 fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
     let mut success = 0_usize;
     let mut valid_zero = 0_usize;
+    let mut inconsistent_accepted_count = 0_usize;
     let mut not_configured = 0_usize;
     let mut refused_before_sending = 0_usize;
     let mut unresolved = 0_usize;
     for outcome in outcomes {
         let kind = outcome.kind;
-        if kind == SourceOutcomeKind::Success {
+        if kind == SourceOutcomeKind::Success && outcome.is_accepted() {
             success += 1;
-        } else if kind == SourceOutcomeKind::ValidZero {
+        } else if kind == SourceOutcomeKind::ValidZero && outcome.is_accepted() {
             valid_zero += 1;
+        } else if kind.is_accepted() {
+            inconsistent_accepted_count += 1;
+            unresolved += 1;
         } else if kind.is_not_configured() {
             not_configured += 1;
         } else if kind.is_refused_before_sending() {
@@ -150,6 +154,7 @@ fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
         "accepted": success + valid_zero,
         "success": success,
         "valid_zero": valid_zero,
+        "inconsistent_accepted_count": inconsistent_accepted_count,
         "not_configured": not_configured,
         "refused_before_sending": refused_before_sending,
         "unresolved": unresolved,
@@ -157,6 +162,20 @@ fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
             && not_configured == 0
             && refused_before_sending == 0
             && unresolved == 0,
+    })
+}
+
+/// Keep the raw recorded verdict for audit and separately flag contradictory counts.
+fn source_execution_row(outcome: &SourceExecutionOutcome) -> Value {
+    json!({
+        "module": outcome.module,
+        "outcome": outcome.kind,
+        "outcome_count_conflict": outcome.kind.is_accepted() && !outcome.is_accepted(),
+        "observed_at_unix": outcome.observed_at_unix,
+        "found": outcome.found,
+        "http_status": outcome.http_status,
+        "retry_after_secs": outcome.retry_after_secs,
+        "detail": outcome.detail,
     })
 }
 
@@ -741,23 +760,7 @@ impl ScanApi {
         };
         let sources: Vec<Value> = results
             .as_ref()
-            .map(|results| {
-                results
-                    .outcomes
-                    .iter()
-                    .map(|outcome| {
-                        json!({
-                            "module": outcome.module,
-                            "outcome": outcome.kind,
-                            "observed_at_unix": outcome.observed_at_unix,
-                            "found": outcome.found,
-                            "http_status": outcome.http_status,
-                            "retry_after_secs": outcome.retry_after_secs,
-                            "detail": outcome.detail,
-                        })
-                    })
-                    .collect()
-            })
+            .map(|results| results.outcomes.iter().map(source_execution_row).collect())
             .unwrap_or_default();
         let uncertainty_register = crate::scan_uncertainty::derive(&record, results.as_ref());
         let mut value = json!(record);
@@ -1515,6 +1518,43 @@ fn empty_results(record: &ScanRecord) -> ScanResults {
 mod tests {
     use super::*;
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+
+    #[test]
+    fn source_summary_never_accepts_contradictory_saved_counts() {
+        let outcomes = [
+            SourceExecutionOutcome::valid_zero("valid", 1),
+            SourceExecutionOutcome::observed(
+                "bad_zero",
+                2,
+                SourceOutcomeKind::ValidZero,
+                Some(200),
+                Some(3),
+                "positive count contradicts a verified zero",
+            ),
+            SourceExecutionOutcome::observed(
+                "bad_success",
+                3,
+                SourceOutcomeKind::Success,
+                Some(200),
+                Some(0),
+                "empty count contradicts a success",
+            ),
+        ];
+        let summary = source_execution_summary(&outcomes);
+        assert_eq!(summary["total"], 3);
+        assert_eq!(summary["accepted"], 1);
+        assert_eq!(summary["valid_zero"], 1);
+        assert_eq!(summary["unresolved"], 2);
+        assert_eq!(summary["inconsistent_accepted_count"], 2);
+        assert_eq!(summary["all_recorded_sources_accepted"], false);
+        let contradictory = source_execution_row(&outcomes[1]);
+        assert_eq!(contradictory["outcome"], "valid_zero");
+        assert_eq!(contradictory["outcome_count_conflict"], true);
+        assert_eq!(contradictory["found"], 3);
+        let ordinary = source_execution_row(&outcomes[0]);
+        assert_eq!(ordinary["outcome_count_conflict"], false);
+    }
+
     use crate::module_selection::Selection;
     use crate::scan_route::ScanKind;
     use crate::scan_service::LookupOutput;
@@ -2495,6 +2535,7 @@ mod tests {
                 "accepted": 2,
                 "success": 1,
                 "valid_zero": 1,
+                "inconsistent_accepted_count": 0,
                 "not_configured": 1,
                 "refused_before_sending": 1,
                 "unresolved": 1,

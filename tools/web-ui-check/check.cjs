@@ -586,6 +586,18 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         peopleLabels.legacy.includes('frontier exhaustion unverified; selected catalogue incomplete') &&
         peopleLabels.complete.includes('frontier exhausted; selected catalogue complete; discovery unverified'),
         peopleLabels);
+      const countLabels = await page.evaluate(() => ({
+        contradiction: sourceOutcomeState({ outcome: 'valid_zero', outcome_count_conflict: true }),
+        validZero: sourceOutcomeState({ outcome: 'valid_zero', outcome_count_conflict: false }),
+        oldServer: sourceOutcomeState({ outcome: 'success' })
+      }));
+      check(`${scheme}: Sources show contradictory count as an error while retaining raw outcome`,
+        countLabels.contradiction[0] === 'bad' &&
+        countLabels.contradiction[1] === 'valid_zero · count conflict' &&
+        countLabels.validZero[0] === 'info' &&
+        countLabels.validZero[1] === 'valid_zero' &&
+        countLabels.oldServer[0] === 'ok',
+        countLabels);
       const observedShown = await page.evaluate(() => [...document.querySelectorAll('#srcs tr')].map(tr => tr.cells[2] ? tr.cells[2].textContent : ''));
       const observedWanted = await page.evaluate(sources => sources.map(o => when(o.observed_at_unix * 1000)), row.sources);
       check(`${scheme}: Summary shows when each source was queried`,
