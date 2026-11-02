@@ -1,14 +1,14 @@
-//! Independent lookup work run at once.
+//! Independent lookup work on a bounded number of scoped threads.
 //!
-//! Each job runs on a thread of its own, with the stack `serve` gives a lookup. The caller reads
-//! every answer back in the order it gave the jobs, so it folds them exactly as it did when they
-//! ran one after another. A lookup then takes as long as its slowest job, not the sum of them all.
+//! `all` retains input-order results, but at most `MAX_PARALLEL_JOBS` workers run per call.
+//! Free workers take the next job rather than waiting for a slow provider to complete.
+//! Every job runs once, including when the OS refuses thread creation; job panics are
+//! delivered to the caller only after the remaining jobs have finished.
 //!
-//! A job whose thread cannot be started runs on the calling thread instead, so a phone short of
-//! threads still gets every answer, only later. A job that panics panics the caller once every
-//! other job has finished, as it would have done had it run there.
+//! `pair` retains its two-way concurrency and thread-failure fallback.
 
-use std::panic::resume_unwind;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::thread::{self, Scope, ScopedJoinHandle};
 
@@ -22,18 +22,72 @@ pub type Job<'env, R> = Box<dyn FnOnce() -> R + Send + 'env>;
 /// so the job waits here: its thread takes it out, or the caller does when the thread never ran.
 type Slot<'env, R> = Mutex<Option<Job<'env, R>>>;
 
-/// Runs every job at once and answers their results in the order of `jobs`.
+/// Maximum scoped lookup workers per call. At 4 MiB per worker this bounds
+/// requested worker-stack reservations to 64 MiB, independently of provider count.
+/// It is not a process-wide cap on simultaneous HTTP requests across callers.
+pub const MAX_PARALLEL_JOBS: usize = 16;
+
+/// Runs all jobs on a bounded, work-conserving worker pool and returns answers in
+/// input order. If no worker can be started, runs every job on the calling thread.
+/// A job panic is rethrown after *all* jobs finish, without cancelling queued work.
 #[must_use]
 pub fn all<'env, R: Send + 'env>(jobs: Vec<Job<'env, R>>) -> Vec<R> {
+    if jobs.is_empty() {
+        return Vec::new();
+    }
     let slots: Vec<Slot<'env, R>> = jobs.into_iter().map(|job| Mutex::new(Some(job))).collect();
+    let results: Vec<Mutex<Option<thread::Result<R>>>> =
+        (0..slots.len()).map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
     thread::scope(|scope| {
-        let running: Vec<_> = slots.iter().map(|slot| start(scope, slot)).collect();
-        running
-            .into_iter()
-            .zip(&slots)
-            .map(|(handle, slot)| finish(handle, slot))
-            .collect()
-    })
+        let mut workers = Vec::new();
+        for _ in 0..slots.len().min(MAX_PARALLEL_JOBS) {
+            match thread::Builder::new()
+                .name("lookup-job".into())
+                .stack_size(JOB_STACK_BYTES)
+                .spawn_scoped(scope, || drain(&slots, &results, &next))
+            {
+                Ok(handle) => workers.push(handle),
+                Err(_) => break,
+            }
+        }
+        if workers.is_empty() {
+            drain(&slots, &results, &next);
+        }
+        for worker in workers {
+            worker.join().unwrap_or_else(|panic| resume_unwind(panic));
+        }
+    });
+    results
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .expect("each queued lookup must run")
+                .unwrap_or_else(|panic| resume_unwind(panic))
+        })
+        .collect()
+}
+
+/// Workers claim distinct job indices without serialising network calls on a queue lock.
+/// Catch a job panic so one failed provider cannot strand unstarted jobs.
+fn drain<'env, R: Send + 'env>(
+    slots: &[Slot<'env, R>],
+    results: &[Mutex<Option<thread::Result<R>>>],
+    next: &AtomicUsize,
+) {
+    loop {
+        let index = next.fetch_add(1, Ordering::Relaxed);
+        let Some(slot) = slots.get(index) else {
+            break;
+        };
+        if let Some(job) = take(slot) {
+            let outcome = catch_unwind(AssertUnwindSafe(job));
+            *results[index]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+        }
+    }
 }
 
 /// Runs `a` and `b` at once, `a` on a thread of its own and `b` on this one, and answers both.
@@ -168,5 +222,52 @@ mod tests {
             *finished.lock().unwrap_or_else(PoisonError::into_inner),
             "the other job was not cut short"
         );
+    }
+    #[test]
+    fn bounded_workers_run_every_job_once_and_preserve_input_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let completed = AtomicUsize::new(0);
+        let jobs: Vec<Job<'_, usize>> = (0_usize..96)
+            .map(|index| {
+                let active = &active;
+                let peak = &peak;
+                let completed = &completed;
+                Box::new(move || {
+                    let running = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(running, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(2));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    completed.fetch_add(1, Ordering::SeqCst);
+                    index
+                }) as Job<'_, usize>
+            })
+            .collect();
+        let result = all(jobs);
+        assert_eq!(result, (0_usize..96).collect::<Vec<_>>());
+        assert_eq!(completed.load(Ordering::SeqCst), 96);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(peak.load(Ordering::SeqCst) <= MAX_PARALLEL_JOBS);
+    }
+
+    #[test]
+    fn panicking_job_does_not_cancel_queued_jobs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let completed = AtomicUsize::new(0);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut jobs: Vec<Job<'_, ()>> = vec![Box::new(|| panic!("provider panic"))];
+            for _ in 0..40 {
+                let completed = &completed;
+                jobs.push(Box::new(move || {
+                    completed.fetch_add(1, Ordering::SeqCst);
+                }));
+            }
+            all(jobs)
+        }));
+        assert!(outcome.is_err(), "provider failure must reach caller");
+        assert_eq!(completed.load(Ordering::SeqCst), 40);
     }
 }
