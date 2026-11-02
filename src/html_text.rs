@@ -273,12 +273,13 @@ impl<'a> Markup<'a> {
                                     )
                                 })
                         })
-                        .find_map(|after_marker| {
-                            self.html
-                                .get(after_marker..)
-                                .and_then(tag_close)
-                                .map(|end| after_marker + end + 1)
-                        })
+                // Parse at most one candidate close, preserving linear scanning
+                // even if its attribute quote never terminates.
+                .and_then(|after_marker| {
+                    self.html
+                        .get(after_marker..)
+                        .and_then(tag_close)
+                        .map(|end| after_marker + end + 1)
                 })
                 .unwrap_or(self.html.len());
             return Some((Piece::Ignored, resume));
