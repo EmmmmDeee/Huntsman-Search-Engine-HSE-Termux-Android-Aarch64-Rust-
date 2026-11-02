@@ -141,7 +141,11 @@ fn read_contents<T: Transport + ?Sized>(
             Err(reason) => unread.push(reason),
         }
     }
-    let contacts = found.len();
+    let contacts = found
+        .iter()
+        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
+        .count();
+    let technologies = found.len() - contacts;
     report.entities.extend(found);
     merge_by_uid(&mut report.entities);
     report.outcome.found = Some(report.entities.len());
@@ -149,6 +153,9 @@ fn read_contents<T: Transport + ?Sized>(
         "archived content: {read} of {} page(s) read, {contacts} contact detail(s) found",
         captures.len()
     );
+    if technologies > 0 {
+        detail.push_str(&format!("; {technologies} archived technology signal(s) found"));
+    }
     if !unread.is_empty() {
         detail.push_str("; not read: ");
         detail.push_str(&unread.join(", "));
