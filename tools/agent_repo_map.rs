@@ -223,6 +223,23 @@ mod tests {
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].file_name().unwrap(), "included.rs");
     }
+    #[test] fn oversized_files_are_reported_and_skipped() {
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-mapper-large-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("large.rs"), vec![b'x'; MAX_FILE_BYTES as usize + 1]).unwrap();
+        let mut paths = Vec::new();
+        let mut visited = 0;
+        let mut coverage = Coverage::default();
+        let result = collect(&root, &mut paths, &mut visited, 0, &mut coverage);
+        fs::remove_dir_all(&root).unwrap();
+        result.unwrap();
+        assert_eq!(coverage.oversized, 1);
+        assert!(paths.is_empty());
+        assert_eq!(coverage.omitted_paths.len(), 1);
+    }
     #[test] fn exclusions() {
         assert!(!allowed_dir(".git"));
         assert!(!allowed_dir("target"));
