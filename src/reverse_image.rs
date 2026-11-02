@@ -586,15 +586,20 @@ mod tests {
             body: serde_json::to_vec(&json!({"header":{"status":0},"results":[]})).unwrap(),
         };
         let keys = Keys::parse("HSE_SAUCENAO_API_KEY=testing_sauce_secret_123").unwrap();
-        let report = search_selected(&network, b"GIF89a", &keys, 123, true, Some("saucenao"))
-            .unwrap();
+        let report =
+            search_selected(&network, b"GIF89a", &keys, 123, true, Some("saucenao")).unwrap();
         assert_eq!(report.statuses.len(), 1);
         assert_eq!(report.statuses[0].state, "completed");
         let requests = network.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
         assert!(!requests[0].url.contains("testing_sauce_secret_123"));
         assert!(!format!("{:?}", requests[0]).contains("testing_sauce_secret_123"));
-        assert!(requests[0].body.windows(24).any(|part| part == b"testing_sauce_secret_123"));
+        assert!(
+            requests[0]
+                .body
+                .windows(24)
+                .any(|part| part == b"testing_sauce_secret_123")
+        );
     }
 
     #[test]
@@ -614,8 +619,7 @@ mod tests {
             body: serde_json::to_vec(&json!({"notResults": []})).unwrap(),
         };
         let keys = Keys::parse("HSE_LENSO_API_KEY=testing_lenso_secret_123").unwrap();
-        let result = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso"))
-            .unwrap();
+        let result = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso")).unwrap();
         assert_eq!(result.statuses[0].state, "failed");
         assert!(result.matches.is_empty());
     }
