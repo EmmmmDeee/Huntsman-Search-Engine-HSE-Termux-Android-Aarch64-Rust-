@@ -66,6 +66,7 @@ src/
 - `mitm_guard` → `collection` — L6 RF/Wi-Fi advisory; peer of `wifi_radar` (target later: `analysis/mitm/` after the clash fold).
 - `gitlab_user` → `collection` — network collector via `fetch`/`http` (same correction as `github_user`).
 - `tiktok_public_contact` → `collection` — same.
+- `web_api_types` → `web` — the sensor report types (`CellScan`, `TrackReport`, `WifiScan`) `web_server` serves, re-exported so the listener names no radar module (guard: `the_web_server_takes_sensor_types_through_web_api_types`).
 
 | Proposed home | Count | Modules |
 | --- | --- | --- |
@@ -75,7 +76,7 @@ src/
 | `src/collection/` | 112 | `abuseipdb`, `acnc`, `asic_director`, `asic_persons`, `atproto`, `base_rpc`, `blockchain`, `bluesky_user`, `cell_radar`, `censys`, `certspotter`, `ckan`, `collection`, `collector`, `common_crawl`, `crates_io`, `crtsh`, `dehashed`, `dns`, `dns_filter`, `dnsbl`, `docker_hub_user`, `docmeta`, `domain_lifecycle`, `duolingo`, `eth_rpc`, `evm_rpc`, `exa`, `exif`, `federated_osint`, `geoint`, `github_repos`, `github_user`, `gitlab_user`, `gleif`, `gravatar`, `greynoise`, `hacker_news`, `hackertarget`, `hibp`, `hudsonrock`, `hunter`, `indicator_legs`, `indicator_sources`, `internetdb`, `ipinfo`, `ipqs`, `isc`, `itunes`, `key_import`, `keybase`, `kickbox`, `leakix`, `lobsters`, `lookup_report`, `maltiverse`, `mastodon_user`, `mitm_guard`, `mnemonic`, `netlas`, `nominatim`, `npm_author`, `numverify`, `oathnet`, `opencellid`, `openpgp_keys`, `opensky`, `osint_area_risk`, `osint_casework`, `otx`, `peeringdb`, `phishstats`, `pipeline_limits`, `planner`, `provider_credentials`, `public_osint`, `pulsedive`, `rdap`, `rdap_legs`, `recon`, `recursion`, `rf`, `rhinser_catalog`, `ripestat`, `robtex`, `routing_context`, `sec_edgar`, `securitytrails`, `seeknow`, `seeknow_collector`, `service_defs`, `shodan`, `solana_rpc`, `source_registry`, `stac`, `stolen_tax`, `stopforumspam`, `submd`, `threat_feeds`, `threatfox`, `tiktok_public_contact`, `urlhaus`, `urlscan`, `virustotal`, `wayback_cdx`, `web_query`, `whoxy`, `wifi_radar`, `wigle`, `wikidata`, `wikipedia`, `xposedornot` |
 | `src/analysis/` | 51 | `analysis`, `apk_intel`, `archived_page`, `attack`, `attack_catalog`, `attack_reporting`, `benchmark`, `breach_hybrid`, `claim_coverage`, `claim_policy`, `classifier`, `commercial_readiness`, `community`, `coref`, `correlator`, `coverage`, `cross_scan`, `dependency`, `diagnostics`, `differential`, `entity`, `entity_reality`, `exposure`, `gap`, `graph`, `identity`, `intelligence`, `leads`, `lineage`, `meta_plan`, `metrics`, `module`, `pipeline`, `pivot`, `profiles`, `proof`, `relation`, `research_route`, `rhinser_nfc`, `rhinser_workspace`, `roi`, `scan_artifact`, `scan_route`, `sf_compat`, `sf_correlate`, `sf_country`, `sf_elements`, `sf_types`, `shadow_assessment`, `timeline`, `trafficking_intel` |
 | `src/application/` | 29 | `artifacts`, `doctor`, `docx`, `dossier_view`, `evidence_register`, `gexf`, `graph_exec`, `ledger`, `lookup_modules`, `lookup_save`, `navigator`, `osint_blueprint`, `run_history`, `runtime`, `scan_alert`, `scan_compare`, `scan_coverage`, `scan_export`, `scan_retention`, `scan_search`, `scan_service`, `scan_store`, `scan_uncertainty`, `search`, `session`, `snake_graph`, `stix`, `store`, `xlsx` |
-| `src/web/` | 4 | `scan_api`, `serve_events`, `serve_probe`, `web_server` |
+| `src/web/` | 5 | `scan_api`, `serve_events`, `serve_probe`, `web_api_types`, `web_server` |
 | `src/cli/` | 18 | `asn_cli`, `attack_cli`, `crypto_cli`, `domain_cli`, `email_cli`, `exposure_cli`, `fetch_cli`, `gleif_cli`, `ip_cli`, `itunes_cli`, `netblock_cli`, `network_cli`, `nominatim_cli`, `people_cli`, `phone_cli`, `seeknow_cli`, `username_cli`, `wikidata_cli` |
 
 Counts by home, `2bc6d0f` → `92d5b6151` → `65c7ba9d7`: core 45→46→47, evidence 5→5→5, infrastructure 10→10→10, collection 84→88→112, analysis 46→46→51, application 24→24→29, web 3→3→4, cli 16→16→18; total 233→238→276.
@@ -108,6 +109,8 @@ Edge inventory: ~1,519 module-level `crate::` edges among the 276 leaf modules (
 | core → evidence | 1 |
 | evidence → analysis | 1 |
 
+Consolidation train (guards in `tests/architecture_boundaries.rs`): `wifi_radar` takes the serving cell as a plain label and names no `cell_radar` item (`the_wifi_radar_does_not_depend_on_the_cell_radar`); `web_server` reaches the radar types only through `web_api_types`; the `Retry-After` suffix is `http::describe_retry_after` (`retry_after_suffix_has_one_definition`); `one_line` is only `textnorm::one_line` and `x509::one_line` (`one_line_is_defined_only_by_textnorm_and_x509`); the APK parsers share `apk_intel::{le16, le32, le64}` and `apk_intel::signer::le32` (`apk_little_endian_readers_have_one_definition`).
+
 Notes: collection → analysis is mostly collectors building `entity`/`relation` values (Stage 7); `wigle → scan_route` is gone (`wigle` → `network_selector`); `evidence → analysis` is the documented `resolve` → `lineage` exception.
 
 Cycles against the *current* L0–L7 layering: **none**. Authoritative: `tests/architecture_doc.rs` (`dependencies_match_the_stated_layering`) and root `ARCHITECTURE.md` (`Dependency cycles: none.`). The heuristic scan above sizes proposed-home cross edges only; it is not a cycle oracle .
@@ -118,9 +121,10 @@ At `65c7ba9d7`, `mitm_guard` is on `main` (L6; advisory, evidence-gated Wi-Fi as
 
 | Module | Proposed home | Uses (notable) | Used by |
 | --- | --- | --- | --- |
-| `radar` | `core` | `fsio` | `web_server`, `wifi_radar` |
-| `wifi_radar` | `collection` | `cell_radar`, `error`, `mitm_guard`, `radar`, `rf`, `textnorm`, `timefmt` | `web_server` |
-| `cell_radar` | `collection` | `error`, `rf`, `textnorm`, `timefmt` | `web_server`, `wifi_radar` |
+| `radar` | `core` | `fsio` | `web_api_types`, `wifi_radar` |
+| `wifi_radar` | `collection` | `error`, `mitm_guard`, `radar`, `rf`, `textnorm`, `timefmt` | `web_api_types` |
+| `cell_radar` | `collection` | `error`, `rf`, `textnorm`, `timefmt` | `web_api_types` |
+| `web_api_types` | `web` | `cell_radar`, `radar`, `wifi_radar` (re-exports only) | `web_server` |
 | `rf` | `collection` | `canonical`, `error`, `textnorm`, `timefmt` | `cell_radar`, `mitm_guard`, `wifi_radar`, `wigle` |
 | `mitm_guard` | `collection` | `rf` | `wifi_radar` |
 | `wigle` | `collection` | `environment`, `fetch`, `http`, `keys`, `network_selector`, `provider_credentials`, `redact`, `rf`, `source_outcome` | `network_cli` |

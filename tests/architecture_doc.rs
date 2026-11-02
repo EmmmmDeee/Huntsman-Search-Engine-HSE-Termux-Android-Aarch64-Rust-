@@ -1010,3 +1010,36 @@ fn parsers_hold_on_known_inputs() {
         );
     }
 }
+
+/// Every guard test `docs/ARCHITECTURE.md` cites by name (a backticked identifier ending in a
+/// recognised guard prefix) is a `#[test]` in `tests/architecture_boundaries.rs`, so the doc cannot
+/// keep pointing at a renamed or deleted guard.
+#[test]
+fn guards_cited_in_docs_architecture_exist() {
+    let doc = fs::read_to_string(root().join("docs/ARCHITECTURE.md")).unwrap();
+    let guards = fs::read_to_string(root().join("tests/architecture_boundaries.rs")).unwrap();
+    let cited: BTreeSet<&str> = doc
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|name| {
+            name.starts_with("the_")
+                || name.ends_with("_has_one_definition")
+                || name.ends_with("_have_one_definition")
+                || name.starts_with("one_line_is_defined_only")
+        })
+        .filter(|name| {
+            name.bytes()
+                .all(|b| b == b'_' || b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+        .collect();
+    assert!(cited.len() >= 5, "expected cited guards, found {cited:?}");
+    let missing: Vec<&&str> = cited
+        .iter()
+        .filter(|name| !guards.contains(&format!("fn {name}()")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "docs/ARCHITECTURE.md cites missing guards: {missing:?}"
+    );
+}
