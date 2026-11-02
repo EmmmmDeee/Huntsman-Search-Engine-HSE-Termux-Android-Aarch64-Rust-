@@ -847,6 +847,12 @@ fn cache_size_does_not_follow_links_outside_cache() {
     symlink(&external_file, cache.join("release/linked-file")).expect("file link");
 
     assert_eq!(dir_size(&cache), 37);
+
+    // A symlink supplied as the traversal root must also be rejected.
+    // Checking only entries inside read_dir is insufficient for this case.
+    let root_link = scratch.path("linked-cache-root");
+    symlink(&outside, &root_link).expect("cache root link");
+    assert_eq!(dir_size(&root_link), 0);
 }
 
 #[test]
