@@ -73,9 +73,11 @@ where
         .transpose()
 }
 
-/// One queried value's record; `value` echoes the query and is not kept.
+/// One queried value's record. Verify any echoed `value` against the target; never retain it in evidence.
 #[derive(Deserialize)]
 struct Entry {
+    #[serde(default)]
+    value: Option<String>,
     // Both counters are required: an absent field must not manufacture a valid zero.
     appears: u8,
     frequency: u64,
@@ -126,6 +128,27 @@ pub fn lookup(
     }
 }
 
+// A provider's echoed target is not evidence about some other indicator.
+// Email local parts are case-sensitive; only the DNS domain is case-insensitive.
+fn matches_echo(indicator: Indicator<'_>, echoed: &str) -> bool {
+    match indicator {
+        Indicator::Email(email) => match (echoed.rsplit_once('@'), email.rsplit_once('@')) {
+            (Some((echo_local, echo_domain)), Some((local, domain))) => {
+                echo_local == local && echo_domain.eq_ignore_ascii_case(domain)
+            }
+            _ => echoed == email,
+        },
+        Indicator::Ip(ip) => match (
+            echoed.parse::<std::net::IpAddr>(),
+            ip.parse::<std::net::IpAddr>(),
+        ) {
+            (Ok(echo), Ok(target)) => echo == target,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// One answer body for `indicator`. **Pure.**
 ///
 /// # Errors
@@ -147,6 +170,17 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
             "answer has no record for the value".into(),
         ));
     };
+    // Check the echoed indicator even for zero reports: a different target is not a valid zero.
+    // Keep both the request and the provider's echoed value out of error messages and findings.
+    if entry
+        .value
+        .as_deref()
+        .is_some_and(|echoed| !matches_echo(indicator, echoed))
+    {
+        return Err(LegError::Decode(
+            "StopForumSpam: echoed value does not match requested indicator".into(),
+        ));
+    }
     // The provider's documented no-match response is exactly appears=0/frequency=0.
     // Inconsistent flags or unsupported appears values establish neither presence nor absence.
     if entry.appears > 1 || (entry.appears == 0) != (entry.frequency == 0) {
@@ -356,6 +390,52 @@ mod tests {
                 "missing or contradictory provider counters must fail closed: {record}"
             );
         }
+    }
+
+    #[test]
+    fn echoed_value_mismatch_is_not_attributed_to_the_target() {
+        for (body, indicator) in [
+            (
+                r#"{"success":1,"email":{"value":"other@example.com","appears":1,"frequency":3}}"#,
+                Indicator::Email("test@example.com"),
+            ),
+            (
+                r#"{"success":1,"email":{"value":"other@example.com","appears":0,"frequency":0}}"#,
+                Indicator::Email("test@example.com"),
+            ),
+            (
+                r#"{"success":1,"ip":{"value":"8.8.4.4","appears":0,"frequency":0}}"#,
+                Indicator::Ip("8.8.8.8"),
+            ),
+            (
+                r#"{"success":1,"email":{"value":"TEST@example.com","appears":1,"frequency":3}}"#,
+                Indicator::Email("test@example.com"),
+            ),
+        ] {
+            let result = decode(body.as_bytes(), indicator);
+            assert!(
+                matches!(&result, Err(LegError::Decode(_))),
+                "an echoed mismatch must not establish target evidence: {indicator:?}"
+            );
+            assert!(
+                !format!("{result:?}").contains("other@example.com"),
+                "do not expose echoed values in diagnostic errors"
+            );
+        }
+    }
+
+    #[test]
+    fn echo_verification_allows_equal_ip_addresses_and_email_domains() {
+        let ipv6 = r#"{"success":1,"ip":{"value":"2001:0db8:0:0::1","appears":1,"frequency":1}}"#;
+        assert!(matches!(
+            decode(ipv6.as_bytes(), Indicator::Ip("2001:db8::1")),
+            Ok(Some(_))
+        ));
+        let email = r#"{"success":1,"email":{"value":"test@EXAMPLE.COM","appears":1,"frequency":1}}"#;
+        assert!(matches!(
+            decode(email.as_bytes(), Indicator::Email("test@example.com")),
+            Ok(Some(_))
+        ));
     }
 
     #[test]
