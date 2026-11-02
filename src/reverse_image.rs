@@ -357,6 +357,25 @@ pub fn search<T: Transport + ?Sized>(
     now: u64,
     live: bool,
 ) -> Result<ImageReport, &'static str> {
+    search_selected(transport, image, keys, now, live, None)
+}
+
+/// The same search, optionally restricted to one provider. This avoids unintentionally
+/// spending credits with all configured providers. Other providers are not contacted.
+///
+/// # Errors
+/// An unknown provider or invalid image is rejected before network activity.
+pub fn search_selected<T: Transport + ?Sized>(
+    transport: &T,
+    image: &[u8],
+    keys: &Keys,
+    now: u64,
+    live: bool,
+    selected: Option<&str>,
+) -> Result<ImageReport, &'static str> {
+    if selected.is_some_and(|name| !PROVIDERS.iter().any(|(provider, _)| *provider == name)) {
+        return Err("unknown reverse-image provider");
+    }
     if image.is_empty() || image.len() > MAX_REVERSE_IMAGE_BYTES || !is_image(image) {
         return Err("expected a JPEG, PNG, GIF or WebP image of 1 byte to 4 MiB");
     }
@@ -368,6 +387,9 @@ pub fn search<T: Transport + ?Sized>(
         matches: Vec::new(),
     };
     for (name, slot) in PROVIDERS {
+        if selected.is_some_and(|chosen| chosen != name) {
+            continue;
+        }
         let status = if !live {
             ProviderStatus {
                 provider: name,
