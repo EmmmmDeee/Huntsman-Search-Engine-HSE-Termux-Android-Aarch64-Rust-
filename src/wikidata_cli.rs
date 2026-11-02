@@ -90,12 +90,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
     }
     merge_by_uid(&mut report.entities);
 
-    if !report
-        .outcomes
-        .iter()
-        .any(|outcome| outcome.kind.is_accepted())
-    {
-        return WikidataRun::Failed(format!("no source answered for {query:?}"));
+    if let Some(run) = crate::source_outcome::none_accepted(
+        &report.outcomes,
+        &format!("no source answered for {query:?}"),
+    ) {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => WikidataRun::Printed { text, report },

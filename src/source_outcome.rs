@@ -474,6 +474,25 @@ impl SourceReach {
     }
 }
 
+/// A lookup where no row's kind was accepted fails (exit 69, [`SourceRun::Failed`]) led by
+/// `lead` and, when a row exists, the first configured row's reason (else the first row's), so
+/// the operator reads why; `None` when some row was accepted.
+#[must_use]
+pub fn none_accepted<R>(outcomes: &[SourceExecutionOutcome], lead: &str) -> Option<SourceRun<R>> {
+    if outcomes.iter().any(|o| o.kind.is_accepted()) {
+        return None;
+    }
+    let why = outcomes
+        .iter()
+        .find(|o| !o.kind.is_not_configured())
+        .or_else(|| outcomes.first())
+        .map(SourceExecutionOutcome::reason);
+    Some(SourceRun::Failed(match why {
+        Some(why) => format!("{lead}: {why}"),
+        None => lead.to_owned(),
+    }))
+}
+
 /// The result of one single-source CLI run: the rendered report, a network refusal, or a failure
 /// the sources gave. Each source's `…Run` type is this over its own report, so the three outcomes
 /// have one definition.
@@ -599,6 +618,36 @@ pub fn classify_fetch(status: u16, body: &str) -> SourceOutcomeKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn none_accepted_names_why_and_always_exits_unavailable() {
+        let down = SourceExecutionOutcome::failed(
+            "blockchain",
+            1,
+            SourceOutcomeKind::Upstream5xx,
+            Some(502),
+            "bad gateway",
+        );
+        let skipped = SourceExecutionOutcome::not_configured("hunter", 1);
+        let Some(SourceRun::<()>::Failed(why)) =
+            none_accepted(&[skipped.clone(), down.clone()], "no source answered for x")
+        else {
+            panic!("expected Failed");
+        };
+        assert_eq!(why, format!("no source answered for x: {}", down.reason()));
+        let Some(SourceRun::<()>::Failed(why)) =
+            none_accepted(std::slice::from_ref(&skipped), "lead")
+        else {
+            panic!("expected Failed");
+        };
+        assert_eq!(why, format!("lead: {}", skipped.reason()));
+        assert!(matches!(
+            none_accepted::<()>(&[], "lead"),
+            Some(SourceRun::Failed(why)) if why == "lead"
+        ));
+        let ok = SourceExecutionOutcome::valid_zero("blockchain", 1);
+        assert!(none_accepted::<()>(&[down, ok], "lead").is_none());
+    }
 
     #[test]
     fn failure_constructors_record_no_row_count_and_keep_their_fields() {
