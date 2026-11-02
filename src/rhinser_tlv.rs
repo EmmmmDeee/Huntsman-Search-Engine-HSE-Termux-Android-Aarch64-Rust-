@@ -2,7 +2,7 @@
 //! Android NFC radio, payment emulation or transmission.
 use serde::Serialize;
 
-const MAX_BYTES: usize = 8192;
+const MAX_RHINSER_TLV_BYTES: usize = 8192;
 const MAX_FIELDS: usize = 128;
 const MAX_DEPTH: usize = 8;
 
@@ -92,7 +92,7 @@ fn inspect_values(data: &[u8], depth: usize, out: &mut TlvInspection) -> Result<
 /// # Errors
 /// Refuses malformed, truncated, indefinite, deeply nested or oversized frames.
 pub fn inspect_tlv(data: &[u8]) -> Result<TlvInspection, String> {
-    if data.is_empty() || data.len() > MAX_BYTES {
+    if data.is_empty() || data.len() > MAX_RHINSER_TLV_BYTES {
         return Err("BER-TLV input must contain 1-8192 bytes".to_owned());
     }
     let mut out = TlvInspection {
