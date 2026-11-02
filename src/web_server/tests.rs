@@ -2880,12 +2880,12 @@ fn reverse_image_upload_uses_the_inspect_gate_and_stays_offline_by_default() {
     let (addr, inspection_calls) = inspect_server(None, "127.0.0.1:0");
     let image = b"GIF89a";
     let head = format!(
-        "POST /api/reverse-image HTTP/1.1\\r\\nHost: localhost\\r\\n{HEADER}Content-Length: {}\\r\\n\\r\\n",
+        "POST /api/reverse-image HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
         image.len()
     );
     let answer = upload(addr, &head, image);
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-    let (_, data) = answer.split_once("\\r\\n\\r\\n").unwrap();
+    let (_, data) = answer.split_once("\r\n\r\n").unwrap();
     let report: serde_json::Value = serde_json::from_str(data).unwrap();
     assert_eq!(report["bytes"], 6);
     assert_eq!(report["live_requested"], false);
@@ -2896,7 +2896,7 @@ fn reverse_image_upload_uses_the_inspect_gate_and_stays_offline_by_default() {
     let denied = upload(
         addr,
         &format!(
-            "POST /api/reverse-image HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Length: {}\\r\\n\\r\\n",
+            "POST /api/reverse-image HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
             image.len()
         ),
         image,
@@ -2905,7 +2905,7 @@ fn reverse_image_upload_uses_the_inspect_gate_and_stays_offline_by_default() {
     let wrong = upload(
         addr,
         &format!(
-            "POST /api/reverse-image?live=1 HTTP/1.1\\r\\nHost: localhost\\r\\n{HEADER}Content-Length: {}\\r\\n\\r\\n",
+            "POST /api/reverse-image?live=1 HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
             image.len()
         ),
         image,
