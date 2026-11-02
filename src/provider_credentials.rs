@@ -643,19 +643,22 @@ fn write_status(
         }
         if !provider.free_tier.is_empty() {
             out.push_str("\tfree_tier=");
-            out.push_str(&one_line(provider.free_tier, 80));
+            out.push_str(&strip_controls_truncated(provider.free_tier, 80));
         }
     }
     for (key, value) in evidence {
         out.push_str("\tprobe.");
-        out.push_str(&one_line(key, 64));
+        out.push_str(&strip_controls_truncated(key, 64));
         out.push('=');
-        out.push_str(&one_line(value, 160));
+        out.push_str(&strip_controls_truncated(value, 160));
     }
     out.push('\n');
 }
 
-fn one_line(value: &str, max_chars: usize) -> String {
+/// `value` with every control character removed (not escaped, unlike
+/// [`crate::textnorm::one_line`], which turns CR/LF/tab into spaces and escapes the rest) and cut to
+/// `max_chars` characters.
+fn strip_controls_truncated(value: &str, max_chars: usize) -> String {
     value
         .chars()
         .filter(|c| !c.is_control())
@@ -669,6 +672,13 @@ mod tests {
 
     use super::*;
     use crate::http::{Request, Response, TransportFailure};
+
+    #[test]
+    fn strip_controls_truncated_drops_controls_where_textnorm_one_line_escapes_them() {
+        assert_eq!(strip_controls_truncated("a\nb\tc\u{1b}d", 64), "abcd");
+        assert_eq!(crate::textnorm::one_line("a\nb\tc"), "a b c");
+        assert_eq!(strip_controls_truncated("abcdef", 3), "abc");
+    }
 
     struct FakeTransport {
         response: Response,
