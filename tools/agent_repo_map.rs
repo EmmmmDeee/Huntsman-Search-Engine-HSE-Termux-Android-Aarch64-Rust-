@@ -18,11 +18,16 @@ struct Coverage {
     oversized: usize,
     non_utf8: usize,
     symbol_truncated: usize,
+    matched: usize,
 }
 
 fn is_symbol(line: &str) -> bool {
     let s = line.trim_start();
-    ["pub fn ", "pub(crate) fn ", "fn ", "pub struct ", "struct ",
+    ["pub fn ", "pub(crate) fn ", "fn ", "pub async fn ", "async fn ",
+     "pub(crate) async fn ", "pub const fn ", "const fn ",
+     "pub(crate) const fn ", "pub unsafe fn ", "unsafe fn ",
+     "pub(crate) unsafe fn ", "pub extern ", "extern ",
+     "pub struct ", "struct ",
      "pub enum ", "enum ", "pub trait ", "trait ", "impl ", "pub type ",
      "type ", "pub mod ", "mod "].iter().any(|p| s.starts_with(p))
 }
@@ -106,9 +111,12 @@ fn main() -> io::Result<()> {
             .collect();
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
         let rank = score(&relative, &symbols, &terms);
-        if rank > 0 { keep_best(&mut matches, rank, relative, symbols); }
+        if rank > 0 {
+            coverage.matched += 1;
+            keep_best(&mut matches, rank, relative, symbols);
+        }
     }
-    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS);
+    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len());
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
@@ -122,6 +130,9 @@ mod tests {
     #[test] fn symbols_and_non_symbols() {
         assert!(is_symbol("  pub(crate) fn resolve() {}"));
         assert!(is_symbol("impl Thing {"));
+        assert!(is_symbol("pub async fn fetch() {}"));
+        assert!(is_symbol("const fn limit() -> usize { 2 }"));
+        assert!(is_symbol("pub(crate) unsafe fn probe() {}"));
         assert!(!is_symbol("let x = 3;"));
         assert!(!is_symbol("// fn fake()"));
     }
