@@ -35,14 +35,15 @@ struct SearchBudget {
 
 impl SearchBudget {
     fn new() -> Self {
-        Self { deadline: Instant::now() + Duration::from_secs(EXTENDED_BUDGET_SECS) }
+        Self {
+            deadline: Instant::now() + Duration::from_secs(EXTENDED_BUDGET_SECS),
+        }
     }
 
     fn exhausted(&self) -> bool {
         Instant::now() >= self.deadline
     }
 }
-
 
 #[derive(Debug, Clone)]
 struct CachedResponse {
@@ -202,7 +203,11 @@ pub fn search<T: Transport + ?Sized>(
     let query = checked_query(query, "query")?;
     let budget = SearchBudget::new();
     let (report, _) = search_with_observations_for(
-        transport, &query, now_unix, &EXTENDED_ENGINES, Some(&budget),
+        transport,
+        &query,
+        now_unix,
+        &EXTENDED_ENGINES,
+        Some(&budget),
     )?;
     Ok(report)
 }
@@ -1292,7 +1297,10 @@ mod tests {
     fn plain_search_rejects_oversized_and_control_queries_before_any_request() {
         let fake = Fake::new(vec![]);
         for query in ["", "   ", "line\nfeed", "nul\0byte", "carriage\rreturn"] {
-            assert!(search_fast(&fake, query, 100).is_err(), "accepted {query:?}");
+            assert!(
+                search_fast(&fake, query, 100).is_err(),
+                "accepted {query:?}"
+            );
         }
         assert!(search_fast(&fake, &"a".repeat(MAX_SEARCH_QUERY_BYTES + 1), 100).is_err());
         assert!(search_fast(&fake, &"🙂".repeat(MAX_SEARCH_QUERY_BYTES / 4 + 1), 100).is_err());
@@ -1610,9 +1618,14 @@ mod tests {
             deadline: Instant::now() - Duration::from_secs(1),
         };
         let fake = Fake::new(vec![]);
-        let (report, observations) =
-            search_with_observations_for(&fake, "query-unused", 100, &EXTENDED_ENGINES, Some(&budget))
-                .unwrap();
+        let (report, observations) = search_with_observations_for(
+            &fake,
+            "query-unused",
+            100,
+            &EXTENDED_ENGINES,
+            Some(&budget),
+        )
+        .unwrap();
         assert!(observations.is_empty());
         assert!(report.hits.is_empty());
         assert_eq!(report.outcomes.len(), 16);
