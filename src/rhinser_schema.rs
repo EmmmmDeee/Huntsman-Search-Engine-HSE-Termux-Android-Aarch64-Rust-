@@ -32,7 +32,14 @@ fn add_safe_metadata(mut evidence: Evidence, value: &Value, kind: &str) -> Evide
     // Never copy raw frames, NFC tag values, identifiers, owner names or URLs.
     let fields: &[&str] = match kind {
         "ndef" => &["byte_count", "records", "total_payload_bytes"],
-        "apdu" => &["byte_count", "data_bytes", "instruction", "class", "sw1", "sw2"],
+        "apdu" => &[
+            "byte_count",
+            "data_bytes",
+            "instruction",
+            "class",
+            "sw1",
+            "sw2",
+        ],
         "tlv" => &["byte_count", "fields", "constructed_fields"],
         "bluetooth" => &["transport", "signal_class", "bonded", "address_class"],
         _ => &[],
@@ -99,7 +106,10 @@ pub fn to_hse_entities(report: &NativeCaptureReport) -> Result<RhinserEntityImpo
         .with_attr("evidence_role", SEED_EVIDENCE_ROLE)
         .with_attr("rhinser_event_kind", kind)
         .with_attr("event_index", index.to_string())
-        .with_attr("claimed_capture_unix_ms", report.captured_unix_ms_claim.to_string())
+        .with_attr(
+            "claimed_capture_unix_ms",
+            report.captured_unix_ms_claim.to_string(),
+        )
         .with_attr("device_attested", "false")
         .with_attr("radio_access", "false");
         entity.add_evidence(add_safe_metadata(evidence, &metadata, kind));
@@ -131,17 +141,49 @@ mod tests {
         assert!(!output.device_attested);
         assert!(!output.radio_access);
         assert_eq!(output.entities[0].confidence, CANDIDATE_CONF);
-        assert!(output.entities.iter().all(|item| item.kind == EntityKind::Other));
-        assert!(output.entities.iter().all(|item| item.has_tag(tags::CANDIDATE)));
-        assert!(output.entities.iter().all(|item| item.has_tag(tags::DERIVED)));
-        assert!(output.entities.iter().all(|item| item.evidence[0].is_operator_seed()));
+        assert!(
+            output
+                .entities
+                .iter()
+                .all(|item| item.kind == EntityKind::Other)
+        );
+        assert!(
+            output
+                .entities
+                .iter()
+                .all(|item| item.has_tag(tags::CANDIDATE))
+        );
+        assert!(
+            output
+                .entities
+                .iter()
+                .all(|item| item.has_tag(tags::DERIVED))
+        );
+        assert!(
+            output
+                .entities
+                .iter()
+                .all(|item| item.evidence[0].is_operator_seed())
+        );
         let serialized = serde_json::to_string(&output).unwrap();
-        for forbidden in ["D101055402656E4869", "00A40400023F00", "pan_full", "cardholder_name", "owns"] {
-            assert!(!serialized.contains(forbidden), "unexpected raw/private field: {forbidden}");
+        for forbidden in [
+            "D101055402656E4869",
+            "00A40400023F00",
+            "pan_full",
+            "cardholder_name",
+            "owns",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "unexpected raw/private field: {forbidden}"
+            );
         }
         assert_eq!(
             output.entities[0].uid,
-            to_hse_entities(&inspect_capture_json(fixture).unwrap()).unwrap().entities[0].uid
+            to_hse_entities(&inspect_capture_json(fixture).unwrap())
+                .unwrap()
+                .entities[0]
+                .uid
         );
         assert_ne!(output.entities[0].uid, output.entities[1].uid);
     }
