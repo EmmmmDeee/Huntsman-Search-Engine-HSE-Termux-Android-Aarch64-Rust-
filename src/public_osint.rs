@@ -194,13 +194,16 @@ fn parse(
     let mut entities = Vec::new();
     let mut seen = BTreeSet::new();
     let mut skipped = rows.len().saturating_sub(MAX_ROWS);
+    // A nonempty upstream result set with no validated rows is not a verified zero.
+    // Preserve the count of omitted records for outcome classification.
 
     for row in rows.iter().take(MAX_ROWS) {
         let Some(url) = row.get("url").and_then(Value::as_str) else {
             skipped += 1;
             continue;
         };
-        if !url.starts_with("https://")
+        if url.chars().any(char::is_control)
+            || !url.starts_with("https://")
             || url.len() > 2048
             || (source == Source::Notices
                 && !(url.starts_with("https://www.fbi.gov/wanted/")
@@ -482,6 +485,17 @@ mod tests {
         let fake = OneResponse::json(200, r#"{"articles":[]}"#);
         let report = search(&fake, Source::News, "story", "s", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    }
+
+    #[test]
+    fn rejects_control_characters_in_upstream_urls() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"articles":[{"title":"Headline","url":"https://example.org/a\\nInjected"}]}"#,
+        );
+        let report = search(&fake, Source::News, "test", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
     }
 
     #[test]
