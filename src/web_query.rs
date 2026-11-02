@@ -222,6 +222,7 @@ pub fn search<T: Transport + ?Sized>(
         now_unix,
         &EXTENDED_ENGINES,
         Some(&budget),
+        None,
     )?;
     Ok(report)
 }
@@ -233,7 +234,7 @@ pub fn search_fast<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    let (report, _) = search_with_observations_for(transport, &query, now_unix, &ENGINES, None)?;
+    let (report, _) = search_with_observations_for(transport, &query, now_unix, &ENGINES, None, None)?;
     Ok(report)
 }
 
@@ -271,11 +272,24 @@ fn search_with_observations_for<T: Transport + ?Sized>(
     now_unix: u64,
     engines: &[EngineSpec],
     budget: Option<&SearchBudget>,
+    skip_blocked: Option<&BTreeSet<String>>,
 ) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
     for &engine in engines {
-        let result = if budget.is_some_and(SearchBudget::exhausted) {
+        let result = if skip_blocked.is_some_and(|blocked| blocked.contains(engine.name)) {
+            EngineReport {
+                hits: Vec::new(),
+                outcome: outcome(
+                    engine.name,
+                    SourceOutcomeKind::Inconclusive,
+                    now_unix,
+                    None,
+                    None,
+                    "not queried: provider blocked in baseline round",
+                ),
+            }
+        } else if budget.is_some_and(SearchBudget::exhausted) {
             EngineReport {
                 hits: Vec::new(),
                 outcome: outcome(
@@ -336,6 +350,7 @@ struct HitObservation {
 struct SearchConfig<'a> {
     engines: &'a [EngineSpec],
     budget: Option<&'a SearchBudget>,
+    skip_blocked: Option<&'a BTreeSet<String>>,
 }
 
 fn append_round<T: Transport + ?Sized>(
@@ -348,7 +363,14 @@ fn append_round<T: Transport + ?Sized>(
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
     let (report, observations) =
-        search_with_observations_for(transport, query, now_unix, config.engines, config.budget)?;
+        search_with_observations_for(
+            transport,
+            query,
+            now_unix,
+            config.engines,
+            config.budget,
+            config.skip_blocked,
+        )?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
@@ -425,7 +447,11 @@ fn adaptive_search_for<T: Transport + ?Sized>(
     let normalized_query = checked_query(input, "adaptive query")?;
     let shared_budget = (engines.len() > ENGINES.len()).then(SearchBudget::new);
     let budget = shared_budget.as_ref();
-    let config = SearchConfig { engines, budget };
+    let config = SearchConfig {
+        engines,
+        budget,
+        skip_blocked: None,
+    };
     let mut rounds = Vec::new();
     let mut discovery_index = BTreeMap::new();
     let baseline_gain = append_round(
@@ -437,6 +463,33 @@ fn adaptive_search_for<T: Transport + ?Sized>(
         &mut rounds,
         &mut discovery_index,
     )?;
+
+    // A blocked provider will not become accessible because the query was
+    // quoted or broadened. Keep its row but avoid redundant requests during
+    // this scan. Transient failures and zero-yield pages remain eligible.
+    let blocked: BTreeSet<String> = rounds[0]
+        .outcomes
+        .iter()
+        .filter(|outcome| {
+            matches!(
+                outcome.kind,
+                SourceOutcomeKind::BotWaf
+                    | SourceOutcomeKind::AuthRequired
+                    | SourceOutcomeKind::AuthRejected
+                    | SourceOutcomeKind::EntitlementDenied
+                    | SourceOutcomeKind::QuotaExhausted
+                    | SourceOutcomeKind::RateLimited
+                    | SourceOutcomeKind::ConfirmedDead
+                    | SourceOutcomeKind::RefusedBeforeSending
+            )
+        })
+        .map(|outcome| outcome.module.clone())
+        .collect();
+    let refined_config = SearchConfig {
+        engines,
+        budget,
+        skip_blocked: Some(&blocked),
+    };
 
     let stop_reason = if has_viable_provider(&rounds[0]) {
         let mut variant_exceeds_budget = false;
@@ -463,7 +516,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
                 &refined,
                 strategy,
                 now_unix,
-                config,
+                refined_config,
                 &mut rounds,
                 &mut discovery_index,
             )?;
@@ -479,7 +532,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
                     &broader,
                     "broader_low_confidence_recall",
                     now_unix,
-                    config,
+                    refined_config,
                     &mut rounds,
                     &mut discovery_index,
                 )?;
@@ -1586,6 +1639,45 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_skips_blocked_providers_after_baseline_without_hiding_outcomes() {
+        struct Capture {
+            requested: RefCell<Vec<String>>,
+        }
+        impl Transport for Capture {
+            fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+                self.requested.borrow_mut().push(request.url.clone());
+                if request.url.starts_with("https://www.mojeek.com/search") {
+                    Ok(response(403, "Cloudflare Just a moment"))
+                } else {
+                    Ok(response(
+                        200,
+                        r#"<a href="https://example.org/adaptive-blocked-fixture">Hit</a>"#,
+                    ))
+                }
+            }
+        }
+        let fake = Capture {
+            requested: RefCell::new(Vec::new()),
+        };
+        let report = adaptive_search(&fake, "unique-blocked-provider check", 4321).unwrap();
+        assert_eq!(report.rounds.len(), 2);
+        assert_eq!(report.rounds[0].outcomes.len(), 16);
+        assert_eq!(report.rounds[1].outcomes.len(), 16);
+        assert_eq!(fake.requested.borrow().len(), 31);
+        let suppressed = report.rounds[1]
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "mojeek")
+            .expect("mojeek must retain an outcome row");
+        assert_eq!(suppressed.kind, SourceOutcomeKind::Inconclusive);
+        assert_eq!(
+            suppressed.detail.as_deref(),
+            Some("not queried: provider blocked in baseline round")
+        );
+        assert!(!report.hits.is_empty());
+    }
+
+    #[test]
     fn exhaustive_registry_is_keyless_unique_and_has_sixteen_providers() {
         assert_eq!(EXTENDED_ENGINES.len(), 16);
         let mut names = BTreeSet::new();
@@ -1678,6 +1770,7 @@ mod tests {
             100,
             &EXTENDED_ENGINES,
             Some(&budget),
+            None,
         )
         .unwrap();
         assert!(observations.is_empty());
