@@ -120,6 +120,9 @@ fn checked_query(input: &str, label: &str) -> Result<String, Error> {
         )));
     }
     let normalized = canonical_whitespace(input);
+    if normalized.len() > MAX_SEARCH_QUERY_BYTES {
+        return Err(Error::Invalid(format!("{label} is too long after normalization")));
+    }
     if normalized.is_empty() {
         return Err(Error::Invalid(format!("{label} must not be empty")));
     }
@@ -1270,6 +1273,16 @@ mod tests {
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
     }
+    #[test]
+    fn query_rejects_oversized_utf8_after_normalization() {
+        // Lowercasing and Unicode folding may expand a query after its input byte check.
+        let input = "İ".repeat(200);
+        let normalized = canonical_whitespace(&input);
+        if normalized.len() > MAX_SEARCH_QUERY_BYTES {
+            assert!(checked_query(&input, "query").is_err());
+        }
+    }
+
     #[test]
     fn query_is_canonical_before_search_setup() {
         assert_eq!(canonical_whitespace("  Ada   Lovelace "), "ada lovelace");
