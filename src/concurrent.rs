@@ -82,7 +82,7 @@ fn drain<'env, R: Send + 'env>(
             break;
         };
         if let Some(job) = take(slot) {
-            let outcome = catch_unwind(AssertUnwindSafe(job));
+            let outcome = catch_unwind(AssertUnwindSafe(|| job()));
             *results[index]
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(outcome);
