@@ -42,30 +42,37 @@ jobs:
           done < <(env)
           bin="./target/release/huntsman-recon"
           printf 'probe\tmodule\texit\tverdict\tobserved\n' > "$out/verdict.tsv"
-          run_probe() {
-            local name="$1" module="$2"
-            shift 2
-            timeout 90 "$bin" "$@" > "$out/$name.out" 2>&1
-            local code=$?
-            local line verdict
+          collect() {
+            local name="$1"
+            shift
+            timeout 150 "$bin" "$@" > "$out/$name.out" 2>&1
+            echo "$?" > "$out/$name.exit"
+          }
+          verdict() {
+            local name="$1" module="$2" code
+            code="$(cat "$out/$name.exit")"
+            local line status
             line="$(awk -F '\t' -v m="$module" '$1==m && ($2=="success" || $2=="valid_zero") {print;exit}' "$out/$name.out" | cut -c1-160)"
-            verdict=FAIL
-            if [ "$code" = 0 ] && [ -n "$line" ]; then verdict=PASS; fi
+            status=FAIL
+            if [ "$code" = 0 ] && [ -n "$line" ]; then status=PASS; fi
             [ -n "$line" ] || line="$(awk -F '\t' -v m="$module" '$1==m {print;exit}' "$out/$name.out" | cut -c1-160)"
             [ -n "$line" ] || line="no accepted provider row"
-            printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$module" "$code" "$verdict" "$line" >> "$out/verdict.tsv"
-            printf '%s: %s exit=%s %s\n' "$module" "$verdict" "$code" "$line"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$module" "$code" "$status" "$line" >> "$out/verdict.tsv"
+            printf '%s: %s exit=%s %s\n' "$module" "$status" "$code" "$line"
           }
-          # Named public, non-sensitive fixtures with stable documented identifiers.
-          run_probe wikidata_q42 wikidata wikidata Q42
-          run_probe github_dtolnay github_user username dtolnay
-          run_probe crates_dtolnay crates_io username dtolnay
-          run_probe peeringdb_13335 peeringdb asn 13335
+          # One username request covers two providers; do not repeat identical live probes.
+          collect wikidata_q42 wikidata Q42
+          verdict wikidata_q42 wikidata
+          collect username_dtolnay username dtolnay
+          verdict username_dtolnay github_user
+          verdict username_dtolnay crates_io
+          collect peeringdb_13335 asn 13335
+          verdict peeringdb_13335 peeringdb
           echo "binary_commit=$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           echo '### Public live provider receipts (actual Rust binary)' >> "$GITHUB_STEP_SUMMARY"
-          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '```' >> "$GITHUB_STEP_SUMMARY"
           cat "$out/verdict.tsv" >> "$GITHUB_STEP_SUMMARY"
-          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '```' >> "$GITHUB_STEP_SUMMARY"
           for f in "$out"/*.out; do
             echo "::group::$(basename "$f") (first 60 lines)"
             head -n 60 "$f" | cut -c1-240
