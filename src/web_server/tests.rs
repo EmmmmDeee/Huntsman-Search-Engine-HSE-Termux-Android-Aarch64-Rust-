@@ -179,6 +179,7 @@ fn rhinser_native_browser_submission_matches_protected_http_contract() {
         "Import authorized capture file (JSON, maximum 20 KB)",
         "let rhinserNativeReport=null;",
         "let rhinserNativeGeneration=0;",
+        "if(generation!==rhinserNativeGeneration)return;",
         "if(generation!==rhinserNativeGeneration||submitted!==",
         "Capture changed during inspection. Inspect the current input again.",
         "if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');",
