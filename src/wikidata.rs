@@ -513,31 +513,78 @@ fn rendered_value(value: &Value) -> Option<String> {
 /// A statement may generate a current-looking entity only when it is not deprecated and carries
 /// no qualifiers. Qualifiers can restrict time, jurisdiction, or applicability; without interpreting
 /// them, suppressing the pivot is safer than presenting it as current. **Pure.**
-fn eligible_for_pivot(statement: &Value) -> bool {
+fn eligible_rank(statement: &Value) -> bool {
     matches!(
         statement.get("rank").and_then(Value::as_str),
         None | Some("normal" | "preferred")
-    ) && statement.get("qualifiers").is_none_or(|qualifiers| {
-        qualifiers
-            .as_object()
-            .is_some_and(serde_json::Map::is_empty)
-    })
+    )
 }
 
-/// Only unqualified, non-deprecated values are used for classification, friendly current-value
-/// attributes and automatic pivots. The complete bounded statement record is kept separately.
-fn values(statements: Option<&serde_json::Map<String, Value>>, pid: &str) -> Vec<String> {
+fn eligible_for_pivot(statement: &Value) -> bool {
+    eligible_rank(statement)
+        && statement
+            .get("qualifiers")
+            .is_none_or(|qualifiers| match qualifiers {
+                Value::Object(entries) => entries.is_empty(),
+                Value::Array(entries) => entries.is_empty(),
+                _ => false,
+            })
+}
+
+/// P805 (statement is subject of) is non-restrictive. Wikibase REST v1 exposes qualifiers
+/// as a list of {property, value} pairs; older fixture/Action shapes use property-keyed maps.
+/// Both forms permit only P805 for P31 classification, never temporal or unknown qualifiers.
+fn eligible_for_classification(statement: &Value) -> bool {
+    eligible_rank(statement)
+        && statement
+            .get("qualifiers")
+            .is_none_or(|qualifiers| match qualifiers {
+                Value::Object(entries) => entries.iter().all(|(pid, values)| {
+                    pid == "P805" && values.as_array().is_some_and(|items| !items.is_empty())
+                }),
+                Value::Array(entries) => entries.iter().all(|entry| {
+                    entry
+                        .get("property")
+                        .and_then(|property| property.get("id"))
+                        .and_then(Value::as_str)
+                        == Some("P805")
+                        && entry
+                            .get("value")
+                            .and_then(|value| value.get("type"))
+                            .and_then(Value::as_str)
+                            == Some("value")
+                }),
+                _ => false,
+            })
+}
+
+/// Share the bounded value decoder while retaining property-specific eligibility.
+fn values_filtered(
+    statements: Option<&serde_json::Map<String, Value>>,
+    pid: &str,
+    eligible: fn(&Value) -> bool,
+) -> Vec<String> {
     statements
         .and_then(|map| map.get(pid))
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter(|statement| eligible_for_pivot(statement))
+                .filter(|statement| eligible(statement))
                 .filter_map(|st| rendered_value(st.get("value")?))
                 .take(MAX_CLAIM_VALUES)
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Only unqualified, non-deprecated values seed friendly attributes and automatic pivots.
+fn values(statements: Option<&serde_json::Map<String, Value>>, pid: &str) -> Vec<String> {
+    values_filtered(statements, pid, eligible_for_pivot)
+}
+
+/// Classify an item from current P31 values, including non-restrictive P805 annotations.
+fn instance_types(statements: Option<&serde_json::Map<String, Value>>) -> Vec<String> {
+    values_filtered(statements, INSTANCE_OF, eligible_for_classification)
 }
 
 /// Preserve bounded source statement envelopes and compatible rendered claim values, explicitly
@@ -600,7 +647,7 @@ fn decode(
     status: u16,
 ) -> Report {
     let statements = item.get("statements").and_then(Value::as_object);
-    let instance_of = values(statements, INSTANCE_OF);
+    let instance_of = instance_types(statements);
     let label = search_label
         .map(str::to_owned)
         .or_else(|| best_language(item.get("labels")))
@@ -1061,5 +1108,95 @@ mod tests {
         );
         entity(&report, &EntityKind::Person, "Jane Example");
         assert!(report.outcome.kind.is_accepted());
+    }
+    #[test]
+    fn nonrestrictive_p805_type_annotation_preserves_person_and_evidence() {
+        let item = r#"{
+          "type":"item","id":"Q42","labels":{"en":"Douglas Adams"},
+          "statements":{
+            "P31":[{"rank":"normal","value":{"type":"value","content":"Q5"},
+                    "qualifiers":[{"property":{"id":"P805","data_type":"wikibase-item"},
+                                   "value":{"type":"value","content":"Q42395533"}}]}],
+            "P856":[{"rank":"normal","value":{"type":"value","content":"https://dated.example/"},
+                     "qualifiers":[{"property":{"id":"P805"},
+                                    "value":{"type":"value","content":"Q1"}}]},
+                    {"rank":"normal","value":{"type":"value","content":"https://live.example/"},
+                     "qualifiers":[]}]
+          }
+        }"#;
+        let report = report_of(item, "Q42");
+        let person = entity(&report, &EntityKind::Person, "Douglas Adams");
+        assert_eq!(
+            person.evidence[0]
+                .attributes
+                .get("instance_of")
+                .map(String::as_str),
+            Some("Q5")
+        );
+        assert!(
+            person.evidence[0]
+                .attr_values("statement_json")
+                .any(|s| s.contains("P805"))
+        );
+        entity(&report, &EntityKind::Domain, "live.example");
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|e| { e.kind == EntityKind::Domain && e.raw_value == "dated.example" })
+        );
+    }
+
+    #[test]
+    fn restrictive_or_deprecated_p31_statements_do_not_classify() {
+        let cases = [
+            serde_json::json!({
+                "rank":"deprecated","value":{"type":"value","content":"Q5"}
+            }),
+            serde_json::json!({
+                "rank":"normal","value":{"type":"value","content":"Q5"},
+                "qualifiers":{"P580":[{"value":{"type":"value","content":"+1990-01-01"}}]}
+            }),
+            serde_json::json!({
+                "rank":"normal","value":{"type":"value","content":"Q5"},
+                "qualifiers":[{"property":{"id":"P580","data_type":"time"},
+                               "value":{"type":"value","content":"+1990-01-01"}}]
+            }),
+            serde_json::json!({
+                "rank":"normal","value":{"type":"value","content":"Q5"},
+                "qualifiers":{
+                    "P805":[{"value":{"type":"value","content":"Q42395533"}}],
+                    "P582":[{"value":{"type":"value","content":"+2000-01-01"}}]
+                }
+            }),
+        ];
+        for statement in cases {
+            let mut item = serde_json::json!({
+                "type":"item","id":"Q43","labels":{"en":"Example Subject"},
+                "statements":{"P31":[]}
+            });
+            item["statements"]["P31"] = serde_json::json!([statement]);
+            let report = decode(&item, "Q43", None, "scan-wd", 1, 200);
+            entity(&report, &EntityKind::Other, "Example Subject");
+            assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Person));
+        }
+    }
+    #[test]
+    fn p805_qualifier_map_remains_supported_and_malformed_qualifiers_are_rejected() {
+        let old = serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"Q5"},
+            "qualifiers":{"P805":[{"value":{"type":"value","content":"Q1"}}]}
+        });
+        assert!(eligible_for_classification(&old));
+        let invalid = serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"Q5"},
+            "qualifiers":[{"property":{"id":"P805"}}]
+        });
+        assert!(!eligible_for_classification(&invalid));
+        let empty = serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"https://example.com/"},
+            "qualifiers":[]
+        });
+        assert!(eligible_for_pivot(&empty));
     }
 }
