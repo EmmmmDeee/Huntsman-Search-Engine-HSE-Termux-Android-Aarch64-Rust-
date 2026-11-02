@@ -70,7 +70,7 @@ pub(super) fn reverse_image_response(
         return json_error(400, "reverse-image upload length mismatch");
     }
     let keys = if live {
-        match crate::keys::Keys::resolve(None, std::env::var_os("HOME").as_deref()) {
+        match crate::keys::Keys::resolve(None, crate::environment::home().as_deref()) {
             Ok(resolved) => resolved.keys,
             Err(_) => return json_error(503, "reverse-image provider credentials unavailable"),
         }
