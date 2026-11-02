@@ -760,13 +760,7 @@ impl ScanApi {
         };
         let sources: Vec<Value> = results
             .as_ref()
-            .map(|results| {
-                results
-                    .outcomes
-                    .iter()
-                    .map(source_execution_row)
-                    .collect()
-            })
+            .map(|results| results.outcomes.iter().map(source_execution_row).collect())
             .unwrap_or_default();
         let uncertainty_register = crate::scan_uncertainty::derive(&record, results.as_ref());
         let mut value = json!(record);
