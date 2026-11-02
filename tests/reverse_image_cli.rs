@@ -31,12 +31,18 @@ fn offline_reverse_image_runs_real_binary_and_reports_no_external_queries() {
         .expect("run image search");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("report JSON");
-    assert_eq!(report["bytes"], image_fixture().len());
+    assert_eq!(report["bytes"].as_u64(), Some(image_fixture().len() as u64));
     assert_eq!(report["live_requested"], false);
     assert_eq!(report["image_sha256"].as_str().unwrap().len(), 64);
     assert!(report["matches"].as_array().unwrap().is_empty());
     assert_eq!(report["statuses"].as_array().unwrap().len(), 3);
-    assert!(report["statuses"].as_array().unwrap().iter().all(|s| s["state"] == "not_requested"));
+    assert!(
+        report["statuses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|status| status["state"] == "not_requested")
+    );
     let help = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
         .args(["reverse-image", "--help"])
         .env("HOME", &home)
