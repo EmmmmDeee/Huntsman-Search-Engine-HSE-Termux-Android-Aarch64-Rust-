@@ -63,19 +63,58 @@ pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
     ENGINES[0],
     ENGINES[1],
     ENGINES[2],
-    EngineSpec { name: "duckduckgo", base_url: "https://html.duckduckgo.com/html/" },
-    EngineSpec { name: "google", base_url: "https://www.google.com/search" },
-    EngineSpec { name: "yahoo", base_url: "https://search.yahoo.com/search" },
-    EngineSpec { name: "ecosia", base_url: "https://www.ecosia.org/search" },
-    EngineSpec { name: "startpage", base_url: "https://www.startpage.com/sp/search" },
-    EngineSpec { name: "qwant", base_url: "https://www.qwant.com/" },
-    EngineSpec { name: "swisscows", base_url: "https://swisscows.com/en/web" },
-    EngineSpec { name: "yandex", base_url: "https://yandex.com/search/" },
-    EngineSpec { name: "yep", base_url: "https://yep.com/web" },
-    EngineSpec { name: "lilo", base_url: "https://search.lilo.org/" },
-    EngineSpec { name: "you", base_url: "https://you.com/search" },
-    EngineSpec { name: "wiby", base_url: "https://wiby.me/" },
-    EngineSpec { name: "marginalia", base_url: "https://search.marginalia.nu/search" },
+    EngineSpec {
+        name: "duckduckgo",
+        base_url: "https://html.duckduckgo.com/html/",
+    },
+    EngineSpec {
+        name: "google",
+        base_url: "https://www.google.com/search",
+    },
+    EngineSpec {
+        name: "yahoo",
+        base_url: "https://search.yahoo.com/search",
+    },
+    EngineSpec {
+        name: "ecosia",
+        base_url: "https://www.ecosia.org/search",
+    },
+    EngineSpec {
+        name: "startpage",
+        base_url: "https://www.startpage.com/sp/search",
+    },
+    EngineSpec {
+        name: "qwant",
+        base_url: "https://www.qwant.com/",
+    },
+    EngineSpec {
+        name: "swisscows",
+        base_url: "https://swisscows.com/en/web",
+    },
+    EngineSpec {
+        name: "yandex",
+        base_url: "https://yandex.com/search/",
+    },
+    EngineSpec {
+        name: "yep",
+        base_url: "https://yep.com/web",
+    },
+    EngineSpec {
+        name: "lilo",
+        base_url: "https://search.lilo.org/",
+    },
+    EngineSpec {
+        name: "you",
+        base_url: "https://you.com/search",
+    },
+    EngineSpec {
+        name: "wiby",
+        base_url: "https://wiby.me/",
+    },
+    EngineSpec {
+        name: "marginalia",
+        base_url: "https://search.marginalia.nu/search",
+    },
 ];
 
 /// Public search forms have different parameter names.
@@ -145,7 +184,6 @@ pub fn search<T: Transport + ?Sized>(
     let (report, _) = search_with_observations(transport, &query, now_unix)?;
     Ok(report)
 }
-
 
 /// Exhaustive, opt-in keyless search across every configured public HTML engine.
 /// A provider may reject automation. Failure remains explicit and does not
@@ -245,8 +283,7 @@ fn append_round<T: Transport + ?Sized>(
     reports: &mut Vec<AdaptiveRound>,
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
-    let (report, observations) =
-        search_with_observations_for(transport, query, now_unix, engines)?;
+    let (report, observations) = search_with_observations_for(transport, query, now_unix, engines)?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
@@ -595,7 +632,6 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
     hits
 }
 
-
 /// Follow only known *result-link* wrappers, without making another network
 /// request. Reject malformed percent-encoding or non-http(s) destinations.
 /// Avoid using an engine redirect URL as a separate document identity.
@@ -607,16 +643,21 @@ fn extract_result_url(href: &str, engine: &str) -> Option<String> {
             || decoded.starts_with("https://duckduckgo.com/l/?"))
     {
         let query = decoded.split_once('?')?.1;
-        let target = query.split('&').filter_map(|pair| pair.split_once('='))
-            .find(|(key, _)| *key == "uddg")?.1;
+        let target = query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == "uddg")?
+            .1;
         crate::value_syntax::percent_decode_strict(target)?
     } else if engine == "google"
-        && (decoded.starts_with("/url?")
-            || decoded.starts_with("https://www.google.com/url?"))
+        && (decoded.starts_with("/url?") || decoded.starts_with("https://www.google.com/url?"))
     {
         let query = decoded.split_once('?')?.1;
-        let target = query.split('&').filter_map(|pair| pair.split_once('='))
-            .find(|(key, _)| *key == "q" || *key == "url")?.1;
+        let target = query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == "q" || *key == "url")?
+            .1;
         crate::value_syntax::percent_decode_strict(target)?
     } else if engine == "yahoo"
         && decoded.starts_with("https://r.search.yahoo.com/")
@@ -1405,7 +1446,11 @@ mod tests {
         assert_eq!(EXTENDED_ENGINES.len(), 16);
         let mut names = BTreeSet::new();
         for engine in EXTENDED_ENGINES {
-            assert!(names.insert(engine.name), "duplicate engine {}", engine.name);
+            assert!(
+                names.insert(engine.name),
+                "duplicate engine {}",
+                engine.name
+            );
             assert!(engine.base_url.starts_with("https://"));
             assert!(!engine.base_url.contains('?'));
         }
@@ -1427,10 +1472,14 @@ mod tests {
         let hits = parse_hits(html, "duckduckgo");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].url, "https://example.org/news?x=1&y=2");
-        assert_eq!(parse_hits(
-            r#"<a href="/url?q=https%3A%2F%2Fexample.net%2Farticle&amp;sa=U">x</a>"#,
-            "google",
-        )[0].url, "https://example.net/article");
+        assert_eq!(
+            parse_hits(
+                r#"<a href="/url?q=https%3A%2F%2Fexample.net%2Farticle&amp;sa=U">x</a>"#,
+                "google",
+            )[0]
+            .url,
+            "https://example.net/article"
+        );
         assert_eq!(parse_hits(
             r#"<a href="https://r.search.yahoo.com/_ylt=z/RU=https%3A%2F%2Fexample.com%2Fa/RK=1">x</a>"#,
             "yahoo",
@@ -1445,18 +1494,32 @@ mod tests {
         impl Transport for Capture {
             fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
                 self.urls.borrow_mut().push(request.url.clone());
-                Ok(response(200, r#"<a href="https://example.org/article">Article</a>"#))
+                Ok(response(
+                    200,
+                    r#"<a href="https://example.org/article">Article</a>"#,
+                ))
             }
         }
-        let fake = Capture { urls: RefCell::new(Vec::new()) };
+        let fake = Capture {
+            urls: RefCell::new(Vec::new()),
+        };
         let report = search_all(&fake, "test all engines", 2000).unwrap();
         assert_eq!(report.outcomes.len(), 16);
         assert_eq!(report.hits.len(), 1);
         let urls = fake.urls.borrow();
         assert_eq!(urls.len(), 16);
-        assert!(urls.iter().any(|url| url.starts_with("https://search.yahoo.com/search?p=")));
-        assert!(urls.iter().any(|url| url.starts_with("https://yandex.com/search/?text=")));
-        assert!(urls.iter().any(|url| url.starts_with("https://swisscows.com/en/web?query=")));
+        assert!(
+            urls.iter()
+                .any(|url| url.starts_with("https://search.yahoo.com/search?p="))
+        );
+        assert!(
+            urls.iter()
+                .any(|url| url.starts_with("https://yandex.com/search/?text="))
+        );
+        assert!(
+            urls.iter()
+                .any(|url| url.starts_with("https://swisscows.com/en/web?query="))
+        );
     }
 
     #[test]
