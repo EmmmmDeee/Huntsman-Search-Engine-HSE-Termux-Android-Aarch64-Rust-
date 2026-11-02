@@ -438,6 +438,30 @@ pub fn adaptive_search_all<T: Transport + ?Sized>(
     adaptive_search(transport, input, now_unix)
 }
 
+/// Baseline access refusal is not fixed by quote or recall variants.
+/// Suppress these repeated requests only within this invocation; preserve a
+/// typed outcome for each skipped engine in every subsequent round.
+fn blocked_provider_names(round: &AdaptiveRound) -> BTreeSet<String> {
+    round
+        .outcomes
+        .iter()
+        .filter(|outcome| {
+            matches!(
+                outcome.kind,
+                SourceOutcomeKind::BotWaf
+                    | SourceOutcomeKind::AuthRequired
+                    | SourceOutcomeKind::AuthRejected
+                    | SourceOutcomeKind::EntitlementDenied
+                    | SourceOutcomeKind::QuotaExhausted
+                    | SourceOutcomeKind::RateLimited
+                    | SourceOutcomeKind::ConfirmedDead
+                    | SourceOutcomeKind::RefusedBeforeSending
+            )
+        })
+        .map(|outcome| outcome.module.clone())
+        .collect()
+}
+
 fn adaptive_search_for<T: Transport + ?Sized>(
     transport: &T,
     input: &str,
@@ -464,27 +488,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
         &mut discovery_index,
     )?;
 
-    // A blocked provider will not become accessible because the query was
-    // quoted or broadened. Keep its row but avoid redundant requests during
-    // this scan. Transient failures and zero-yield pages remain eligible.
-    let blocked: BTreeSet<String> = rounds[0]
-        .outcomes
-        .iter()
-        .filter(|outcome| {
-            matches!(
-                outcome.kind,
-                SourceOutcomeKind::BotWaf
-                    | SourceOutcomeKind::AuthRequired
-                    | SourceOutcomeKind::AuthRejected
-                    | SourceOutcomeKind::EntitlementDenied
-                    | SourceOutcomeKind::QuotaExhausted
-                    | SourceOutcomeKind::RateLimited
-                    | SourceOutcomeKind::ConfirmedDead
-                    | SourceOutcomeKind::RefusedBeforeSending
-            )
-        })
-        .map(|outcome| outcome.module.clone())
-        .collect();
+    let blocked = blocked_provider_names(&rounds[0]);
     let refined_config = SearchConfig {
         engines,
         budget,
