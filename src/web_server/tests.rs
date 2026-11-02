@@ -3654,3 +3654,15 @@ fn autonomous_research_mission_reuses_durable_scan_and_rejects_untrusted_dispatc
     assert!(no_token.starts_with("HTTP/1.1 401"), "{no_token}");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn favicon_ico_is_an_empty_no_content_icon() {
+    let icon = response_for_request(
+        "GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        None,
+        loopback_bind(),
+    );
+    assert!(icon.starts_with("HTTP/1.1 204"), "{icon}");
+    assert_eq!(header(&icon, "Content-Type"), Some("image/x-icon"));
+    assert!(icon.ends_with("\r\n\r\n"), "204 carries no body: {icon:?}");
+}
