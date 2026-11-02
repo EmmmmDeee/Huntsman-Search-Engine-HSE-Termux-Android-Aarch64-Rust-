@@ -117,13 +117,12 @@ fn main() -> io::Result<()> {
         coverage.inspected += 1;
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
         let rank = score(&relative, &src, &terms);
-        if rank == 0 { continue; }
         let mut symbol_count = 0;
         let mut symbols = Vec::new();
         for (line_number, line) in src.lines().enumerate() {
             if !is_symbol(line) { continue; }
             symbol_count += 1;
-            if symbols.len() < MAX_SYMBOLS {
+            if rank > 0 && symbols.len() < MAX_SYMBOLS {
                 symbols.push((line_number + 1, line.trim().chars().take(180).collect()));
             }
         }
