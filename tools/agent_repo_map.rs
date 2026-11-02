@@ -115,13 +115,16 @@ fn main() -> io::Result<()> {
             continue;
         };
         coverage.inspected += 1;
-        let symbol_count = src.lines().filter(|line| is_symbol(line)).count();
+        let mut symbol_count = 0;
+        let mut symbols = Vec::new();
+        for (line_number, line) in src.lines().enumerate() {
+            if !is_symbol(line) { continue; }
+            symbol_count += 1;
+            if symbols.len() < MAX_SYMBOLS {
+                symbols.push((line_number + 1, line.trim().chars().take(180).collect()));
+            }
+        }
         if symbol_count > MAX_SYMBOLS { coverage.symbol_truncated += 1; }
-        let symbols: Vec<(usize, String)> = src.lines().enumerate()
-            .filter(|(_, s)| is_symbol(s))
-            .take(MAX_SYMBOLS)
-            .map(|(n, s)| (n + 1, s.trim().chars().take(180).collect()))
-            .collect();
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
         let rank = score(&relative, &src, &terms);
         if rank > 0 {
