@@ -234,7 +234,8 @@ pub fn search_fast<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    let (report, _) = search_with_observations_for(transport, &query, now_unix, &ENGINES, None, None)?;
+    let (report, _) =
+        search_with_observations_for(transport, &query, now_unix, &ENGINES, None, None)?;
     Ok(report)
 }
 
@@ -362,15 +363,14 @@ fn append_round<T: Transport + ?Sized>(
     reports: &mut Vec<AdaptiveRound>,
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
-    let (report, observations) =
-        search_with_observations_for(
-            transport,
-            query,
-            now_unix,
-            config.engines,
-            config.budget,
-            config.skip_blocked,
-        )?;
+    let (report, observations) = search_with_observations_for(
+        transport,
+        query,
+        now_unix,
+        config.engines,
+        config.budget,
+        config.skip_blocked,
+    )?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
