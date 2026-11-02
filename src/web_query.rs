@@ -1191,6 +1191,15 @@ mod tests {
         );
         let report = parse_engine_response(engine, &response, 502);
         assert!(!response_is_cacheable(&response, &report));
+        for directive in ["max-age = 0", "public, max-age= 0", "MAX-AGE =0"] {
+            let response = response_with_headers(
+                200,
+                &[("cache-control", directive)],
+                r#"<a href="https://example.org/third">third</a>"#,
+            );
+            let report = parse_engine_response(engine, &response, 502);
+            assert!(!response_is_cacheable(&response, &report), "{directive}");
+        }
     }
 
     #[test]
