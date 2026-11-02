@@ -2559,7 +2559,7 @@ mod tests {
             ("<<<>>>", Some("<<<>>>")),
             ("x<", Some("x<")),
             ("</", Some("</")),
-            ("<!-- never closed", Some("<!-- never closed")),
+            ("<!-- never closed", None),
             ("a<!-- hidden -->b", Some("ab")),
             ("a<!-- x > y -->b", Some("ab")),
             ("<!DOCTYPE html><?xml x?>text", Some("text")),
