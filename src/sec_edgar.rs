@@ -45,7 +45,19 @@ const DATASET: &str = "SEC EDGAR";
 
 /// Plain operator identity and real, operator-authorised contact email. The value is sent to SEC
 /// only; neither errors nor logs include its contents. This is not an API key or login.
-const USER_AGENT_CONFIGURATION_MESSAGE: &str = "SEC EDGAR requires HUNTSMAN_SEC_USER_AGENT with an operator-authorised contact email; no request sent";
+const USER_AGENT_UNSET_MESSAGE: &str = "SEC EDGAR requires an operator-authorised contact: HUNTSMAN_SEC_USER_AGENT is not set; no request sent";
+/// The configured value failed validation. The shape is named; the value itself never is.
+const USER_AGENT_INVALID_MESSAGE: &str = "SEC EDGAR requires an operator-authorised contact: HUNTSMAN_SEC_USER_AGENT is set but unusable; it must be \"Name contact@your-domain\" (12-200 printable ASCII characters, a name, then an email address you control); no request sent";
+
+/// The not-configured detail for `configured`: unset (absent or blank) or set but unusable.
+/// **Pure.**
+fn user_agent_configuration_message(configured: Option<&str>) -> &'static str {
+    if configured.is_none_or(|value| value.trim().is_empty()) {
+        USER_AGENT_UNSET_MESSAGE
+    } else {
+        USER_AGENT_INVALID_MESSAGE
+    }
+}
 
 /// Validate the externally supplied HTTP User-Agent without retaining or logging invalid input.
 /// A syntactically plausible contact address does not establish authorisation: the operator must
@@ -287,7 +299,7 @@ fn lookup_with_config<T: Transport + ?Sized>(
             now_unix,
             SourceOutcomeKind::NotConfigured,
             None,
-            USER_AGENT_CONFIGURATION_MESSAGE,
+            user_agent_configuration_message(configured_agent),
         )));
     };
     lookup_with_agent(transport, name, scan_id, now_unix, user_agent)
@@ -975,6 +987,43 @@ mod tests {
         let report = lookup(&transport, "elon musk", "scan-edgar", 1).expect("runs");
         assert!(report.entities.is_empty());
         assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    /// An unset variable and a set-but-unusable one need different operator action, so the
+    /// row says which, names the shape required, and never echoes the configured value.
+    #[test]
+    fn not_configured_detail_tells_unset_apart_from_invalid_without_echoing_it() {
+        let detail = |agent: Option<&str>| {
+            lookup_with_config(&ScriptedTransport::new(vec![]), "elon musk", "s", 1, agent)
+                .expect("configuration is a source outcome")
+                .outcome
+                .detail
+                .unwrap_or_default()
+        };
+        for unset in [None, Some(""), Some("   ")] {
+            let text = detail(unset);
+            assert!(
+                text.contains("HUNTSMAN_SEC_USER_AGENT is not set"),
+                "{text}"
+            );
+            assert!(text.ends_with("no request sent"), "{text}");
+        }
+        for invalid in [
+            "Huntsman none@domain",
+            "Huntsman secret-token-value",
+            "Huntsman contact@example.com\r\nX-Injected: yes",
+        ] {
+            let text = detail(Some(invalid));
+            assert!(
+                text.contains("HUNTSMAN_SEC_USER_AGENT is set but unusable"),
+                "{text}"
+            );
+            assert!(text.contains("\"Name contact@your-domain\""), "{text}");
+            assert!(text.ends_with("no request sent"), "{text}");
+            for fragment in ["none@domain", "secret-token-value", "X-Injected"] {
+                assert!(!text.contains(fragment), "{text} echoes {fragment}");
+            }
+        }
     }
 
     #[test]
