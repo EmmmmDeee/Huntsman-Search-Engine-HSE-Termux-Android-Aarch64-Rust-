@@ -262,7 +262,7 @@ impl<'a> Markup<'a> {
                 .and_then(|rest| {
                     rest.match_indices(&end_marker)
                         .map(|(offset, _)| next + offset + end_marker.len())
-                        .filter(|&after_marker| {
+                        .find(|&after_marker| {
                             self.lower
                                 .as_bytes()
                                 .get(after_marker)
@@ -273,7 +273,6 @@ impl<'a> Markup<'a> {
                                     )
                                 })
                         })
-                        .next()
                 })
                 // Parse at most one candidate close, preserving linear scanning
                 // even if its attribute quote never terminates.
