@@ -244,18 +244,30 @@ impl<'a> Markup<'a> {
             .find(|element| name.eq_ignore_ascii_case(element));
         if let (Some(element), false) = (raw_text, end_tag) {
             // The element's content is not text: skip to its end tag, or to the end of input.
+            // Only an appropriate end tag ends raw text. A prefix such as
+            // </scripting> or </stylesheet> is content, not a closing tag.
             let end_marker = format!("</{element}");
             let resume = self
                 .lower
                 .get(next..)
-                .and_then(|rest| rest.find(&end_marker))
-                .map_or(self.html.len(), |offset| {
-                    let after_marker = next + offset + end_marker.len();
-                    self.html
-                        .get(after_marker..)
-                        .and_then(|rest| rest.find('>'))
-                        .map_or(self.html.len(), |end| after_marker + end + 1)
-                });
+                .and_then(|rest| {
+                    rest.match_indices(&end_marker).find_map(|(offset, _)| {
+                        let after_marker = next + offset + end_marker.len();
+                        let boundary = self.lower.as_bytes().get(after_marker).copied()?;
+                        let boundary_ok = matches!(
+                            boundary,
+                            b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'/' | b'>'
+                        );
+                        if !boundary_ok {
+                            return None;
+                        }
+                        self.html
+                            .get(after_marker..)
+                            .and_then(tag_close)
+                            .map(|end| after_marker + end + 1)
+                    })
+                })
+                .unwrap_or(self.html.len());
             return Some((Piece::Ignored, resume));
         }
         Some((
