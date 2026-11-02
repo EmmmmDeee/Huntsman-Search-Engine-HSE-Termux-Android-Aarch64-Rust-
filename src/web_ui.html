@@ -452,6 +452,17 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="alert" id="rhinser-source-error" role="alert" hidden></p>
 <div class="table-wrap"><table><thead><tr><th>Category</th><th>Source</th><th>Link</th><th>Evidence status</th></tr></thead><tbody id="rhinser-source-list"></tbody></table></div>
 </div></div>
+<div class="panel" id="rhinser-native-panel">
+<div class="panel-heading">Rhinser native capture inspector (operator import)</div>
+<div class="panel-body">
+<p class="help">Paste a capture JSON envelope exported with explicit permission by an Android companion. The Rust server checks structure and returns redacted observations only. Imported timestamps and consent are unverified operator claims. This is not live NFC or Bluetooth scanning.</p>
+<form id="rhinser-native-form">
+<label for="rhinser-native-input">NDEF / APDU / Bluetooth capture JSON</label>
+<textarea id="rhinser-native-input" rows="4" maxlength="20000" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder='{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}' required></textarea>
+<button class="btn" id="rhinser-native-run" type="submit">Inspect local capture</button>
+</form>
+<pre class="mono osint-report" id="rhinser-native-output" role="status">No capture submitted. No device radio accessed.</pre>
+</div></div>
 <div class="panel" id="osint-methods-panel"><div class="panel-heading">Source-backed OSINT methods</div>
 <div class="panel-body">
 <form id="osint-case-form" class="row">
@@ -1791,6 +1802,10 @@ async function osintOffline(method, source, output, button) {
     $(output).textContent='Review unavailable: '+e.message;
   }finally{submit.disabled=false}
 }
+$('rhinser-native-form').onsubmit=ev=>{
+  ev.preventDefault();
+  osintOffline('/api/rhinser/native','rhinser-native-input','rhinser-native-output','rhinser-native-run');
+};
 $('osint-case-form').onsubmit=ev=>{
   ev.preventDefault();
   osintOffline('/api/osint/case','osint-case-input','osint-case-output','osint-case-run');
