@@ -166,17 +166,6 @@ fn parse_saucenao(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
     Ok(matches)
 }
 
-fn multipart_sauce(image: &[u8], secret: &Secret) -> Vec<u8> {
-    // Static boundary is safe: a collision would need the exact marker in a binary image. Avoid
-    // depending on that probability by selecting a boundary that does not occur in the input.
-    let mut boundary = "HSE_Image_Boundary_A".to_owned();
-    while image.windows(boundary.len()).any(|window| window == boundary.as_bytes()) {
-        boundary.push('Z');
-    }
-    // The boundary must be communicated separately in the HTTP Content-Type header.
-    multipart_body(image, secret, &boundary)
-}
-
 fn multipart_body(image: &[u8], secret: &Secret, boundary: &str) -> Vec<u8> {
     let mut body = Vec::with_capacity(image.len() + 1024);
     for (name, value) in [("api_key", secret.expose()), ("output_type", "2"),
