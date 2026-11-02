@@ -61,3 +61,11 @@ public web page, configure exactly one provider key, run `--live` and verify bot
 the API response and independent existence of its returned source URLs. Repeat for
 the other configured providers. A single provider failure cannot be treated as a
 clean negative.
+
+## Instagram QR and image provenance
+
+A QR graphic and a username identify a profile destination, **not the photo bytes**
+needed for visual matching. Export or save the actual publicly accessible profile
+photo to the phone, then pass its image file to the CLI. An identical image can be
+reused by unrelated accounts; neither exact-image matches nor visually similar
+images establish that two profiles are controlled by the same person.
