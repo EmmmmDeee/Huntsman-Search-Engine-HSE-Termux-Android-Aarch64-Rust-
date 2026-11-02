@@ -39,6 +39,38 @@ struct Body {
     ip: Option<Entry>,
 }
 
+// StopForumSpam has returned both JSON numbers and decimal strings for confidence.
+// Reject other types and non-finite strings rather than losing evidence as a false zero.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ConfidenceWire {
+    Number(f64),
+    Decimal(String),
+}
+
+fn deserialize_confidence<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    Option::<ConfidenceWire>::deserialize(deserializer)?
+        .map(|raw| {
+            let value = match raw {
+                ConfidenceWire::Number(value) => value,
+                ConfidenceWire::Decimal(text) => text
+                    .parse::<f64>()
+                    .map_err(|_| D::Error::custom("invalid StopForumSpam confidence decimal"))?,
+            };
+            if value.is_finite() {
+                Ok(value)
+            } else {
+                Err(D::Error::custom("non-finite StopForumSpam confidence"))
+            }
+        })
+        .transpose()
+}
+
 /// One queried value's record; `value` echoes the query and is not kept.
 #[derive(Deserialize)]
 struct Entry {
@@ -48,7 +80,7 @@ struct Entry {
     frequency: u64,
     #[serde(default)]
     lastseen: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_confidence")]
     confidence: Option<f64>,
     #[serde(default)]
     torexit: u8,
@@ -215,6 +247,37 @@ mod tests {
             .unwrap_or_else(|| panic!("recorded body must decode"));
         assert_eq!(f.tags, ["spam-reported"]);
         assert!(!format!("{f:?}").contains("test@example.com"));
+    }
+
+    #[test]
+    fn live_decimal_string_confidence_keeps_the_report_and_does_not_echo_the_email() {
+        // Reproduced from the public API for the reserved example-domain indicator
+        // test@example.com on 2026-11-03. The previous f64-only field rejected it.
+        let body = r#"{"success":1,"email":{"value":"test@example.com","appears":1,"frequency":3,"lastseen":"2026-10-31 11:47:01","confidence":"40.00"}}"#;
+        let finding = decode(body.as_bytes(), Indicator::Email("test@example.com"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("string-encoded confidence must decode"));
+        assert_eq!(
+            finding.summary,
+            "StopForumSpam: the address has 3 spam reports, last on 2026-10-31 11:47:01"
+        );
+        assert!(finding.attrs.contains(&("reports", "3".into())));
+        assert!(finding.attrs.contains(&("confidence", "40.00".into())));
+        assert!(!format!("{finding:?}").contains("test@example.com"));
+    }
+
+    #[test]
+    fn malformed_confidence_cannot_be_silently_accepted_as_absence() {
+        for malformed in [r#""invalid""#, r#""NaN""#, "true", "{}", "[]"] {
+            let body = format!(
+                r#"{{"success":1,"email":{{"appears":1,"frequency":3,"confidence":{malformed}}}}}"#
+            );
+            assert!(
+                matches!(decode(body.as_bytes(), Indicator::Email("test@example.com")), Err(LegError::Decode(_))),
+                "malformed confidence must fail closed: {malformed}"
+            );
+        }
     }
 
     #[test]
