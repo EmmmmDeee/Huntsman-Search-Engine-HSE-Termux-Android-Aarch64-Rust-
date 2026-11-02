@@ -269,7 +269,7 @@ impl<'a> Markup<'a> {
                                 .is_some_and(|&byte| {
                                     matches!(
                                         byte,
-                                        b' ' | b'\\t' | b'\\n' | b'\\r' | b'\\x0c' | b'/' | b'>'
+                                        b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'/' | b'>'
                                     )
                                 })
                         })
