@@ -38,9 +38,8 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
     if metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES as u64 {
         return fail(EX_DATAERR, "image must be between 1 byte and 4 MiB");
     }
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(_) => return fail(EX_NOINPUT, "could not read image"),
+    let Ok(bytes) = fs::read(path) else {
+        return fail(EX_NOINPUT, "could not read image");
     };
     // Validate again after read to reject a file that grew between metadata and read.
     if bytes.len() > MAX_IMAGE_BYTES {
