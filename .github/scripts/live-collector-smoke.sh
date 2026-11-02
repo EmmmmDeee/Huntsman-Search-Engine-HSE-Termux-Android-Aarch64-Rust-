@@ -28,6 +28,7 @@ probes=(
 
 printf 'module\tprobe\tverdict\tevidence\n' > "$out/verdict.tsv"
 failed=0
+tab="$(printf '\t')"
 for row in "${probes[@]}"; do
   IFS='|' read -r id cmd module <<< "$row"
   if [ ! -e "$out/$id.exit" ]; then
@@ -37,14 +38,14 @@ for row in "${probes[@]}"; do
   fi
   code="$(cat "$out/$id.exit")"
   # Match actual tab-delimited fields; grep -E "\\t" is not a portable tab match.
-  line="$(awk -F '\\t' -v wanted="$module" '$1 == wanted && $2 == "success" { print; exit }' "$out/$id.out" | cut -c1-160)"
+  line="$(awk -F "$tab" -v wanted="$module" '$1 == wanted && $2 == "success" { print; exit }' "$out/$id.out" | cut -c1-160)"
   if [ "$code" = "0" ] && [ -n "$line" ]; then
     verdict=PASS
   else
     verdict=FAIL
     failed=1
-    line="$(awk -F '\\t' -v wanted="$module" '$1 == wanted { print; exit }' "$out/$id.out" | cut -c1-160)"
-    [ -n "$line" ] || line="$(head -c 160 "$out/$id.out" | tr '\\n\\t' '  ')"
+    line="$(awk -F "$tab" -v wanted="$module" '$1 == wanted { print; exit }' "$out/$id.out" | cut -c1-160)"
+    [ -n "$line" ] || line="$(head -c 160 "$out/$id.out" | tr '\n\t' '  ')"
   fi
   printf '%s\t%s\t%s\texit=%s %s\n' "$module" "$id" "$verdict" "$code" "$line" >> "$out/verdict.tsv"
 done
