@@ -113,7 +113,7 @@ pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
     },
     EngineSpec {
         name: "marginalia",
-        base_url: "https://search.marginalia.nu/search",
+        base_url: "https://marginalia-search.com/search",
     },
 ];
 
@@ -836,6 +836,7 @@ fn is_engine_or_navigation_url(url: &str) -> bool {
         "you.com",
         "wiby.me",
         "marginalia.nu",
+        "marginalia-search.com",
     ];
     ENGINE_HOSTS.iter().any(|known| {
         host == *known
