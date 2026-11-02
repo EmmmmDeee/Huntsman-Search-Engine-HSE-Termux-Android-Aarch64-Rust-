@@ -734,12 +734,12 @@ mod tests {
     #[test]
     fn hibp_breaches_from_exposure_are_breach_evidence() {
         // `exposure` records each HIBP breach that lists an address as that address, tagged
-        // `breach`, with evidence under `exposure_cli::SOURCE`.
+        // `breach`, with evidence under `hibp::ACCOUNT_SOURCE`.
         let breached = |address: &str| {
             let mut entity = Entity::new(EntityKind::Email, address, 0.9, "scan");
             entity.tag(tags::BREACH);
             entity.add_evidence(Evidence::new(
-                EvidenceProvenance::new(crate::exposure_cli::SOURCE),
+                EvidenceProvenance::new(crate::hibp::ACCOUNT_SOURCE),
                 "Address listed in HIBP breach Adobe",
             ));
             entity

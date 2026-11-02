@@ -3,6 +3,12 @@
 //! The country table is ported from the legacy Huntsman `phone_intl` module.
 //! This module performs no network I/O.
 
+/// The label the Australian numbering-plan reading records its evidence and outcome under.
+pub const AU_SOURCE: &str = "phone_au";
+
+/// The label the North American Numbering Plan reading records its evidence and outcome under.
+pub const NANP_SOURCE: &str = "phone_nanp";
+
 pub const COUNTRIES: &[(&str, &str, &str)] = &[
     // Multi-digit codes first (longest-prefix-first).
     ("1242", "BS", "Bahamas"),

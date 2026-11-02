@@ -70,7 +70,8 @@ use crate::keys::{Keys, Secret};
 use crate::redact::{scrub_bounded, scrub_secrets};
 use crate::source_outcome::SourceOutcomeKind;
 
-const SRC: &str = "stolen_tax";
+/// Source label stolen.tax records its evidence and outcome under.
+pub const SOURCE: &str = "stolen_tax";
 /// The key slot this source reads (keys file or environment).
 pub const KEY_SLOT: &str = crate::environment::STOLEN_TAX_KEY_ENV;
 /// v2 gateway; the path is appended per cascade step.
@@ -328,7 +329,7 @@ fn query_path<T: Transport + ?Sized>(
                 ..FetchOptions::default()
             },
             deadline,
-            SRC,
+            SOURCE,
             now_unix,
         )
         .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
@@ -900,7 +901,7 @@ fn build_entities(data: &StolenTaxData, query: &str, scan_id: &str) -> Vec<Entit
             }
             let mut entity = Entity::new(kind.clone(), value, MEDIUM, scan_id);
             entity.add_evidence(Evidence::new(
-                EvidenceProvenance::for_scan(SRC, scan_id),
+                EvidenceProvenance::for_scan(SOURCE, scan_id),
                 correlated.clone(),
             ));
             entities.push(entity);
@@ -912,7 +913,7 @@ fn build_entities(data: &StolenTaxData, query: &str, scan_id: &str) -> Vec<Entit
         let text = breach_evidence_text(&breach.name, &marker, breach);
         let mut entity = Entity::new(EntityKind::Credential, marker, HIGH, scan_id);
         entity.add_evidence(Evidence::new(
-            EvidenceProvenance::for_scan(SRC, scan_id),
+            EvidenceProvenance::for_scan(SOURCE, scan_id),
             text,
         ));
         entities.push(entity);

@@ -269,11 +269,8 @@ fn enrich_au(canonical: &str, scan_id: &str, entity: &mut Entity) {
 }
 
 /// Evidence source for the offline North American Numbering Plan reading.
-/// The label the Australian numbering-plan reading records its evidence and outcome under.
-pub const AU_SOURCE: &str = "phone_au";
-
-/// The label the North American Numbering Plan reading records its evidence and outcome under.
-pub const NANP_SOURCE: &str = "phone_nanp";
+/// Re-exported from [`crate::phone_intl`], the numbering-plan home; these paths stay stable.
+pub use crate::phone_intl::{AU_SOURCE, NANP_SOURCE};
 
 /// What the North American Numbering Plan says about a `+1` number: its national and
 /// international forms, its class, its area code's country, and whether it is one of the

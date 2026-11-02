@@ -57,6 +57,9 @@ pub struct OuiInfo {
 
 /// The assignee the MA-L registry gives a block the IEEE Registration Authority sub-assigns
 /// (MA-M, MA-S, IAB): its real holder is not in the MA-L registry.
+/// Source label for the offline OUI classification of a hardware address.
+pub const SOURCE: &str = "oui";
+
 const IEEE_RA: &str = "IEEE Registration Authority";
 
 impl OuiInfo {

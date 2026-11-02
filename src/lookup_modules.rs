@@ -24,7 +24,7 @@ use crate::{
 /// The breach legs an email address's lookup folds in.
 const BREACH: [&str; 4] = [
     exposure_cli::HIBP_MODULE,
-    exposure_cli::STOLEN_TAX_SOURCE,
+    crate::stolen_tax::SOURCE,
     oathnet::SOURCE,
     dehashed::COLLECTOR_ID,
 ];
@@ -96,7 +96,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             crate::lobsters::SRC,
             crate::docker_hub_user::SRC,
             seeknow_collector::COLLECTOR_ID,
-            exposure_cli::STOLEN_TAX_SOURCE,
+            crate::stolen_tax::SOURCE,
             oathnet::SOURCE,
         ],
         ScanKind::Phone => {
@@ -216,8 +216,8 @@ pub fn offline_runs(kind: ScanKind) -> Vec<&'static str> {
     match kind {
         ScanKind::Email => vec!["email_parse"],
         ScanKind::Username => vec!["username_variants"],
-        ScanKind::Phone => vec!["phone_intl", "phone_au", crate::phone_cli::NANP_SOURCE],
-        ScanKind::Network => vec![crate::network_cli::OUI_SOURCE],
+        ScanKind::Phone => vec!["phone_intl", "phone_au", crate::phone_intl::NANP_SOURCE],
+        ScanKind::Network => vec![crate::oui::SOURCE],
         ScanKind::Ip
         | ScanKind::Domain
         | ScanKind::Netblock

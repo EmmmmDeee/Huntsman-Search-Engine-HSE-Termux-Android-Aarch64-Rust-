@@ -2913,7 +2913,7 @@ mod tests {
                     // The row the HIBP leg writes, `hibp_account`, is the `hibp` module's.
                     Ok(LookupOutput {
                         outcomes: vec![SourceExecutionOutcome::valid_zero(
-                            crate::exposure_cli::SOURCE,
+                            crate::hibp::ACCOUNT_SOURCE,
                             1,
                         )],
                         ..LookupOutput::default()
