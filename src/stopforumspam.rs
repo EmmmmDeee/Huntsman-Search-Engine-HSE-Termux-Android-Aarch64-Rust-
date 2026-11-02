@@ -345,7 +345,7 @@ mod tests {
             r#"{"appears":2,"frequency":3}"#,
             r#"{"appears":0}"#,
             r#"{"frequency":0}"#,
-            r#"{}"#,
+            r"{}",
         ] {
             let body = format!(r#"{{"success":1,"ip":{record}}}"#);
             assert!(
