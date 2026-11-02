@@ -93,13 +93,19 @@ pub(super) fn rhinser_native_response(parsed: &ParsedRequest<'_>) -> String {
     if length > MAX_FORM_BYTES
         || u64::try_from(length).unwrap_or(u64::MAX) > crate::rhinser_native::MAX_CAPTURE_BYTES
     {
-        return json_error(413, "Rhinser native capture too large; use osint native FILE");
+        return json_error(
+            413,
+            "Rhinser native capture too large; use osint native FILE",
+        );
     }
     let Some(body) = parsed.body else {
         return json_error(400, "Rhinser native capture body missing");
     };
     if body.len() != length {
-        return json_error(400, "Rhinser native capture body incomplete or invalid UTF-8");
+        return json_error(
+            400,
+            "Rhinser native capture body incomplete or invalid UTF-8",
+        );
     }
     match crate::rhinser_native::inspect_capture_json(body.as_bytes()) {
         Ok(report) => serde_json::to_string(&report).map_or_else(
