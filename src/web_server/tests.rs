@@ -105,28 +105,50 @@ fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
         Some("secret"),
         public_bind(),
     );
-    assert!(missing_lookup.starts_with("HTTP/1.1 403"), "{missing_lookup}");
+    assert!(
+        missing_lookup.starts_with("HTTP/1.1 403"),
+        "{missing_lookup}"
+    );
     let cross_site = response_for_request(
-        &request("POST", "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n", fixture),
+        &request(
+            "POST",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n",
+            fixture,
+        ),
         Some("secret"),
         public_bind(),
     );
     assert!(cross_site.starts_with("HTTP/1.1 403"), "{cross_site}");
     let get = response_for_request(
-        &request("GET", "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n", fixture),
+        &request(
+            "GET",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            fixture,
+        ),
         Some("secret"),
         public_bind(),
     );
     assert!(get.starts_with("HTTP/1.1 405"), "{get}");
-    let unconsented = fixture.replace("\"operator_consented\":true", "\"operator_consented\":false");
+    let unconsented = fixture.replace(
+        "\"operator_consented\":true",
+        "\"operator_consented\":false",
+    );
     let invalid = response_for_request(
-        &request("POST", "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n", &unconsented),
+        &request(
+            "POST",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            &unconsented,
+        ),
         Some("secret"),
         public_bind(),
     );
     assert!(invalid.starts_with("HTTP/1.1 400"), "{invalid}");
     let malformed = response_for_request(
-        &request("POST", "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n", "not-json"),
+        &request(
+            "POST",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            "not-json",
+        ),
         Some("secret"),
         public_bind(),
     );
@@ -143,7 +165,10 @@ fn rhinser_native_browser_submission_matches_protected_http_contract() {
         "osintOffline('/api/rhinser/native'",
         "This is not live NFC or Bluetooth scanning.",
     ] {
-        assert!(INDEX_HTML.contains(marker), "missing native browser integration: {marker}");
+        assert!(
+            INDEX_HTML.contains(marker),
+            "missing native browser integration: {marker}"
+        );
     }
 }
 
