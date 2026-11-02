@@ -51,6 +51,18 @@ transport, with no redirect followed.
 - The outcome detail names the crawl, how many pages were read and why any was not (over 1 MiB,
   not the requested range, a record naming another URL, a captured error page).
 
+## Historical generator technology evidence
+
+The same shared archive reader now extracts explicit `<meta name="generator">`
+declarations from the up-to-three validated, already-retrieved WARC web pages.
+It creates at most eight `historical_technology` `Other` entities per page
+for allowlisted product names (WordPress, Drupal, Joomla, Ghost, Hugo,
+Jekyll, TYPO3, MediaWiki), with the crawl source, UTC capture timestamp,
+original URL and archive evidence link. These are historical self-declarations,
+not verified current technologies. No raw generator strings or versions are
+persisted. This does not read extra WARC pages or visit the original site.
+Contact counts and existing phone/email behaviour are preserved.
+
 ## Limits
 
 Common Crawl samples the web; it does not crawl every page of a site, and an empty index for one
