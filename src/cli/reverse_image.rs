@@ -1,16 +1,16 @@
 //! Local image fingerprinting and opt-in, keyed external reverse-image search.
-use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
 use huntsman_recon::clock;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
+use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::reverse_image::{self, MAX_REVERSE_IMAGE_BYTES};
 
 use super::fail;
 
-const USAGE: &str = "usage: huntsman-recon reverse-image IMAGE-FILE [--live] [--json]\n--live: send image to configured Google Vision, Lenso and SauceNAO indexes (may incur charges)\nWithout --live: compute local SHA-256 only; no network requests.";
+const USAGE: &str = "usage: huntsman-recon reverse-image IMAGE-FILE [--live] [--provider google_vision|lenso|saucenao] [--json]\n--live: send image to configured Google Vision, Lenso and SauceNAO indexes (may incur charges)\nWithout --live: compute local SHA-256 only; no network requests.";
 
 pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
@@ -19,10 +19,18 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
     let mut path: Option<&str> = None;
     let mut live = false;
     let mut as_json = false;
-    for arg in args {
+    let mut provider: Option<&str> = None;
+    let mut words = args.iter();
+    while let Some(arg) = words.next() {
         match arg.as_str() {
             "--live" if !live => live = true,
             "--json" if !as_json => as_json = true,
+            "--provider" if provider.is_none() => {
+                let Some(name) = words.next() else {
+                    return fail(EX_USAGE, USAGE);
+                };
+                provider = Some(name.as_str());
+            }
             option if option.starts_with('-') || path.is_some() => return fail(EX_USAGE, USAGE),
             file => path = Some(file),
         }
@@ -31,23 +39,16 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
         return fail(EX_USAGE, USAGE);
     };
     let path = Path::new(path);
-    let metadata = match fs::metadata(path) {
-        Ok(meta) if meta.is_file() => meta,
-        _ => return fail(EX_NOINPUT, "image is not a regular readable file"),
+    // Refuse symlinks and changed inodes; never allocate beyond the image ceiling,
+    // even when a file grows during the read.
+    let Ok(bytes) = read_bounded(path, MAX_REVERSE_IMAGE_BYTES as u64) else {
+        return fail(EX_NOINPUT, "image is unreadable, linked or larger than 4 MiB");
     };
-    if metadata.len() == 0 || metadata.len() > MAX_REVERSE_IMAGE_BYTES as u64 {
-        return fail(EX_DATAERR, "image must be between 1 byte and 4 MiB");
-    }
-    let Ok(bytes) = fs::read(path) else {
-        return fail(EX_NOINPUT, "could not read image");
-    };
-    // Validate again after read to reject a file that grew between metadata and read.
-    if bytes.len() > MAX_REVERSE_IMAGE_BYTES {
-        return fail(EX_DATAERR, "image changed during reading or exceeded 4 MiB");
-    }
     let keys = super::credentials::lookup_keys();
     let transport = UreqTransport::new(&TransportConfig::default());
-    let report = match reverse_image::search(&transport, &bytes, &keys, clock::unix_now(), live) {
+    let report = match reverse_image::search_selected(
+        &transport, &bytes, &keys, clock::unix_now(), live, provider,
+    ) {
         Ok(report) => report,
         Err(reason) => return fail(EX_DATAERR, reason),
     };
