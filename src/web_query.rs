@@ -415,7 +415,7 @@ fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
     !cache_control
         .split(',')
         .map(str::trim)
-        .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
+        .any(|directive| matches!(directive, "no-store" | "no-cache") || directive.split_once('=').is_some_and(|(key, value)| key.trim() == "max-age" && value.trim() == "0"))
 }
 
 fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
