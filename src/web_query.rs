@@ -412,10 +412,12 @@ fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
         .header_value("cache-control")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    !cache_control
-        .split(',')
-        .map(str::trim)
-        .any(|directive| matches!(directive, "no-store" | "no-cache") || directive.split_once('=').is_some_and(|(key, value)| key.trim() == "max-age" && value.trim() == "0"))
+    !cache_control.split(',').map(str::trim).any(|directive| {
+        matches!(directive, "no-store" | "no-cache")
+            || directive
+                .split_once('=')
+                .is_some_and(|(key, value)| key.trim() == "max-age" && value.trim() == "0")
+    })
 }
 
 fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
