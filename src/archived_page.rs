@@ -227,7 +227,14 @@ pub fn findings(
 /// A non-word boundary prevents "WordPressSpoof" matching "WordPress".
 fn known_generator(value: &str) -> Option<&'static str> {
     const GENERATORS: &[&str] = &[
-        "WordPress", "Drupal", "Joomla", "Ghost", "Hugo", "Jekyll", "TYPO3", "MediaWiki",
+        "WordPress",
+        "Drupal",
+        "Joomla",
+        "Ghost",
+        "Hugo",
+        "Jekyll",
+        "TYPO3",
+        "MediaWiki",
     ];
     let value = value.trim();
     GENERATORS.iter().copied().find(|known| {
@@ -299,7 +306,11 @@ pub fn technologies(
             0.5,
             scan_id,
             evidence,
-            &[archive.source, "historical_content", "historical_technology"],
+            &[
+                archive.source,
+                "historical_content",
+                "historical_technology",
+            ],
         );
         if seen.len() == 8 {
             break;
@@ -484,7 +495,8 @@ mod tests {
             source: "wayback_cdx",
             dataset: "Wayback captured content",
             holder: "the Internet Archive",
-            snapshot_url: "https://web.archive.org/web/20240101000000/https://example.org".to_owned(),
+            snapshot_url: "https://web.archive.org/web/20240101000000/https://example.org"
+                .to_owned(),
         };
         let capture = capture("20240101000000", "https://example.org");
         let html = r#"<html>
@@ -532,8 +544,16 @@ mod tests {
             &archive,
             "scan",
         );
-        assert!(found.iter().any(|e| e.kind == EntityKind::Email && e.value == "desk@example.org"));
-        assert!(found.iter().any(|e| e.kind == EntityKind::Other && e.value == "technology:Ghost"));
+        assert!(
+            found
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "desk@example.org")
+        );
+        assert!(
+            found
+                .iter()
+                .any(|e| e.kind == EntityKind::Other && e.value == "technology:Ghost")
+        );
         assert_eq!(found.len(), 2, "{found:?}");
     }
 
