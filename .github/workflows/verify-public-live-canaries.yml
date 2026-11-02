@@ -24,11 +24,44 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # pull_request defaults to a synthetic merge checkout; never mislabel it as PR HEAD.
+      - name: Verify checked-out commit and PR parent SHAs
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          checked_out="$(git rev-parse HEAD)"
+          if [ "$checked_out" != "$GITHUB_SHA" ]; then
+            echo "::error::Checkout SHA differs from the GitHub workflow SHA"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            parents="$(git cat-file -p HEAD | awk '$1=="parent" {print $2}')"
+            expected_parents="$(printf '%s\n%s' "$PR_BASE_SHA" "$PR_HEAD_SHA")"
+            if [ "$parents" != "$expected_parents" ]; then
+              echo "::error::The tested PR merge commit does not have the expected base/head parents"
+              exit 1
+            fi
+            echo "pr_base_sha=$PR_BASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+            echo "pr_head_sha=$PR_HEAD_SHA" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "tested_checkout_sha=$checked_out" >> "$GITHUB_STEP_SUMMARY"
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
         with:
           toolchain: "1.99"
-      - name: Build real Huntsman release binary from this PR revision
-        run: cargo build --locked --release --bin huntsman-recon
+      - name: Build binary and verify its embedded source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --bin huntsman-recon
+          binary_sha="$(./target/release/huntsman-recon build-sha)"
+          if [ "$binary_sha" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::The genuine binary's embedded source SHA does not match the checkout"
+            exit 1
+          fi
+          echo "verified_binary_sha=$binary_sha" >> "$GITHUB_STEP_SUMMARY"
       - name: Probe live public OSINT providers with exact built binary
         id: probe
         shell: bash
