@@ -533,4 +533,91 @@ mod tests {
         assert!(search(&NoNetwork, b"not image", &keys, 1, true).is_err());
         assert!(search(&NoNetwork, &vec![0xff; MAX_REVERSE_IMAGE_BYTES + 1], &keys, 1, true).is_err());
     }
+    struct ScriptedTransport {
+        requests: std::sync::Mutex<Vec<Request>>,
+        body: Vec<u8>,
+    }
+
+    impl Transport for ScriptedTransport {
+        fn send(
+            &self,
+            request: &Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            self.requests.lock().unwrap().push(request.clone());
+            Ok(crate::http::Response {
+                status: 200,
+                headers: Vec::new(),
+                body: self.body.clone(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn one_provider_is_called_once_and_its_key_is_not_in_the_url_or_debug() {
+        let network = ScriptedTransport {
+            requests: std::sync::Mutex::new(Vec::new()),
+            body: serde_json::to_vec(&json!({"responses":[{"webDetection":{
+                "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]})).unwrap(),
+        };
+        let keys = Keys::parse("HSE_GOOGLE_VISION_API_KEY=testing_provider_secret_123").unwrap();
+        let report = search_selected(&network, b"GIF89a", &keys, 123, true, Some("google_vision"))
+            .unwrap();
+        assert_eq!(report.observed_at_unix, 123);
+        assert_eq!(report.statuses.len(), 1);
+        assert_eq!(report.statuses[0].state, "completed");
+        assert_eq!(report.matches.len(), 1);
+        let requests = network.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.method, crate::http::Method::Post);
+        assert_eq!(request.url, "https://vision.googleapis.com/v1/images:annotate");
+        assert_eq!(request.header_value("X-goog-api-key"), Some("testing_provider_secret_123"));
+        assert!(!format!("{request:?}").contains("testing_provider_secret_123"));
+        let payload: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(payload.pointer("/requests/0/features/0/type").and_then(Value::as_str),
+            Some("WEB_DETECTION"));
+    }
+
+    #[test]
+    fn paid_saucenao_upload_keeps_credential_out_of_the_url() {
+        let network = ScriptedTransport {
+            requests: std::sync::Mutex::new(Vec::new()),
+            body: serde_json::to_vec(&json!({"header":{"status":0},"results":[]})).unwrap(),
+        };
+        let keys = Keys::parse("HSE_SAUCENAO_API_KEY=testing_sauce_secret_123").unwrap();
+        let report = search_selected(&network, b"GIF89a", &keys, 123, true, Some("saucenao"))
+            .unwrap();
+        assert_eq!(report.statuses.len(), 1);
+        assert_eq!(report.statuses[0].state, "completed");
+        let requests = network.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].url.contains("testing_sauce_secret_123"));
+        assert!(!format!("{:?}", requests[0]).contains("testing_sauce_secret_123"));
+        assert!(requests[0].body.windows(24).any(|part| part == b"testing_sauce_secret_123"));
+    }
+
+    #[test]
+    fn invalid_provider_and_private_embedded_urls_are_refused() {
+        let keys = Keys::parse("").unwrap();
+        assert!(search_selected(&NoNetwork, b"GIF89a", &keys, 1, true, Some("other")).is_err());
+        assert!(web_url("https://user:password@example.org/a").is_none());
+        assert!(web_url("https://example.org/space here").is_none());
+        assert!(web_url("javascript:alert(1)").is_none());
+        assert_eq!(web_url("https://example.org/x?a=1"), Some("https://example.org/x?a=1".into()));
+    }
+
+    #[test]
+    fn malformed_provider_json_does_not_look_like_a_negative_result() {
+        let network = ScriptedTransport {
+            requests: std::sync::Mutex::new(Vec::new()),
+            body: serde_json::to_vec(&json!({"notResults": []})).unwrap(),
+        };
+        let keys = Keys::parse("HSE_LENSO_API_KEY=testing_lenso_secret_123").unwrap();
+        let result = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso"))
+            .unwrap();
+        assert_eq!(result.statuses[0].state, "failed");
+        assert!(result.matches.is_empty());
+    }
+
 }
