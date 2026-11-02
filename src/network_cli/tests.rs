@@ -180,11 +180,17 @@ fn locally_administered_bssid_is_not_asserted_randomised_or_vendor_identified() 
         .find(|e| e.provenance.source == OUI_SOURCE)
         .expect("offline OUI evidence");
     assert_eq!(
-        evidence.attributes.get("locally_administered").map(String::as_str),
+        evidence
+            .attributes
+            .get("locally_administered")
+            .map(String::as_str),
         Some("true")
     );
     assert_eq!(
-        evidence.attributes.get("randomisation_status").map(String::as_str),
+        evidence
+            .attributes
+            .get("randomisation_status")
+            .map(String::as_str),
         Some("unverified")
     );
     assert!(!evidence.attributes.contains_key("vendor"));
