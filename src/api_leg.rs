@@ -133,7 +133,7 @@ pub enum LegError {
     RefusedWithoutKey(u16),
     /// A rate or quota limit, at the status it came with (`429`, a `403` with `Retry-After`, an
     /// exhausted quota or a rate-limit message), or in a provider's own answer.
-    #[error("rate or quota limit reached (HTTP {status}){}", describe_retry(*.retry_after))]
+    #[error("rate or quota limit reached (HTTP {status}){}", crate::http::describe_retry_after(*.retry_after))]
     RateLimited {
         status: u16,
         retry_after: Option<u64>,
@@ -151,10 +151,6 @@ pub enum LegError {
     /// The answer was longer than the transport's body limit, so it was not read whole.
     #[error("response exceeds the body limit")]
     TooLarge,
-}
-
-fn describe_retry(retry_after: Option<u64>) -> String {
-    retry_after.map_or_else(String::new, |secs| format!(", retry after {secs}s"))
 }
 
 fn describe_detail(detail: &str) -> String {

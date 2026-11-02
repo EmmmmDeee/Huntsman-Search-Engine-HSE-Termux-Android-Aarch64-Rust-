@@ -1009,8 +1009,26 @@ pub fn retry_after_secs(value: &str, now_unix: u64) -> Option<u64> {
     Some(u64::try_from(at.saturating_sub(now)).unwrap_or(0))
 }
 
+/// The suffix a rate-limit error appends for its `Retry-After` wait: `", retry after {secs}s"`, or
+/// nothing when the server named none. The one rendering shared by `api_leg`, `oathnet` and `wigle`.
+#[must_use]
+pub fn describe_retry_after(retry_after: Option<u64>) -> String {
+    retry_after.map_or_else(String::new, |secs| format!(", retry after {secs}s"))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn describe_retry_after_renders_the_wait_or_nothing() {
+        assert_eq!(describe_retry_after(None), "");
+        assert_eq!(describe_retry_after(Some(0)), ", retry after 0s");
+        assert_eq!(describe_retry_after(Some(30)), ", retry after 30s");
+        assert_eq!(
+            describe_retry_after(Some(u64::MAX)),
+            ", retry after 18446744073709551615s"
+        );
+    }
+
     #[test]
     fn expired_resolver_deadline_does_not_spawn_a_worker() {
         use std::sync::atomic::{AtomicUsize, Ordering};
