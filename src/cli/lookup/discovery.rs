@@ -69,6 +69,25 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Recognise the two keyless flags without making an ambiguous word a provider
+/// option. Preserve the three-engine default unless --all is explicit.
+fn parse_query_flags(args: &[String]) -> Option<(bool, bool, &[String])> {
+    let mut adaptive = false;
+    let mut all = false;
+    let mut offset = 0;
+    while let Some(flag) = args.get(offset).map(String::as_str) {
+        match flag {
+            "--adaptive" if !adaptive => adaptive = true,
+            "--all" if !all => all = true,
+            _ => break,
+        }
+        offset += 1;
+    }
+    let terms = &args[offset..];
+    (!terms.is_empty() && !terms.iter().any(|term| term.starts_with("--")))
+        .then_some((adaptive, all, terms))
+}
+
 pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon query QUERY...");
@@ -114,27 +133,12 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
             }
         };
     }
-    // Preserve the three-engine default for speed and backwards compatibility.
-    // Exhaustive discovery is explicit, bounded, keyless and never promotes
-    // search overlap into independent factual corroboration.
-    let mut adaptive = false;
-    let mut all = false;
-    let mut offset = 0;
-    while let Some(flag) = args.get(offset).map(String::as_str) {
-        match flag {
-            "--adaptive" if !adaptive => adaptive = true,
-            "--all" if !all => all = true,
-            _ => break,
-        }
-        offset += 1;
-    }
-    let terms = &args[offset..];
-    if terms.is_empty() || terms.iter().any(|term| term.starts_with("--")) {
+    let Some((adaptive, all, terms)) = parse_query_flags(args) else {
         return fail(
             EX_USAGE,
             "usage: huntsman-recon query [--adaptive] [--all] QUERY...",
         );
-    }
+    };
     let query = terms.join(" ");
     let now = clock::unix_now();
     let transport = UreqTransport::new(&TransportConfig::default());
