@@ -279,6 +279,7 @@ pub mod value_syntax;
 pub mod virustotal;
 pub mod wayback_cdx;
 pub mod web;
+pub mod web_api_types;
 pub mod web_query;
 pub mod web_server;
 pub mod whoxy;
