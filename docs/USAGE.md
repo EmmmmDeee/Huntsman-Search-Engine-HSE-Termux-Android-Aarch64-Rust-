@@ -598,3 +598,21 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 ### Domain lifecycle analysis
 
 `domain-lifecycle analyze INPUT.json --as-of UNIX_SECONDS [--output REPORT.json]` compares imported domain observations entirely offline. It preserves source/upstream boundaries, rejects conflicting duplicate identifiers, records failed/truncated observations as coverage gaps, and emits only conservative observed changes. Ownership, causality, and registration availability remain explicitly unknown unless established elsewhere. See [docs/DOMAIN_LIFECYCLE.md](DOMAIN_LIFECYCLE.md).
+
+
+## Reverse-image search (CLI and phone Web UI)
+
+Run `huntsman-recon reverse-image photo.jpg --json` for an offline exact-file
+SHA-256 fingerprint. Add `--live --provider google_vision`,
+`--live --provider lenso` or `--live --provider saucenao` to search one
+configured provider index at a time. Omitting `--provider` with `--live`
+queries all configured providers and may consume multiple paid credits. Images
+are capped at 4 MiB; the file reader refuses symlinks and changed inodes.
+
+The **Inspect** tab includes **Reverse-image search**, with an offline option
+and three explicit live-provider choices. It uses `POST /api/reverse-image`
+with a bounded upload and Huntsman's same-origin, header and authentication
+checks. Browser searches require `?live=1&provider=NAME` for an external
+request; no file is sent to a provider in offline mode. The returned image
+URLs are leads and require independent checking. See [REVERSE_IMAGE.md](REVERSE_IMAGE.md)
+for credential slots, response states, resource limits and validation.
