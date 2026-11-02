@@ -76,7 +76,12 @@ pub(super) fn reverse_image_response(
     };
     let transport = crate::http::UreqTransport::new(&crate::http::TransportConfig::default());
     match crate::reverse_image::search_selected(
-        &transport, &upload.body, &keys, crate::clock::unix_now(), live, selected,
+        &transport,
+        &upload.body,
+        &keys,
+        crate::clock::unix_now(),
+        live,
+        selected,
     ) {
         Ok(report) => match serde_json::to_string(&report) {
             Ok(json) => json_ok(&json, false),
