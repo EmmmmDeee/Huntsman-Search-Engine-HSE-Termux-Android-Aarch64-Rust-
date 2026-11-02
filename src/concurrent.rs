@@ -230,7 +230,7 @@ mod tests {
         let active = AtomicUsize::new(0);
         let peak = AtomicUsize::new(0);
         let completed = AtomicUsize::new(0);
-        let jobs: Vec<Job<'_, usize>> = (0..96)
+        let jobs: Vec<Job<'_, usize>> = (0_usize..96)
             .map(|index| {
                 let active = &active;
                 let peak = &peak;
@@ -246,7 +246,7 @@ mod tests {
             })
             .collect();
         let result = all(jobs);
-        assert_eq!(result, (0..96).collect::<Vec<_>>());
+        assert_eq!(result, (0_usize..96).collect::<Vec<_>>());
         assert_eq!(completed.load(Ordering::SeqCst), 96);
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert!(peak.load(Ordering::SeqCst) <= MAX_PARALLEL_JOBS);
