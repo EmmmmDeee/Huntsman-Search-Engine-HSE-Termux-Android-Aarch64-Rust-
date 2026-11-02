@@ -132,7 +132,8 @@ fn main() -> io::Result<()> {
     coverage.displayed_symbols_truncated = matches.iter().filter(|(_, _, symbols)| symbols.len() > 35).count();
     println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated);
     for omitted in &coverage.omitted_paths {
-        eprintln!("# Omitted Rust file: {omitted}");
+        let relative = Path::new(omitted).strip_prefix(&root).unwrap_or(Path::new(omitted));
+        eprintln!("# Omitted Rust file: {}", relative.display());
     }
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
