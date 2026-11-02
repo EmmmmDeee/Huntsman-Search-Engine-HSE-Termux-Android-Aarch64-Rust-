@@ -194,7 +194,7 @@ fn read_capture<T: Transport + ?Sized>(
         response.header_value("content-type").unwrap_or_default(),
         response.body.len(),
     )?;
-    Ok(archived_page::contacts(
+    Ok(archived_page::findings(
         &String::from_utf8_lossy(&response.body),
         capture,
         &Archive {
