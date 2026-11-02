@@ -257,7 +257,7 @@ fn known_generator(value: &str) -> Option<&'static str> {
     })
 }
 
-/// Technology names from a bounded, explicitly declared metadata value. WayTrace accepts
+/// Technology names from a bounded metadata declaration. The upstream tool accepts
 /// comma, semicolon and ` and ` delimiters; keep that useful coverage while restricting
 /// persisted findings to Huntsman's reviewed allowlist. The raw value is never returned.
 fn declared_generators(value: &str) -> Vec<&'static str> {
