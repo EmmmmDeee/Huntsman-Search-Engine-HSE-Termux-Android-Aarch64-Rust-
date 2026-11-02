@@ -19,7 +19,14 @@ The same domain lookup feeds saved scans and the existing local web UI/API. The
 
 One GET to `https://web.archive.org/cdx/search/cdx` with `url`, `matchType=domain`,
 `output=json`, `fl=timestamp,original,statuscode,digest,mimetype`,
-`filter=statuscode:200`, `collapse=urlkey` and `limit=32`.
+`collapse=urlkey` and `limit=32`. It does not ask the archive to apply a
+server-side `statuscode:200` filter: that filter can require a costly scan
+before the provider returns a small result. The collector instead validates
+each row locally and retains evidence **only** for HTTP 200 captures.
+Valid non-200 rows are excluded; their number is reported separately.
+A response containing only non-200 records is **inconclusive**, not evidence
+that the website never existed. This can improve response latency but does
+not guarantee recovery from upstream timeouts.
 
 The collector validates the CDX field header, complete JSON, domain boundary,
 HTTP(S) URL syntax, timestamp, row limit and source HTTP status before emitting
