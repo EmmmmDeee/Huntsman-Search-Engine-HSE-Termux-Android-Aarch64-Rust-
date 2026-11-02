@@ -68,6 +68,26 @@ jobs:
           test -x ./target/release/huntsman-recon
           bash .github/scripts/verify-keyless-live-20261103.sh \
             ./target/release/huntsman-recon "$RUNNER_TEMP/keyless-smoke"
+      - name: Exercise web search engines and offline entity pivots
+        working-directory: source
+        run: |
+          set -euo pipefail
+          bin=./target/release/huntsman-recon
+          timeout 180 "$bin" query "rust programming language" > "$RUNNER_TEMP/engines.out" 2>&1
+          for engine in bing brave mojeek; do
+            if ! grep -Eq "^engine=${engine}[[:space:]]outcome=" "$RUNNER_TEMP/engines.out"; then
+              echo "ERROR: missing typed search outcome for $engine"
+              cat "$RUNNER_TEMP/engines.out"
+              exit 1
+            fi
+          done
+          timeout 30 "$bin" sources example.com > "$RUNNER_TEMP/sources.out"
+          timeout 30 "$bin" plan example.com > "$RUNNER_TEMP/plan.out"
+          echo 'PASS: all three search engines returned typed outcomes; sources and plan CLI ran'
+          grep '^engine=' "$RUNNER_TEMP/engines.out" | cut -c1-200
+          grep '^hits=' "$RUNNER_TEMP/engines.out" | tail -n 1
+          test -s "$RUNNER_TEMP/sources.out"
+          test -s "$RUNNER_TEMP/plan.out"
       - name: Publish bounded evidence summary
         if: always()
         run: |
