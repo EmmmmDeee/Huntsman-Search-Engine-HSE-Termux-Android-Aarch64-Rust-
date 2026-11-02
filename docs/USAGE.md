@@ -196,6 +196,7 @@ cargo run -- gleif "5493001KJTIIGC8Y1R12"  # keyless GLEIF LEI register: an LEI 
 cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenStreetMap Nominatim: a place or address to coordinates + full address (a LAT,LON argument is reverse-geocoded instead); network
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
+cargo run -- reverse-image --help         # offline help for SHA-256 image evidence and opt-in indexed-image provider search
 cargo run -- apk --help                   # offline Android APK archive intelligence: structural ZIP/DEX/ABI/signing indicators, exact-byte SHA-256
 cargo run -- source-intel --help          # offline APK-to-source-candidate projection; no public-access or network-contact claims
 # Example after creating two local archives: huntsman-recon apk diff old.apk new.apk --json
