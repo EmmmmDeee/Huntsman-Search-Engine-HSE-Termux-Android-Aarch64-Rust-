@@ -1618,7 +1618,7 @@ mod tests {
     #[test]
     fn expired_shared_budget_skips_all_engines_with_typed_outcomes() {
         let budget = SearchBudget {
-            deadline: Instant::now() - Duration::from_secs(1),
+            deadline: Instant::now(),
         };
         let fake = Fake::new(vec![]);
         let (report, observations) = search_with_observations_for(
