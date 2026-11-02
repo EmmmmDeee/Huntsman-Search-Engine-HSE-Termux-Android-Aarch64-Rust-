@@ -318,18 +318,23 @@ struct HitObservation {
     appearances: usize,
 }
 
+#[derive(Clone, Copy)]
+struct SearchConfig<'a> {
+    engines: &'a [EngineSpec],
+    budget: Option<&'a SearchBudget>,
+}
+
 fn append_round<T: Transport + ?Sized>(
     transport: &T,
     query: &str,
     strategy: &'static str,
     now_unix: u64,
-    engines: &[EngineSpec],
-    budget: Option<&SearchBudget>,
+    config: SearchConfig<'_>,
     reports: &mut Vec<AdaptiveRound>,
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
     let (report, observations) =
-        search_with_observations_for(transport, query, now_unix, engines, budget)?;
+        search_with_observations_for(transport, query, now_unix, config.engines, config.budget)?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
@@ -406,6 +411,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
     let normalized_query = checked_query(input, "adaptive query")?;
     let shared_budget = (engines.len() > ENGINES.len()).then(SearchBudget::new);
     let budget = shared_budget.as_ref();
+    let config = SearchConfig { engines, budget };
     let mut rounds = Vec::new();
     let mut discovery_index = BTreeMap::new();
     let baseline_gain = append_round(
@@ -413,8 +419,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
         &normalized_query,
         "baseline",
         now_unix,
-        engines,
-        budget,
+        config,
         &mut rounds,
         &mut discovery_index,
     )?;
@@ -444,8 +449,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
                 &refined,
                 strategy,
                 now_unix,
-                engines,
-                budget,
+                config,
                 &mut rounds,
                 &mut discovery_index,
             )?;
@@ -461,8 +465,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
                     &broader,
                     "broader_low_confidence_recall",
                     now_unix,
-                    engines,
-                    budget,
+                    config,
                     &mut rounds,
                     &mut discovery_index,
                 )?;
