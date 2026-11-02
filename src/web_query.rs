@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -24,6 +25,24 @@ const MAX_SEARCH_QUERY_BYTES: usize = 512;
 const CACHE_TTL_SECS: u64 = 300;
 const CACHE_CAPACITY: usize = 256;
 const RETRY_POLICY: BackoffPolicy = BackoffPolicy::new(2, 100, 500, true);
+/// Shared bounded wall-clock budget keeps 16-engine searches usable from a phone Web UI.
+const EXTENDED_BUDGET_SECS: u64 = 110;
+const EXTENDED_REQUEST_SECS: u64 = 6;
+
+struct SearchBudget {
+    deadline: Instant,
+}
+
+impl SearchBudget {
+    fn new() -> Self {
+        Self { deadline: Instant::now() + Duration::from_secs(EXTENDED_BUDGET_SECS) }
+    }
+
+    fn exhausted(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+}
+
 
 #[derive(Debug, Clone)]
 struct CachedResponse {
@@ -181,8 +200,10 @@ pub fn search<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    let (report, _) =
-        search_with_observations_for(transport, &query, now_unix, &EXTENDED_ENGINES)?;
+    let budget = SearchBudget::new();
+    let (report, _) = search_with_observations_for(
+        transport, &query, now_unix, &EXTENDED_ENGINES, Some(&budget),
+    )?;
     Ok(report)
 }
 
@@ -193,7 +214,7 @@ pub fn search_fast<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    let (report, _) = search_with_observations_for(transport, &query, now_unix, &ENGINES)?;
+    let (report, _) = search_with_observations_for(transport, &query, now_unix, &ENGINES, None)?;
     Ok(report)
 }
 
@@ -230,11 +251,26 @@ fn search_with_observations_for<T: Transport + ?Sized>(
     query: &str,
     now_unix: u64,
     engines: &[EngineSpec],
+    budget: Option<&SearchBudget>,
 ) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
     for &engine in engines {
-        let result = search_engine(transport, engine, query, now_unix)?;
+        let result = if budget.is_some_and(SearchBudget::exhausted) {
+            EngineReport {
+                hits: Vec::new(),
+                outcome: outcome(
+                    engine.name,
+                    SourceOutcomeKind::Inconclusive,
+                    now_unix,
+                    None,
+                    None,
+                    "not queried: shared search time budget exhausted",
+                ),
+            }
+        } else {
+            search_engine_bounded(transport, engine, query, now_unix, budget)?
+        };
         hits.extend(result.hits);
         outcomes.push(result.outcome);
     }
@@ -283,10 +319,12 @@ fn append_round<T: Transport + ?Sized>(
     strategy: &'static str,
     now_unix: u64,
     engines: &[EngineSpec],
+    budget: Option<&SearchBudget>,
     reports: &mut Vec<AdaptiveRound>,
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
-    let (report, observations) = search_with_observations_for(transport, query, now_unix, engines)?;
+    let (report, observations) =
+        search_with_observations_for(transport, query, now_unix, engines, budget)?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
@@ -344,9 +382,8 @@ pub fn adaptive_search_fast<T: Transport + ?Sized>(
     adaptive_search_for(transport, input, now_unix, &ENGINES)
 }
 
-/// Use all 16 keyless web engines for each bounded adaptive round.
-/// This can make up to 48 independently paced requests (three rounds).
-/// It is opt-in because some search sites block non-browser clients.
+/// Compatibility alias: 16 engines are now the default. The bounded adaptive
+/// search uses a common deadline so a slow provider does not stall a phone UI.
 pub fn adaptive_search_all<T: Transport + ?Sized>(
     transport: &T,
     input: &str,
@@ -362,6 +399,8 @@ fn adaptive_search_for<T: Transport + ?Sized>(
     engines: &[EngineSpec],
 ) -> Result<AdaptiveSearchReport, Error> {
     let normalized_query = checked_query(input, "adaptive query")?;
+    let shared_budget = (engines.len() > ENGINES.len()).then(SearchBudget::new);
+    let budget = shared_budget.as_ref();
     let mut rounds = Vec::new();
     let mut discovery_index = BTreeMap::new();
     let baseline_gain = append_round(
@@ -370,6 +409,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
         "baseline",
         now_unix,
         engines,
+        budget,
         &mut rounds,
         &mut discovery_index,
     )?;
@@ -400,6 +440,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
                 strategy,
                 now_unix,
                 engines,
+                budget,
                 &mut rounds,
                 &mut discovery_index,
             )?;
@@ -416,6 +457,7 @@ fn adaptive_search_for<T: Transport + ?Sized>(
                     "broader_low_confidence_recall",
                     now_unix,
                     engines,
+                    budget,
                     &mut rounds,
                     &mut discovery_index,
                 )?;
@@ -461,23 +503,50 @@ struct EngineReport {
     outcome: SourceExecutionOutcome,
 }
 
+#[cfg(test)]
 fn search_engine<T: Transport + ?Sized>(
     transport: &T,
     engine: EngineSpec,
     query: &str,
     now_unix: u64,
 ) -> Result<EngineReport, Error> {
+    search_engine_bounded(transport, engine, query, now_unix, None)
+}
+
+fn search_engine_bounded<T: Transport + ?Sized>(
+    transport: &T,
+    engine: EngineSpec,
+    query: &str,
+    now_unix: u64,
+    budget: Option<&SearchBudget>,
+) -> Result<EngineReport, Error> {
     let url = append_query_param(engine.base_url, search_parameter(engine.name), query);
     if let Some(cached) = cached_response(&url, now_unix) {
         return Ok(parse_engine_response(engine, &cached, now_unix));
     }
 
-    let request = Request::get(&url)
+    let mut request = Request::get(&url)
         .header("accept", "text/html,application/xhtml+xml")
         .header("user-agent", crate::http::DEFAULT_USER_AGENT);
+    if budget.is_some() {
+        request = request.with_timeout(Duration::from_secs(EXTENDED_REQUEST_SECS));
+    }
     let mut attempt = 0u32;
 
     loop {
+        if budget.is_some_and(SearchBudget::exhausted) {
+            return Ok(EngineReport {
+                hits: Vec::new(),
+                outcome: outcome(
+                    engine.name,
+                    SourceOutcomeKind::Inconclusive,
+                    now_unix,
+                    None,
+                    None,
+                    "not queried: shared search time budget exhausted",
+                ),
+            });
+        }
         // The shared boundary paces per host: it suppresses while the circuit is
         // open and records the outcome's health. A suppressed fetch comes back as a
         // no-response `Inconclusive`, which is not retryable and falls through below.
@@ -1533,6 +1602,25 @@ mod tests {
             urls.iter()
                 .any(|url| url.starts_with("https://swisscows.com/en/web?query="))
         );
+    }
+
+    #[test]
+    fn expired_shared_budget_skips_all_engines_with_typed_outcomes() {
+        let budget = SearchBudget {
+            deadline: Instant::now() - Duration::from_secs(1),
+        };
+        let fake = Fake::new(vec![]);
+        let (report, observations) =
+            search_with_observations_for(&fake, "query-unused", 100, &EXTENDED_ENGINES, Some(&budget))
+                .unwrap();
+        assert!(observations.is_empty());
+        assert!(report.hits.is_empty());
+        assert_eq!(report.outcomes.len(), 16);
+        assert!(report.outcomes.iter().all(|outcome| {
+            outcome.kind == SourceOutcomeKind::Inconclusive
+                && outcome.detail.as_deref()
+                    == Some("not queried: shared search time budget exhausted")
+        }));
     }
 
     #[test]
