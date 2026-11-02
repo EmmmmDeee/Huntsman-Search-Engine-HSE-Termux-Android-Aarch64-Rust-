@@ -55,7 +55,10 @@ pub(super) fn reverse_image_response(
         }
     }
     if live != selected.is_some() {
-        return json_error(400, "live reverse-image search requires one explicit provider");
+        return json_error(
+            400,
+            "live reverse-image search requires one explicit provider",
+        );
     }
     let Some(upload) = upload else {
         if parsed.body.is_none() {
