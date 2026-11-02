@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/verify-public-live-canaries.yml'
+      - 'src/stopforumspam.rs'
   workflow_dispatch:
 
 permissions:
@@ -68,6 +69,10 @@ jobs:
           verdict username_dtolnay crates_io
           collect peeringdb_13335 asn 13335
           verdict peeringdb_13335 peeringdb
+          # Reserved example-domain canary: test the real email CLI and StopForumSpam adapter.
+          # An accepted result from a different provider cannot substitute for this one.
+          collect stopforumspam_example email test@example.com
+          verdict stopforumspam_example stopforumspam
           # Additional read-only functional breadth: actual search engines and people-source legs.
           # These are diagnostic probes, not fabricated PASSes when an upstream site blocks us.
           collect query_huntsman query huntsman spider
@@ -86,7 +91,12 @@ jobs:
             head -n 60 "$f" | cut -c1-240
             echo '::endgroup::'
           done
-          if ! grep -q $'\tPASS\t' "$out/verdict.tsv"; then
+          if ! grep -q 
+\tPASS\t' "$out/verdict.tsv"; then
             echo '::error::No provider returned an accepted public live outcome'
+            exit 1
+          fi
+          if ! awk -F '\t' '$1=="stopforumspam_example" && $2=="stopforumspam" && $3==0 && $4=="PASS" {ok=1} END {exit !ok}' "$out/verdict.tsv"; then
+            echo '::error::StopForumSpam live canary failed: other provider successes do not validate the repaired adapter'
             exit 1
           fi
