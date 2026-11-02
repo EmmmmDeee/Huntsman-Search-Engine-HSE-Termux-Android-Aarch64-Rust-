@@ -230,7 +230,7 @@ pub fn findings(
 }
 
 /// Recognize a declared generator without recording its arbitrary, potentially sensitive value.
-/// A non-word boundary prevents "WordPressSpoof" matching "WordPress".
+/// A non-word boundary prevents `WordPressSpoof` matching `WordPress`.
 fn known_generator(value: &str) -> Option<&'static str> {
     const GENERATORS: &[&str] = &[
         "WordPress",
@@ -529,8 +529,8 @@ mod tests {
         </html>"#;
         let result = technologies(html, &capture, &archive, "scan");
         assert_eq!(result.len(), 2, "{result:?}");
-        assert!(result.iter().any(|e| e.value == "technology:WordPress"));
-        assert!(result.iter().any(|e| e.value == "technology:Drupal"));
+        assert!(result.iter().any(|e| e.value == "technology:wordpress"));
+        assert!(result.iter().any(|e| e.value == "technology:drupal"));
         assert!(result.iter().all(|e| e.has_tag("historical_technology")));
         let evidence = &result[0].evidence[0];
         assert_eq!(
@@ -570,7 +570,7 @@ mod tests {
         assert!(
             found
                 .iter()
-                .any(|e| e.kind == EntityKind::Other && e.value == "technology:Ghost")
+                .any(|e| e.kind == EntityKind::Other && e.value == "technology:ghost")
         );
         assert_eq!(found.len(), 2, "{found:?}");
     }

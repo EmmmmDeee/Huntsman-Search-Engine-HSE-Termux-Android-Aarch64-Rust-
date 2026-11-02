@@ -76,7 +76,7 @@ the particular bounded index query returned no matches.
 
 Each of the at most three already-fetched archived web pages also passes through the
 shared `archived_page::technologies` extractor. It emits at most eight allowlisted
-`Other` entities with values such as `technology:WordPress`, tagged
+`Other` entities with values such as `technology:wordpress`, tagged
 `historical_technology`, only when the captured HTML explicitly declares a
 `<meta name="generator" content="...">` value matching WordPress, Drupal,
 Joomla, Ghost, Hugo, Jekyll, TYPO3 or MediaWiki. Detection is an archived page's

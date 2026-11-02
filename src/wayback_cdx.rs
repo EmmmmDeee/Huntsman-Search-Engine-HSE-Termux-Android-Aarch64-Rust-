@@ -560,7 +560,7 @@ mod tests {
                 .find(|e| e.kind == kind && e.value == value)
                 .unwrap_or_else(|| panic!("{value}: {:?}", report.entities))
         };
-        let technology = lead(EntityKind::Other, "technology:WordPress");
+        let technology = lead(EntityKind::Other, "technology:wordpress");
         assert!(technology.has_tag("historical_technology"));
         assert_eq!(
             technology.evidence[0]

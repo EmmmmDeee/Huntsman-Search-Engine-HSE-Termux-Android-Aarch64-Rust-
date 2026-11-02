@@ -933,7 +933,7 @@ mod tests {
         let technology = report
             .entities
             .iter()
-            .find(|e| e.kind == EntityKind::Other && e.value == "technology:Drupal")
+            .find(|e| e.kind == EntityKind::Other && e.value == "technology:drupal")
             .expect("historical Drupal generator evidence");
         assert!(technology.has_tag("historical_technology"));
         assert_eq!(
