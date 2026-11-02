@@ -257,7 +257,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <button class="btn btn-primary" id="uresearch-go" type="submit">Research</button>
 </form>
 <div class="toolbar"><button class="btn" id="uresearch-mission" type="button" disabled>Start bounded autonomous mission</button></div>
-<p class="help">Missions may use sources.</p>
+<p class="help">Public web discovery queries 16 keyless search engines by default. Engine errors and time-budget skips are not evidence of absence. Search links are unverified leads; missions may use additional sources.</p>
 <p class="help" id="uresearch-status" role="status"></p>
 <div id="uresearch-hits" class="help"></div>
 </div></div>
@@ -942,7 +942,14 @@ $('uresearch').onsubmit=async ev=>{
         items.append(li);
       }
       $('uresearch-hits').replaceChildren(items);
-      $('uresearch-status').textContent=hits.length+' discovery leads · '+(report.stop_reason||'')+'. Unverified leads.';
+      const rounds=Array.isArray(report.rounds)?report.rounds:[];
+      const outcomes=rounds.flatMap(r=>Array.isArray(r.outcomes)?r.outcomes:[]);
+      const success=outcomes.filter(o=>o.kind==='success').length;
+      const skipped=outcomes.filter(o=>String(o.detail||'').includes('time budget exhausted')).length;
+      $('uresearch-status').textContent=hits.length+' unverified discovery leads · '+
+        success+'/'+outcomes.length+' successful engine executions'+
+        (skipped?' · '+skipped+' skipped by time budget':'')+
+        ' · '+(report.stop_reason||'completed')+'.';
     }
   }catch(e){if(version===researchVersion)$('uresearch-status').textContent='Error: '+e.message}
   finally{if(version===researchVersion)b.disabled=false}
