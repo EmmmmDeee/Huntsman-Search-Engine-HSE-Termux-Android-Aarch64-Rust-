@@ -2531,6 +2531,7 @@ mod tests {
                 "accepted": 2,
                 "success": 1,
                 "valid_zero": 1,
+                "inconsistent_accepted_count": 0,
                 "not_configured": 1,
                 "refused_before_sending": 1,
                 "unresolved": 1,
