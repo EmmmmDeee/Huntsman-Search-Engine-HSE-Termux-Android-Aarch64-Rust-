@@ -19,7 +19,7 @@ use crate::entity::{Entity, Evidence};
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::relation::{self, Relation};
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::escape_controls;
 
 /// One entity row: kind, `value`, confidence, tags. The caller picks the value it shows: a lookup
@@ -150,6 +150,55 @@ pub fn render(entities: &[Entity], outcomes: &[SourceExecutionOutcome]) -> Resul
     Ok(out)
 }
 
+/// [`render`] for a front-end that combines several sources, ending with one row for the
+/// front-end itself ([`front_end_row`]) so its own verdict reads like every source's.
+///
+/// # Errors
+/// As [`render`].
+pub fn render_front_end(
+    module: &str,
+    entities: &[Entity],
+    outcomes: &[SourceExecutionOutcome],
+) -> Result<String, String> {
+    let mut out = render(entities, outcomes)?;
+    writeln!(out, "{}", front_end_row(module, entities.len(), outcomes))
+        .map_err(|err| err.to_string())?;
+    Ok(out)
+}
+
+/// The row a combining front-end prints for itself: `module<TAB>kind<TAB>found=N<TAB>detail=`
+/// with N its merged entities. Its kind is `success` when any source succeeded, else
+/// `valid_zero` when any answered with nothing, else the first source's kind.
+#[must_use]
+pub fn front_end_row(module: &str, found: usize, outcomes: &[SourceExecutionOutcome]) -> String {
+    let any = |kind: SourceOutcomeKind| outcomes.iter().any(|o| o.kind == kind);
+    let kind = if any(SourceOutcomeKind::Success) {
+        SourceOutcomeKind::Success.as_str()
+    } else if any(SourceOutcomeKind::ValidZero) {
+        SourceOutcomeKind::ValidZero.as_str()
+    } else {
+        outcomes
+            .first()
+            .map_or(SourceOutcomeKind::Inconclusive.as_str(), |o| {
+                o.kind.as_str()
+            })
+    };
+    let answered = outcomes
+        .iter()
+        .filter(|o| {
+            matches!(
+                o.kind,
+                SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero
+            )
+        })
+        .count();
+    format!(
+        "{}\t{kind}\tfound={found}\tdetail=sources answered {answered}/{}",
+        escape_controls(module),
+        outcomes.len()
+    )
+}
+
 /// The relations between the report's entities, one row each, sorted so the same entities
 /// always print the same block.
 fn append_relations(entities: &[Entity], out: &mut String) -> Result<(), String> {
@@ -197,6 +246,46 @@ fn append_lineage(entities: &[Entity], out: &mut String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_front_end_row_reads_its_sources_like_one_source() {
+        let ok = SourceExecutionOutcome::success("ripestat", 1, 3);
+        let zero = SourceExecutionOutcome::valid_zero("peeringdb", 1);
+        let down = SourceExecutionOutcome::failed(
+            "rdap",
+            1,
+            SourceOutcomeKind::Upstream5xx,
+            Some(503),
+            "down",
+        );
+        assert_eq!(
+            front_end_row("asn_cli", 4, &[down.clone(), ok, zero.clone()]),
+            "asn_cli\tsuccess\tfound=4\tdetail=sources answered 2/3"
+        );
+        assert_eq!(
+            front_end_row("ip_cli", 0, &[down.clone(), zero]),
+            "ip_cli\tvalid_zero\tfound=0\tdetail=sources answered 1/2"
+        );
+        assert_eq!(
+            front_end_row("netblock_cli", 0, &[down]),
+            "netblock_cli\tupstream5xx\tfound=0\tdetail=sources answered 0/1"
+        );
+        assert_eq!(
+            front_end_row("domain_cli", 0, &[]),
+            "domain_cli\tinconclusive\tfound=0\tdetail=sources answered 0/0"
+        );
+    }
+
+    #[test]
+    fn render_front_end_is_render_then_the_front_end_row() {
+        let outcomes = [SourceExecutionOutcome::success("ripestat", 1, 2)];
+        let plain = render(&[], &outcomes).unwrap();
+        let front = render_front_end("asn_cli", &[], &outcomes).unwrap();
+        assert_eq!(
+            front,
+            format!("{plain}asn_cli\tsuccess\tfound=0\tdetail=sources answered 1/1\n")
+        );
+    }
     use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
     use crate::test_support::unexpected_controls;
 
