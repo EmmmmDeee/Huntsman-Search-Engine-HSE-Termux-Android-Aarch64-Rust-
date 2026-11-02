@@ -270,5 +270,4 @@ mod tests {
         assert!(outcome.is_err(), "provider failure must reach caller");
         assert_eq!(completed.load(Ordering::SeqCst), 40);
     }
-
 }
