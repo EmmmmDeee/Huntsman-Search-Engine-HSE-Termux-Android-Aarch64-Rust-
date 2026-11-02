@@ -14,6 +14,8 @@
 //! the crawl date, not a claim that it is still true; an empty index is not proof that a site
 //! never existed.
 
+use std::fmt::Write as _;
+
 use crate::archived_page::{self, Admission, Archive, Capture};
 use crate::canonical::{canonical_domain, canonical_url};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -477,9 +479,7 @@ fn read_contents<T: Transport + ?Sized>(
         records.len()
     );
     if technologies > 0 {
-        detail.push_str(&format!(
-            "; {technologies} archived technology signal(s) found"
-        ));
+        let _ = write!(detail, "; {technologies} archived technology signal(s) found");
     }
     if !unread.is_empty() {
         detail.push_str("; not read: ");
