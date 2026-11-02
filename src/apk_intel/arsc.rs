@@ -10,6 +10,8 @@
 //! configuration in practice); a localized override in another configuration is not preferred over
 //! it, so the result is the base label, never a wrong one.
 
+use super::{le16, le32};
+
 /// Chunk types in a compiled resource table.
 const RES_STRING_POOL: u16 = 0x0001;
 const RES_TABLE: u16 = 0x0002;
@@ -26,16 +28,6 @@ const MAX_PACKAGES: usize = 16;
 const MAX_TYPE_CHUNKS: usize = 4096;
 /// A resolved label longer than this is refused as malformed rather than kept.
 const MAX_LABEL_BYTES: usize = 512;
-
-fn le16(data: &[u8], at: usize) -> Option<u16> {
-    let field = data.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes([field[0], field[1]]))
-}
-
-fn le32(data: &[u8], at: usize) -> Option<u32> {
-    let field = data.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes([field[0], field[1], field[2], field[3]]))
-}
 
 fn index(value: u32) -> Option<usize> {
     usize::try_from(value).ok()
