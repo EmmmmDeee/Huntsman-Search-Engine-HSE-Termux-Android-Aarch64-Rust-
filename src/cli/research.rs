@@ -26,7 +26,10 @@ pub(super) fn research_cmd(args: &[String]) -> ExitCode {
     }
     let terms = &args[offset..];
     if terms.is_empty() || terms.iter().any(|value| value.starts_with("--")) {
-        return fail(EX_USAGE, "usage: huntsman-recon research [--plan] [--all] TERM...");
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon research [--plan] [--all] TERM...",
+        );
     }
 
     let input = terms.join(" ");
