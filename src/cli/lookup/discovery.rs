@@ -114,12 +114,25 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
             }
         };
     }
-    let adaptive = args.first().is_some_and(|arg| arg == "--adaptive");
-    let terms = if adaptive { &args[1..] } else { args };
-    if terms.is_empty() {
+    // Preserve the three-engine default for speed and backwards compatibility.
+    // Exhaustive discovery is explicit, bounded, keyless and never promotes
+    // search overlap into independent factual corroboration.
+    let mut adaptive = false;
+    let mut all = false;
+    let mut offset = 0;
+    while let Some(flag) = args.get(offset).map(String::as_str) {
+        match flag {
+            "--adaptive" if !adaptive => adaptive = true,
+            "--all" if !all => all = true,
+            _ => break,
+        }
+        offset += 1;
+    }
+    let terms = &args[offset..];
+    if terms.is_empty() || terms.iter().any(|term| term.starts_with("--")) {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon query [--adaptive] QUERY...",
+            "usage: huntsman-recon query [--adaptive] [--all] QUERY...",
         );
     }
     let query = terms.join(" ");
@@ -127,7 +140,12 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     let transport = UreqTransport::new(&TransportConfig::default());
 
     if adaptive {
-        return match web_query::adaptive_search(&transport, &query, now) {
+        let result = if all {
+            web_query::adaptive_search_all(&transport, &query, now)
+        } else {
+            web_query::adaptive_search(&transport, &query, now)
+        };
+        return match result {
             Ok(report) => {
                 match terminal_json_pretty(&report) {
                     Ok(serialized) => println!("{serialized}"),
@@ -145,7 +163,12 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
         };
     }
 
-    match web_query::search(&transport, &query, now) {
+    let result = if all {
+        web_query::search_all(&transport, &query, now)
+    } else {
+        web_query::search(&transport, &query, now)
+    };
+    match result {
         Ok(report) => {
             print!("{}", report.render());
             if report.hits.is_empty() {
