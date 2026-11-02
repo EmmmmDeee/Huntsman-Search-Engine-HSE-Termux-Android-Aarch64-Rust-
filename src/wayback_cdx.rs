@@ -532,7 +532,10 @@ mod tests {
             // The index, then the capture it named, both from the archive and nowhere else.
             if request.url.starts_with(API) {
                 assert!(request.url.contains("matchType=domain"));
-                assert!(!request.url.contains("filter="), "status is verified locally");
+                assert!(
+                    !request.url.contains("filter="),
+                    "status is verified locally"
+                );
                 // The fields asked for are the ones the answer's header is held to.
                 assert!(
                     request
