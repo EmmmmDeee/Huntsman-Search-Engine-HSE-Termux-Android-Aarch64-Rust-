@@ -13,6 +13,13 @@ const MAX_DIRS: usize = 20_000;
 const MAX_DIR_ENTRIES: usize = 20_000;
 const MAX_DEPTH: usize = 64;
 
+#[derive(Default)]
+struct Coverage {
+    oversized: usize,
+    non_utf8: usize,
+    symbol_truncated: usize,
+}
+
 fn is_symbol(line: &str) -> bool {
     let s = line.trim_start();
     ["pub fn ", "pub(crate) fn ", "fn ", "pub struct ", "struct ",
@@ -29,7 +36,7 @@ fn require_room(count: usize, limit: usize, kind: &str) -> io::Result<()> {
     }
     Ok(())
 }
-fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize) -> io::Result<()> {
+fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize, coverage: &mut Coverage) -> io::Result<()> {
     if depth > MAX_DEPTH {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "directory depth limit exceeded"));
     }
@@ -46,10 +53,13 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize
         if ty.is_symlink() { continue; }
         if ty.is_dir() {
             if allowed_dir(&e.file_name().to_string_lossy()) {
-                collect(&e.path(), out, visited, depth + 1)?;
+                collect(&e.path(), out, visited, depth + 1, coverage)?;
             }
-        } else if ty.is_file() && e.path().extension().is_some_and(|x| x == "rs")
-            && e.metadata()?.len() <= MAX_FILE_BYTES {
+        } else if ty.is_file() && e.path().extension().is_some_and(|x| x == "rs") { 
+            if e.metadata()?.len() > MAX_FILE_BYTES {
+                coverage.oversized += 1;
+                continue;
+            }
             require_room(out.len(), MAX_FILES, "Rust file")?;
             out.push(e.path());
         }
@@ -76,7 +86,8 @@ fn main() -> io::Result<()> {
     let terms: Vec<String> = args.iter().skip(2).map(|s| s.to_ascii_lowercase()).collect();
     let mut paths = Vec::new();
     let mut visited = 0;
-    collect(&root, &mut paths, &mut visited, 0)?;
+    let mut coverage = Coverage::default();
+    collect(&root, &mut paths, &mut visited, 0, &mut coverage)?;
     let mut matches = Vec::new();
     for path in paths.iter() {
         let mut bytes = Vec::new();
@@ -85,7 +96,9 @@ fn main() -> io::Result<()> {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 "Rust source exceeded file size limit during read"));
         }
-        let Ok(src) = String::from_utf8(bytes) else { continue };
+        let Ok(src) = String::from_utf8(bytes) else { coverage.non_utf8 += 1; continue };
+        let symbol_count = src.lines().filter(|line| is_symbol(line)).count();
+        if symbol_count > MAX_SYMBOLS { coverage.symbol_truncated += 1; }
         let symbols: Vec<(usize, String)> = src.lines().enumerate()
             .filter(|(_, s)| is_symbol(s))
             .take(MAX_SYMBOLS)
@@ -95,7 +108,7 @@ fn main() -> io::Result<()> {
         let rank = score(&relative, &symbols, &terms);
         if rank > 0 { keep_best(&mut matches, rank, relative, symbols); }
     }
-    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n", paths.len(), terms.join(" "));
+    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS);
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
@@ -122,10 +135,10 @@ mod tests {
         assert_eq!(require_room(1, 1, "item").unwrap_err().kind(), io::ErrorKind::InvalidData);
         let mut paths = Vec::new();
         let mut visited = 0;
-        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, MAX_DEPTH + 1)
+        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, MAX_DEPTH + 1, &mut Coverage::default())
             .unwrap_err().kind(), io::ErrorKind::InvalidData);
         visited = MAX_DIRS;
-        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, 0)
+        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, 0, &mut Coverage::default())
             .unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
     #[test] fn results_are_bounded_and_deterministic() {
