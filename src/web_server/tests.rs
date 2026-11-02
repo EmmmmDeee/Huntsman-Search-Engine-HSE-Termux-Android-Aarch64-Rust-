@@ -119,6 +119,17 @@ fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
         public_bind(),
     );
     assert!(cross_site.starts_with("HTTP/1.1 403"), "{cross_site}");
+    // A public HSE bind must never accept raw capture bytes, even with a valid token.
+    let public_upload = response_for_request(
+        &request(
+            "POST",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            fixture,
+        ),
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(public_upload.starts_with("HTTP/1.1 403"), "{public_upload}");
     let get = response_for_request(
         &request(
             "GET",
