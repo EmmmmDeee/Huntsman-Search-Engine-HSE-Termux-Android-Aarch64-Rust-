@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use huntsman_recon::clock;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::reverse_image::{self, MAX_IMAGE_BYTES};
+use huntsman_recon::reverse_image::{self, MAX_REVERSE_IMAGE_BYTES};
 
 use super::fail;
 
@@ -35,14 +35,14 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
         Ok(meta) if meta.is_file() => meta,
         _ => return fail(EX_NOINPUT, "image is not a regular readable file"),
     };
-    if metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES as u64 {
+    if metadata.len() == 0 || metadata.len() > MAX_REVERSE_IMAGE_BYTES as u64 {
         return fail(EX_DATAERR, "image must be between 1 byte and 4 MiB");
     }
     let Ok(bytes) = fs::read(path) else {
         return fail(EX_NOINPUT, "could not read image");
     };
     // Validate again after read to reject a file that grew between metadata and read.
-    if bytes.len() > MAX_IMAGE_BYTES {
+    if bytes.len() > MAX_REVERSE_IMAGE_BYTES {
         return fail(EX_DATAERR, "image changed during reading or exceeded 4 MiB");
     }
     let keys = super::credentials::lookup_keys();
