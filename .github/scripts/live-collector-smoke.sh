@@ -15,35 +15,36 @@ while IFS='=' read -r name _; do
   case "$name" in HUNTSMAN_*) unset "$name" ;; esac
 done < <(env)
 
-# probe-id|command line|module|regex the output must match for PASS
+# probe-id|command line|source module (exact tab-delimited rows only)
 probes=(
-  "user-dtolnay|username dtolnay|github_user|^github_user	success	"
-  "user-dtolnay|username dtolnay|crates_io|^crates_io	success	"
-  "user-pg|username pg|hacker_news|^hacker_news	success	"
-  "user-jcs|username jcs|lobsters|^lobsters	success	"
-  "user-torvalds|username torvalds|docker_hub_user|^docker_hub_user	success	"
-  "wikidata-q42|wikidata Q42|wikidata|^wikidata	success	"
-  "asn-13335|asn 13335|peeringdb|^peeringdb	success	"
+  "user-dtolnay|username dtolnay|github_user"
+  "user-dtolnay|username dtolnay|crates_io"
+  "user-pg|username pg|hacker_news"
+  "user-jcs|username jcs|lobsters"
+  "user-torvalds|username torvalds|docker_hub_user"
+  "wikidata-q42|wikidata Q42|wikidata"
+  "asn-13335|asn 13335|peeringdb"
 )
 
 printf 'module\tprobe\tverdict\tevidence\n' > "$out/verdict.tsv"
 failed=0
 for row in "${probes[@]}"; do
-  IFS='|' read -r id cmd module pattern <<< "$row"
+  IFS='|' read -r id cmd module <<< "$row"
   if [ ! -e "$out/$id.exit" ]; then
     # shellcheck disable=SC2086 # the probe's words are its arguments
     timeout 180 "$bin" $cmd > "$out/$id.out" 2>&1
     echo "$?" > "$out/$id.exit"
   fi
   code="$(cat "$out/$id.exit")"
-  line="$(grep -m1 -E "$pattern" "$out/$id.out" | cut -c1-160)"
-  if [ -n "$line" ]; then
+  # Match actual tab-delimited fields; grep -E "\\t" is not a portable tab match.
+  line="$(awk -F '\\t' -v wanted="$module" '$1 == wanted && $2 == "success" { print; exit }' "$out/$id.out" | cut -c1-160)"
+  if [ "$code" = "0" ] && [ -n "$line" ]; then
     verdict=PASS
   else
     verdict=FAIL
     failed=1
-    line="$(grep -m1 -E "^$module	" "$out/$id.out" | cut -c1-160)"
-    [ -n "$line" ] || line="$(head -c 160 "$out/$id.out" | tr '\n\t' '  ')"
+    line="$(awk -F '\\t' -v wanted="$module" '$1 == wanted { print; exit }' "$out/$id.out" | cut -c1-160)"
+    [ -n "$line" ] || line="$(head -c 160 "$out/$id.out" | tr '\\n\\t' '  ')"
   fi
   printf '%s\t%s\t%s\texit=%s %s\n' "$module" "$id" "$verdict" "$code" "$line" >> "$out/verdict.tsv"
 done
