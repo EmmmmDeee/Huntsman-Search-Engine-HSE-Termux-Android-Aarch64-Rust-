@@ -35,3 +35,13 @@ fn raw_text_true_closers_preserve_visible_suffix() {
         assert_eq!(html_to_text(html, 200).as_deref(), Some("BeforeAfter"));
     }
 }
+
+#[test]
+fn malformed_end_candidate_does_not_hide_later_valid_close() {
+    for html in [
+        "Before<script>secret</script foo=\"unterminated </script>After",
+        "Before<style>secret</style foo=\"unterminated </style>After",
+    ] {
+        assert_eq!(html_to_text(html, 200).as_deref(), Some("BeforeAfter"));
+    }
+}
