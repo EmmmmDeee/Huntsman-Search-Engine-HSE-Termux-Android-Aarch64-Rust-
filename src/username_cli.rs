@@ -625,18 +625,27 @@ mod tests {
         }
     }
 
-    /// Each source waits on its own server, so thirteen that take 200 ms each answer in about 200 ms,
-    /// not the second they took one after another.
+    /// Verify overlapping source requests without relying on wall-clock timing under QEMU.
     #[test]
     fn the_sources_run_at_once() {
-        struct Slow(Fake);
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Slow(Fake, AtomicUsize, AtomicUsize);
+        impl Slow {
+            fn new(fake: Fake) -> Self {
+                Self(fake, AtomicUsize::new(0), AtomicUsize::new(0))
+            }
+        }
         impl Transport for Slow {
             fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+                let active = self.1.fetch_add(1, Ordering::SeqCst) + 1;
+                self.2.fetch_max(active, Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(200));
+                self.1.fetch_sub(1, Ordering::SeqCst);
                 self.0.send(request)
             }
         }
-        let slow = Slow(Fake::new(vec![
+        let slow = Slow::new(Fake::new(vec![
             (GITHUB, response(404, "")),
             (GITLAB, response(200, "[]")),
             (
@@ -674,16 +683,12 @@ mod tests {
                 ),
             ),
         ]));
-        let started = std::time::Instant::now();
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
-        let took = started.elapsed();
         assert_eq!(report.outcomes.len(), 13);
-        assert!(
-            took < std::time::Duration::from_millis(800),
-            "thirteen 200 ms sources took {took:?}"
-        );
+        let peak = slow.2.load(Ordering::SeqCst);
+        assert!(peak >= 2, "source requests did not overlap: peak={peak}");
     }
 
     #[test]
