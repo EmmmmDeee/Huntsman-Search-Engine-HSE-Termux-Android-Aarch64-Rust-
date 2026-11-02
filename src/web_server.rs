@@ -115,6 +115,8 @@ const KEYS_PATH: &str = "/api/settings/keys";
 /// A local file's raw bytes in, its EXIF and embedded document metadata out: the `exif` and
 /// `docmeta` commands for a file picked in the browser.
 const INSPECT_PATH: &str = "/api/inspect";
+/// Shares the protected, one-at-a-time binary upload gate with file inspection.
+const REVERSE_IMAGE_PATH: &str = "/api/reverse-image";
 /// The OSINT app blueprint: JSON, or the Word document with `format=docx`.
 const BLUEPRINT_PATH: &str = "/api/blueprint";
 /// Offline, unverified Rhinser source directory exposed to authenticated local clients.
@@ -1047,8 +1049,9 @@ fn read_request_with(
 fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(usize, Slot)> {
     let inspect = routes.inspect.as_ref()?;
     let parsed = parse_request(head)?;
+    let reverse_image = parsed.path == REVERSE_IMAGE_PATH;
     let admitted = parsed.method == Method::Post
-        && parsed.path == INSPECT_PATH
+        && (parsed.path == INSPECT_PATH || reverse_image)
         && !parsed.transfer_encoding
         && page_refusal(&parsed, "inspection", true).is_none()
         && authorized(&parsed, config)
@@ -1056,9 +1059,14 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
     if !admitted {
         return None;
     }
+    let limit = if reverse_image {
+        crate::reverse_image::MAX_REVERSE_IMAGE_BYTES
+    } else {
+        MAX_INSPECT_BYTES
+    };
     let length = parsed
         .content_length
-        .filter(|length| (1..=MAX_INSPECT_BYTES).contains(length))?;
+        .filter(|length| (1..=limit).contains(length))?;
     Some((length, Slot::take_of(&inspect.live, MAX_INSPECTIONS)?))
 }
 
@@ -1493,6 +1501,7 @@ fn route(
         "/api/evidence" => dossier_json_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes),
+        REVERSE_IMAGE_PATH => reverse_image_response(parsed, upload, routes),
         OSINT_CASE_PATH => osint_offline_response(parsed, false),
         OSINT_RISK_PATH => osint_offline_response(parsed, true),
         INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
@@ -1564,7 +1573,10 @@ mod lookup;
 mod page;
 mod response;
 mod settings;
-use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response};
+use analysis::{
+    analyze_response, inspect_response, investigate_response, osint_offline_response,
+    reverse_image_response,
+};
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use page::{FAVICON_SVG, PAGE, PAGE_ID};
