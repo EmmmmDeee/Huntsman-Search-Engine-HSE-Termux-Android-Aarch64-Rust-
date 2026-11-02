@@ -1818,6 +1818,7 @@ function invalidateRhinserReport(){
 $('rhinser-native-input').oninput=invalidateRhinserReport;
 $('rhinser-native-file').onchange=async ev=>{
   invalidateRhinserReport();
+  const generation=rhinserNativeGeneration;
   const file=ev.target.files&&ev.target.files[0];
   if(!file)return;
   if(!file.size||file.size>20000){
@@ -1827,10 +1828,12 @@ $('rhinser-native-file').onchange=async ev=>{
   }
   try{
     const contents=await file.text();
+    if(generation!==rhinserNativeGeneration)return;
     if(new TextEncoder().encode(contents).length>20000)throw new Error('capture exceeds browser limit');
     $('rhinser-native-input').value=contents;
     $('rhinser-native-output').textContent='Capture loaded locally. Choose Inspect local capture to validate it with Rust. No radio was accessed.';
   }catch(e){
+    if(generation!==rhinserNativeGeneration)return;
     $('rhinser-native-output').textContent='Import refused: '+e.message;
   }
   ev.target.value='';
