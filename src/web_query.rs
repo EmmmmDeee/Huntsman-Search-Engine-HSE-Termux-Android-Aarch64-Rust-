@@ -495,6 +495,7 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
     let mut hits = Vec::new();
     for href in href_values(html) {
         let decoded = decode_html_entities(href);
+        let decoded = bing_click_target(&decoded).unwrap_or(decoded);
         let Some(url) = canonical_url(&decoded) else {
             continue;
         };
@@ -512,6 +513,29 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
         }
     }
     hits
+}
+
+/// The target of a Bing click redirect (`https://www.bing.com/ck/a?…&u=a1<base64url>`), or
+/// `None` for any other address or an undecodable `u`. Only Bing's own host is unwrapped.
+fn bing_click_target(href: &str) -> Option<String> {
+    let rest = href
+        .strip_prefix("https://www.bing.com/ck/a?")
+        .or_else(|| href.strip_prefix("https://bing.com/ck/a?"))?;
+    let encoded = rest
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("u=a1"))?
+        .split('#')
+        .next()?;
+    let standard: String = encoded
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    let bytes = crate::base64::decode_standard(&standard)?;
+    String::from_utf8(bytes).ok()
 }
 
 fn href_values(html: &str) -> Vec<&str> {
@@ -768,6 +792,34 @@ mod tests {
             detail: "transient test failure".into(),
             blocked: false,
         }
+    }
+
+    /// Bing wraps every organic result in a `bing.com/ck/a` click redirect whose `u` parameter is
+    /// `a1` plus the target in unpadded URL-safe Base64; the target is the hit, the wrapper is not.
+    #[test]
+    fn parser_unwraps_bing_click_redirects_to_their_target() {
+        let wrap = |target: &str| format!("a1{}", crate::base64::url_unpadded(target.as_bytes()));
+        let hit = wrap("https://example.org/spiders?a=1&b=2");
+        let html = format!(
+            r#"
+            <a href="https://www.bing.com/ck/a?!&amp;&amp;p=ab&amp;u={hit}&amp;ntb=1">A</a>
+            <a href="https://www.bing.com/ck/a?u={}">relative</a>
+            <a href="https://www.bing.com/ck/a?u={}">engine</a>
+            <a href="https://www.bing.com/ck/a?u=a1!!notbase64">bad</a>
+            <a href="https://evil.example/ck/a?u={hit}">spoof</a>
+        "#,
+            wrap("/images/search?q=x"),
+            wrap("http://go.microsoft.com/fwlink"),
+        );
+        let hits = parse_hits(&html, "bing");
+        let urls: Vec<&str> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://example.org/spiders?a=1&b=2".to_owned(),
+                format!("https://evil.example/ck/a?u={hit}"),
+            ]
+        );
     }
 
     #[test]
