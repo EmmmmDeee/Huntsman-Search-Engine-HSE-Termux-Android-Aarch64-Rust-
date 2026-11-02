@@ -97,14 +97,7 @@ struct CrateInfo {
 /// most 39 bytes, ASCII letters/digits/hyphen, no leading, trailing or doubled hyphen. **Pure.**
 #[must_use]
 pub fn valid_handle(handle: &str) -> bool {
-    !handle.is_empty()
-        && handle.len() <= 39
-        && !handle.starts_with('-')
-        && !handle.ends_with('-')
-        && !handle.contains("--")
-        && handle
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    crate::github_user::valid_login_shape(handle)
 }
 
 /// The `/api/v1/users/{login}` URL. **Pure.**

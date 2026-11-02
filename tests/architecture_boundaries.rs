@@ -670,6 +670,31 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// The GitHub login shape (at most 39 bytes, letters/digits/hyphen, hyphen rules) is written once,
+/// in `github_user::valid_login_shape`; other collectors call it rather than restating the rule.
+#[test]
+fn github_login_shape_has_one_definition() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/github_user.rs")
+        .filter(|source| {
+            production_tokens(&source.text).windows(7).any(|w| {
+                w[0] == "len"
+                    && w[1] == "("
+                    && w[2] == ")"
+                    && w[3] == "<"
+                    && w[4] == "="
+                    && w[5] == "39"
+            })
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(
+        found.is_empty(),
+        "GitHub login shape restated in: {found:?}"
+    );
+}
+
 /// Whether `toks` define `fn _(v: Option<&str>) -> Option<&str> { v.map(str::trim).filter(..` —
 /// a private copy of `textnorm::nonblank`.
 fn defines_nonblank_copy(toks: &[String]) -> bool {
