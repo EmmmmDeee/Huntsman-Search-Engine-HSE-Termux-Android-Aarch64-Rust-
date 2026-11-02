@@ -20,6 +20,7 @@ struct Coverage {
     symbol_truncated: usize,
     matched: usize,
     inspected: usize,
+    displayed_symbols_truncated: usize,
 }
 
 fn is_symbol(line: &str) -> bool {
@@ -113,25 +114,27 @@ fn main() -> io::Result<()> {
             .collect();
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
         // Search the complete source body; symbol extraction is only a navigation aid.
-        // Avoid allocating a second lowercased copy of the entire source at once.
+        // Lowercase the source once per file, not once per query term.
         let rank = if terms.is_empty() { 1 } else {
             let path_lower = relative.to_ascii_lowercase();
+            let source_lower = src.to_ascii_lowercase();
             let mut rank = 0;
             for term in &terms {
                 if path_lower.contains(term) {
                     rank += 12;
-                } else if src.to_ascii_lowercase().contains(term) {
+                } else if source_lower.contains(term) {
                     rank += 3;
                 }
             }
             rank
         };
         if rank > 0 {
+            if symbols.len() > 35 { coverage.displayed_symbols_truncated += 1; }
             coverage.matched += 1;
             keep_best(&mut matches, rank, relative, symbols);
         }
     }
-    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected);
+    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated);
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
