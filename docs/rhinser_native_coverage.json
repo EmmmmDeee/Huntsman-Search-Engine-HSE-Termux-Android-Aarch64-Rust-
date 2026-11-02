@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "source_summaries": [
+    {
+      "apk": "rhinse-osint.apk",
+      "app_class_entries": 132,
+      "distinct_class_method_name_pairs": 700,
+      "zip_resources": 908,
+      "sha256": "e6be6b6bbff2128cf72a34d1a64d25fbaf7c121a0ce803e60e45bdb97f363036"
+    },
+    {
+      "apk": "Rhinser.apk",
+      "app_class_entries": 38,
+      "distinct_class_method_name_pairs": 316,
+      "zip_resources": 25,
+      "sha256": "6a41162f2cf1d59a8689c01a685cd6cde06752c57a02b7177ef009bed7c9593a"
+    },
+    {
+      "apk": "RHINSE-SCAN-DETECT.apk",
+      "app_class_entries": 12,
+      "distinct_class_method_name_pairs": 35,
+      "zip_resources": 17,
+      "sha256": "30833ef95b4f504cd4db0919bfc5dc6743590d9e33d25ed424fc1cb1d42d68c4"
+    }
+  ],
+  "totals": {
+    "app_class_entries": 182,
+    "distinct_class_method_name_pairs": 1051,
+    "zip_resources": 950
+  },
+  "classification": "static method names inventoried, not code or behavioural parity",
+  "native_interoperability": {
+    "schema": 1,
+    "mode": "read_only_offline",
+    "nfc": true,
+    "bluetooth_fixture": true,
+    "simulated_scanner_demo": true,
+    "live_hardware": false,
+    "payment_emulation": false,
+    "covert_remote_agent": false
+  }
+}

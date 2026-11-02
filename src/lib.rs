@@ -205,6 +205,7 @@ pub mod retrieval_artifact;
 pub mod rf;
 pub mod rhinser_catalog;
 pub mod rhinser_nfc;
+pub mod rhinser_native;
 pub mod rhinser_workspace;
 pub mod ripestat;
 pub mod robtex;

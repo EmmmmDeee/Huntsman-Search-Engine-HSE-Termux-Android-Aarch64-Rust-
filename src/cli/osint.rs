@@ -18,10 +18,11 @@ use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
 use huntsman_recon::rhinser_catalog::Catalog;
 use huntsman_recon::rhinser_nfc;
+use huntsman_recon::rhinser_native;
 use huntsman_recon::rhinser_workspace::{MAX_WORKSPACE_BYTES, Workspace};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-pub(super) const OSINT_HELP: &str = "osint nfc apdu|ndef HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+pub(super) const OSINT_HELP: &str = "osint native FILE | osint demo SEED | osint nfc apdu|ndef HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
@@ -83,6 +84,32 @@ fn catalog_cmd(args: &[String]) -> ExitCode {
             EX_USAGE,
             "usage: osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY]",
         ),
+    }
+}
+
+/// Inspect operator-supplied, offline native Android bridge observations.
+fn native_cmd(args: &[String]) -> ExitCode {
+    let [filename] = args else {
+        return fail(EX_USAGE, "usage: osint native FILE");
+    };
+    let data = match read_bounded(Path::new(filename), rhinser_native::MAX_CAPTURE_BYTES) {
+        Ok(data) => data,
+        Err(error) => return fail_error(&error),
+    };
+    match rhinser_native::inspect_capture_json(&data) {
+        Ok(report) => emit(&report, true),
+        Err(error) => fail(EX_DATAERR, &error),
+    }
+}
+
+/// Explicitly simulated demo. Never emits an observation or sensor finding.
+fn demo_cmd(args: &[String]) -> ExitCode {
+    let [seed] = args else {
+        return fail(EX_USAGE, "usage: osint demo NONNEGATIVE_INTEGER_SEED");
+    };
+    match seed.parse::<u64>() {
+        Ok(seed) => emit(&rhinser_native::simulate_demo(seed), true),
+        Err(_) => fail(EX_DATAERR, "demo seed must be a nonnegative integer"),
     }
 }
 
@@ -239,6 +266,8 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     let now = clock::unix_now();
     match args {
         [mode, rest @ ..] if mode == "catalog" => catalog_cmd(rest),
+        [mode, rest @ ..] if mode == "native" => native_cmd(rest),
+        [mode, rest @ ..] if mode == "demo" => demo_cmd(rest),
         [mode, rest @ ..] if mode == "nfc" => nfc_cmd(rest),
         [mode, rest @ ..] if mode == "workspace" => workspace_cmd(rest),
         [mode, path] if mode == "case" => {
