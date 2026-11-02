@@ -544,8 +544,7 @@ mod tests {
 
     #[test]
     fn doctor_transport_rejects_a_truncated_http_body_on_a_real_socket() {
-        let (addr, server) =
-            reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
+        let (addr, server) = reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
         let result = get(addr, "/api/health", None, Duration::from_secs(2));
         server.join().expect("server");
         assert!(result.is_err_and(|error| error.kind() == ErrorKind::InvalidData));
@@ -553,8 +552,7 @@ mod tests {
 
     #[test]
     fn doctor_transport_accepts_a_complete_http_body_on_a_real_socket() {
-        let (addr, server) =
-            reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        let (addr, server) = reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
         let result = get(addr, "/api/health", None, Duration::from_secs(2));
         server.join().expect("server");
         let response = result.expect("complete HTTP response");
