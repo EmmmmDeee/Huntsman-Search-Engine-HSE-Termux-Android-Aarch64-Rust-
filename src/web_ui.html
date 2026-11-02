@@ -396,7 +396,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div id="pane-settings" hidden>
 <div class="panel"><div class="panel-heading">Meta Information</div><dl class="kv" id="meta"></dl></div>
 <div class="panel"><div class="panel-heading">Scan Options</div><dl class="kv" id="opts"></dl></div>
-<div class="panel"><div class="panel-heading">Discovery Tree <span class="badge" id="lineage-n"></span></div><p class="help pad">Each lookup the scan ran, by hop from the target, and every entity it found.</p><div id="lineage"></div></div>
+<div class="panel"><div class="panel-heading">Discovery Tree <span class="badge" id="lineage-n"></span></div><p class="help pad">Discovered entity pivots by hop. The initial lookup and provider outcomes are shown separately in Lookup Report and Sources.</p><div id="lineage"></div></div>
 <div class="panel"><div class="panel-heading">Lookup Report</div><pre id="sreport"></pre></div>
 </div>
 <div id="pane-log" hidden>
@@ -1489,7 +1489,7 @@ function scanSettings(){
   const h=s.honoured||{},applied=v=>v===true?'applied':v===false?'not applied yet: every module of the target\'s lookup ran':v;
   kv('opts',[['Use case',o.usecase],['Use case applied',applied(h.usecase)],['Data types selected',list(o.types)||'all'],['Data types applied',applied(h.types)],['Modules selected',list(o.modules)||'all'],['Modules applied',applied(h.modules)],['Recursion depth',o.depth?o.depth+(o.depth===1?' hop':' hops')+' past the target':'0: the target\'s own lookup only'],['Recursion applied',applied(h.depth)],['Stopped following because',stopped(s)],['Modules run',list(s.modules_run)]]);
   const tree=s.lineage||[];$('lineage-n').textContent=tree.length;
-  $('lineage').replaceChildren(table(['Hop','Lookup','Found'],tree,e=>{const tr=el('tr');put(tr,'Hop',e.generation).className='nw';put(tr,'Lookup',el('span','data',e.from_kind+': '+e.from_selector));put(tr,'Found',el('span','data',e.to_kind+': '+e.to_value)).classList.add('wide');return tr},live(s.status)?'Nothing found yet.':'No lookups were kept for this scan.'));
+  $('lineage').replaceChildren(table(['Hop','Lookup','Found'],tree,e=>{const tr=el('tr');put(tr,'Hop',e.generation).className='nw';put(tr,'Lookup',el('span','data',e.from_kind+': '+e.from_selector));put(tr,'Found',el('span','data',e.to_kind+': '+e.to_value)).classList.add('wide');return tr},live(s.status)?'No discovered pivots yet.':'No discovered entity pivots were recorded. The initial lookup may still have run; inspect Lookup Report and Sources.'));
   $('sreport').textContent=s.report||'No report yet.';
 }
 let logs=[];

@@ -301,6 +301,15 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
                     action,
                 ));
             }
+        } else if record.status == ScanStatus::Finished {
+            items.push(general(
+                "scan:termination_unrecorded",
+                1,
+                "missing_observations",
+                "results.json#termination",
+                "The finished scan has no saved frontier-termination reason; exhaustion cannot be verified.",
+                "Inspect the saved scan format and rerun before asserting frontier exhaustion.",
+            ));
         }
     } else {
         items.push(general(
@@ -505,6 +514,23 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn missing_termination_on_a_finished_scan_is_an_explicit_uncertainty() {
+        let mut results = saved(vec![SourceExecutionOutcome::valid_zero("wikidata", 1)]);
+        results.termination = None;
+        let register = derive(&record(ScanStatus::Finished), Some(&results));
+        assert!(register
+            .items
+            .iter()
+            .any(|item| item.id == "scan:termination_unrecorded"));
+        results.termination = Some(TerminationReason::FixedPoint);
+        let complete = derive(&record(ScanStatus::Finished), Some(&results));
+        assert!(!complete
+            .items
+            .iter()
+            .any(|item| item.id == "scan:termination_unrecorded"));
     }
 
     #[test]

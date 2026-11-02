@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::module;
 use crate::scan_store::{ScanRecord, ScanResults, ScanStatus};
 use crate::source_outcome::SourceOutcomeKind;
+use crate::termination::TerminationReason;
 
 /// Concrete provider executions that a people lookup can record, and the module
 /// selection that gates each one, in execution order. ASIC people uses one parent
@@ -55,6 +56,8 @@ pub struct PeopleSourceCoverage {
     pub not_observed_sources: usize,
     pub excluded_sources: Vec<&'static str>,
     pub sources: Vec<PeopleSourceRow>,
+    /// All saved recursion work ended without a configured bound stopping expansion.
+    pub frontier_exhausted: bool,
     pub complete_within_catalogue: bool,
     pub discovery_completeness: &'static str,
 }
@@ -121,6 +124,11 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Option<Peop
     }
 
     let selected_sources = sources.len();
+    // Accepted provider rows alone do not establish that bounded recursion finished.
+    // Missing termination metadata also fails closed for older saved scans.
+    let frontier_exhausted = results.is_some_and(|saved| {
+        saved.termination == Some(TerminationReason::FixedPoint)
+    });
     Some(PeopleSourceCoverage {
         scope: "people_lookup_catalogue",
         catalogued_sources: PEOPLE_LEGS.len(),
@@ -130,7 +138,9 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Option<Peop
         unresolved_sources,
         not_observed_sources,
         excluded_sources,
-        complete_within_catalogue: record.status == ScanStatus::Finished
+        frontier_exhausted,
+        complete_within_catalogue: frontier_exhausted
+            && record.status == ScanStatus::Finished
             && results.is_some()
             && selected_sources > 0
             && accepted_sources == selected_sources,
@@ -242,6 +252,49 @@ mod tests {
         let coverage = derive(&selected, Some(&observations)).unwrap();
         assert_eq!(coverage.unresolved_sources, 1);
         assert_eq!(coverage.sources[0].recorded_executions, 2);
+        assert!(!coverage.complete_within_catalogue);
+    }
+
+    #[test]
+    fn bounded_or_unrecorded_frontier_does_not_claim_complete_people_coverage() {
+        let mut selected = record();
+        selected.options.modules = vec!["asic_director".into()];
+        let mut observations = results(vec![SourceExecutionOutcome::valid_zero("asic_director", 1)]);
+        for reason in [
+            Some(TerminationReason::MaxDepth),
+            Some(TerminationReason::RequestBudget),
+            None,
+        ] {
+            observations.termination = reason;
+            let coverage = derive(&selected, Some(&observations)).unwrap();
+            assert_eq!(coverage.accepted_sources, 1);
+            assert!(!coverage.frontier_exhausted);
+            assert!(!coverage.complete_within_catalogue);
+        }
+        observations.termination = Some(TerminationReason::FixedPoint);
+        let coverage = derive(&selected, Some(&observations)).unwrap();
+        assert!(coverage.frontier_exhausted);
+        assert!(coverage.complete_within_catalogue);
+    }
+
+    #[test]
+    fn inconclusive_and_skipped_people_sources_match_a_real_scan_signature() {
+        let observations = results(vec![
+            SourceExecutionOutcome::valid_zero("asic_persons.banned", 1),
+            SourceExecutionOutcome::valid_zero("asic_persons.advisers", 1),
+            SourceExecutionOutcome::valid_zero("asic_persons.credit", 1),
+            SourceExecutionOutcome::inconclusive("asic_director", 1, "unverified empty page"),
+            SourceExecutionOutcome::valid_zero("wikidata", 1),
+            SourceExecutionOutcome::valid_zero("acnc", 1),
+            SourceExecutionOutcome::not_configured("sec_edgar", 1),
+            SourceExecutionOutcome::not_configured("seeknow", 1),
+        ]);
+        let coverage = derive(&record(), Some(&observations)).unwrap();
+        assert_eq!(coverage.accepted_sources, 5);
+        assert_eq!(coverage.unresolved_sources, 1);
+        assert_eq!(coverage.not_configured_sources, 2);
+        assert_eq!(coverage.not_observed_sources, 0);
+        assert!(coverage.frontier_exhausted);
         assert!(!coverage.complete_within_catalogue);
     }
 
