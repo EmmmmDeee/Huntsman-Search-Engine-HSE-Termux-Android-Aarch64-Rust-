@@ -513,6 +513,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_blank_upstream_titles() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"articles":[{"title":"   ","url":"https://example.org/a"}]}"#,
+        );
+        let report = search(&fake, Source::News, "test", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
     fn reported_nonzero_total_is_not_a_verified_empty_result() {
         for source in [Source::News, Source::Notices] {
             let fake = OneResponse::json(
