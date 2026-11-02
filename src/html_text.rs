@@ -273,6 +273,8 @@ impl<'a> Markup<'a> {
                                     )
                                 })
                         })
+                        .next()
+                })
                 // Parse at most one candidate close, preserving linear scanning
                 // even if its attribute quote never terminates.
                 .and_then(|after_marker| {
