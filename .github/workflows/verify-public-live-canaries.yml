@@ -68,6 +68,14 @@ jobs:
           verdict username_dtolnay crates_io
           collect peeringdb_13335 asn 13335
           verdict peeringdb_13335 peeringdb
+          # Additional read-only functional breadth: actual search engines and people-source legs.
+          # These are diagnostic probes, not fabricated PASSes when an upstream site blocks us.
+          collect query_huntsman query huntsman spider
+          collect people_douglas people Douglas Adams
+          printf 'search_engines exit=%s\n' "$(cat "$out/query_huntsman.exit")"
+          grep '^engine=' "$out/query_huntsman.out" | head -n 20 || true
+          printf 'people_sources exit=%s\n' "$(cat "$out/people_douglas.exit")"
+          grep -E '^(asic_persons|asic_director|wikidata|acnc|sec_edgar|seeknow)' "$out/people_douglas.out" | head -n 20 || true
           echo "binary_commit=$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           echo '### Public live provider receipts (actual Rust binary)' >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' '```' >> "$GITHUB_STEP_SUMMARY"
