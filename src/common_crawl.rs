@@ -874,6 +874,18 @@ mod tests {
         assert_eq!(gunzip_member(&named, 1024).unwrap(), data);
     }
 
+    fn assert_ghost_powered_by(report: &Report) {
+        let ghost = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Other && e.value == "technology:ghost")
+            .expect("historical Ghost powered-by evidence");
+        assert_eq!(
+            ghost.evidence[0].attr_values("signal").next(),
+            Some("html_meta_powered_by")
+        );
+    }
+
     /// The index lists three pages; the contact page and the root are read by exact byte range
     /// from the crawl's data origin, the third over the page bound is never requested; a record
     /// naming another URL, or a captured non-200, is named and not read.
@@ -933,15 +945,7 @@ mod tests {
             seen.iter()
                 .all(|r| r.header_value("authorization").is_none())
         );
-        let second = report
-            .entities
-            .iter()
-            .find(|e| e.kind == EntityKind::Other && e.value == "technology:ghost")
-            .expect("historical Ghost powered-by evidence");
-        assert_eq!(
-            second.evidence[0].attr_values("signal").next(),
-            Some("html_meta_powered_by")
-        );
+        assert_ghost_powered_by(&report);
         let technology = report
             .entities
             .iter()
