@@ -121,7 +121,9 @@ fn checked_query(input: &str, label: &str) -> Result<String, Error> {
     }
     let normalized = canonical_whitespace(input);
     if normalized.len() > MAX_SEARCH_QUERY_BYTES {
-        return Err(Error::Invalid(format!("{label} is too long after normalization")));
+        return Err(Error::Invalid(format!(
+            "{label} is too long after normalization"
+        )));
     }
     if normalized.is_empty() {
         return Err(Error::Invalid(format!("{label} must not be empty")));
