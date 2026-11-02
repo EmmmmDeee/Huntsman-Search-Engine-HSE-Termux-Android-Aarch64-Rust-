@@ -129,7 +129,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "plan [--session-dir DIR] SEED [SEED ...] | plan --load-session DIR ID\nRun the offline investigation spine on one or more seeds: normalise them into entities and relations, analyse that one state, and plan the external routes without fetching them. --session-dir DIR saves the run as a session, and --load-session DIR ID prints a saved one. Offline."
         }
         "query" => {
-            "query QUERY...\nOptional: query --adaptive QUERY... . Query the rebuilt keyless Bing, Brave, and Mojeek subset. --adaptive emits JSON with up to 3 feedback-directed query rounds, URL attribution by engine, typed outcomes and explicit limits (up to 9 engine executions, 18 HTTP attempts with retries)."
+            "query [--adaptive] [--all] QUERY...\nDefault: Bing, Brave and Mojeek. --all queries 16 keyless public search sites; --adaptive uses up to three bounded query variants and emits JSON. --all can trigger 16 requests per round, plus transient retries. Search URLs are leads, not verified claims. --exa separately uses optional provider credits."
         }
         "sf" => SF_USAGE,
         "scans" => SCANS_HELP,
