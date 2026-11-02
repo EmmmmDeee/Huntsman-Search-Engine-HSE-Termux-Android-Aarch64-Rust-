@@ -122,6 +122,40 @@ fn live_collector_smoke_is_manual_read_only_and_secret_free() {
             "no probe for {module}"
         );
     }
+    // The sweep reads every keyless networked module from the binary's own registry, and the web
+    // server is exercised only on loopback (rootless, never a public bind).
+    assert!(
+        script.contains("\"$bin\" modules --json"),
+        "sweep uses the module registry"
+    );
+    assert!(
+        script.contains("serve --bind \"127.0.0.1:$port\""),
+        "serve is exercised on loopback"
+    );
+    for command in [
+        "username ",
+        "people ",
+        "domain ",
+        "ip ",
+        "email ",
+        "netblock ",
+        "crypto ",
+        "geocode ",
+        "gleif ",
+        "itunes ",
+        "query ",
+        "recon crtsh ",
+        "recon dns ",
+        "public-osint web ",
+        "public-osint news ",
+        "asn ",
+        "wikidata ",
+    ] {
+        assert!(
+            script.contains(&format!("|{command}")),
+            "no sweep probe runs `{command}`"
+        );
+    }
 }
 
 #[test]
