@@ -179,8 +179,17 @@ fn grouped_provider_issues(outcomes: &[SourceExecutionOutcome]) -> (usize, Vec<U
     let mut unresolved_executions = 0;
     let mut groups: BTreeMap<(String, String), UncertaintyItem> = BTreeMap::new();
     for outcome in outcomes {
-        let Some((priority, category, uncertainty, next_action)) = provider_issue(outcome.kind)
-        else {
+        let issue = if outcome.kind.is_accepted() && !outcome.is_accepted() {
+            Some((
+                1,
+                "outcome_count_conflict",
+                "The saved provider outcome claims acceptance, but its row count contradicts that claim.",
+                "Inspect and correct the provider parser or saved evidence before accepting this result.",
+            ))
+        } else {
+            provider_issue(outcome.kind)
+        };
+        let Some((priority, category, uncertainty, next_action)) = issue else {
             continue;
         };
         unresolved_executions += 1;
@@ -465,6 +474,41 @@ mod tests {
                 .items
                 .iter()
                 .any(|i| i.id == "scan:termination:request_budget")
+        );
+    }
+
+    #[test]
+    fn contradictory_saved_counts_are_visible_as_unresolved_evidence() {
+        let observations = saved(vec![
+            SourceExecutionOutcome::valid_zero("valid", 1),
+            SourceExecutionOutcome::observed(
+                "invalid_zero",
+                2,
+                SourceOutcomeKind::ValidZero,
+                Some(200),
+                Some(2),
+                "not a real zero",
+            ),
+            SourceExecutionOutcome::observed(
+                "invalid_success",
+                3,
+                SourceOutcomeKind::Success,
+                Some(200),
+                Some(0),
+                "empty success",
+            ),
+        ]);
+        let register = derive(&record(ScanStatus::Finished), Some(&observations));
+        assert_eq!(register.recorded_executions, 3);
+        assert_eq!(register.unresolved_executions, 2);
+        assert_eq!(register.distinct_provider_issues, 2);
+        assert_eq!(
+            register
+                .items
+                .iter()
+                .filter(|issue| issue.category == "outcome_count_conflict")
+                .count(),
+            2
         );
     }
 

@@ -100,7 +100,7 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Option<Peop
         // One accepted response must never suppress an unresolved execution.
         let status = if matches.is_empty() {
             PeopleSourceStatus::NotObserved
-        } else if matches.iter().all(|outcome| outcome.kind.is_accepted()) {
+        } else if matches.iter().all(|outcome| outcome.is_accepted()) {
             PeopleSourceStatus::Accepted
         } else if matches
             .iter()
@@ -252,6 +252,29 @@ mod tests {
         assert_eq!(coverage.unresolved_sources, 1);
         assert_eq!(coverage.sources[0].recorded_executions, 2);
         assert!(!coverage.complete_within_catalogue);
+    }
+
+    #[test]
+    fn inconsistent_accepted_rows_do_not_complete_a_people_source() {
+        let mut selected = record();
+        selected.options.modules = vec!["asic_director".into()];
+        for (kind, found) in [
+            (SourceOutcomeKind::ValidZero, Some(4)),
+            (SourceOutcomeKind::Success, Some(0)),
+        ] {
+            let row = SourceExecutionOutcome::observed(
+                "asic_director",
+                1,
+                kind,
+                Some(200),
+                found,
+                "count contradicts outcome",
+            );
+            let coverage = derive(&selected, Some(&results(vec![row]))).unwrap();
+            assert_eq!(coverage.unresolved_sources, 1);
+            assert_eq!(coverage.accepted_sources, 0);
+            assert!(!coverage.complete_within_catalogue);
+        }
     }
 
     #[test]
