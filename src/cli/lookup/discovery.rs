@@ -312,13 +312,19 @@ mod query_flag_tests {
     #[test]
     fn every_engine_is_the_default_and_fast_requires_explicit_opt_in() {
         fn parse(args: &[&str]) -> Option<(bool, bool)> {
-            let args = args.iter().map(|item| (*item).to_owned()).collect::<Vec<_>>();
+            let args = args
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>();
             parse_query_flags(&args).map(|(adaptive, fast, _)| (adaptive, fast))
         }
         assert_eq!(parse(&["topic"]), Some((false, false)));
         assert_eq!(parse(&["--adaptive", "topic"]), Some((true, false)));
         assert_eq!(parse(&["--fast", "topic"]), Some((false, true)));
-        assert_eq!(parse(&["--adaptive", "--fast", "topic"]), Some((true, true)));
+        assert_eq!(
+            parse(&["--adaptive", "--fast", "topic"]),
+            Some((true, true))
+        );
         assert_eq!(parse(&["--all", "topic"]), Some((false, false)));
         assert_eq!(parse(&["--fast", "--all", "topic"]), None);
         assert_eq!(parse(&["--all", "--fast", "topic"]), None);
