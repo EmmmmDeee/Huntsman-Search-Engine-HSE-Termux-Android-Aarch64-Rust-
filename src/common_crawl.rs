@@ -874,6 +874,18 @@ mod tests {
         assert_eq!(gunzip_member(&named, 1024).unwrap(), data);
     }
 
+    fn assert_ghost_powered_by(report: &Report) {
+        let ghost = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Other && e.value == "technology:ghost")
+            .expect("historical Ghost powered-by evidence");
+        assert_eq!(
+            ghost.evidence[0].attr_values("signal").next(),
+            Some("html_meta_powered_by")
+        );
+    }
+
     /// The index lists three pages; the contact page and the root are read by exact byte range
     /// from the crawl's data origin, the third over the page bound is never requested; a record
     /// naming another URL, or a captured non-200, is named and not read.
@@ -883,7 +895,7 @@ mod tests {
             "https://example.org/contact",
             "200",
             "text/html; charset=UTF-8",
-            r#"<meta name="generator" content="Drupal 10.2"><p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
+            r#"<meta name="generator" content="Drupal 10.2"><meta name="powered-by" content="Ghost 5.0"><p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
         );
         let root = warc("https://elsewhere.example/", "200", "text/html", "<p>x</p>");
         let index = [
@@ -933,6 +945,7 @@ mod tests {
             seen.iter()
                 .all(|r| r.header_value("authorization").is_none())
         );
+        assert_ghost_powered_by(&report);
         let technology = report
             .entities
             .iter()

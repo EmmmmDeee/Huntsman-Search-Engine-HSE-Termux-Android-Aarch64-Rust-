@@ -77,14 +77,18 @@ the particular bounded index query returned no matches.
 Each of the at most three already-fetched archived web pages also passes through the
 shared `archived_page::technologies` extractor. It emits at most eight allowlisted
 `Other` entities with values such as `technology:wordpress`, tagged
-`historical_technology`, only when the captured HTML explicitly declares a
-`<meta name="generator" content="...">` value matching WordPress, Drupal,
-Joomla, Ghost, Hugo, Jekyll, TYPO3 or MediaWiki. Detection is an archived page's
+`historical_technology`, only when captured HTML explicitly declares an allowlisted product in
+`<meta name="generator">` or `<meta name="powered-by">` metadata.
+Declarations with several products separated by commas, semicolons or
+case-insensitive ` and ` are independently recognised. WordPress, Drupal,
+Joomla, Ghost, Hugo, Jekyll, TYPO3 and MediaWiki are supported. Detection is an archived page's
 own claim, not independent confirmation of its stack or its current deployment.
 
 Each lead names its capture UTC timestamp, original URL, archive replay URL and
-source. Raw generator values and versions are never stored, because archived
-metadata can include arbitrary personal or sensitive data. Script contents,
+source, and whether the evidence came from generator or powered-by metadata.
+Raw metadata values and versions are never stored, because archived
+metadata can include arbitrary personal or sensitive data; values over
+4,096 bytes are ignored. Script contents,
 ordinary page text and comments do not count as generator metadata. These
 signals reuse the fetched page without more network requests, and existing
 email/phone contacts remain unchanged. Historical technology signals are not

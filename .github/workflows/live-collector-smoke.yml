@@ -1,0 +1,60 @@
+name: Live collector smoke
+
+# Manual, read-only live check of the keyless username/people collectors (github_user, crates_io,
+# hacker_news, lobsters, docker_hub_user, wikidata, peeringdb) against their real public hosts.
+# It builds the release binary from the dispatched commit on a GitHub-hosted runner and runs
+# .github/scripts/live-collector-smoke.sh, which writes a per-module PASS/FAIL verdict.
+# No third-party actions, no secrets, no write scopes, no deploy: the verdict and the raw outputs
+# are printed to the job log and the run summary.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Live collector smoke (real hosts)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch the dispatched commit (no stored credentials)
+        run: |
+          git init -q src
+          git -C src fetch -q --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          git -C src checkout -q FETCH_HEAD
+      - name: Build the release binary
+        working-directory: src
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable build --locked --release
+          ./target/release/huntsman-recon build-sha || true
+      - name: Run the live probes
+        id: probes
+        working-directory: src
+        run: |
+          set +e
+          bash .github/scripts/live-collector-smoke.sh ./target/release/huntsman-recon "$RUNNER_TEMP/smoke"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+      - name: Publish the verdict and raw outputs
+        if: always()
+        run: |
+          {
+            echo "## Live collector smoke at $GITHUB_SHA"
+            echo '```'
+            cat "$RUNNER_TEMP/smoke/verdict.tsv"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for f in "$RUNNER_TEMP"/smoke/*.out; do
+            echo "::group::$(basename "$f") exit=$(cat "${f%.out}.exit")"
+            cut -c1-300 "$f" | head -n 120
+            echo "::endgroup::"
+          done
+      - name: Fail when a probe failed
+        if: steps.probes.outputs.status != '0'
+        run: exit 1
