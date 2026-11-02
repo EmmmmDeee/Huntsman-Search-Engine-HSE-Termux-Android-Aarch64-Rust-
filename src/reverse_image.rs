@@ -2,7 +2,7 @@
 //! the whole internet. A visually similar image is never evidence of a person's identity.
 //! No provider is contacted unless the operator asks for --live and has configured its key.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -46,6 +46,11 @@ pub struct ImageReport {
     pub image_sha256: String,
     pub bytes: usize,
     pub live_requested: bool,
+    pub observed_at_unix: u64,
+    /// Matching image URLs returned independently by at least two provider indexes.
+    /// Same URL across providers does not by itself establish a real-world identity.
+    pub shared_image_urls: Vec<String>,
+    pub truncated: bool,
     pub statuses: Vec<ProviderStatus>,
     pub matches: Vec<ImageMatch>,
 }
@@ -83,7 +88,7 @@ fn insert(
     image: Option<&str>,
     score: Option<f64>,
 ) {
-    if matches.len() >= MAX_MATCHES {
+    if matches.len() > MAX_MATCHES {
         return;
     }
     let source_url = source.and_then(web_url);
@@ -383,6 +388,9 @@ pub fn search_selected<T: Transport + ?Sized>(
         image_sha256: hex32(&sha256(image)),
         bytes: image.len(),
         live_requested: live,
+        observed_at_unix: now,
+        shared_image_urls: Vec::new(),
+        truncated: false,
         statuses: Vec::new(),
         matches: Vec::new(),
     };
@@ -435,6 +443,16 @@ pub fn search_selected<T: Transport + ?Sized>(
             m.image_url.clone(),
         ))
     });
+    let mut sources: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for item in &report.matches {
+        if let Some(url) = item.image_url.as_ref() {
+            sources.entry(url.clone()).or_default().insert(item.provider.clone());
+        }
+    }
+    report.shared_image_urls = sources.into_iter().filter_map(|(url, providers)| {
+        (providers.len() > 1).then_some(url)
+    }).collect();
+    report.truncated = report.matches.len() > MAX_MATCHES;
     report.matches.truncate(MAX_MATCHES);
     Ok(report)
 }
