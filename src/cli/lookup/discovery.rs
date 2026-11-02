@@ -69,23 +69,25 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Recognise the two keyless flags without making an ambiguous word a provider
-/// option. Preserve the three-engine default unless --all is explicit.
+/// One parser for keyless CLI modes: all engines is the default.
+/// --all remains a backwards-compatible alias; --fast selects the old three.
 fn parse_query_flags(args: &[String]) -> Option<(bool, bool, &[String])> {
     let mut adaptive = false;
+    let mut fast = false;
     let mut all = false;
     let mut offset = 0;
     while let Some(flag) = args.get(offset).map(String::as_str) {
         match flag {
             "--adaptive" if !adaptive => adaptive = true,
-            "--all" if !all => all = true,
+            "--fast" if !fast && !all => fast = true,
+            "--all" if !all && !fast => all = true,
             _ => break,
         }
         offset += 1;
     }
     let terms = &args[offset..];
     (!terms.is_empty() && !terms.iter().any(|term| term.starts_with("--")))
-        .then_some((adaptive, all, terms))
+        .then_some((adaptive, fast, terms))
 }
 
 pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
@@ -133,10 +135,10 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
             }
         };
     }
-    let Some((adaptive, all, terms)) = parse_query_flags(args) else {
+    let Some((adaptive, fast, terms)) = parse_query_flags(args) else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon query [--adaptive] [--all] QUERY...",
+            "usage: huntsman-recon query [--adaptive] [--fast|--all] QUERY...",
         );
     };
     let query = terms.join(" ");
@@ -144,8 +146,8 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     let transport = UreqTransport::new(&TransportConfig::default());
 
     if adaptive {
-        let result = if all {
-            web_query::adaptive_search_all(&transport, &query, now)
+        let result = if fast {
+            web_query::adaptive_search_fast(&transport, &query, now)
         } else {
             web_query::adaptive_search(&transport, &query, now)
         };
@@ -167,8 +169,8 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
         };
     }
 
-    let result = if all {
-        web_query::search_all(&transport, &query, now)
+    let result = if fast {
+        web_query::search_fast(&transport, &query, now)
     } else {
         web_query::search(&transport, &query, now)
     };
