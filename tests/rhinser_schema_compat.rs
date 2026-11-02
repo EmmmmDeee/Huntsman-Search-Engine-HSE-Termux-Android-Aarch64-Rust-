@@ -10,10 +10,7 @@ fn run(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn native_entities_preview_does_not_promote_sensor_claims_to_facts() {
-    let path = std::env::temp_dir().join(format!(
-        "hse-rhinser-schema-{}.json",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("hse-rhinser-schema-{}.json", std::process::id()));
     let fixture = br#"{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"ndef","hex":"D101055402656E4869"},{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}"#;
     std::fs::write(&path, fixture).unwrap();
     let output = run(&["osint", "native", "--entities", path.to_str().unwrap()]);
