@@ -1009,7 +1009,9 @@ fn read_request_with(
                     announced = whole;
                     continue;
                 }
-                announced = Some(head + announced_body_len(&bytes[..head]));
+                // A valid decimal length can fill usize. Keep the refusal/drain path bounded
+                // without overflowing when the request head is added to that untrusted value.
+                announced = Some(head.saturating_add(announced_body_len(&bytes[..head])));
                 whole = Some(head + form_body_len(&bytes[..head]));
             }
         }
@@ -1160,8 +1162,19 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         } else if name.eq_ignore_ascii_case("sec-fetch-site") {
             sec_fetch_site = Some(value.trim());
         } else if name.eq_ignore_ascii_case("content-length") {
-            has_body |= value.trim() != "0";
-            content_length = value.trim().parse().ok();
+            // Reject ambiguous framing before either the reader or a route consumes it.
+            // RFC 9110 uses digits only; Rust's integer parser also accepts a leading '+'.
+            // Repeated fields (even identical ones) are refused rather than choosing a winner.
+            let value = value.trim_matches([' ', '\t']);
+            if content_length.is_some()
+                || value.is_empty()
+                || !value.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            let length = value.parse().ok()?;
+            has_body |= length != 0;
+            content_length = Some(length);
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             has_body = true;
             transfer_encoding = true;

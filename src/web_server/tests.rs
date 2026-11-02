@@ -36,6 +36,50 @@ fn bind_for(token: Option<&str>) -> SocketAddr {
 }
 
 #[test]
+fn malformed_content_lengths_are_rejected_before_routing() {
+    for headers in [
+        "Content-Length: +0\r\n",
+        "Content-Length: -1\r\n",
+        "Content-Length: \r\n",
+        "Content-Length: abc\r\n",
+        "Content-Length: 0, 0\r\n",
+        "Content-Length: 0\r\ncontent-length: 1\r\n",
+        "Content-Length: 1\r\nContent-Length: 0\r\n",
+        "Content-Length: 0\r\nContent-Length: 0\r\n",
+        "Content-Length: 99999999999999999999999999999999999\r\n",
+    ] {
+        let request = format!("GET /api/health HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n");
+        let answer = response_for_request(&request, None, loopback_bind());
+        assert!(answer.starts_with("HTTP/1.1 400"), "{headers:?}: {answer}");
+    }
+    for value in ["0", "00", "\t0 \t"] {
+        let request = format!(
+            "GET /api/health HTTP/1.1\r\nHost: localhost\r\nContent-Length: {value}\r\n\r\n"
+        );
+        let answer = response_for_request(&request, None, loopback_bind());
+        assert!(answer.starts_with("HTTP/1.1 200"), "{value:?}: {answer}");
+    }
+}
+
+#[test]
+fn maximum_content_length_does_not_overflow_the_socket_reader() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    let request = format!(
+        "POST /api/investigate HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+        usize::MAX
+    );
+    client.write_all(request.as_bytes()).unwrap();
+    client.shutdown(Shutdown::Write).unwrap();
+    let (head, upload, unread) =
+        read_request_with(&mut server, Instant::now() + IO_TIMEOUT, |_| None).unwrap();
+    assert_eq!(head, request);
+    assert!(upload.is_none());
+    assert!(unread > MAX_INSPECT_BYTES);
+}
+
+#[test]
 fn rhinser_catalogue_http_contract_is_read_only_and_complete() {
     let request = "GET /api/rhinser/catalog HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n";
     let answer = response_for_request(request, None, loopback_bind());
