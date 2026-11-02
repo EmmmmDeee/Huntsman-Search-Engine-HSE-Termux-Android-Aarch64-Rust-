@@ -1,0 +1,105 @@
+name: Keyless search live smoke
+
+# Read-only live internet acceptance on the exact PR commit. Public test phrases
+# only; no person's identifiers, secrets, paid APIs, login, or challenge bypass.
+on:
+  pull_request:
+    paths:
+      - "src/web_query.rs"
+      - "src/source_registry.rs"
+      - "src/cli/lookup/discovery.rs"
+      - "src/cli/research.rs"
+      - ".github/workflows/keyless-search-live-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keyless-live-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-search:
+    name: Real binary versus 16 live public search sites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+    steps:
+      - name: Check out exact CI commit without storing credentials
+        run: |
+          set -euo pipefail
+          git init -q huntsman
+          git -C huntsman fetch -q --depth 1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          git -C huntsman checkout -q FETCH_HEAD
+          test "$(git -C huntsman rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Compile real release binary
+        working-directory: huntsman
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.99 --profile minimal
+          cargo +1.99 build --release --locked --bin huntsman-recon
+          test -x target/release/huntsman-recon
+          target/release/huntsman-recon build-sha
+      - name: Exercise public entity pivots offline
+        working-directory: huntsman
+        run: |
+          set -euo pipefail
+          bin=target/release/huntsman-recon
+          "$bin" sources "Ada Lovelace" > "$RUNNER_TEMP/hse-pivots.txt"
+          grep -q '^kind=person ' "$RUNNER_TEMP/hse-pivots.txt"
+          n="$(grep -c '^source=' "$RUNNER_TEMP/hse-pivots.txt")"
+          echo "person source routes: $n"
+          test "$n" -ge 16
+          "$bin" research --plan "rust programming language" > "$RUNNER_TEMP/hse-plan.txt"
+          test -s "$RUNNER_TEMP/hse-plan.txt"
+      - name: Execute real keyless engines against live internet
+        id: search
+        working-directory: huntsman
+        run: |
+          set -euo pipefail
+          # The engine has its own 110-second shared budget. Timeout also guards
+          # unexpected DNS, egress or transport regressions outside that budget.
+          set +e
+          timeout 185 target/release/huntsman-recon query --adaptive "rust programming language" \
+            > "$RUNNER_TEMP/hse-web-report.json" 2> "$RUNNER_TEMP/hse-web-stderr.log"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "cli_exit=$code"
+          jq -e '.rounds | length >= 1' "$RUNNER_TEMP/hse-web-report.json"
+          jq -e '.rounds[0].outcomes | length == 16' "$RUNNER_TEMP/hse-web-report.json"
+          jq -e '([.rounds[0].outcomes[].module] | unique | length) == 16' "$RUNNER_TEMP/hse-web-report.json"
+          jq -r '.rounds[] | .strategy as $strategy | .outcomes[] |
+            [$strategy, .module, .kind, (.http_status // "-"), (.found // "-"), (.detail // "")] | @tsv' \
+            "$RUNNER_TEMP/hse-web-report.json"
+          echo "unique_hits=$(jq '.hits | length' "$RUNNER_TEMP/hse-web-report.json")"
+          test "$code" -eq 0
+          jq -e '.hits | length > 0' "$RUNNER_TEMP/hse-web-report.json"
+      - name: Publish independently inspectable execution summary
+        if: always()
+        run: |
+          {
+            echo "## Huntsman 16-engine live smoke"
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo "Runner: \`$(uname -m)\` (Linux; not a Termux device)"
+            echo "CLI exit: \`${{ steps.search.outputs.exit_code }}\`"
+            if test -s "$RUNNER_TEMP/hse-web-report.json" && jq -e . "$RUNNER_TEMP/hse-web-report.json" >/dev/null; then
+              echo "Unique URL leads: $(jq '.hits | length' "$RUNNER_TEMP/hse-web-report.json")"
+              echo '### Per-engine execution results (all rounds)'
+              echo '~~~text'
+              jq -r '.rounds[] | .strategy as $strategy | .outcomes[] |
+                [$strategy, .module, .kind, (.http_status // "-"), (.found // "-"), (.detail // "")] | @tsv' \
+                "$RUNNER_TEMP/hse-web-report.json"
+              echo '~~~'
+            else
+              echo "No valid Huntsman JSON report; inspect the job log."
+              if test -s "$RUNNER_TEMP/hse-web-stderr.log"; then
+                echo '~~~text'
+                head -30 "$RUNNER_TEMP/hse-web-stderr.log"
+                echo '~~~'
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
