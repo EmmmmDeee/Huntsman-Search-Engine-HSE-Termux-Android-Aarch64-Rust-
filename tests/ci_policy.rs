@@ -75,3 +75,51 @@ fn every_job_runs_on_the_pinned_runner_image() {
         }
     }
 }
+
+#[test]
+fn live_collector_smoke_is_manual_read_only_and_secret_free() {
+    let path = format!("{WORKFLOWS}/live-collector-smoke.yml");
+    let workflow = fs::read_to_string(&path).expect("live collector smoke workflow");
+    let triggers: Vec<&str> = workflow
+        .split("\non:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("an `on:` block")
+        .lines()
+        .map(str::trim)
+        .collect();
+    assert_eq!(
+        triggers,
+        ["workflow_dispatch:"],
+        "{path}: manual dispatch only"
+    );
+    assert!(
+        workflow.contains("permissions:\n  contents: read\n"),
+        "{path}: read-only token"
+    );
+    for forbidden in ["secrets.", "uses:", ": write", "id-token:", "github_token"] {
+        assert!(
+            !workflow.to_ascii_lowercase().contains(forbidden),
+            "{path} must not contain {forbidden:?}"
+        );
+    }
+    let script = fs::read_to_string(".github/scripts/live-collector-smoke.sh").expect("script");
+    assert!(
+        script.contains("unset HIBP_API_KEY"),
+        "the smoke unsets keys"
+    );
+    for module in [
+        "github_user",
+        "crates_io",
+        "hacker_news",
+        "lobsters",
+        "docker_hub_user",
+        "wikidata",
+        "peeringdb",
+    ] {
+        assert!(
+            script.contains(&format!("|{module}|")),
+            "no probe for {module}"
+        );
+    }
+}
