@@ -1204,7 +1204,7 @@ mod tests {
             "public, max-age= 0",
             "MAX-AGE =0",
             "max-age=000",
-            "max-age=\\"0\\"",
+            "max-age=\"0\"",
         ] {
             let response = response_with_headers(
                 200,
