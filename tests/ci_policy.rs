@@ -132,6 +132,16 @@ fn live_collector_smoke_is_manual_read_only_and_secret_free() {
         script.contains("serve --bind \"127.0.0.1:$port\""),
         "serve is exercised on loopback"
     );
+    // The web UI is checked through the flows the page itself drives, not only its health.
+    for flow in [
+        "X-Huntsman-Lookup: 1",
+        "/api/scans?target=",
+        "/elements",
+        "/export?format=csv",
+        "web-ui-flow",
+    ] {
+        assert!(script.contains(flow), "the UI smoke lacks {flow:?}");
+    }
     for command in [
         "username ",
         "people ",

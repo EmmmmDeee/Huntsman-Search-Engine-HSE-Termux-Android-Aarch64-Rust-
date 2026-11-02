@@ -130,11 +130,42 @@ port=18087
 "$bin" serve --bind "127.0.0.1:$port" > "$out/serve.log" 2>&1 &
 serve_pid=$!
 for _ in $(seq 1 50); do curl -fsS "http://127.0.0.1:$port/api/health" > /dev/null 2>&1 && break; sleep 0.2; done
+# The web UI's own flows: every read endpoint the page calls (with its X-Huntsman-Lookup
+# header), then a live username scan started the way the "Run Scan Now" form starts it, polled
+# to completion, and each scan tab the page opens.
+base="http://127.0.0.1:$port"
+lookup='X-Huntsman-Lookup: 1'
+ui_get() {
+  printf '%s %s\n' "$1" "$(curl -sS -H "$lookup" -o /dev/null -w '%{http_code} %{size_download}B' "$base$1")"
+}
 {
-  for path in /api/health /api/modules /; do
-    printf '%s %s\n' "$path" "$(curl -sS -o /dev/null -w '%{http_code} %{size_download}B' "http://127.0.0.1:$port$path")"
+  for path in /api/health /api/modules / /api/settings /api/settings/keys /api/scans \
+    /api/scans/alerts /api/eventtypes /api/correlationrules /api/rhinser/catalog; do
+    ui_get "$path"
   done
+  scan="$(curl -sS -H "$lookup" -X POST \
+    "$base/api/scans?target=octocat&name=octocat&kind=username&depth=0&usecase=all")"
+  id="$(printf '%s' "$scan" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null)"
+  printf 'POST /api/scans %s\n' "${id:-NO-ID}"
+  state=none
+  if [ -n "$id" ]; then
+    for _ in $(seq 1 120); do
+      state="$(curl -sS -H "$lookup" "$base/api/scans/$id" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("status"), d.get("elements"))' 2>/dev/null)"
+      case "$state" in RUNNING*|STARTING*|CREATED*|None*|"") sleep 2 ;; *) break ;; esac
+    done
+    printf 'scan-state %s\n' "$state"
+    for tab in "" /summary /elements /correlations /graph /log "/export?format=csv" \
+      "/export?format=json" "/correlations?format=csv"; do
+      ui_get "/api/scans/$id$tab"
+    done
+  fi
 } > "$out/serve.tsv"
+# Every UI request answered 200, the scan finished, and it holds more than its seed.
+ui_ok=1
+grep -vE '^(POST|scan-state) ' "$out/serve.tsv" | grep -vq ' 200 ' && ui_ok=0
+grep -q '^POST /api/scans NO-ID' "$out/serve.tsv" && ui_ok=0
+grep -qE '^scan-state FINISHED ([2-9]|[1-9][0-9]+)$' "$out/serve.tsv" || ui_ok=0
+printf 'web-ui-flow %s\n' "$([ "$ui_ok" = 1 ] && echo PASS || echo FAIL)" >> "$out/serve.tsv"
 kill "$serve_pid" 2>/dev/null
 cat "$out/serve.tsv"
 exit "$failed"
