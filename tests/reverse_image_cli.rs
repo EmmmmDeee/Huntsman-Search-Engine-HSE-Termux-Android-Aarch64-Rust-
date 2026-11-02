@@ -42,7 +42,7 @@ fn offline_reverse_image_runs_real_binary_and_reports_no_external_queries() {
     assert_eq!(report["bytes"].as_u64(), Some(image_fixture().len() as u64));
     assert_eq!(report["live_requested"], false);
     assert_eq!(report["image_sha256"].as_str().unwrap().len(), 64);
-    assert!(report["matches"].as_array().unwrap().is_empty());
+    assert_eq!(report["matches"].as_array().unwrap().len(), 0);
     assert_eq!(report["statuses"].as_array().unwrap().len(), 3);
     assert!(
         report["statuses"]
@@ -76,7 +76,7 @@ fn reverse_image_cli_refuses_symlink_input_without_following_it() {
         .output()
         .expect("run command");
     assert!(!out.status.success());
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout.len(), 0);
     assert!(String::from_utf8_lossy(&out.stderr).contains("unreadable"));
     fs::remove_dir_all(home).expect("clean scratch");
 }
