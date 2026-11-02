@@ -670,6 +670,24 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// `one_line` names exactly two renderings: `textnorm::one_line` (escape for one terminal row) and
+/// `x509::one_line` (a distinguished name on one line). The credential probe's control-stripping
+/// truncation has its own name, so the three different behaviours never share one (R-04).
+#[test]
+fn one_line_is_defined_only_by_textnorm_and_x509() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/textnorm.rs" && source.path != "src/x509.rs")
+        .filter(|source| {
+            production_tokens(&source.text)
+                .windows(2)
+                .any(|w| w[0] == "fn" && w[1] == "one_line")
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(found.is_empty(), "one_line redefined in: {found:?}");
+}
+
 /// The `Retry-After` suffix of a rate-limit error has one rendering, `http::describe_retry_after`
 /// (R-05). `dehashed` keeps its own `describe_retry`: it renders a `Duration` as `"{n}s"` or
 /// `"unknown"`, a different message.
