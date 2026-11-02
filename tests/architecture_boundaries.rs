@@ -670,6 +670,38 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// Whether `toks` define `fn _(v: Option<&str>) -> Option<&str> { v.map(str::trim).filter(..` —
+/// a private copy of `textnorm::nonblank`.
+fn defines_nonblank_copy(toks: &[String]) -> bool {
+    const SHAPE: [&str; 27] = [
+        "(", "$", ":", "Option", "<", "&", "str", ">", ")", "-", ">", "Option", "<", "&", "str",
+        ">", "{", "$", ".", "map", "(", "str", "::", "trim", ")", ".", "filter",
+    ];
+    toks.windows(SHAPE.len() + 2).any(|w| {
+        w[0] == "fn"
+            && SHAPE.iter().enumerate().all(|(k, want)| {
+                let got = w[k + 2].as_str();
+                if *want == "$" {
+                    got == w[3]
+                } else {
+                    got == *want
+                }
+            })
+    })
+}
+
+/// A trimmed non-blank optional field is `textnorm::nonblank`; no other module keeps a copy.
+#[test]
+fn trimmed_nonblank_field_has_one_definition() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/textnorm.rs")
+        .filter(|source| defines_nonblank_copy(&production_tokens(&source.text)))
+        .map(|source| source.path)
+        .collect();
+    assert!(found.is_empty(), "nonblank copy defined in: {found:?}");
+}
+
 /// Lower-case hex in the APK parsers is `base64::base16_lower`, whose test pins it to `{:02x}` for
 /// every byte; no APK module keeps its own `hex` formatter.
 #[test]

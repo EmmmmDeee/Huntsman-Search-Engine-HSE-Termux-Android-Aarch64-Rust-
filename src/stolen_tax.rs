@@ -53,6 +53,7 @@
 //! one that only restates the query, is neither an error nor reported as not found. A
 //! paid source: nothing in this crate calls it automatically.
 
+use crate::textnorm::nonblank as non_blank;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -709,11 +710,6 @@ fn merge_data(into: &mut StolenTaxData, from: StolenTaxData) {
     into.usernames.extend(from.usernames);
     into.breaches.extend(from.breaches);
     into.unnamed_rows += from.unnamed_rows;
-}
-
-/// `Some(trimmed)` for a present, non-blank provider field. **Pure.**
-fn non_blank(v: Option<&str>) -> Option<&str> {
-    v.map(str::trim).filter(|s| !s.is_empty())
 }
 
 fn normalize_path(path: &str, data: Value) -> Result<StolenTaxData, String> {

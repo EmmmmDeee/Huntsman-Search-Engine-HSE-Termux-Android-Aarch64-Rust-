@@ -15,6 +15,7 @@
 //! Multi-process and multi-device traffic is NOT coordinated: aggregate use of OSMF's
 //! public endpoint requires a single gateway or a separately operated service.
 
+use crate::textnorm::nonblank as opt;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -660,10 +661,6 @@ fn point(place: &Place) -> Option<String> {
     let lat = place.lat.as_deref()?.trim();
     let lon = place.lon.as_deref()?.trim();
     canonical_coordinates(&format!("{lat},{lon}"))
-}
-
-fn opt(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|v| !v.is_empty())
 }
 
 #[cfg(test)]
