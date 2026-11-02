@@ -70,13 +70,20 @@ struct GhUser {
 
 #[must_use]
 pub fn valid_login(value: &str) -> bool {
-    let login = value.trim().trim_start_matches('@');
-    !login.is_empty()
-        && login.len() <= 39
-        && !login.starts_with('-')
-        && !login.ends_with('-')
-        && !login.contains("--")
-        && login
+    valid_login_shape(value.trim().trim_start_matches('@'))
+}
+
+/// Whether `handle`, taken as is, has the shape of a GitHub login: non-empty, at most 39 bytes,
+/// ASCII letters/digits/hyphen, no leading, trailing or doubled hyphen. The one definition of that
+/// shape; [`valid_login`] first trims and drops a leading `@`. **Pure.**
+#[must_use]
+pub fn valid_login_shape(handle: &str) -> bool {
+    !handle.is_empty()
+        && handle.len() <= 39
+        && !handle.starts_with('-')
+        && !handle.ends_with('-')
+        && !handle.contains("--")
+        && handle
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
