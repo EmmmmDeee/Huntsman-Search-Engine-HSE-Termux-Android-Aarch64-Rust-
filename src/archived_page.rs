@@ -629,22 +629,22 @@ mod tests {
         assert_eq!(found.len(), 6, "{found:?}");
         for product in ["wordpress", "joomla", "drupal", "ghost", "hugo", "jekyll"] {
             assert!(
-                found.iter().any(|e| e.value == format!("technology:{product}")),
+                found
+                    .iter()
+                    .any(|e| e.value == format!("technology:{product}")),
                 "{product}: {found:?}"
             );
         }
         assert_eq!(
-            found.iter()
-                .filter(|entity| entity.evidence[0]
-                    .attr_values("signal")
-                    .next() == Some("html_meta_powered_by"))
+            found
+                .iter()
+                .filter(|entity| entity.evidence[0].attr_values("signal").next()
+                    == Some("html_meta_powered_by"))
                 .count(),
             2
         );
         assert!(found.iter().all(|e| {
-            e.evidence[0]
-                .attr_values("capture_timestamp_utc")
-                .next() == Some("20240101000000")
+            e.evidence[0].attr_values("capture_timestamp_utc").next() == Some("20240101000000")
         }));
         let json = serde_json::to_string(&found).expect("serialisable evidence");
         for absent in ["6.4", "4.3", "WordPressSpoof", "Ghostly", "MediaWiki 1.0"] {
