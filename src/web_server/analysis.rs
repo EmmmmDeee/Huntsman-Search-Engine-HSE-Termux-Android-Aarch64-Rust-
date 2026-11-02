@@ -70,6 +70,46 @@ pub(super) fn osint_offline_response(parsed: &ParsedRequest<'_>, risk: bool) -> 
     }
 }
 
+/// `POST /api/rhinser/native`: classify an explicit, operator-submitted capture
+/// through exactly the same Rust validator as `osint native FILE`.
+/// No Android sensor access, key handling, remote provider call or persistence occurs.
+/// Consent and device timestamps supplied in JSON remain unauthenticated claims.
+pub(super) fn rhinser_native_response(parsed: &ParsedRequest<'_>) -> String {
+    if parsed.method != Method::Post {
+        return json_error(405, "Rhinser native inspection requires POST");
+    }
+    if let Some(refusal) = page_refusal(parsed, "Rhinser native inspection", true) {
+        return refusal;
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "Rhinser native inspection accepts JSON body only");
+    }
+    let Some(length) = parsed.content_length else {
+        return json_error(400, "Rhinser native inspection needs content length");
+    };
+    if length == 0 {
+        return json_error(400, "Rhinser native inspection needs JSON body");
+    }
+    if length > MAX_FORM_BYTES
+        || u64::try_from(length).unwrap_or(u64::MAX) > crate::rhinser_native::MAX_CAPTURE_BYTES
+    {
+        return json_error(413, "Rhinser native capture too large; use osint native FILE");
+    }
+    let Some(body) = parsed.body else {
+        return json_error(400, "Rhinser native capture body missing");
+    };
+    if body.len() != length {
+        return json_error(400, "Rhinser native capture body incomplete or invalid UTF-8");
+    }
+    match crate::rhinser_native::inspect_capture_json(body.as_bytes()) {
+        Ok(report) => serde_json::to_string(&report).map_or_else(
+            |_| json_error(500, "Rhinser native report serialization failed"),
+            |json| json_ok(&json, false),
+        ),
+        Err(_) => json_error(400, "Rhinser native capture invalid or unauthorized"),
+    }
+}
+
 pub(super) fn analyze_response(
     parsed: &ParsedRequest<'_>,
     analyze: Option<&AnalyzeHandler>,
