@@ -252,6 +252,59 @@ impl<T: Transport + Sync> Transport for Recording<T> {
     }
 }
 
+/// Answers each request with the next canned response (a JSON 500 once they run out) and records
+/// every request sent; `Sync`, unlike [`ScriptedTransport`].
+pub struct CannedRecorder {
+    responses: Mutex<Vec<Response>>,
+    sent: Mutex<Vec<Request>>,
+}
+
+impl CannedRecorder {
+    #[must_use]
+    pub fn new(responses: Vec<Response>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+            sent: Mutex::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn sent(&self) -> Vec<Request> {
+        self.sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Transport for CannedRecorder {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        self.sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request.clone());
+        let mut responses = self
+            .responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if responses.is_empty() {
+            return Ok(json_status(500, ""));
+        }
+        Ok(responses.remove(0))
+    }
+}
+
+/// A response with `code`, a JSON content type and `body`.
+#[must_use]
+pub fn json_status(code: u16, body: &str) -> Response {
+    Response {
+        status: code,
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: body.as_bytes().to_vec(),
+        truncated: false,
+    }
+}
+
 /// A 200 response with an HTML body.
 #[must_use]
 pub fn html_ok(body: &str) -> Response {
