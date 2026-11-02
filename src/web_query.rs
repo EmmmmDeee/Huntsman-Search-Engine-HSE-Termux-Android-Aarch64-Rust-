@@ -143,7 +143,13 @@ pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
 /// Canonical search-link builder shared by live fetch and entity-source pivots.
 #[must_use]
 pub fn search_url(engine: EngineSpec, query: &str) -> String {
-    append_query_param(engine.base_url, search_parameter(engine.name), query)
+    // Preserve the existing RFC 3986 discovery-route contract: spaces are
+    // %20, whereas literal plus signs remain percent-encoded as %2B.
+    // The common HTTP builder uses HTML form encoding; rewriting only the
+    // newly appended suffix leaves any provider base URL unchanged.
+    let url = append_query_param(engine.base_url, search_parameter(engine.name), query);
+    let (base, suffix) = url.split_at(engine.base_url.len());
+    format!("{base}{}", suffix.replace('+', "%20"))
 }
 
 fn search_parameter(engine: &str) -> &'static str {
@@ -1564,6 +1570,19 @@ mod tests {
         let report = search_fast(&fake, "alice challenge-page", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
+    }
+
+    #[test]
+    fn search_routes_keep_rfc3986_space_and_literal_plus_distinct() {
+        let engine = EXTENDED_ENGINES
+            .iter()
+            .find(|engine| engine.name == "yahoo")
+            .copied()
+            .expect("yahoo engine");
+        assert_eq!(
+            search_url(engine, "Ada + Lovelace"),
+            "https://search.yahoo.com/search?p=Ada%20%2B%20Lovelace"
+        );
     }
 
     #[test]
