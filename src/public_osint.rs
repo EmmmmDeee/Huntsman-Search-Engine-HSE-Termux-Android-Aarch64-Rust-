@@ -316,7 +316,7 @@ fn classify_document(
         }
         Ok((_, skipped)) => {
             let total = document.get("total").and_then(Value::as_u64).unwrap_or(0);
-            if skipped == 0 && (source != Source::Notices || total == 0) {
+            if skipped == 0 && total == 0 {
                 (
                     Vec::new(),
                     SourceExecutionOutcome::valid_zero(label, now).with_http_status(200),
@@ -482,6 +482,23 @@ mod tests {
         let fake = OneResponse::json(200, r#"{"articles":[]}"#);
         let report = search(&fake, Source::News, "story", "s", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    }
+
+    #[test]
+    fn reported_nonzero_total_is_not_a_verified_empty_result() {
+        for source in [Source::News, Source::Notices] {
+            let fake = OneResponse::json(
+                200,
+                if source == Source::News {
+                    r#"{"articles":[],"total":7}"#
+                } else {
+                    r#"{"items":[],"total":7}"#
+                },
+            );
+            let report = search(&fake, source, "test", "s", 1).unwrap();
+            assert!(report.entities.is_empty());
+            assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+        }
     }
 
     #[test]
