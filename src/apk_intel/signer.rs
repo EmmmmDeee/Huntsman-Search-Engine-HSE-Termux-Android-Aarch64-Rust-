@@ -259,7 +259,7 @@ pub(super) fn certificate(der: &[u8], scheme: &str) -> Option<Certificate> {
         self_signed: der[issuer.start..issuer.end] == der[subject.start..subject.end],
         issuer: name(der, *issuer)?,
         subject: subject_name,
-        serial: hex(&der[serial.start..serial.end]),
+        serial: crate::base64::base16_lower(&der[serial.start..serial.end]),
         not_before: time(der, not_before)?,
         not_after: time(der, not_after)?,
     })
@@ -294,14 +294,6 @@ pub fn pkcs7(der: &[u8], file: &str) -> Vec<Certificate> {
         )
     };
     found().unwrap_or_default()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
 }
 
 pub(super) fn le32(data: &[u8], at: usize) -> Option<usize> {

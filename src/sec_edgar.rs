@@ -28,6 +28,7 @@
 //! name-matched filer as a visible lead but never auto-dispatches it onto a potentially unrelated
 //! third party, whatever the operator's expansion floor.
 
+use crate::textnorm::nonblank as trimmed;
 use serde::Deserialize;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
@@ -679,11 +680,6 @@ fn join_trimmed(values: &[String]) -> String {
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// `value` trimmed, when it is present and not blank. **Pure.**
-fn trimmed(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|text| !text.is_empty())
 }
 
 #[cfg(test)]

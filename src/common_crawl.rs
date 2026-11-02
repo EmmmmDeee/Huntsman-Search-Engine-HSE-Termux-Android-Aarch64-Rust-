@@ -14,6 +14,8 @@
 //! the crawl date, not a claim that it is still true; an empty index is not proof that a site
 //! never existed.
 
+use std::fmt::Write as _;
+
 use crate::archived_page::{self, Admission, Archive, Capture};
 use crate::canonical::{canonical_domain, canonical_url};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -464,7 +466,11 @@ fn read_contents<T: Transport + ?Sized>(
             Err(reason) => unread.push(reason),
         }
     }
-    let contacts = found.len();
+    let contacts = found
+        .iter()
+        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
+        .count();
+    let technologies = found.len() - contacts;
     report.entities.extend(found);
     merge_by_uid(&mut report.entities);
     report.outcome.found = Some(report.entities.len());
@@ -472,6 +478,12 @@ fn read_contents<T: Transport + ?Sized>(
         "crawled content: {read} of {} page(s) read, {contacts} contact detail(s) found",
         records.len()
     );
+    if technologies > 0 {
+        let _ = write!(
+            detail,
+            "; {technologies} archived technology signal(s) found"
+        );
+    }
     if !unread.is_empty() {
         detail.push_str("; not read: ");
         detail.push_str(&unread.join(", "));
@@ -521,7 +533,7 @@ fn read_record<T: Transport + ?Sized>(
         return Err("record names another URL".to_owned());
     }
     archived_page::web_page(&page.content_type, page.body.len())?;
-    Ok(archived_page::contacts(
+    Ok(archived_page::findings(
         &String::from_utf8_lossy(page.body),
         capture,
         &Archive {
@@ -871,7 +883,7 @@ mod tests {
             "https://example.org/contact",
             "200",
             "text/html; charset=UTF-8",
-            r#"<p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
+            r#"<meta name="generator" content="Drupal 10.2"><p>Mail <a href="mailto:desk%40example.org">desk</a> or call +61 491 570 006.</p>"#,
         );
         let root = warc("https://elsewhere.example/", "200", "text/html", "<p>x</p>");
         let index = [
@@ -920,6 +932,22 @@ mod tests {
         assert!(
             seen.iter()
                 .all(|r| r.header_value("authorization").is_none())
+        );
+        let technology = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Other && e.value == "technology:drupal")
+            .expect("historical Drupal generator evidence");
+        assert!(technology.has_tag("historical_technology"));
+        assert_eq!(
+            technology.evidence[0]
+                .attr_values("capture_timestamp_utc")
+                .next(),
+            Some("20261003000000")
+        );
+        assert_eq!(
+            technology.evidence[0].attr_values("signal").next(),
+            Some("html_meta_generator")
         );
         let email = report
             .entities

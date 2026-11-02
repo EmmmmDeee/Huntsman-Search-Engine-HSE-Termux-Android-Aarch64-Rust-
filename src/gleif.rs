@@ -19,6 +19,7 @@
 //! drift, never a positive entity, and an unknown LEI (404) or an empty search is a clean zero. Every
 //! registry field is kept verbatim as evidence; nothing is redacted and no classification is invented.
 
+use crate::textnorm::nonblank as trimmed;
 use serde::Deserialize;
 
 use crate::au_id::is_valid_acn;
@@ -592,11 +593,6 @@ fn add_acn(entity: &LegalEntity, evidence: &Evidence, scan_id: &str, entities: &
 /// A local name's non-empty trimmed `name`. **Pure.**
 fn name_of(local: &LocalName) -> Option<&str> {
     trimmed(local.name.as_deref())
-}
-
-/// `value` trimmed, when it is present and not blank. **Pure.**
-fn trimmed(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|text| !text.is_empty())
 }
 
 /// The entity's other (alias) names, comma-joined and kept verbatim as evidence. **Pure.**

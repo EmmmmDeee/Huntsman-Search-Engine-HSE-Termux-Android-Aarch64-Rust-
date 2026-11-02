@@ -20,7 +20,7 @@ use crate::canonical::canonical_url;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
-use crate::http::{DEFAULT_USER_AGENT, Request, Transport, percent_encode_unreserved};
+use crate::http::{Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "crates_io";
@@ -97,14 +97,7 @@ struct CrateInfo {
 /// most 39 bytes, ASCII letters/digits/hyphen, no leading, trailing or doubled hyphen. **Pure.**
 #[must_use]
 pub fn valid_handle(handle: &str) -> bool {
-    !handle.is_empty()
-        && handle.len() <= 39
-        && !handle.starts_with('-')
-        && !handle.ends_with('-')
-        && !handle.contains("--")
-        && handle
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    crate::github_user::valid_login_shape(handle)
 }
 
 /// The `/api/v1/users/{login}` URL. **Pure.**
@@ -128,9 +121,7 @@ fn profile_url(handle: &str) -> String {
 }
 
 fn request(url: String) -> Request {
-    Request::get(url)
-        .header("accept", "application/json")
-        .header("user-agent", DEFAULT_USER_AGENT)
+    Request::get_json(url)
 }
 
 /// Look up one crates.io account and its published crates, keyless.

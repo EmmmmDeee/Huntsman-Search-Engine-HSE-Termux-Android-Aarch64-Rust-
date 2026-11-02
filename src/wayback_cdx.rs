@@ -141,7 +141,11 @@ fn read_contents<T: Transport + ?Sized>(
             Err(reason) => unread.push(reason),
         }
     }
-    let contacts = found.len();
+    let contacts = found
+        .iter()
+        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
+        .count();
+    let technologies = found.len() - contacts;
     report.entities.extend(found);
     merge_by_uid(&mut report.entities);
     report.outcome.found = Some(report.entities.len());
@@ -149,6 +153,12 @@ fn read_contents<T: Transport + ?Sized>(
         "archived content: {read} of {} page(s) read, {contacts} contact detail(s) found",
         captures.len()
     );
+    if technologies > 0 {
+        let _ = write!(
+            detail,
+            "; {technologies} archived technology signal(s) found"
+        );
+    }
     if !unread.is_empty() {
         detail.push_str("; not read: ");
         detail.push_str(&unread.join(", "));
@@ -194,7 +204,7 @@ fn read_capture<T: Transport + ?Sized>(
         response.header_value("content-type").unwrap_or_default(),
         response.body.len(),
     )?;
-    Ok(archived_page::contacts(
+    Ok(archived_page::findings(
         &String::from_utf8_lossy(&response.body),
         capture,
         &Archive {
@@ -518,7 +528,7 @@ mod tests {
     /// the archive refused or that is not a web page is named, never read as an absence.
     #[test]
     fn archived_pages_yield_historical_contact_leads_naming_their_capture() {
-        let contact = r#"<html><head><script>var spam="evil@attacker.test";</script><style>.a{}</style></head><body>
+        let contact = r#"<html><head><meta name="generator" content="WordPress 6.3"><script>var spam="evil@attacker.test";</script><style>.a{}</style></head><body>
 <p>Write to <a href="mailto:info%40example.org?subject=hello">us</a> or call +61 491 570 006.</p>
 <img src="logo@2x.png"><!-- old@example.org --></body></html>"#;
         let transport = crate::test_support::ScriptedTransport::new(vec![
@@ -551,6 +561,18 @@ mod tests {
                 .find(|e| e.kind == kind && e.value == value)
                 .unwrap_or_else(|| panic!("{value}: {:?}", report.entities))
         };
+        let technology = lead(EntityKind::Other, "technology:wordpress");
+        assert!(technology.has_tag("historical_technology"));
+        assert_eq!(
+            technology.evidence[0]
+                .attr_values("capture_timestamp_utc")
+                .next(),
+            Some("20190505050505")
+        );
+        assert_eq!(
+            technology.evidence[0].attr_values("signal").next(),
+            Some("html_meta_generator")
+        );
         let email = lead(EntityKind::Email, "info@example.org");
         assert!(email.has_tag("historical_content"));
         assert!(email.confidence <= archived_page::CONFIDENCE_CAP);

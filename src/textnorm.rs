@@ -228,6 +228,13 @@ pub fn name_tokens(full: &str) -> Vec<String> {
         .collect()
 }
 
+/// `value` trimmed, or `None` when it is absent or blank. **Pure.**
+#[must_use]
+#[inline]
+pub fn nonblank(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|s| !s.is_empty())
+}
+
 /// A trimmed, non-empty borrow of an optional string field.
 #[must_use]
 pub fn nonempty(value: &Option<String>) -> Option<&str> {
@@ -677,6 +684,15 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nonblank_trims_and_drops_blank_or_absent_values() {
+        assert_eq!(super::nonblank(None), None);
+        assert_eq!(super::nonblank(Some("")), None);
+        assert_eq!(super::nonblank(Some(" \t\n ")), None);
+        assert_eq!(super::nonblank(Some("  a b  ")), Some("a b"));
+        assert_eq!(super::nonblank(Some("x")), Some("x"));
+    }
+
     use super::*;
 
     #[test]

@@ -63,13 +63,19 @@ pub struct Archive<'a> {
     pub snapshot_url: String,
 }
 
-/// At most [`MAX_PAGES`] distinct captures, by URL: contact-like pages first, then the site
-/// root, then the rest, each group newest first. **Pure.**
+/// At most [`MAX_PAGES`] distinct captures, by URL: keep the newest timestamp for each
+/// URL regardless of index row order, then prioritize contact-like pages, the site root,
+/// and the remaining paths, newest first within each group. **Pure.**
 #[must_use]
 pub fn choose(captures: impl IntoIterator<Item = Capture>) -> Vec<Capture> {
     let mut ranked: Vec<(u8, Capture)> = Vec::new();
     for capture in captures {
-        if ranked.iter().any(|(_, seen)| seen.url == capture.url) {
+        if let Some((_, seen)) = ranked.iter_mut().find(|(_, seen)| seen.url == capture.url) {
+            // Archive indexes need not return captures in timestamp order. Keep the latest
+            // capture for this URL rather than whichever appeared first in the response.
+            if capture.timestamp > seen.timestamp {
+                *seen = capture;
+            }
             continue;
         }
         let path = capture
@@ -209,6 +215,116 @@ pub fn contacts(
     entities
 }
 
+/// Archive-only findings from an already fetched, bounded web page. Retains the existing
+/// contact parser and adds only explicitly declared, recognized generator technologies.
+#[must_use]
+pub fn findings(
+    html: &str,
+    capture: &Capture,
+    archive: &Archive<'_>,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut entities = contacts(html, capture, archive, scan_id);
+    entities.extend(technologies(html, capture, archive, scan_id));
+    entities
+}
+
+/// Recognize a declared generator without recording its arbitrary, potentially sensitive value.
+/// A non-word boundary prevents `WordPressSpoof` matching `WordPress`.
+fn known_generator(value: &str) -> Option<&'static str> {
+    const GENERATORS: &[&str] = &[
+        "WordPress",
+        "Drupal",
+        "Joomla",
+        "Ghost",
+        "Hugo",
+        "Jekyll",
+        "TYPO3",
+        "MediaWiki",
+    ];
+    let value = value.trim();
+    GENERATORS.iter().copied().find(|known| {
+        value
+            .get(..known.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(known))
+            && value.get(known.len()..).is_some_and(|tail| {
+                tail.is_empty()
+                    || tail
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_whitespace() || matches!(c, '/' | '(' | '-'))
+            })
+    })
+}
+
+/// Technologies declared by HTML <meta name="generator">, not verified live deployments.
+/// The raw generator string and version are never persisted. No scripts execute, and no
+/// associated URLs are fetched. At most eight unique allowlisted names are emitted per page.
+#[must_use]
+pub fn technologies(
+    html: &str,
+    capture: &Capture,
+    archive: &Archive<'_>,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut entities = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for piece in Markup::new(html) {
+        let Piece::Tag {
+            name,
+            end: false,
+            attrs,
+        } = piece
+        else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("meta")
+            || !attribute(attrs, "name")
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("generator"))
+        {
+            continue;
+        }
+        let Some(value) = attribute(attrs, "content") else {
+            continue;
+        };
+        let Some(technology) = known_generator(value) else {
+            continue;
+        };
+        if !seen.insert(technology) {
+            continue;
+        }
+        let evidence = Evidence::new(
+            EvidenceProvenance::for_scan(archive.source, scan_id),
+            format!(
+                "archived HTML generator metadata declared {technology} on {} at {} UTC; historical self-declaration, not proof of a current deployment",
+                capture.url, capture.timestamp
+            ),
+        )
+        .with_attr("dataset", archive.dataset)
+        .with_attr("capture_timestamp_utc", &capture.timestamp)
+        .with_attr("original_url", &capture.url)
+        .with_attr("archive_snapshot_url", &archive.snapshot_url)
+        .with_attr("signal", "html_meta_generator");
+        push_entity(
+            &mut entities,
+            EntityKind::Other,
+            &format!("technology:{technology}"),
+            0.5,
+            scan_id,
+            evidence,
+            &[
+                archive.source,
+                "historical_content",
+                "historical_technology",
+            ],
+        );
+        if seen.len() == 8 {
+            break;
+        }
+    }
+    entities
+}
+
 /// What an archive index's original URL is to a lookup of one domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
@@ -333,8 +449,20 @@ mod tests {
                 "https://example.org"
             ]
         );
-        // The first capture of a URL is kept; a later duplicate is not a second page.
-        assert_eq!(chosen[0].timestamp, "20230101000000");
+        // Duplicates do not consume a page slot; the newest capture is selected.
+        assert_eq!(chosen[0].timestamp, "20250101000000");
+    }
+
+    #[test]
+    fn newest_capture_is_selected_regardless_of_index_order() {
+        let old = capture("20190101000000", "https://example.org/contact");
+        let new = capture("20250501000000", "https://example.org/contact");
+        let other = capture("20240101000000", "https://example.org/about");
+        let first_old = choose([old.clone(), other.clone(), new.clone()]);
+        let first_new = choose([new.clone(), other, old]);
+        assert_eq!(first_old, first_new);
+        assert_eq!(first_old.len(), 2);
+        assert_eq!(first_old[0], new);
     }
 
     #[test]
@@ -377,6 +505,74 @@ mod tests {
             Some("https://archive.test/snap")
         );
         assert!(!found.iter().any(|e| e.value.contains("hidden")));
+    }
+
+    #[test]
+    fn archive_generator_metadata_emits_only_dated_allowlisted_technology() {
+        let archive = Archive {
+            source: "wayback_cdx",
+            dataset: "Wayback captured content",
+            holder: "the Internet Archive",
+            snapshot_url: "https://web.archive.org/web/20240101000000/https://example.org"
+                .to_owned(),
+        };
+        let capture = capture("20240101000000", "https://example.org");
+        let html = r#"<html>
+            <meta NAME="Generator" CONTENT="WordPress 6.3">
+            <meta name="generator" content="WORDPRESS/6.4">
+            <meta name="generator" content="WordPressSpoof">
+            <meta name="generator" content="unknown secret=do-not-persist">
+            <meta name="generator" content="Drupal (10.1)">
+            <script>var injected = '<meta name="generator" content="Ghost">';</script>
+            <!-- <meta name="generator" content="Hugo"> -->
+            <p>Joomla is mentioned in text, not generator metadata.</p>
+        </html>"#;
+        let result = technologies(html, &capture, &archive, "scan");
+        assert_eq!(result.len(), 2, "{result:?}");
+        assert!(result.iter().any(|e| e.value == "technology:wordpress"));
+        assert!(result.iter().any(|e| e.value == "technology:drupal"));
+        assert!(result.iter().all(|e| e.has_tag("historical_technology")));
+        let evidence = &result[0].evidence[0];
+        assert_eq!(
+            evidence.attr_values("capture_timestamp_utc").next(),
+            Some("20240101000000")
+        );
+        assert_eq!(
+            evidence.attr_values("archive_snapshot_url").next(),
+            Some("https://web.archive.org/web/20240101000000/https://example.org")
+        );
+        let serialised = serde_json::to_string(&result).expect("serialize archive evidence");
+        for sensitive in ["6.3", "6.4", "do-not-persist", "WordPressSpoof", "injected"] {
+            assert!(!serialised.contains(sensitive), "{sensitive}");
+        }
+    }
+
+    #[test]
+    fn archive_findings_preserve_contacts_and_add_declared_technology() {
+        let archive = Archive {
+            source: "common_crawl",
+            dataset: "Common Crawl captured content",
+            holder: "Common Crawl",
+            snapshot_url: "https://archive.test/capture".to_owned(),
+        };
+        let found = findings(
+            r#"<meta name="generator" content="Ghost 5.0">
+            <p>Contact <a href="mailto:desk@example.org">email</a></p>"#,
+            &capture("20220202000000", "https://example.org/contact"),
+            &archive,
+            "scan",
+        );
+        assert!(
+            found
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "desk@example.org")
+        );
+        assert!(
+            found
+                .iter()
+                .any(|e| e.kind == EntityKind::Other && e.value == "technology:ghost")
+        );
+        assert_eq!(found.len(), 2, "{found:?}");
     }
 
     #[test]

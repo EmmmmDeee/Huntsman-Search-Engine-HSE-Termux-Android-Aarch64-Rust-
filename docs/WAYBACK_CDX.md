@@ -72,6 +72,24 @@ human identity, website authorization, completeness of an archive, or the actual
 existence/absence of all older captures. An empty valid CDX query means only that
 the particular bounded index query returned no matches.
 
+## Historical technology signals
+
+Each of the at most three already-fetched archived web pages also passes through the
+shared `archived_page::technologies` extractor. It emits at most eight allowlisted
+`Other` entities with values such as `technology:wordpress`, tagged
+`historical_technology`, only when the captured HTML explicitly declares a
+`<meta name="generator" content="...">` value matching WordPress, Drupal,
+Joomla, Ghost, Hugo, Jekyll, TYPO3 or MediaWiki. Detection is an archived page's
+own claim, not independent confirmation of its stack or its current deployment.
+
+Each lead names its capture UTC timestamp, original URL, archive replay URL and
+source. Raw generator values and versions are never stored, because archived
+metadata can include arbitrary personal or sensitive data. Script contents,
+ordinary page text and comments do not count as generator metadata. These
+signals reuse the fetched page without more network requests, and existing
+email/phone contacts remain unchanged. Historical technology signals are not
+proof of a vulnerability.
+
 ## Deliberate limits
 
 - At most 32 CDX capture records; at most 128 KiB of CDX JSON parsed.

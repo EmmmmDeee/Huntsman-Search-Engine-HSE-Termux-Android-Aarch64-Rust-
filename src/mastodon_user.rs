@@ -7,6 +7,7 @@
 //! server's own "Record not found" answer is a zero: any other refusal (a block page, a rate
 //! limit, a suspended account) says nothing about whether the account exists.
 
+use crate::textnorm::nonblank as non_empty;
 use serde::Deserialize;
 
 use crate::classifier;
@@ -154,10 +155,6 @@ fn interpret(
         outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
             .with_http_status(response.status),
     })
-}
-
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// The account's own address, `username@mastodon.social`, whatever `acct` the server gives.
