@@ -901,7 +901,7 @@ mod tests {
         assert_eq!(report.profile.state, "observed");
         let sent = fake.sent.lock().unwrap();
         assert_eq!(sent.iter().filter(|r| r.url.contains(API_HOST)).count(), 4);
-        assert_eq!(sent.iter().filter(|r| !r.url.contains(API_HOST)).count(), 3);
+        assert_eq!(sent.iter().filter(|r| !r.url.contains(API_HOST)).count(), web_query::EXTENDED_ENGINES.len());
     }
 
     #[test]
@@ -1006,7 +1006,7 @@ mod tests {
         assert!(report.discovery.is_some());
         assert!(!report.has_observation());
         let requests = fake.sent.lock().unwrap();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), web_query::EXTENDED_ENGINES.len());
         for req in requests.iter() {
             assert!(!req.url.contains("rapidapi"));
             assert!(req.header_value("x-rapidapi-key").is_none());
