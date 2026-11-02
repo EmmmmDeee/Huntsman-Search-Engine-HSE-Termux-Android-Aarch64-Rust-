@@ -15,7 +15,8 @@ use crate::value_syntax::form_decode;
 use super::{
     ANALYZE_STACK_BYTES, AnalyzeHandler, INSPECT_STACK_BYTES, InvestigateHandler, LookupReport,
     MAX_ANALYZE_SEEDS, MAX_FORM_BYTES, MAX_INSPECT_BYTES, MAX_INSPECT_NAME_BYTES,
-    MAX_SELECTOR_BYTES, Method, ParsedRequest, Routes, Upload, json_error, json_ok, page_refusal,
+    MAX_SELECTOR_BYTES, Method, ParsedRequest, Routes, ServeConfig, Upload, json_error, json_ok,
+    page_refusal,
 };
 
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
@@ -74,12 +75,16 @@ pub(super) fn osint_offline_response(parsed: &ParsedRequest<'_>, risk: bool) -> 
 /// through exactly the same Rust validator as `osint native FILE`.
 /// No Android sensor access, key handling, remote provider call or persistence occurs.
 /// Consent and device timestamps supplied in JSON remain unauthenticated claims.
-pub(super) fn rhinser_native_response(parsed: &ParsedRequest<'_>) -> String {
+/// Restricted to loopback to avoid transferring raw APDU material to a public HTTP bind.
+pub(super) fn rhinser_native_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
     if parsed.method != Method::Post {
         return json_error(405, "Rhinser native inspection requires POST");
     }
     if let Some(refusal) = page_refusal(parsed, "Rhinser native inspection", true) {
         return refusal;
+    }
+    if !config.bind.ip().is_loopback() {
+        return json_error(403, "Rhinser native capture inspection requires loopback");
     }
     if !parsed.query.is_empty() {
         return json_error(400, "Rhinser native inspection accepts JSON body only");
