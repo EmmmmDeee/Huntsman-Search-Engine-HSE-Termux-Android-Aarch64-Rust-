@@ -74,8 +74,7 @@ fn inspect_values(data: &[u8], depth: usize, out: &mut TlvInspection) -> Result<
         out.tag_names_hex.push(
             tag.iter()
                 .map(|byte| format!("{byte:02X}"))
-                .collect::<Vec<_>>()
-                .join(""),
+                .collect::<String>(),
         );
         if first & 0x20 != 0 {
             out.constructed_fields += 1;
