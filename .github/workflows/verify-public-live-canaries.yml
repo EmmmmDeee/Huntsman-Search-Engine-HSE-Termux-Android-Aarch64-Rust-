@@ -91,12 +91,11 @@ jobs:
             head -n 60 "$f" | cut -c1-240
             echo '::endgroup::'
           done
-          if ! grep -q 
-\tPASS\t' "$out/verdict.tsv"; then
+          if ! grep -q $'\tPASS\t' "$out/verdict.tsv"; then
             echo '::error::No provider returned an accepted public live outcome'
             exit 1
           fi
-          if ! awk -F '\t' '$1=="stopforumspam_example" && $2=="stopforumspam" && $3==0 && $4=="PASS" {ok=1} END {exit !ok}' "$out/verdict.tsv"; then
+          if ! awk -F '\t' '$1=="stopforumspam_example" && $2=="stopforumspam" && $3=="0" && $4=="PASS" {ok=1} END {exit !ok}' "$out/verdict.tsv"; then
             echo '::error::StopForumSpam live canary failed: other provider successes do not validate the repaired adapter'
             exit 1
           fi
