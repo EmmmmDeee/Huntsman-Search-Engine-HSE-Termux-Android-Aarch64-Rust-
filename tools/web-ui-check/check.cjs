@@ -567,6 +567,25 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         sourceCoverage.includes(expectedCoverage.not_configured + ' not configured') &&
         sourceCoverage.includes('does not establish exhaustive source coverage'),
         { sourceCoverage, expectedCoverage });
+      const peopleLabels = await page.evaluate(() => {
+        const partial = {
+          accepted_sources: 5, selected_sources: 8, not_configured_sources: 2,
+          unresolved_sources: 1, not_observed_sources: 0,
+          frontier_exhausted: true, complete_within_catalogue: false
+        };
+        return {
+          partial: peopleCoverage(partial),
+          limited: peopleCoverage({ ...partial, frontier_exhausted: false }),
+          legacy: peopleCoverage({ ...partial, frontier_exhausted: undefined }),
+          complete: peopleCoverage({ ...partial, accepted_sources: 8, not_configured_sources: 0, unresolved_sources: 0, complete_within_catalogue: true })
+        };
+      });
+      check(`${scheme}: Sources distinguishes frontier exhaustion from catalogue and discovery completeness`,
+        peopleLabels.partial.includes('frontier exhausted; selected catalogue incomplete; discovery unverified') &&
+        peopleLabels.limited.includes('frontier exhaustion unverified; selected catalogue incomplete') &&
+        peopleLabels.legacy.includes('frontier exhaustion unverified; selected catalogue incomplete') &&
+        peopleLabels.complete.includes('frontier exhausted; selected catalogue complete; discovery unverified'),
+        peopleLabels);
       const observedShown = await page.evaluate(() => [...document.querySelectorAll('#srcs tr')].map(tr => tr.cells[2] ? tr.cells[2].textContent : ''));
       const observedWanted = await page.evaluate(sources => sources.map(o => when(o.observed_at_unix * 1000)), row.sources);
       check(`${scheme}: Summary shows when each source was queried`,
