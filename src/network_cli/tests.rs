@@ -180,11 +180,17 @@ fn local_bssid_reports_address_bits_not_unobserved_randomisation() {
             .find(|item| item.provenance.source == OUI_SOURCE)
             .expect("offline OUI evidence");
         assert_eq!(
-            evidence.attributes.get("locally_administered").map(String::as_str),
+            evidence
+                .attributes
+                .get("locally_administered")
+                .map(String::as_str),
             Some("true")
         );
         assert_eq!(
-            evidence.attributes.get("randomisation_status").map(String::as_str),
+            evidence
+                .attributes
+                .get("randomisation_status")
+                .map(String::as_str),
             Some("unverified")
         );
         assert!(!evidence.attributes.contains_key("vendor"), "{text}");
