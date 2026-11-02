@@ -521,16 +521,20 @@ mod tests {
         let mut results = saved(vec![SourceExecutionOutcome::valid_zero("wikidata", 1)]);
         results.termination = None;
         let register = derive(&record(ScanStatus::Finished), Some(&results));
-        assert!(register
-            .items
-            .iter()
-            .any(|item| item.id == "scan:termination_unrecorded"));
+        assert!(
+            register
+                .items
+                .iter()
+                .any(|item| item.id == "scan:termination_unrecorded")
+        );
         results.termination = Some(TerminationReason::FixedPoint);
         let complete = derive(&record(ScanStatus::Finished), Some(&results));
-        assert!(!complete
-            .items
-            .iter()
-            .any(|item| item.id == "scan:termination_unrecorded"));
+        assert!(
+            !complete
+                .items
+                .iter()
+                .any(|item| item.id == "scan:termination_unrecorded")
+        );
     }
 
     #[test]

@@ -126,9 +126,8 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Option<Peop
     let selected_sources = sources.len();
     // Accepted provider rows alone do not establish that bounded recursion finished.
     // Missing termination metadata also fails closed for older saved scans.
-    let frontier_exhausted = results.is_some_and(|saved| {
-        saved.termination == Some(TerminationReason::FixedPoint)
-    });
+    let frontier_exhausted =
+        results.is_some_and(|saved| saved.termination == Some(TerminationReason::FixedPoint));
     Some(PeopleSourceCoverage {
         scope: "people_lookup_catalogue",
         catalogued_sources: PEOPLE_LEGS.len(),
@@ -259,7 +258,8 @@ mod tests {
     fn bounded_or_unrecorded_frontier_does_not_claim_complete_people_coverage() {
         let mut selected = record();
         selected.options.modules = vec!["asic_director".into()];
-        let mut observations = results(vec![SourceExecutionOutcome::valid_zero("asic_director", 1)]);
+        let mut observations =
+            results(vec![SourceExecutionOutcome::valid_zero("asic_director", 1)]);
         for reason in [
             Some(TerminationReason::MaxDepth),
             Some(TerminationReason::RequestBudget),
