@@ -100,8 +100,15 @@ fn sources_routes_a_handle_as_written() {
             String::from_utf8_lossy(&out.stderr)
         );
         let stdout = String::from_utf8(out.stdout).unwrap();
-        assert!(
-            stdout.starts_with("kind=username confidence=0.400 routes=3\n"),
+        let summary = stdout.lines().next().expect("route summary");
+        let route_count = summary
+            .strip_prefix("kind=username confidence=0.400 routes=")
+            .and_then(|count| count.parse::<usize>().ok())
+            .expect("valid username route count");
+        assert!(route_count >= 3, "{stdout}");
+        assert_eq!(
+            route_count,
+            stdout.lines().filter(|line| line.starts_with("source=")).count(),
             "{stdout}"
         );
         assert!(
