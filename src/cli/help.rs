@@ -95,7 +95,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Every query term must occur; an email address or domain must occur whole. Short HTML challenge pages and unsafe or oversized inputs are skipped."
         }
         "sources" => {
-            "sources QUERY...\nClassify an indicator and print curated public/browser search routes. The rest of the line is the query, so a name needs no quotes. Does not fetch those routes."
+            "sources QUERY...\nClassify an indicator and print offline public/browser discovery routes. Eligible person, organisation, email, handle, domain, IP and ABN/ACN entities also get all 16 keyless engine links from the canonical search registry. Links are unverified leads only; no fetching or credential discovery."
         }
         "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
