@@ -148,16 +148,52 @@ impl Breaker {
     }
 }
 
-/// Run `f` over the breakers, one per host. In the binary they are shared by every thread, so a
-/// failing host is paced down for every caller. A unit test gets its own on its thread instead:
-/// the tests of one binary run in parallel against the same fake hosts, and a rate limit one of
-/// them provokes must not hold back another's request.
-fn with_breakers<R>(f: impl FnOnce(&mut HashMap<String, Breaker>) -> R) -> R {
+/// A bounded shared host table. A running reconnaissance session may encounter thousands of
+/// distinct domains; retaining a breaker forever for every host would grow memory indefinitely.
+/// The least-recently-used *closed* breaker is evicted first, keeping active backoffs where
+/// possible. At full capacity with no closed breakers the oldest active breaker is evicted.
+const MAX_BREAKER_HOSTS: usize = 2_048;
+
+#[derive(Default)]
+struct BreakerRegistry {
+    hosts: HashMap<String, (Breaker, u64)>,
+    used: u64,
+}
+
+impl BreakerRegistry {
+    fn entry(&mut self, host: &str) -> &mut Breaker {
+        if self.hosts.len() >= MAX_BREAKER_HOSTS && !self.hosts.contains_key(host) {
+            let victim = self
+                .hosts
+                .iter()
+                .min_by_key(|(_, (breaker, tick))| {
+                    (breaker.state() != BreakerState::Closed, *tick)
+                })
+                .map(|(host, _)| host.clone());
+            if let Some(victim) = victim {
+                self.hosts.remove(&victim);
+            }
+        }
+        self.used = self.used.wrapping_add(1);
+        let (breaker, last_used) = self.hosts.entry(host.to_owned()).or_default();
+        *last_used = self.used;
+        breaker
+    }
+
+    fn state(&self, host: &str) -> Option<BreakerState> {
+        self.hosts.get(host).map(|(breaker, _)| breaker.state())
+    }
+}
+
+/// Run `f` over the bounded breakers, one per host. In the binary they are shared by every
+/// thread, so a failing host is paced down for every caller. Unit tests use a thread-local table
+/// so concurrent tests against the same fake names cannot influence each other's outcomes.
+fn with_breakers<R>(f: impl FnOnce(&mut BreakerRegistry) -> R) -> R {
     #[cfg(not(test))]
     {
-        static REGISTRY: OnceLock<Mutex<HashMap<String, Breaker>>> = OnceLock::new();
+        static REGISTRY: OnceLock<Mutex<BreakerRegistry>> = OnceLock::new();
         let mut guard = REGISTRY
-            .get_or_init(|| Mutex::new(HashMap::new()))
+            .get_or_init(|| Mutex::new(BreakerRegistry::default()))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&mut guard)
@@ -165,8 +201,8 @@ fn with_breakers<R>(f: impl FnOnce(&mut HashMap<String, Breaker>) -> R) -> R {
     #[cfg(test)]
     {
         thread_local! {
-            static REGISTRY: std::cell::RefCell<HashMap<String, Breaker>> =
-                std::cell::RefCell::new(HashMap::new());
+            static REGISTRY: std::cell::RefCell<BreakerRegistry> =
+                std::cell::RefCell::new(BreakerRegistry::default());
         }
         REGISTRY.with(|registry| f(&mut registry.borrow_mut()))
     }
@@ -174,34 +210,24 @@ fn with_breakers<R>(f: impl FnOnce(&mut HashMap<String, Breaker>) -> R) -> R {
 
 #[must_use]
 pub fn allow_host(host: &str, now: u64) -> bool {
-    with_breakers(|breakers| breakers.entry(host.to_string()).or_default().allow(now))
+    with_breakers(|breakers| breakers.entry(host).allow(now))
 }
 
 pub fn record_success(host: &str) {
-    with_breakers(|breakers| breakers.entry(host.to_string()).or_default().on_success());
+    with_breakers(|breakers| breakers.entry(host).on_success());
 }
 
 pub fn record_failure(host: &str, now: u64) {
-    with_breakers(|breakers| {
-        breakers
-            .entry(host.to_string())
-            .or_default()
-            .on_failure(now);
-    });
+    with_breakers(|breakers| breakers.entry(host).on_failure(now));
 }
 
 pub fn record_rate_limited(host: &str, now: u64, retry_after_secs: u64) {
-    with_breakers(|breakers| {
-        breakers
-            .entry(host.to_string())
-            .or_default()
-            .on_rate_limited(now, retry_after_secs);
-    });
+    with_breakers(|breakers| breakers.entry(host).on_rate_limited(now, retry_after_secs));
 }
 
 #[must_use]
 pub fn host_state(host: &str) -> Option<BreakerState> {
-    with_breakers(|breakers| breakers.get(host).map(Breaker::state))
+    with_breakers(|breakers| breakers.state(host))
 }
 
 #[must_use]
@@ -393,6 +419,40 @@ mod tests {
         assert!(!allow_host(host, T0 + 89));
         assert!(allow_host(host, T0 + 90));
         assert_eq!(host_state(host), Some(BreakerState::HalfOpen));
+    }
+
+    #[test]
+    fn breaker_registry_is_bounded_and_preserves_active_rate_limits() {
+        let mut registry = BreakerRegistry::default();
+        registry.entry("throttled.example").on_rate_limited(T0, 600);
+        for index in 0..MAX_BREAKER_HOSTS - 1 {
+            registry.entry(&format!("host-{index}.example"));
+        }
+        assert_eq!(registry.hosts.len(), MAX_BREAKER_HOSTS);
+
+        // Refresh the oldest closed entry; the next new host must evict a
+        // different closed entry rather than the actively throttled host.
+        registry.entry("host-0.example");
+        registry.entry("new.example");
+        assert_eq!(registry.hosts.len(), MAX_BREAKER_HOSTS);
+        assert_eq!(registry.state("throttled.example"), Some(BreakerState::Open));
+        assert_eq!(registry.state("host-0.example"), Some(BreakerState::Closed));
+        assert_eq!(registry.state("host-1.example"), None);
+        assert_eq!(registry.state("new.example"), Some(BreakerState::Closed));
+    }
+
+    #[test]
+    fn registry_remains_bounded_even_when_every_host_is_throttled() {
+        let mut registry = BreakerRegistry::default();
+        for index in 0..MAX_BREAKER_HOSTS {
+            registry
+                .entry(&format!("throttled-{index}.example"))
+                .on_rate_limited(T0, 600);
+        }
+        registry.entry("fresh.example");
+        assert_eq!(registry.hosts.len(), MAX_BREAKER_HOSTS);
+        assert_eq!(registry.state("throttled-0.example"), None);
+        assert_eq!(registry.state("fresh.example"), Some(BreakerState::Closed));
     }
 
     #[test]
