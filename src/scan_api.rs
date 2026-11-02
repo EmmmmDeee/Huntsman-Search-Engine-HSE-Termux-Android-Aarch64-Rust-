@@ -2693,6 +2693,40 @@ mod tests {
     }
 
     #[test]
+    fn matrix_reads_a_stopped_scan_as_json_or_raw_without_writing() {
+        let (api, dir) = api("matrix");
+        let id = finished(&api);
+        let original = std::fs::read(dir.join(&id).join("results.json")).unwrap();
+        let route = format!("/api/scans/{id}/matrix");
+        let json = api.handle("GET", &route, "");
+        assert_eq!(json.status, 200, "{}", json.text());
+        assert_eq!(
+            json.filename.as_deref(),
+            Some(format!("{id}-matrix.json").as_str())
+        );
+        assert!(body(&json).is_object());
+        let raw = api.handle("GET", &route, "format=raw");
+        assert_eq!(raw.status, 200, "{}", raw.text());
+        assert_eq!(raw.content_type, "text/plain; charset=utf-8");
+        assert_eq!(
+            raw.filename.as_deref(),
+            Some(format!("{id}-matrix.txt").as_str())
+        );
+        assert_eq!(api.handle("GET", &route, "format=csv").status, 400);
+        assert_eq!(api.handle("POST", &route, "").status, 405);
+        assert_eq!(
+            api.handle("GET", "/api/scans/0123456789abcdef/matrix", "")
+                .status,
+            404
+        );
+        assert_eq!(
+            std::fs::read(dir.join(&id).join("results.json")).unwrap(),
+            original
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn summary_elements_graph_and_log_read_the_saved_scan() {
         let (api, dir) = api("read");
         let id = finished(&api);
