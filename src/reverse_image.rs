@@ -18,9 +18,9 @@ use crate::sha256::{hex32, sha256};
 pub const MAX_REVERSE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MATCHES: usize = 80;
 const PROVIDERS: [(&str, &str); 3] = [
-    ("google_vision", "HSE_GOOGLE_VISION_API_KEY"),
-    ("lenso", "HSE_LENSO_API_KEY"),
-    ("saucenao", "HSE_SAUCENAO_API_KEY"),
+    ("google_vision", crate::environment::GOOGLE_VISION_KEY_ENV),
+    ("lenso", crate::environment::LENSO_KEY_ENV),
+    ("saucenao", crate::environment::SAUCENAO_KEY_ENV),
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -579,7 +579,7 @@ mod tests {
                 "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]}))
             .unwrap(),
         };
-        let keys = Keys::parse("HSE_GOOGLE_VISION_API_KEY=testing_provider_secret_123").unwrap();
+        let keys = Keys::parse("HUNTSMAN_GOOGLE_VISION_KEY=testing_provider_secret_123").unwrap();
         let report =
             search_selected(&network, b"GIF89a", &keys, 123, true, Some("google_vision")).unwrap();
         assert_eq!(report.observed_at_unix, 123);
@@ -614,7 +614,7 @@ mod tests {
             requests: std::sync::Mutex::new(Vec::new()),
             body: serde_json::to_vec(&json!({"header":{"status":0},"results":[]})).unwrap(),
         };
-        let keys = Keys::parse("HSE_SAUCENAO_API_KEY=testing_sauce_secret_123").unwrap();
+        let keys = Keys::parse("HUNTSMAN_SAUCENAO_KEY=testing_sauce_secret_123").unwrap();
         let report =
             search_selected(&network, b"GIF89a", &keys, 123, true, Some("saucenao")).unwrap();
         assert_eq!(report.statuses.len(), 1);
@@ -650,7 +650,7 @@ mod tests {
             requests: std::sync::Mutex::new(Vec::new()),
             body: serde_json::to_vec(&json!({"notResults": []})).unwrap(),
         };
-        let keys = Keys::parse("HSE_LENSO_API_KEY=testing_lenso_secret_123").unwrap();
+        let keys = Keys::parse("HUNTSMAN_LENSO_KEY=testing_lenso_secret_123").unwrap();
         let result = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso")).unwrap();
         assert_eq!(result.statuses[0].state, "failed");
         assert!(result.matches.is_empty());
