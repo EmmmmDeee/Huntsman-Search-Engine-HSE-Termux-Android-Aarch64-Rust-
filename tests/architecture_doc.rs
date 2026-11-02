@@ -1043,3 +1043,43 @@ fn guards_cited_in_docs_architecture_exist() {
         "docs/ARCHITECTURE.md cites missing guards: {missing:?}"
     );
 }
+
+/// Each Stage 2 shim (`src/{core,evidence,infrastructure,application,web}/mod.rs`) re-exports
+/// exactly the modules `docs/ARCHITECTURE.md` places in that home (less private `test_support`),
+/// so the doc's home table and the code that names those homes cannot drift apart.
+#[test]
+fn every_stage2_shim_reexports_exactly_its_documented_home() {
+    let doc = fs::read_to_string(root().join("docs/ARCHITECTURE.md")).unwrap();
+    for home in ["core", "evidence", "infrastructure", "application", "web"] {
+        let marker = format!("| `src/{home}/` |");
+        let row = doc
+            .lines()
+            .find(|line| line.starts_with(&marker))
+            .unwrap_or_else(|| panic!("docs/ARCHITECTURE.md has no row for src/{home}/"));
+        let modules_cell = row.rsplit('|').nth(1).expect("a modules cell");
+        let mut documented: Vec<&str> = modules_cell
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|name| *name != "test_support")
+            .collect();
+        documented.sort_unstable();
+
+        let shim = fs::read_to_string(root().join(format!("src/{home}/mod.rs"))).unwrap();
+        let start = shim.find("pub use crate::").expect("a re-export");
+        let list = &shim[start + "pub use crate::".len()..];
+        let list = &list[..list.find(';').expect("an end")];
+        let mut exported: Vec<&str> = list
+            .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace())
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+        exported.sort_unstable();
+
+        assert_eq!(
+            exported, documented,
+            "src/{home}/mod.rs re-exports differ from its docs/ARCHITECTURE.md row"
+        );
+    }
+}
