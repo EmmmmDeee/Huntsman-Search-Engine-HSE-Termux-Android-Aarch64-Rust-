@@ -260,6 +260,7 @@ value_syntax	leaf	dependency-free domain mailbox URL-host E.164 and TXT-record t
 virustotal	adapter	VirusTotal leg reached through ip_cli and domain_cli when its key is set
 wayback_cdx	adapter	keyless Internet Archive CDX historical capture collector reached through domain_cli from domain, scan -k domain and /api/lookup; emits provenance-backed historical URL and hostname leads
 web_query	adapter	keyless web meta-search subset
+web_api_types	leaf	sensor report types (cell, Wi-Fi, track) re-exported for web_server
 web_server	runtime	embedded Web UI and read-only HTTP API
 serve_events	runtime	in-process event hub streamed to Web UI clients over the /api/events Server-Sent Events endpoint
 whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set

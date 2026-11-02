@@ -670,6 +670,28 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// The web server names the sensor reports it serves through `web_api_types` only, never the
+/// radar collector modules themselves (R-07).
+#[test]
+fn the_web_server_takes_sensor_types_through_web_api_types() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| {
+            source.path == "src/web_server.rs" || under(&source.path, "src/web_server")
+        })
+        .filter(|source| {
+            production_tokens(&source.text).windows(2).any(|w| {
+                matches!(w[0].as_str(), "cell_radar" | "wifi_radar" | "radar") && w[1] == "::"
+            })
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(
+        found.is_empty(),
+        "web_server names a radar module: {found:?}"
+    );
+}
+
 /// The Wi-Fi radar takes the serving cell as a plain label; it never reaches into the cell radar
 /// for it, so either radar builds and changes without the other (R-08).
 #[test]
