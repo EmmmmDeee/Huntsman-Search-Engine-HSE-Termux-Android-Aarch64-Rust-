@@ -443,6 +443,8 @@ pub fn search_selected<T: Transport + ?Sized>(
             m.image_url.clone(),
         ))
     });
+    report.truncated = report.matches.len() > MAX_MATCHES;
+    report.matches.truncate(MAX_MATCHES);
     let mut sources: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for item in &report.matches {
         if let Some(url) = item.image_url.as_ref() {
@@ -452,8 +454,6 @@ pub fn search_selected<T: Transport + ?Sized>(
     report.shared_image_urls = sources.into_iter().filter_map(|(url, providers)| {
         (providers.len() > 1).then_some(url)
     }).collect();
-    report.truncated = report.matches.len() > MAX_MATCHES;
-    report.matches.truncate(MAX_MATCHES);
     Ok(report)
 }
 
