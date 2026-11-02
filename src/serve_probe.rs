@@ -515,6 +515,23 @@ mod tests {
     }
 
     #[test]
+    fn doctor_transport_rejects_a_truncated_http_body_on_a_real_socket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort")
+                .expect("write incomplete reply");
+        });
+        assert!(get(addr, "/api/health", None, Duration::from_secs(2))
+            .is_err_and(|error| error.kind() == ErrorKind::InvalidData));
+        server.join().expect("server");
+    }
+
+    #[test]
     fn a_closed_port_is_not_running() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
