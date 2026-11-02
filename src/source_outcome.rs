@@ -241,8 +241,9 @@ impl SourceExecutionOutcome {
     #[must_use]
     pub const fn is_accepted(&self) -> bool {
         match (self.kind, self.found) {
-            (SourceOutcomeKind::Success, Some(0))
-            | (SourceOutcomeKind::ValidZero, Some(1..)) => false,
+            (SourceOutcomeKind::Success, Some(0)) | (SourceOutcomeKind::ValidZero, Some(1..)) => {
+                false
+            }
             (kind, _) => kind.is_accepted(),
         }
     }
@@ -1027,15 +1028,17 @@ mod tests {
                 SourceReach::Failed(Some(_))
             ));
         }
-        assert!(SourceExecutionOutcome::observed(
-            "legacy",
-            7,
-            SourceOutcomeKind::Success,
-            Some(200),
-            None,
-            "legacy provider with no count",
-        )
-        .is_accepted());
+        assert!(
+            SourceExecutionOutcome::observed(
+                "legacy",
+                7,
+                SourceOutcomeKind::Success,
+                Some(200),
+                None,
+                "legacy provider with no count",
+            )
+            .is_accepted()
+        );
     }
 
     #[test]
