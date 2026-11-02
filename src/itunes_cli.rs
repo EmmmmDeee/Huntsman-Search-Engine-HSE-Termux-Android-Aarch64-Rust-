@@ -89,12 +89,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keyword: &str, now_unix: u64) -
     }
     merge_by_uid(&mut report.entities);
 
-    if !report
-        .outcomes
-        .iter()
-        .any(|outcome| outcome.kind.is_accepted())
-    {
-        return ItunesRun::Failed(format!("no source answered for {keyword:?}"));
+    if let Some(run) = crate::source_outcome::none_accepted(
+        &report.outcomes,
+        &format!("no source answered for {keyword:?}"),
+    ) {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => ItunesRun::Printed { text, report },

@@ -151,12 +151,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, address: &str, now_unix: u64) -
     }
     merge_by_uid(&mut report.entities);
 
-    if !report
-        .outcomes
-        .iter()
-        .any(|outcome| outcome.kind.is_accepted())
-    {
-        return CryptoRun::Failed(format!("no source answered for {address}"));
+    if let Some(run) = crate::source_outcome::none_accepted(
+        &report.outcomes,
+        &format!("no source answered for {address}"),
+    ) {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => CryptoRun::Printed { text, report },
@@ -313,6 +312,26 @@ mod tests {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
             }
             CryptoRun::Network(why) | CryptoRun::Failed(why) => panic!("{why}"),
+        }
+    }
+
+    /// A source that answered with an error is named in the failure, not dropped: the operator
+    /// reads `no source answered for ADDR: blockchain: …` (exit 69, as before).
+    #[test]
+    fn a_failed_source_is_named_in_the_unanswered_message() {
+        match run(
+            &OneResponse::json(502, "bad gateway"),
+            "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+            1,
+        ) {
+            CryptoRun::Failed(why) => assert!(
+                why.starts_with(
+                    "no source answered for 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2: blockchain"
+                ),
+                "{why}"
+            ),
+            CryptoRun::Network(why) => panic!("exit changed to a refusal: {why}"),
+            CryptoRun::Printed { text, .. } => panic!("printed {text}"),
         }
     }
 }
