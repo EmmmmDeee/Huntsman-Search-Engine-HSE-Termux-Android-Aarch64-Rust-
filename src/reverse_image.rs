@@ -89,12 +89,17 @@ fn insert(
 }
 
 fn parse_google(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
-    let first = value.get("responses").and_then(Value::as_array)
-        .and_then(|list| list.first()).ok_or("google response is missing responses[0]")?;
+    let first = value
+        .get("responses")
+        .and_then(Value::as_array)
+        .and_then(|list| list.first())
+        .ok_or("google response is missing responses[0]")?;
     if first.get("error").is_some() {
         return Err("google reported a request error");
     }
-    let data = first.get("webDetection").and_then(Value::as_object)
+    let data = first
+        .get("webDetection")
+        .and_then(Value::as_object)
         .ok_or("google response is missing webDetection")?;
     let mut matches = Vec::new();
     for (field, kind) in [
@@ -104,22 +109,45 @@ fn parse_google(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
     ] {
         if let Some(items) = data.get(field).and_then(Value::as_array) {
             for item in items {
-                insert(&mut matches, "google_vision", kind, None,
-                    item.get("url").and_then(Value::as_str), None);
+                insert(
+                    &mut matches,
+                    "google_vision",
+                    kind,
+                    None,
+                    item.get("url").and_then(Value::as_str),
+                    None,
+                );
             }
         }
     }
-    if let Some(pages) = data.get("pagesWithMatchingImages").and_then(Value::as_array) {
+    if let Some(pages) = data
+        .get("pagesWithMatchingImages")
+        .and_then(Value::as_array)
+    {
         for page in pages {
             let source = page.get("url").and_then(Value::as_str);
-            insert(&mut matches, "google_vision", "page_with_match", source, None,
-                page.get("score").and_then(Value::as_f64));
-            for (field, kind) in [("fullMatchingImages", "full_image_on_page"),
-                                   ("partialMatchingImages", "partial_image_on_page")] {
+            insert(
+                &mut matches,
+                "google_vision",
+                "page_with_match",
+                source,
+                None,
+                page.get("score").and_then(Value::as_f64),
+            );
+            for (field, kind) in [
+                ("fullMatchingImages", "full_image_on_page"),
+                ("partialMatchingImages", "partial_image_on_page"),
+            ] {
                 if let Some(items) = page.get(field).and_then(Value::as_array) {
                     for item in items {
-                        insert(&mut matches, "google_vision", kind, source,
-                            item.get("url").and_then(Value::as_str), None);
+                        insert(
+                            &mut matches,
+                            "google_vision",
+                            kind,
+                            source,
+                            item.get("url").and_then(Value::as_str),
+                            None,
+                        );
                     }
                 }
             }
@@ -129,16 +157,23 @@ fn parse_google(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
 }
 
 fn parse_lenso(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
-    let rows = value.get("results").and_then(Value::as_array)
+    let rows = value
+        .get("results")
+        .and_then(Value::as_array)
         .ok_or("lenso response is missing results array")?;
     let mut matches = Vec::new();
     for row in rows {
         let score = row.get("confidenceScore").and_then(Value::as_f64);
         if let Some(urls) = row.get("urlList").and_then(Value::as_array) {
             for item in urls {
-                insert(&mut matches, "lenso", "provider_duplicate",
+                insert(
+                    &mut matches,
+                    "lenso",
+                    "provider_duplicate",
                     item.get("sourceUrl").and_then(Value::as_str),
-                    item.get("imageUrl").and_then(Value::as_str), score);
+                    item.get("imageUrl").and_then(Value::as_str),
+                    score,
+                );
             }
         }
     }
@@ -146,31 +181,54 @@ fn parse_lenso(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
 }
 
 fn parse_saucenao(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
-    let header = value.get("header").and_then(Value::as_object)
+    let header = value
+        .get("header")
+        .and_then(Value::as_object)
         .ok_or("SauceNAO response is missing header")?;
     if header.get("status").and_then(Value::as_i64) != Some(0) {
         return Err("SauceNAO returned a non-success status");
     }
-    let rows = value.get("results").and_then(Value::as_array)
+    let rows = value
+        .get("results")
+        .and_then(Value::as_array)
         .ok_or("SauceNAO response is missing results array")?;
     let mut matches = Vec::new();
     for row in rows {
-        let score = row.pointer("/header/similarity")
-            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok())
-                .or_else(|| v.as_f64()));
-        let source = row.pointer("/data/ext_urls/0").and_then(Value::as_str)
+        let score = row.pointer("/header/similarity").and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| v.as_f64())
+        });
+        let source = row
+            .pointer("/data/ext_urls/0")
+            .and_then(Value::as_str)
             .or_else(|| row.pointer("/data/source").and_then(Value::as_str));
-        insert(&mut matches, "saucenao", "provider_similar", source,
-            row.pointer("/header/thumbnail").and_then(Value::as_str), score);
+        insert(
+            &mut matches,
+            "saucenao",
+            "provider_similar",
+            source,
+            row.pointer("/header/thumbnail").and_then(Value::as_str),
+            score,
+        );
     }
     Ok(matches)
 }
 
 fn multipart_body(image: &[u8], secret: &Secret, boundary: &str) -> Vec<u8> {
     let mut body = Vec::with_capacity(image.len() + 1024);
-    for (name, value) in [("api_key", secret.expose()), ("output_type", "2"),
-                          ("db", "999"), ("numres", "10")] {
-        body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
+    for (name, value) in [
+        ("api_key", secret.expose()),
+        ("output_type", "2"),
+        ("db", "999"),
+        ("numres", "10"),
+    ] {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
     }
     body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"image.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
     body.extend_from_slice(image);
@@ -180,12 +238,20 @@ fn multipart_body(image: &[u8], secret: &Secret, boundary: &str) -> Vec<u8> {
 
 fn sauce_request(image: &[u8], secret: &Secret) -> Request {
     let mut boundary = "HSE_Image_Boundary_A".to_owned();
-    while image.windows(boundary.len()).any(|window| window == boundary.as_bytes()) {
+    while image
+        .windows(boundary.len())
+        .any(|window| window == boundary.as_bytes())
+    {
         boundary.push('Z');
     }
-    Request::post("https://saucenao.com/search.php",
-                  multipart_body(image, secret, &boundary))
-        .header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+    Request::post(
+        "https://saucenao.com/search.php",
+        multipart_body(image, secret, &boundary),
+    )
+    .header(
+        "Content-Type",
+        format!("multipart/form-data; boundary={boundary}"),
+    )
 }
 
 fn perform<T: Transport + ?Sized>(
@@ -201,23 +267,30 @@ fn perform<T: Transport + ?Sized>(
         "google_vision" => {
             let body = json!({"requests": [{"image": {"content": b64},
                 "features": [{"type": "WEB_DETECTION", "maxResults": 20}]}]});
-            let request = Request::post("https://vision.googleapis.com/v1/images:annotate",
-                serde_json::to_vec(&body).map_err(|_| "could not encode request")?)
-                .header("Content-Type", "application/json");
+            let request = Request::post(
+                "https://vision.googleapis.com/v1/images:annotate",
+                serde_json::to_vec(&body).map_err(|_| "could not encode request")?,
+            )
+            .header("Content-Type", "application/json");
             let authority = AuthenticationAuthority::configured_slot(name, slot, now)
                 .map_err(|_| "credential authority invalid")?;
-            let cred = Credential::new(authority, secret.clone(),
-                AuthStyle::Header("X-goog-api-key".into()))
-                .map_err(|_| "credential invalid")?
-                .only_for_origin("https://vision.googleapis.com:443");
+            let cred = Credential::new(
+                authority,
+                secret.clone(),
+                AuthStyle::Header("X-goog-api-key".into()),
+            )
+            .map_err(|_| "credential invalid")?
+            .only_for_origin("https://vision.googleapis.com:443");
             (request, Some(cred))
         }
         "lenso" => {
             let body = json!({"image": b64, "category": "duplicates",
                 "sortType": "QUALITY_DESCENDING", "page": 1});
-            let request = Request::post("https://api.lenso.ai/search",
-                serde_json::to_vec(&body).map_err(|_| "could not encode request")?)
-                .header("Content-Type", "application/json");
+            let request = Request::post(
+                "https://api.lenso.ai/search",
+                serde_json::to_vec(&body).map_err(|_| "could not encode request")?,
+            )
+            .header("Content-Type", "application/json");
             let authority = AuthenticationAuthority::configured_slot(name, slot, now)
                 .map_err(|_| "credential authority invalid")?;
             let cred = Credential::new(authority, secret.clone(), AuthStyle::Bearer)
@@ -229,11 +302,18 @@ fn perform<T: Transport + ?Sized>(
         _ => return Err("unknown provider".into()),
     };
     // Never follow redirects for image uploads or credentials, including SauceNAO's body secret.
-    let fetched = fetch(transport, request.with_timeout(Duration::from_secs(30)),
-        credential.as_ref(), &FetchOptions::no_redirects(), name, now)
-        .map_err(|_| "network policy or request refused")?;
-    let response = fetched.response.ok_or_else(|| format!("transport: {}",
-        fetched.outcome.kind.as_str()))?;
+    let fetched = fetch(
+        transport,
+        request.with_timeout(Duration::from_secs(30)),
+        credential.as_ref(),
+        &FetchOptions::no_redirects(),
+        name,
+        now,
+    )
+    .map_err(|_| "network policy or request refused")?;
+    let response = fetched
+        .response
+        .ok_or_else(|| format!("transport: {}", fetched.outcome.kind.as_str()))?;
     if response.truncated {
         return Err("provider response truncated".into());
     }
@@ -247,7 +327,8 @@ fn perform<T: Transport + ?Sized>(
         "lenso" => parse_lenso(&json),
         "saucenao" => parse_saucenao(&json),
         _ => Err("unknown provider"),
-    }.map_err(str::to_owned)
+    }
+    .map_err(str::to_owned)
 }
 
 /// Compute the immutable input hash offline, then optionally query all three configured
@@ -257,7 +338,11 @@ fn perform<T: Transport + ?Sized>(
 /// # Errors
 /// Rejects empty, oversized or unrecognised image bytes without making a network request.
 pub fn search<T: Transport + ?Sized>(
-    transport: &T, image: &[u8], keys: &Keys, now: u64, live: bool,
+    transport: &T,
+    image: &[u8],
+    keys: &Keys,
+    now: u64,
+    live: bool,
 ) -> Result<ImageReport, &'static str> {
     if image.is_empty() || image.len() > MAX_IMAGE_BYTES || !is_image(image) {
         return Err("expected a JPEG, PNG, GIF or WebP image of 1 byte to 4 MiB");
@@ -271,24 +356,38 @@ pub fn search<T: Transport + ?Sized>(
     };
     for (name, slot) in PROVIDERS {
         let status = if !live {
-            ProviderStatus {provider: name, state: "not_requested",
-                detail: "offline only (pass --live to send image to providers)".into(), results: 0}
+            ProviderStatus {
+                provider: name,
+                state: "not_requested",
+                detail: "offline only (pass --live to send image to providers)".into(),
+                results: 0,
+            }
         } else if let Some(secret) = keys.get(slot) {
             match perform(transport, name, slot, image, &secret, now) {
                 Ok(mut matches) => {
                     let count = matches.len();
                     report.matches.append(&mut matches);
-                    ProviderStatus {provider: name, state: "completed",
+                    ProviderStatus {
+                        provider: name,
+                        state: "completed",
                         detail: "response parsed; matches are not proof of identity".into(),
-                        results: count}
+                        results: count,
+                    }
                 }
-                Err(message) => ProviderStatus {provider: name, state: "failed",
-                    detail: message, results: 0},
+                Err(message) => ProviderStatus {
+                    provider: name,
+                    state: "failed",
+                    detail: message,
+                    results: 0,
+                },
             }
         } else {
-            ProviderStatus {provider: name, state: "unconfigured",
+            ProviderStatus {
+                provider: name,
+                state: "unconfigured",
                 detail: format!("set {slot} in the private credentials file"),
-                results: 0}
+                results: 0,
+            }
         };
         report.statuses.push(status);
     }
