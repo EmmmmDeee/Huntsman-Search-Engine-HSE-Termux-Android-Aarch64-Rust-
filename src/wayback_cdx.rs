@@ -56,19 +56,58 @@ pub fn lookup<T: Transport + ?Sized>(
     url = append_query_param(&url, "collapse", "urlkey");
     url = append_query_param(&url, "limit", &MAX_CAPTURES.to_string());
 
-    let fetched = fetch(
+    // The normal query must filter *before* URL-key collapse. Otherwise an
+    // earlier 302/404 for a URL may hide its later successful capture.
+    let filtered_url = append_query_param(&url, "filter", "statuscode:200");
+    let options = FetchOptions::no_redirects().paced();
+    let primary = fetch(
         transport,
-        Request::get(url)
+        Request::get(filtered_url)
             .header("accept", "application/json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         None,
-        &FetchOptions::no_redirects().paced(),
+        &options,
         SOURCE,
         now_unix,
     )?;
+
+    // Retry the cheaper, unfiltered index only for a genuine first-byte timeout.
+    // Never retry DNS/TLS failures, refusals, rate limits, HTTP errors or a valid
+    // zero response. The same paced circuit protects this single fallback.
+    let mut fallback_used = false;
+    let fetched = if primary.outcome.kind == SourceOutcomeKind::TtfbTimeout {
+        let alternate = fetch(
+            transport,
+            Request::get(url)
+                .header("accept", "application/json")
+                .header("user-agent", crate::http::DEFAULT_USER_AGENT),
+            None,
+            &options,
+            SOURCE,
+            now_unix,
+        )?;
+        if alternate.response.is_some() {
+            fallback_used = true;
+            alternate
+        } else {
+            primary
+        }
+    } else {
+        primary
+    };
+
     let mut report = interpret(&fetched, &domain, scan_id, now_unix).unwrap_or_else(miss);
     if report.outcome.kind == SourceOutcomeKind::Success {
         read_contents(transport, &mut report, scan_id, now_unix);
+    }
+    if fallback_used {
+        let warning = "unfiltered fallback after CDX first-byte timeout; URL-key collapse may hide later successful captures";
+        let detail = report.outcome.detail.take().unwrap_or_default();
+        report.outcome = report.outcome.with_detail(if detail.is_empty() {
+            warning.to_owned()
+        } else {
+            format!("{detail}; {warning}")
+        });
     }
     Ok(report)
 }
@@ -533,8 +572,8 @@ mod tests {
             if request.url.starts_with(API) {
                 assert!(request.url.contains("matchType=domain"));
                 assert!(
-                    !request.url.contains("filter="),
-                    "status is verified locally"
+                    request.url.contains("filter=statuscode%3A200"),
+                    "normal index must filter success before URL-key collapse"
                 );
                 // The fields asked for are the ones the answer's header is held to.
                 assert!(
@@ -566,6 +605,49 @@ mod tests {
                 .iter()
                 .any(|e| e.value == "https://example.org/a")
         );
+    }
+
+    #[test]
+    fn cdx_timeout_falls_back_once_without_claiming_complete_coverage() {
+        let index = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200101000000","https://example.org/redirect","302","X","text/html"],["20200102000000","https://example.org/contact","200","Y","text/html"]]"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::TtfbTimeout,
+                detail: "first byte did not arrive".into(),
+                blocked: false,
+            }),
+            Ok(response(index)),
+            Ok(page(200, "text/html", "<a href='mailto:team@example.org'>team</a>")),
+        ]);
+        let report = lookup(&transport, "example.org", "scan", NOW).expect("bounded fallback");
+        let requests = transport.seen.borrow();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].url.contains("filter=statuscode%3A200"));
+        assert!(!requests[1].url.contains("filter="));
+        assert!(requests.iter().all(|r| r.url.starts_with("https://web.archive.org/")));
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert!(report.entities.iter().any(|e| e.value == "https://example.org/contact"));
+        assert!(report.entities.iter().any(|e| e.value == "team@example.org"));
+        assert!(!report.entities.iter().any(|e| e.value.contains("/redirect")));
+        assert!(
+            report.outcome.detail.as_deref().unwrap_or_default().contains("collapse may hide later successful"),
+            "{:?}",
+            report.outcome
+        );
+    }
+
+    #[test]
+    fn other_transport_failures_never_trigger_unfiltered_retry() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::DnsFailure,
+                detail: "DNS failed".into(),
+                blocked: false,
+            }),
+        ]);
+        let report = lookup(&transport, "example.org", "scan", NOW).expect("typed source outcome");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::DnsFailure);
+        assert_eq!(transport.seen.borrow().len(), 1);
     }
 
     fn page(status: u16, content_type: &str, body: &str) -> Response {
