@@ -161,6 +161,39 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configu
     assert!(text.contains(wigle::USER_SLOT), "{text}");
 }
 
+
+#[test]
+fn local_bssid_reports_address_bits_not_unobserved_randomisation() {
+    for bssid in ["d6:92:5e:af:76:c9", "02:11:22:33:44:55"] {
+        let (text, report) = printed(run(
+            &crate::test_support::Refusing,
+            &Keys::default(),
+            bssid,
+            7,
+        ));
+        assert_eq!(report.entities.len(), 1, "{text}");
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
+        assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::NotConfigured);
+        assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::NotConfigured);
+        let evidence = report.entities[0]
+            .evidence
+            .iter()
+            .find(|item| item.provenance.source == OUI_SOURCE)
+            .expect("offline OUI evidence");
+        assert_eq!(
+            evidence.attributes.get("locally_administered").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            evidence.attributes.get("randomisation_status").map(String::as_str),
+            Some("unverified")
+        );
+        assert!(!evidence.attributes.contains_key("vendor"), "{text}");
+        assert!(!evidence.attributes.contains_key("randomised"), "{text}");
+        assert!(text.contains("address rotation is unverified"), "{text}");
+    }
+}
+
 /// A BSSID `WiGLE` recorded is observed by `WiGLE` alone: the OUI registry's reading of its prefix is
 /// no second source of it.
 #[test]

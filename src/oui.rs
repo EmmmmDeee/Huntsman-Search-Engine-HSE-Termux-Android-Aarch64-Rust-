@@ -19,6 +19,7 @@ pub enum DeviceClass {
     Router,
     Printer,
     Beacon,
+    /// Legacy name: the address is locally administered; rotation has not been observed.
     Randomized,
     Unknown,
     Unregistered,
@@ -41,7 +42,7 @@ impl DeviceClass {
             Self::Router => "router",
             Self::Printer => "printer",
             Self::Beacon => "beacon",
-            Self::Randomized => "randomized",
+            Self::Randomized => "locally_administered",
             Self::Unknown => "unknown",
             Self::Unregistered => "unregistered",
         }
@@ -60,8 +61,8 @@ pub struct OuiInfo {
 const IEEE_RA: &str = "IEEE Registration Authority";
 
 impl OuiInfo {
-    /// The manufacturer the IEEE MA-L registry names for the address: `None` for a randomised
-    /// address, an unregistered prefix, or a block the IEEE Registration Authority sub-assigns.
+    /// The manufacturer the IEEE MA-L registry names for the address: `None` for a locally
+    /// administered address, an unregistered prefix, or an IEEE sub-assigned block.
     #[must_use]
     pub fn manufacturer(&self) -> Option<&'static str> {
         match self.class {
@@ -88,7 +89,7 @@ fn octets(mac: &str) -> Option<[u8; 6]> {
     Some(out)
 }
 
-/// Whether the address is locally administered (randomised): the U/L bit of its first octet.
+/// Whether the U/L bit identifies a locally administered address. This does not prove rotation.
 #[must_use]
 pub fn is_locally_administered(mac: &str) -> Option<bool> {
     octets(mac).map(|octets| octets[0] & 0x02 != 0)
@@ -106,7 +107,7 @@ pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
     let octets = octets(mac)?;
     if octets[0] & 0x02 != 0 {
         return Some(OuiInfo {
-            vendor: "Randomized (private)",
+            vendor: "Locally administered (vendor unknown)",
             class: DeviceClass::Randomized,
         });
     }
@@ -298,15 +299,17 @@ mod tests {
     }
 
     #[test]
-    fn randomised_and_multicast_bits_are_read_directly() {
+    fn locally_administered_and_multicast_bits_are_read_directly() {
         for mac in [
             "02:00:00:00:00:01",
             "06:11:22:33:44:55",
             "DA:A1:19:AB:CD:EF",
+            "d6:92:5e:af:76:c9",
         ] {
             let info = classify_mac(mac).unwrap();
             assert_eq!(info.class, DeviceClass::Randomized);
-            assert_eq!(info.vendor, "Randomized (private)");
+            assert_eq!(info.vendor, "Locally administered (vendor unknown)");
+            assert_eq!(info.class.as_str(), "locally_administered");
             assert_eq!(info.manufacturer(), None);
         }
         assert_eq!(is_locally_administered("3C:07:54:AB:CD:EF"), Some(false));

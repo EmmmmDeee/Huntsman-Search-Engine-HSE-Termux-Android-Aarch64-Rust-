@@ -4,7 +4,7 @@
 //! SSID (`ssid:NAME`, or any other text when the kind is named), or a cell site
 //! (`cell:MCC:MNC:AREA:CELL`), which the `OpenCelliD` indicator leg looks up; a coordinate pair is
 //! also searched for the cell sites `OpenCelliD` lists around it. A BSSID is first classified
-//! offline: its OUI vendor and whether it is a randomised (locally administered) address. Then
+//! offline: its locally administered bit and an IEEE vendor only for universal addresses. Then
 //! the keyed `WiGLE` legs ([`crate::wigle`]) search for what the selector names: `WiFi` always,
 //! and Bluetooth too for a MAC address or a place. Without
 //! both `WiGLE` slots it makes no request and records `NotConfigured`, never a zero.
@@ -47,7 +47,7 @@ pub const NETWORK_USAGE: &str =
     "usage: huntsman-recon network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE]";
 pub const NETWORK_HELP: &str = "\
 network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE]
-Look up a WiFi network, or a cell site. A cell site (cell:505:01:17:91, the country, network, area and cell numbers radar cells reports) is looked up in OpenCelliD, which gives the tower's position, range and sample count; it needs HUNTSMAN_OPENCELLID_KEY, and without it makes no request and reports not_configured. WiGLE is not searched for a cell site. With the same key, LAT,LON also lists the cell sites OpenCelliD places in the 1.8 km square around the point (at most 50, one request), each a cell: selector network takes back; they are sites near the point, not ones any device there used. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its OUI vendor and whether it is a randomised address. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports not_configured. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
+Look up a WiFi network, or a cell site. A cell site (cell:505:01:17:91, the country, network, area and cell numbers radar cells reports) is looked up in OpenCelliD, which gives the tower's position, range and sample count; it needs HUNTSMAN_OPENCELLID_KEY, and without it makes no request and reports not_configured. WiGLE is not searched for a cell site. With the same key, LAT,LON also lists the cell sites OpenCelliD places in the 1.8 km square around the point (at most 50, one request), each a cell: selector network takes back; they are sites near the point, not ones any device there used. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its locally administered bit and an OUI vendor only for universal addresses. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports not_configured. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the offline OUI classification of a BSSID selector.
 pub const OUI_SOURCE: &str = "oui";
@@ -309,30 +309,27 @@ fn oui_leg(
     let Some(info) = oui::classify_mac(bssid) else {
         return SourceExecutionOutcome::valid_zero(OUI_SOURCE, now_unix);
     };
-    let randomised = info.class == oui::DeviceClass::Randomized;
-    let vendor = if randomised {
-        info.vendor
-    } else if let Some(manufacturer) = info.manufacturer() {
-        manufacturer
-    } else {
-        // No MA-L assignment names the prefix (unregistered, or a block the IEEE Registration
-        // Authority sub-assigns): the registry has no manufacturer to report.
+    let locally_administered = oui::is_locally_administered(bssid) == Some(true);
+    let vendor = info.manufacturer();
+    if !locally_administered && vendor.is_none() {
+        // No MA-L assignment names the prefix (unregistered, or an IEEE sub-assigned block).
         return SourceExecutionOutcome::valid_zero(OUI_SOURCE, now_unix);
-    };
+    }
+    let mut evidence = Evidence::new(
+        EvidenceProvenance::for_scan(OUI_SOURCE, scan_id),
+        if locally_administered {
+            "Locally administered address: manufacturer unknown; address rotation is unverified"
+        } else {
+            "Manufacturer from the IEEE OUI registry"
+        },
+    )
+    .with_attr("locally_administered", locally_administered.to_string())
+    .with_attr("randomisation_status", "unverified");
+    if let Some(vendor) = vendor {
+        evidence = evidence.with_attr("vendor", vendor);
+    }
     let mut entity = Entity::new(EntityKind::MacAddress, bssid, 0.95, scan_id);
-    entity.add_evidence(
-        Evidence::new(
-            EvidenceProvenance::for_scan(OUI_SOURCE, scan_id),
-            if randomised {
-                "Locally administered (randomised) address: it names no manufacturer and may \
-                 rotate"
-            } else {
-                "Manufacturer from the IEEE OUI registry"
-            },
-        )
-        .with_attr("vendor", vendor)
-        .with_attr("randomised", randomised.to_string()),
-    );
+    entity.add_evidence(evidence);
     entities.push(entity);
     SourceExecutionOutcome::success(OUI_SOURCE, now_unix, 1)
 }
