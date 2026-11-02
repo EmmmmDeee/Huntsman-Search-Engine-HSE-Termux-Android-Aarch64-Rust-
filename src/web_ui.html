@@ -457,9 +457,12 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel-body">
 <p class="help">Paste a capture JSON envelope exported with explicit permission by an Android companion. The Rust server checks structure and returns redacted observations only. Imported timestamps and consent are unverified operator claims. This is not live NFC or Bluetooth scanning.</p>
 <form id="rhinser-native-form">
+<label for="rhinser-native-file">Import authorized capture file (JSON, maximum 20 KB)</label>
+<input type="file" id="rhinser-native-file" accept=".json,application/json" aria-label="Import authorized Rhinser capture">
 <label for="rhinser-native-input">NDEF / APDU / Bluetooth capture JSON</label>
 <textarea id="rhinser-native-input" rows="4" maxlength="20000" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder='{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}' required></textarea>
 <button class="btn" id="rhinser-native-run" type="submit">Inspect local capture</button>
+<button class="btn btn-ghost" id="rhinser-native-export" type="button" disabled>Export redacted report</button>
 </form>
 <pre class="mono osint-report" id="rhinser-native-output" role="status">No capture submitted. No device radio accessed.</pre>
 </div></div>
@@ -1798,13 +1801,51 @@ async function osintOffline(method, source, output, button) {
     if(new TextEncoder().encode(body).length>20000)throw new Error('Dataset exceeds browser limit; use Huntsman CLI');
     const result=await api(method,{method:'POST',body});
     $(output).textContent=JSON.stringify(result,null,2);
+    return result;
   }catch(e) {
     $(output).textContent='Review unavailable: '+e.message;
+    return null;
   }finally{submit.disabled=false}
 }
-$('rhinser-native-form').onsubmit=ev=>{
+// The capture stays in this tab. Only the Rust-produced redacted report is exportable.
+let rhinserNativeReport=null;
+function invalidateRhinserReport(){
+  rhinserNativeReport=null;
+  $('rhinser-native-export').disabled=true;
+}
+$('rhinser-native-input').oninput=invalidateRhinserReport;
+$('rhinser-native-file').onchange=async ev=>{
+  invalidateRhinserReport();
+  const file=ev.target.files&&ev.target.files[0];
+  if(!file)return;
+  if(!file.size||file.size>20000){
+    $('rhinser-native-output').textContent='Import refused: capture file must be 1–20000 bytes. Use the CLI for larger captures.';
+    ev.target.value='';
+    return;
+  }
+  try{
+    const contents=await file.text();
+    if(new TextEncoder().encode(contents).length>20000)throw new Error('capture exceeds browser limit');
+    $('rhinser-native-input').value=contents;
+    $('rhinser-native-output').textContent='Capture loaded locally. Choose Inspect local capture to validate it with Rust. No radio was accessed.';
+  }catch(e){
+    $('rhinser-native-output').textContent='Import refused: '+e.message;
+  }
+  ev.target.value='';
+};
+$('rhinser-native-form').onsubmit=async ev=>{
   ev.preventDefault();
-  osintOffline('/api/rhinser/native','rhinser-native-input','rhinser-native-output','rhinser-native-run');
+  invalidateRhinserReport();
+  const result=await osintOffline('/api/rhinser/native','rhinser-native-input','rhinser-native-output','rhinser-native-run');
+  if(result&&result.evidence_role==='operator_submitted_unverified'&&result.radio_access===false&&Array.isArray(result.observations)){
+    rhinserNativeReport=result;
+    $('rhinser-native-export').disabled=false;
+  }else if(result){
+    $('rhinser-native-output').textContent='Unexpected capture response. No report available for export.';
+  }
+};
+$('rhinser-native-export').onclick=()=>{
+  if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');
 };
 $('osint-case-form').onsubmit=ev=>{
   ev.preventDefault();
