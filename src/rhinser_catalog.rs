@@ -101,7 +101,10 @@ impl Catalog {
                             || template.matches("{q}").count() != 1
                             || template.len() > 2048
                     })
-                    || tool.disposition.as_deref().is_some_and(|status| status != "parked_at_last_review")
+                    || tool
+                        .disposition
+                        .as_deref()
+                        .is_some_and(|status| status != "parked_at_last_review")
                     || (tool.disposition.as_deref() == Some("parked_at_last_review")
                         && tool.query_template.is_some())
                     || tool.url.contains('@')
@@ -276,9 +279,18 @@ mod tests {
         );
         assert!(catalog.search_url("t0343", "test").is_err());
         assert!(catalog.search_url("emailosint", "").is_err());
-        assert!(catalog.search_url("emailosint", "person@example.org").is_err());
+        assert!(
+            catalog
+                .search_url("emailosint", "person@example.org")
+                .is_err()
+        );
         assert_eq!(
-            catalog.tool("emailosint").unwrap().tool.disposition.as_deref(),
+            catalog
+                .tool("emailosint")
+                .unwrap()
+                .tool
+                .disposition
+                .as_deref(),
             Some("parked_at_last_review")
         );
     }
