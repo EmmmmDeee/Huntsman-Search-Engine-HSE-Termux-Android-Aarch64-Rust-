@@ -34,7 +34,7 @@ use crate::canonical::canonical_ip;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
-use crate::http::{DEFAULT_USER_AGENT, Request, Transport};
+use crate::http::{Request, Transport};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE: &str = "peeringdb";
@@ -174,9 +174,7 @@ pub fn netfac_url(net_id: u64) -> String {
 }
 
 fn request(url: String) -> Request {
-    Request::get(url)
-        .header("accept", "application/json")
-        .header("user-agent", DEFAULT_USER_AGENT)
+    Request::get_json(url)
 }
 
 fn options() -> FetchOptions {
