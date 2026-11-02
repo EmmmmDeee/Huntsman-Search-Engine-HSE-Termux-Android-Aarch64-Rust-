@@ -1,0 +1,77 @@
+name: Verify public live source canaries
+
+# PR-time receipt for one committed workflow change, plus explicit manual reruns.
+# The historical broad live-collector-smoke.yml remains manual-only.
+# This job uses no provider keys, no secrets, no writes and no deployment privileges.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/verify-public-live-canaries.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-live:
+    name: Genuine binary against public sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      HUNTSMAN_BUILD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.99"
+      - name: Build real Huntsman release binary from this PR revision
+        run: cargo build --locked --release --bin huntsman-recon
+      - name: Probe live public OSINT providers with exact built binary
+        id: probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/huntsman-live"
+          mkdir -p "$out"
+          # Never forward operator credentials to the binary under test.
+          unset GITHUB_TOKEN GH_TOKEN HIBP_API_KEY
+          while IFS='=' read -r key _; do
+            case "$key" in HUNTSMAN_*|HSE_*|*_KEY|*_TOKEN|*_SECRET) unset "$key" ;; esac
+          done < <(env)
+          bin="./target/release/huntsman-recon"
+          printf 'probe\tmodule\texit\tverdict\tobserved\n' > "$out/verdict.tsv"
+          run_probe() {
+            local name="$1" module="$2"
+            shift 2
+            timeout 90 "$bin" "$@" > "$out/$name.out" 2>&1
+            local code=$?
+            local line verdict
+            line="$(awk -F '\t' -v m="$module" '$1==m && ($2=="success" || $2=="valid_zero") {print;exit}' "$out/$name.out" | cut -c1-160)"
+            verdict=FAIL
+            if [ "$code" = 0 ] && [ -n "$line" ]; then verdict=PASS; fi
+            [ -n "$line" ] || line="$(awk -F '\t' -v m="$module" '$1==m {print;exit}' "$out/$name.out" | cut -c1-160)"
+            [ -n "$line" ] || line="no accepted provider row"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$module" "$code" "$verdict" "$line" >> "$out/verdict.tsv"
+            printf '%s: %s exit=%s %s\n' "$module" "$verdict" "$code" "$line"
+          }
+          # Named public, non-sensitive fixtures with stable documented identifiers.
+          run_probe wikidata_q42 wikidata wikidata Q42
+          run_probe github_dtolnay github_user username dtolnay
+          run_probe crates_dtolnay crates_io username dtolnay
+          run_probe peeringdb_13335 peeringdb asn 13335
+          echo "binary_commit=$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo '### Public live provider receipts (actual Rust binary)' >> "$GITHUB_STEP_SUMMARY"
+          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+          cat "$out/verdict.tsv" >> "$GITHUB_STEP_SUMMARY"
+          echo '\`\`\`' >> "$GITHUB_STEP_SUMMARY"
+          for f in "$out"/*.out; do
+            echo "::group::$(basename "$f") (first 60 lines)"
+            head -n 60 "$f" | cut -c1-240
+            echo '::endgroup::'
+          done
+          if ! grep -q $'\tPASS\t' "$out/verdict.tsv"; then
+            echo '::error::No provider returned an accepted public live outcome'
+            exit 1
+          fi
