@@ -670,6 +670,24 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
 
 /// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
 /// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+/// The `Retry-After` suffix of a rate-limit error has one rendering, `http::describe_retry_after`
+/// (R-05). `dehashed` keeps its own `describe_retry`: it renders a `Duration` as `"{n}s"` or
+/// `"unknown"`, a different message.
+#[test]
+fn retry_after_suffix_has_one_definition() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/dehashed/client.rs")
+        .filter(|source| {
+            production_tokens(&source.text)
+                .windows(2)
+                .any(|w| w[0] == "fn" && w[1] == "describe_retry")
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(found.is_empty(), "describe_retry redefined in: {found:?}");
+}
+
 /// The web server names the sensor reports it serves through `web_api_types` only, never the
 /// radar collector modules themselves (R-07).
 #[test]
