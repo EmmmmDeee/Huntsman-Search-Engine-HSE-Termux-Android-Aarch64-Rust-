@@ -15,7 +15,7 @@ use crate::keys::{Keys, Secret};
 use crate::sha256::{hex32, sha256};
 
 /// Cap memory use for image bytes, Base64 encoding, request building and downstream providers.
-pub const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REVERSE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MATCHES: usize = 80;
 const PROVIDERS: [(&str, &str); 3] = [
     ("google_vision", "HSE_GOOGLE_VISION_API_KEY"),
@@ -344,7 +344,7 @@ pub fn search<T: Transport + ?Sized>(
     now: u64,
     live: bool,
 ) -> Result<ImageReport, &'static str> {
-    if image.is_empty() || image.len() > MAX_IMAGE_BYTES || !is_image(image) {
+    if image.is_empty() || image.len() > MAX_REVERSE_IMAGE_BYTES || !is_image(image) {
         return Err("expected a JPEG, PNG, GIF or WebP image of 1 byte to 4 MiB");
     }
     let mut report = ImageReport {
@@ -478,6 +478,6 @@ mod tests {
     fn malformed_and_oversized_input_rejected_before_network() {
         let keys = Keys::parse("").unwrap();
         assert!(search(&NoNetwork, b"not image", &keys, 1, true).is_err());
-        assert!(search(&NoNetwork, &vec![0xff; MAX_IMAGE_BYTES + 1], &keys, 1, true).is_err());
+        assert!(search(&NoNetwork, &vec![0xff; MAX_REVERSE_IMAGE_BYTES + 1], &keys, 1, true).is_err());
     }
 }
