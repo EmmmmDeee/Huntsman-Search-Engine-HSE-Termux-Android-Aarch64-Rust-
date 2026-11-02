@@ -183,19 +183,11 @@ fn build_id_in_notes(notes: &[u8]) -> Option<String> {
             && notes.get(name_at..name_end) == Some(b"GNU\0")
             && (1..=MAX_BUILD_ID_BYTES).contains(&descsz)
         {
-            return Some(hex(&notes[desc_at..desc_end]));
+            return Some(crate::base64::base16_lower(&notes[desc_at..desc_end]));
         }
         at = desc_end.checked_add((4 - descsz % 4) % 4)?;
     }
     None
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02x}");
-        out
-    })
 }
 
 /// What the dynamic section declares: the library's own `SONAME` (when it records one) and the
