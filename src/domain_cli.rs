@@ -201,7 +201,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
         merge_by_uid(&mut entities);
     }
 
-    let mut text = match lookup_report::render(&entities, &outcomes) {
+    let mut text = match lookup_report::render_front_end("domain_cli", &entities, &outcomes) {
         Ok(rendered) => rendered,
         Err(msg) => return DomainRun::Failed(msg),
     };

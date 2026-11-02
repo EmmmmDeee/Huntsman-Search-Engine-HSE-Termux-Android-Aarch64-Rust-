@@ -1097,3 +1097,68 @@ fn an_unasked_breach_leg_cannot_cover_the_exposure_lookup() {
     );
     assert!(passes.covered(ScanKind::Exposure, "ada@example.org"));
 }
+
+/// Each combining front-end ends its printed report with one row of its own, named for its
+/// module, so the operator (and the live smoke) reads its verdict like every source's.
+#[test]
+fn each_combining_front_end_prints_one_row_of_its_own_verdict() {
+    let net = Everywhere::default();
+    let transport = Selected::new(net.clone(), Selection::all());
+    let feeds = || Feeds::new(Box::new(Selected::new(net.clone(), Selection::all())), None);
+    let keys = keys();
+    let printed: [(&str, String); 4] = [
+        (
+            "ip_cli",
+            text_of(ip_cli::run(
+                &transport,
+                &keys,
+                &feeds(),
+                target(ScanKind::Ip),
+                NOW,
+            )),
+        ),
+        (
+            "domain_cli",
+            text_of(domain_cli::run(
+                &transport,
+                &keys,
+                &feeds(),
+                target(ScanKind::Domain),
+                NOW,
+            )),
+        ),
+        (
+            "netblock_cli",
+            text_of(netblock_cli::run(
+                &transport,
+                &feeds(),
+                target(ScanKind::Netblock),
+                NOW,
+            )),
+        ),
+        (
+            "asn_cli",
+            text_of(asn_cli::run(&transport, target(ScanKind::Asn), NOW)),
+        ),
+    ];
+    for (module, text) in printed {
+        let own = text
+            .lines()
+            .filter(|line| line.starts_with(&format!("{module}\t")))
+            .collect::<Vec<_>>();
+        assert_eq!(own.len(), 1, "{module} printed {own:?}");
+        assert!(
+            own[0].contains("\tfound=") && own[0].contains("\tdetail=sources answered "),
+            "{module} printed {:?}",
+            own[0]
+        );
+    }
+}
+
+/// The text a lookup printed.
+fn text_of<R>(run: SourceRun<R>) -> String {
+    match run {
+        SourceRun::Printed { text, .. } => text,
+        SourceRun::Network(why) | SourceRun::Failed(why) => panic!("printed no report: {why}"),
+    }
+}

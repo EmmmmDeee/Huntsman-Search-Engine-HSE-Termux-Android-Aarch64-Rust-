@@ -280,7 +280,7 @@ pub fn run<T: Transport + ?Sized>(
     {
         return run;
     }
-    match lookup_report::render(&report.entities, &report.outcomes) {
+    match lookup_report::render_front_end("ip_cli", &report.entities, &report.outcomes) {
         Ok(text) => IpRun::Printed { text, report },
         Err(message) => IpRun::Failed(message),
     }

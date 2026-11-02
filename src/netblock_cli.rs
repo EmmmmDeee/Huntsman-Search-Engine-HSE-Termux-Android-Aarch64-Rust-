@@ -153,7 +153,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
     {
         return run;
     }
-    match lookup_report::render(&report.entities, &report.outcomes) {
+    match lookup_report::render_front_end("netblock_cli", &report.entities, &report.outcomes) {
         Ok(text) => NetblockRun::Printed { text, report },
         Err(message) => NetblockRun::Failed(message),
     }
