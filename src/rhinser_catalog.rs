@@ -16,6 +16,8 @@ pub struct Tool {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_template: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +101,9 @@ impl Catalog {
                             || template.matches("{q}").count() != 1
                             || template.len() > 2048
                     })
+                    || tool.disposition.as_deref().is_some_and(|status| status != "parked_at_last_review")
+                    || (tool.disposition.as_deref() == Some("parked_at_last_review")
+                        && tool.query_template.is_some())
                     || tool.url.contains('@')
                     || tool.url.chars().any(char::is_control)
                     || !tool_ids.insert(&tool.id)
@@ -150,6 +155,9 @@ impl Catalog {
         let hit = self
             .tool(id)
             .ok_or_else(|| "unknown catalogue tool".to_owned())?;
+        if hit.tool.disposition.as_deref() == Some("parked_at_last_review") {
+            return Err("source was observed parked; query URLs are disabled".to_owned());
+        }
         let template = hit
             .tool
             .query_template
@@ -262,12 +270,17 @@ mod tests {
         let catalog = Catalog::load().unwrap();
         assert_eq!(
             catalog
-                .search_url("emailosint", "person+tag@example.org")
+                .search_url("emailosint_dashboard", "person+tag@example.org")
                 .unwrap(),
-            "https://emailosint.com/?q=person%2Btag%40example.org"
+            "https://www.emailosint.org/dashboard/lookup?email=person%2Btag%40example.org"
         );
         assert!(catalog.search_url("t0343", "test").is_err());
         assert!(catalog.search_url("emailosint", "").is_err());
+        assert!(catalog.search_url("emailosint", "person@example.org").is_err());
+        assert_eq!(
+            catalog.tool("emailosint").unwrap().tool.disposition.as_deref(),
+            Some("parked_at_last_review")
+        );
     }
 
     #[test]

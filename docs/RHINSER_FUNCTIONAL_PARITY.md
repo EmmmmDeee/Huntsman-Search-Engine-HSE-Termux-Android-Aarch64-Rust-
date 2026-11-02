@@ -63,6 +63,12 @@ huntsman-recon osint nfc ndef "D1 01 05 54 02 65 6E 48 69"
 - `cargo fmt --check`, `cargo clippy`, unit/integration suite and Android ARM64 cross-build must pass before the branch may merge.
 - Rootless Termux device execution and Android companion behaviour require **physical-device tests**; passing CI cannot substitute for them.
 
+## Independent source-quality observation (2 November 2026)
+
+The retained historical source ID `emailosint` at `https://emailosint.com/` returned a parked/domain-for-sale page in the available web retrieval. This is an observation at the time of review, not proof of permanent unavailability. The original source entry remains in the 83-reference catalogue for provenance, but its email-bearing query template has been disabled, and the Web UI shows a non-clickable **Parked at last review** record. This prevents accidental submission of an email address to a parked domain. The `.org` service advertises a separate active product; common ownership, data reliability, and lookup-URL functionality have not been independently established.
+
+Other sampled results: ABN Lookup rendered its public page; automated retrieval of NAA RecordSearch returned 403 and ASIC Connect a redirect loop. Those failures are not evidence that either public service is down. A complete 83-source live availability audit remains outstanding.
+
 ## Remaining engineering work
 
 1. Verify directory URL freshness independently and identify official live collection APIs for high-priority sources.

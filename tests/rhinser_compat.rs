@@ -34,14 +34,16 @@ fn all_catalogue_entries_are_accessible_without_network() {
         "osint",
         "catalog",
         "--query",
-        "emailosint",
+        "emailosint_dashboard",
         "abc+test@example.org",
     ]);
     assert!(template.status.success());
     assert_eq!(
         String::from_utf8_lossy(&template.stdout).trim(),
-        "https://emailosint.com/?q=abc%2Btest%40example.org"
+        "https://www.emailosint.org/dashboard/lookup?email=abc%2Btest%40example.org"
     );
+    let parked = run(&["osint", "catalog", "--query", "emailosint", "example@example.org"]);
+    assert!(!parked.status.success(), "parked domains must never generate email-bearing URLs");
 }
 
 #[test]

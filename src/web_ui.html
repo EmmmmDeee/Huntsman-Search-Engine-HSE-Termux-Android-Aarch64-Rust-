@@ -1709,6 +1709,10 @@ function renderRhinserCatalog(){
     if(category&&group.id!==category)continue;
     for(const tool of group.tools){
       if(needle&&![group.name,group.id,tool.name,tool.url].some(s=>s.toLowerCase().includes(needle)))continue;
+      if(tool.disposition==='parked_at_last_review'){
+        rows.push({category:group.name,name:tool.name,url:null,disposition:'Parked at last review'});
+        continue;
+      }
       let url;
       try{
         url=new URL(tool.url);
@@ -1718,9 +1722,11 @@ function renderRhinserCatalog(){
     }
   }
   fill('rhinser-source-list',rows,item=>{
-    const link=el('a','link','Open source');
-    link.href=item.url;link.target='_blank';link.rel='noopener noreferrer';link.referrerPolicy='no-referrer';
-    return [item.category,item.name,link,'Unverified lead'];
+    const link=item.url?el('a','link','Open source'):el('span','help','Unavailable');
+    if(item.url){
+      link.href=item.url;link.target='_blank';link.rel='noopener noreferrer';link.referrerPolicy='no-referrer';
+    }
+    return [item.category,item.name,link,item.disposition||'Unverified lead'];
   });
   $('rhinser-source-status').textContent=rows.length+' of '+rhinserCatalog.toolCount+' unverified source references shown. No third-party search performed.';
 }

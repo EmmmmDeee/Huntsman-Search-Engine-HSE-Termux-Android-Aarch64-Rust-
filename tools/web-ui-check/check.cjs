@@ -805,6 +805,11 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.fill('#rhinser-source-search', 'EmailOSINT');
       check(`${scheme}: Rhinser source-text filtering`, await page.locator('#rhinser-source-list tr').count() === 3,
         await page.textContent('#rhinser-source-list-n'));
+      const parkedEntry = await page.locator('#rhinser-source-list tr').first().evaluate(row => ({
+        links: row.querySelectorAll('a').length, text: row.textContent,
+      }));
+      check(`${scheme}: parked EmailOSINT source cannot leak queries by link`,
+        parkedEntry.links === 0 && parkedEntry.text.includes('Parked at last review'), parkedEntry);
       const rhinserLink = await page.locator('#rhinser-source-list a').first().evaluate(a => ({
         href: a.href, target: a.target, rel: a.rel, referrerPolicy: a.referrerPolicy,
       }));
