@@ -177,7 +177,10 @@ fn live_smoke_verdict_requires_actual_source_success() {
     // A success row cannot override a failed CLI process.
     fs::write(out.join("user-jcs.exit"), "1\n").expect("nonzero exit fixture");
     let nonzero = run();
-    assert!(!nonzero.status.success(), "nonzero exit must invalidate success");
+    assert!(
+        !nonzero.status.success(),
+        "nonzero exit must invalidate success"
+    );
     let verdict = fs::read_to_string(out.join("verdict.tsv")).expect("exit verdict");
     assert!(verdict.contains("lobsters\tuser-jcs\tFAIL\texit=1"));
     fs::write(out.join("user-jcs.exit"), "0\n").expect("restore success exit");
@@ -195,6 +198,9 @@ fn live_smoke_verdict_requires_actual_source_success() {
     )
     .expect("mismatched module/status fixture");
     let mismatched = run();
-    assert!(!mismatched.status.success(), "wrong source/status must fail");
+    assert!(
+        !mismatched.status.success(),
+        "wrong source/status must fail"
+    );
     fs::remove_dir_all(&out).expect("remove fixture");
 }
