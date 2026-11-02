@@ -233,6 +233,20 @@ impl SourceExecutionOutcome {
         }
     }
 
+    /// An accepted label with an explicitly contradictory row count is not evidence.
+    ///
+    /// The constructors already enforce this, but saved scans and the generic
+    /// `observed` constructor can carry a count that disagrees with the label.
+    /// A missing count is preserved for legacy provider contracts.
+    #[must_use]
+    pub const fn is_accepted(&self) -> bool {
+        match (self.kind, self.found) {
+            (SourceOutcomeKind::Success, Some(0))
+            | (SourceOutcomeKind::ValidZero, Some(1..)) => false,
+            (kind, _) => kind.is_accepted(),
+        }
+    }
+
     /// Rows were parsed. Zero rows here is `Inconclusive`: an empty parse is not proof
     /// of absence until the provider contract says so through [`Self::valid_zero`].
     #[must_use]
@@ -414,7 +428,7 @@ pub enum SourceReach {
 impl SourceReach {
     #[must_use]
     pub fn of(outcomes: &[SourceExecutionOutcome]) -> Self {
-        if outcomes.iter().any(|o| o.kind.is_accepted()) {
+        if outcomes.iter().any(SourceExecutionOutcome::is_accepted) {
             return Self::Answered;
         }
         let first = |pick: fn(SourceOutcomeKind) -> bool| {
@@ -986,6 +1000,42 @@ mod tests {
             assert_eq!(reach.unanswered::<()>("L"), None);
             assert_eq!(reach.stopped::<()>("L"), None);
         }
+    }
+
+    #[test]
+    fn contradictory_accepted_counts_never_convert_failure_into_a_verified_answer() {
+        let valid = SourceExecutionOutcome::valid_zero("fixture", 7);
+        let positive = SourceExecutionOutcome::success("fixture", 7, 2);
+        assert!(valid.is_accepted());
+        assert!(positive.is_accepted());
+        for (kind, found) in [
+            (SourceOutcomeKind::ValidZero, Some(2)),
+            (SourceOutcomeKind::Success, Some(0)),
+        ] {
+            let contradiction = SourceExecutionOutcome::observed(
+                "fixture",
+                7,
+                kind,
+                Some(200),
+                found,
+                "contradictory recorded row count",
+            );
+            assert!(contradiction.kind.is_accepted());
+            assert!(!contradiction.is_accepted());
+            assert!(matches!(
+                SourceReach::of(&[contradiction]),
+                SourceReach::Failed(Some(_))
+            ));
+        }
+        assert!(SourceExecutionOutcome::observed(
+            "legacy",
+            7,
+            SourceOutcomeKind::Success,
+            Some(200),
+            None,
+            "legacy provider with no count",
+        )
+        .is_accepted());
     }
 
     #[test]
