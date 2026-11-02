@@ -23,7 +23,9 @@ use crate::value_syntax::find_ascii_ci_bytes;
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const MAX_SEARCH_QUERY_BYTES: usize = 512;
 const CACHE_TTL_SECS: u64 = 300;
-const CACHE_CAPACITY: usize = 256;
+/// Keep anonymous search-cache memory bounded on low-RAM Android phones.
+const CACHE_CAPACITY: usize = 64;
+const MAX_CACHEABLE_BODY_BYTES: usize = 512 * 1024;
 const RETRY_POLICY: BackoffPolicy = BackoffPolicy::new(2, 100, 500, true);
 /// Shared bounded wall-clock budget keeps 16-engine searches usable from a phone Web UI.
 const EXTENDED_BUDGET_SECS: u64 = 110;
@@ -610,6 +612,7 @@ fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
     // Only a semantically successful search is reusable. HTTP success with
     // no external hits is explicitly a ZeroYieldAnomaly, not negative evidence.
     if response.truncated
+        || response.body.len() > MAX_CACHEABLE_BODY_BYTES
         || !(200..300).contains(&response.status)
         || report.outcome.kind != SourceOutcomeKind::Success
         || report.hits.is_empty()
@@ -1454,6 +1457,29 @@ mod tests {
         );
         let report = parse_engine_response(engine, &response, 502);
         assert!(!response_is_cacheable(&response, &report));
+    }
+
+    #[test]
+    fn oversized_search_pages_are_not_retained_in_android_cache() {
+        let engine = EngineSpec {
+            name: "cache_size_test",
+            base_url: "https://cache-size-web-query.invalid/search",
+        };
+        let large = format!(
+            "<a href=\"https://example.org/big\">Big</a>{}",
+            " ".repeat(MAX_CACHEABLE_BODY_BYTES),
+        );
+        let fake = Fake::new(vec![
+            Ok(response(200, &large)),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/fresh">Fresh</a>"#,
+            )),
+        ]);
+        let first = search_engine(&fake, engine, "unique-cache-size", 400).unwrap();
+        let second = search_engine(&fake, engine, "unique-cache-size", 401).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/big");
+        assert_eq!(second.hits[0].url, "https://example.org/fresh");
     }
 
     #[test]
