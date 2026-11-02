@@ -216,7 +216,7 @@ fn parse(
         let Some(title) = row
             .get("title")
             .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.trim().is_empty() && !s.chars().any(char::is_control))
         else {
             skipped += 1;
             continue;
@@ -368,7 +368,10 @@ fn web_search<T: Transport + ?Sized>(
     };
     let mut entities = Vec::new();
     for hit in found.hits.into_iter().take(40) {
-        if !hit.url.starts_with("https://") || hit.url.len() > 2048 {
+        if !hit.url.starts_with("https://")
+            || hit.url.len() > 2048
+            || hit.url.chars().any(char::is_control)
+        {
             continue;
         }
         let evidence = Evidence::new(
@@ -492,6 +495,17 @@ mod tests {
         let fake = OneResponse::json(
             200,
             r#"{"articles":[{"title":"Headline","url":"https://example.org/a\\nInjected"}]}"#,
+        );
+        let report = search(&fake, Source::News, "test", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn rejects_control_characters_in_upstream_titles() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"articles":[{"title":"Headline\\nInjected","url":"https://example.org/a"}]}"#,
         );
         let report = search(&fake, Source::News, "test", "s", 1).unwrap();
         assert!(report.entities.is_empty());
