@@ -431,7 +431,8 @@ mod tests {
             decode(ipv6.as_bytes(), Indicator::Ip("2001:db8::1")),
             Ok(Some(_))
         ));
-        let email = r#"{"success":1,"email":{"value":"test@EXAMPLE.COM","appears":1,"frequency":1}}"#;
+        let email =
+            r#"{"success":1,"email":{"value":"test@EXAMPLE.COM","appears":1,"frequency":1}}"#;
         assert!(matches!(
             decode(email.as_bytes(), Indicator::Email("test@example.com")),
             Ok(Some(_))
