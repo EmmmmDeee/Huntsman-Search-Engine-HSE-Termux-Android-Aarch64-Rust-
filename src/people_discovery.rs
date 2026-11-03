@@ -200,7 +200,7 @@ mod tests {
             self.seen.borrow_mut().push(request.url.clone());
             if self.denied {
                 return Err(TransportFailure {
-                    kind: SourceOutcomeKind::ConnectFailure,
+                    kind: SourceOutcomeKind::TlsFailure,
                     detail: "offline test".into(),
                     blocked: false,
                 });
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_sources_do_not_claim_zero_results_are_confirmed() {
+    fn unavailable_sources_do_not_claim_zero_results_are_confirmed() {
         let fixture = Fixture { seen: RefCell::new(Vec::new()), denied: true };
         let report = discover(&fixture, "Daphne Example", Region::Au, 7200).unwrap();
         assert!(report.candidates.is_empty());
