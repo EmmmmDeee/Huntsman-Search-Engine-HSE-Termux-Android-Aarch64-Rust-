@@ -423,6 +423,16 @@ mod tests {
                 let entity = &report.entities[0];
                 assert!(entity.has_tag("carrier-line:mobile"));
                 assert!(entity.evidence_sources().contains("numverify"));
+                let provider = entity
+                    .evidence
+                    .iter()
+                    .find(|e| e.provenance.source == "numverify")
+                    .expect("Numverify evidence");
+                assert!(
+                    provider.attr_values("provider_scope").eq([
+                        "number-validation metadata only; not subscriber identity, live service status or real-time geolocation"
+                    ])
+                );
                 assert!(text.contains("numverify\tsuccess\tfound=1"), "{text}");
                 assert!(!text.contains("numverify-test-key"));
             }
