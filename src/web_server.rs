@@ -1149,6 +1149,12 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
+        // RFC 9112 §5.1 requires HTTP servers to reject whitespace in
+        // field names (especially before ':') with 400 Bad Request.
+        // Silently ignoring "Content-Length : 1" creates parser ambiguity.
+        if name.is_empty() || name.bytes().any(|byte| matches!(byte, b' ' | b'\t')) {
+            return None;
+        }
         if name.eq_ignore_ascii_case("host") {
             // First Host wins; a second one is malformed and is ignored rather than
             // allowed to override the first.
