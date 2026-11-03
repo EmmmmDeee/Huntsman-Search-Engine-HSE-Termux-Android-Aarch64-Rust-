@@ -36,7 +36,7 @@ SEARCH="$STAGE/search-discovery.json"
 EXTRACT="$STAGE/extracted-candidates.txt"
 START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # stdout contains only the complete 2xx response body (not headers or messages).
-timeout 90 "$BIN" fetch "$URL" --raw-body > "$RAW" ||
+timeout 90 "$BIN" fetch "$URL" --raw-body --max-redirects 0 > "$RAW" ||
   fail 'raw source fetch failed: no complete source body admitted'
 BYTES="$(wc -c < "$RAW" | tr -d '[:space:]')"
 [ "$BYTES" -gt 0 ] && [ "$BYTES" -le 1048576 ] ||
@@ -74,7 +74,7 @@ if [ "$JSON_OK" = 1 ]; then
          evidence_role:"search_leads_only_not_corrobated_claims"},
        extraction:{file:"extracted-candidates.txt",sha256:$extract_sha,
          command_exit:$extract_rc,evidence_role:"derived_candidates_not_verified"},
-       hybrid_online_success:($query_rc==0 and ($r.hits|length)>0
+       hybrid_online_success:($query_rc==0 and $extract_rc==0 and ($r.hits|length)>0
          and ([$r.rounds[].outcomes[]|select(.kind=="success")]|length)>0),
        independent_corroboration:"not_established",
        unredacted_source_body:true,content_private_to_local_casebook:true}' \
