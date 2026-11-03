@@ -169,6 +169,8 @@ mod tests {
             r#"{"valid":true,"carrier":"Example Mobile"}"#,
             r#"{"valid":true,"number":"","carrier":"Example Mobile"}"#,
             r#"{"valid":false,"number":"  "}"#,
+            r#"{"valid":false,"carrier":"Example Mobile"}"#,
+            r#"{"valid":false,"number":"61401981052"}"#,
         ] {
             assert!(
                 decode(body.as_bytes(), "+61401981051").is_err(),
