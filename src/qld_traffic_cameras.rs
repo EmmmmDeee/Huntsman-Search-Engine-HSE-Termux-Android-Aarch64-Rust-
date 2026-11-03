@@ -58,10 +58,7 @@ pub struct Catalogue {
 ///
 /// # Errors
 /// Returns a policy/egress error when the guarded fetch refuses the URL.
-pub fn collect<T: Transport + ?Sized>(
-    transport: &T,
-    now_unix: u64,
-) -> Result<Catalogue, Error> {
+pub fn collect<T: Transport + ?Sized>(transport: &T, now_unix: u64) -> Result<Catalogue, Error> {
     let request = Request::get_json(format!("{ENDPOINT}?apikey={PUBLIC_KEY}"))
         .with_timeout(Duration::from_secs(15));
     let fetched = fetch(
@@ -83,12 +80,8 @@ pub fn collect<T: Transport + ?Sized>(
                 "camera catalogue exceeds 2 MiB",
             ));
         }
-        let document: Value = decode_json(
-            response,
-            SOURCE,
-            now_unix,
-            "QLDTraffic camera catalogue",
-        )?;
+        let document: Value =
+            decode_json(response, SOURCE, now_unix, "QLDTraffic camera catalogue")?;
         parse(&document, now_unix, response.status)
     })();
     Ok(result.unwrap_or_else(|outcome| Catalogue {
@@ -100,21 +93,14 @@ pub fn collect<T: Transport + ?Sized>(
     }))
 }
 
-fn failed(
-    now: u64,
-    kind: SourceOutcomeKind,
-    status: u16,
-    reason: &str,
-) -> SourceExecutionOutcome {
+fn failed(now: u64, kind: SourceOutcomeKind, status: u16, reason: &str) -> SourceExecutionOutcome {
     SourceExecutionOutcome::failed(SOURCE, now, kind, Some(status), reason)
 }
 
 fn short_text(value: Option<&Value>, bound: usize) -> Option<String> {
     let text = value?.as_str()?.trim();
-    (!text.is_empty()
-        && text.len() <= bound
-        && !text.chars().any(char::is_control))
-    .then(|| text.to_owned())
+    (!text.is_empty() && text.len() <= bound && !text.chars().any(char::is_control))
+        .then(|| text.to_owned())
 }
 
 /// A publisher-supplied JPEG reference is retained only from documented camera hosts.
@@ -301,7 +287,9 @@ mod tests {
     fn empty_catalogue_is_valid_zero_but_wrong_shape_is_drift() {
         assert_eq!(
             parse(&json!({"type":"FeatureCollection","features":[]}), 100, 200)
-                .expect("empty").outcome.kind,
+                .expect("empty")
+                .outcome
+                .kind,
             SourceOutcomeKind::ValidZero
         );
         assert!(parse(&json!({"features":[]}), 100, 200).is_err());
@@ -311,7 +299,10 @@ mod tests {
     fn rejects_duplicate_and_non_publisher_image_origin() {
         let mut doc = sample();
         let duplicate = doc["features"][0].clone();
-        doc["features"].as_array_mut().expect("array").push(duplicate);
+        doc["features"]
+            .as_array_mut()
+            .expect("array")
+            .push(duplicate);
         let mut forged = doc["features"][0].clone();
         forged["properties"]["id"] = json!(2);
         forged["properties"]["image_url"] = json!("https://example.com/secret.jpg");
