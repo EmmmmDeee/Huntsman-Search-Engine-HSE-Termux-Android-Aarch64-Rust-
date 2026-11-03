@@ -586,6 +586,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn joined_is_order_invariant_for_positive_counts_and_failures() {
+        let a = EndpointAnswer::Found(7);
+        let b = EndpointAnswer::Found(11);
+        let c = EndpointAnswer::Failed(SourceOutcomeKind::RateLimited);
+        assert_eq!(Joined::of(&[a, b, c]), Joined::Found(18));
+        assert_eq!(Joined::of(&[c, b, a]), Joined::Found(18));
+    }
+
+    #[test]
+    fn missing_or_unvouched_answers_never_prove_absence() {
+        assert_eq!(Joined::of(&[]), Joined::Inconclusive);
+        assert_eq!(Joined::of(&[EndpointAnswer::Found(0)]), Joined::Inconclusive);
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Unvouched]),
+            Joined::Inconclusive
+        );
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Failed(SourceOutcomeKind::BotWaf)]),
+            Joined::Inconclusive
+        );
+    }
+
+    #[test]
     fn joined_found_count_saturates_instead_of_overflowing() {
         assert_eq!(
             Joined::of(&[EndpointAnswer::Found(usize::MAX), EndpointAnswer::Found(1)]),
