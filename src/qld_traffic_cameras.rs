@@ -16,6 +16,8 @@ use crate::fetch::{FetchOptions, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
+pub mod reconcile;
+
 pub const SOURCE: &str = "qld_traffic_cameras";
 pub const ENDPOINT: &str = "https://api.qldtraffic.qld.gov.au/v1/webcams";
 /// The public developer key printed in `QLDTraffic` API specification v1.10, §2.1.1.1.
