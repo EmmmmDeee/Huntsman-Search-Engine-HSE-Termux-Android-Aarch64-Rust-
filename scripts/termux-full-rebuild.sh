@@ -122,47 +122,7 @@ HSE_ACCEPTANCE_SERVER_LOG="$server_log" \
   bash scripts/termux-runtime-acceptance.sh ||
   die "Termux acceptance failed; report: $report; installed binary unchanged"
 grep -q '^PASS  ' "$report" || die 'acceptance produced no passing checks'
-if ! grep -Eq '^PASS[[:space:]]+TERMUX_RUNTIME_ACCEPTANCE[[:space:]]*
-  die "acceptance did not report the device verdict; installed binary unchanged ($report)"
-fi
-
-# A binary can be replaced while an existing service process continues running
-# its previous inode. The operator restarts serve after installation.
-destination="$prefix/bin/huntsman-recon"
-backup="$prefix/bin/.huntsman-recon.previous"
-mkdir -p "$prefix/bin"
-if [[ -L "$destination" || (-e "$destination" && ! -f "$destination") ]]; then
-  die 'refusing to replace a symlink or non-regular installed binary'
-fi
-if [[ -L "$backup" || (-e "$backup" && ! -f "$backup") ]]; then
-  die 'refusing a symlink or non-regular rollback destination'
-fi
-candidate_sha="$(sha256sum "$binary" | cut -d' ' -f1)"
-stage="$(mktemp "$prefix/bin/.huntsman-recon.stage.XXXXXXXX")"
-cp -- "$binary" "$stage"
-chmod 700 "$stage"
-staged_sha="$(sha256sum "$stage" | cut -d' ' -f1)"
-[[ "$staged_sha" == "$candidate_sha" ]] || die 'staged binary checksum mismatch'
-had_previous=0
-if [[ -f "$destination" ]]; then
-  old_stage="$(mktemp "$prefix/bin/.huntsman-recon.old.XXXXXXXX")"
-  cp -p -- "$destination" "$old_stage"
-  mv -f -- "$old_stage" "$backup"
-  had_previous=1
-fi
-mv -f -- "$stage" "$destination"
-stage=""
-if [[ "$("$destination" build-sha 2>/dev/null || true)" != "$revision" ||
-      "$(sha256sum "$destination" | cut -d' ' -f1)" != "$candidate_sha" ]]; then
-  if (( had_previous )); then mv -f -- "$backup" "$destination"; else rm -f -- "$destination"; fi
-  die 'post-install verification failed; previous executable restored where present'
-fi
-note "PASS  pinned native binary installed: $destination"
-note "PASS  provenance: $revision"
-note "PASS  acceptance report: $report"
-if (( had_previous )); then note "Rollback binary retained: $backup"; fi
-note 'Restart an already-running Huntsman serve process to load the new executable.'
- "$report"; then
+if ! grep -Eq '^PASS[[:space:]]+TERMUX_RUNTIME_ACCEPTANCE[[:space:]]*$' "$report"; then
   die "acceptance did not report the device verdict; installed binary unchanged ($report)"
 fi
 
