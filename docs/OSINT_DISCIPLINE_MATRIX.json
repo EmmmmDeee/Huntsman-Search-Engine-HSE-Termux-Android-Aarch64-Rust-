@@ -1,0 +1,255 @@
+{
+  "schema": "huntsman.osint.disciplines",
+  "baseline_commit": "0f3a306a7c664c5f39c781da5d1f0870b8ba3287",
+  "tree_entries": 1460,
+  "files": 1360,
+  "inventory": "docs/OSINT_FILE_MATRIX.tsv",
+  "collection": "none",
+  "disclaimer": "Source ownership is not live source availability, verified identity or verified location.",
+  "disciplines": [
+    {
+      "id": "GEOINT",
+      "priority": "focus",
+      "owner": "src/geoint.rs",
+      "files": [
+        "src/geoint.rs",
+        "src/geohash.rs",
+        "src/nominatim.rs",
+        "src/osint_area_risk.rs"
+      ],
+      "synergy": [
+        "NETINT",
+        "DOCINT",
+        "IMINT"
+      ],
+      "scope": "Operator-provided/public place coordinates, map features, dated locations; no person-location assertions.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "HUMINT",
+      "priority": "focus",
+      "owner": "src/osint_casework.rs",
+      "files": [
+        "src/osint_casework.rs",
+        "src/rhinser_workspace.rs",
+        "src/public_osint.rs"
+      ],
+      "synergy": [
+        "SOCMINT",
+        "DOCINT",
+        "GEOINT"
+      ],
+      "scope": "Attributed public statements and consented interviews; no impersonation or covert elicitation.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "NETINT",
+      "priority": "focus",
+      "owner": "src/network_cli.rs",
+      "files": [
+        "src/network_cli.rs",
+        "src/rdap.rs",
+        "src/dns.rs",
+        "src/asn_cli.rs"
+      ],
+      "synergy": [
+        "GEOINT",
+        "CYBINT"
+      ],
+      "scope": "Public RDAP/DNS/ASN metadata; IP location is approximate, not personal geolocation.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "SOCMINT",
+      "priority": "standard",
+      "owner": "src/public_osint.rs",
+      "files": [
+        "src/atproto.rs",
+        "src/bluesky_user.rs",
+        "src/mastodon_user.rs"
+      ],
+      "synergy": [
+        "HUMINT",
+        "WEBINT"
+      ],
+      "scope": "Public social posts; no speculative identity linkages.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "IMINT",
+      "priority": "standard",
+      "owner": "src/exif.rs",
+      "files": [
+        "src/exif.rs",
+        "src/docmeta.rs"
+      ],
+      "synergy": [
+        "GEOINT",
+        "DOCINT"
+      ],
+      "scope": "Image metadata, integrity and source attribution; no face identification.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "SIGINT",
+      "priority": "standard",
+      "owner": "src/wifi_radar.rs",
+      "files": [
+        "src/wifi_radar.rs",
+        "src/cell_radar.rs",
+        "src/radar.rs"
+      ],
+      "synergy": [
+        "NETINT",
+        "GEOINT"
+      ],
+      "scope": "Consented local radio data subject to Android permissions; no third-party tracking.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "CYBINT",
+      "priority": "standard",
+      "owner": "src/indicator_sources.rs",
+      "files": [
+        "src/indicator_sources.rs",
+        "src/threat_feeds.rs",
+        "src/mitm_guard.rs"
+      ],
+      "synergy": [
+        "NETINT",
+        "TECHINT"
+      ],
+      "scope": "Defensive threat-indicator research.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "WEBINT",
+      "priority": "standard",
+      "owner": "src/search.rs",
+      "files": [
+        "src/search.rs",
+        "src/common_crawl.rs",
+        "src/archived_page.rs"
+      ],
+      "synergy": [
+        "SOCMINT",
+        "DOCINT"
+      ],
+      "scope": "Public web and archives with capture dates.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "DOCINT",
+      "priority": "standard",
+      "owner": "src/docmeta.rs",
+      "files": [
+        "src/docmeta.rs",
+        "src/docx.rs",
+        "src/retrieval_artifact.rs"
+      ],
+      "synergy": [
+        "HUMINT",
+        "GEOINT"
+      ],
+      "scope": "Public-document metadata and historical records.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "FININT",
+      "priority": "standard",
+      "owner": "src/blockchain.rs",
+      "files": [
+        "src/blockchain.rs",
+        "src/eth_rpc.rs",
+        "src/base_rpc.rs"
+      ],
+      "synergy": [
+        "NETINT",
+        "DOCINT"
+      ],
+      "scope": "Public-chain/organisational data; ownership requires independent proof.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "TECHINT",
+      "priority": "standard",
+      "owner": "src/source_intel.rs",
+      "files": [
+        "src/source_intel.rs",
+        "src/rhinser_native.rs"
+      ],
+      "synergy": [
+        "NETINT",
+        "CYBINT"
+      ],
+      "scope": "Source/API and Android APK technical inspection.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "IDINT",
+      "priority": "standard",
+      "owner": "src/identity_resolution.rs",
+      "files": [
+        "src/identity_resolution.rs",
+        "src/entity_reality.rs",
+        "src/identity.rs"
+      ],
+      "synergy": [
+        "HUMINT",
+        "EVIDENCE"
+      ],
+      "scope": "Hypothetical identity resolution with evidence gates.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "EVIDENCE",
+      "priority": "critical",
+      "owner": "src/evidence_register.rs",
+      "files": [
+        "src/evidence_register.rs",
+        "src/evidence_register/matrix.rs",
+        "src/evidence_ancestry.rs",
+        "src/scan_store.rs"
+      ],
+      "synergy": [
+        "GEOINT",
+        "HUMINT",
+        "NETINT"
+      ],
+      "scope": "Canonical observations, ancestry and matrix. No duplication of verification logic.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "ORTHOGONAL",
+      "priority": "critical",
+      "owner": "src/orthogonal_osint.rs",
+      "files": [
+        "src/orthogonal_osint.rs",
+        "src/correlator.rs",
+        "src/source_registry.rs"
+      ],
+      "synergy": [
+        "EVIDENCE",
+        "NETINT"
+      ],
+      "scope": "Modality gap proposals, not executed collection.",
+      "status": "mapped_not_runtime_verified"
+    },
+    {
+      "id": "WEBUI",
+      "priority": "critical",
+      "owner": "src/web_server.rs",
+      "files": [
+        "src/web_server.rs",
+        "src/web_ui.html",
+        "src/web_server/guard.rs"
+      ],
+      "synergy": [
+        "EVIDENCE",
+        "ORTHOGONAL"
+      ],
+      "scope": "Loopback-first protected embedded UI and read-only HTTP API.",
+      "status": "mapped_not_runtime_verified"
+    }
+  ]
+}
