@@ -114,8 +114,7 @@ pub fn collect_gis<T: Transport + ?Sized>(
                 "GIS camera catalogue exceeds 2 MiB",
             ));
         }
-        let json: Value =
-            decode_json(response, SOURCE_GIS, now_unix, "TMR state-road camera GIS")?;
+        let json: Value = decode_json(response, SOURCE_GIS, now_unix, "TMR state-road camera GIS")?;
         parse_gis(&json, now_unix, response.status)
     })();
     Ok(result.unwrap_or_else(|outcome| GisCatalogue {
@@ -127,12 +126,7 @@ pub fn collect_gis<T: Transport + ?Sized>(
     }))
 }
 
-fn failed(
-    now: u64,
-    status: u16,
-    kind: SourceOutcomeKind,
-    reason: &str,
-) -> SourceExecutionOutcome {
+fn failed(now: u64, status: u16, kind: SourceOutcomeKind, reason: &str) -> SourceExecutionOutcome {
     SourceExecutionOutcome::failed(SOURCE_GIS, now, kind, Some(status), reason)
 }
 
@@ -155,8 +149,7 @@ fn point(value: &Value) -> Option<(f64, f64)> {
 
 fn bounded_text(value: Option<&Value>, length: usize) -> Option<String> {
     let s = value?.as_str()?.trim();
-    (!s.is_empty() && s.len() <= length && !s.chars().any(char::is_control))
-        .then(|| s.to_owned())
+    (!s.is_empty() && s.len() <= length && !s.chars().any(char::is_control)).then(|| s.to_owned())
 }
 
 fn row(feature: &Value) -> Option<GisCamera> {
@@ -335,9 +328,8 @@ pub fn reconcile(webcam: &Catalogue, gis: &GisCatalogue) -> Option<Reconciliatio
             });
         }
     }
-    let candidate_search_truncated = webcam_only_ids.len() > 256
-        || gis_only_ids.len() > 256
-        || spatial_candidates.len() > 64;
+    let candidate_search_truncated =
+        webcam_only_ids.len() > 256 || gis_only_ids.len() > 256 || spatial_candidates.len() > 64;
     spatial_candidates.truncate(64);
     Some(Reconciliation {
         webcam_count: primary.len(),
@@ -368,8 +360,12 @@ mod tests {
                 "properties":{"camera_id":id,"description":"Sample camera","direction":"North","locality":"Archerfield"}
             }))
             .collect();
-        parse_gis(&json!({"type":"FeatureCollection","features":features}), 10, 200)
-            .expect("GIS fixture")
+        parse_gis(
+            &json!({"type":"FeatureCollection","features":features}),
+            10,
+            200,
+        )
+        .expect("GIS fixture")
     }
 
     fn camera(id: u64) -> Camera {
@@ -408,7 +404,10 @@ mod tests {
         assert_eq!(r.gis_only_ids, vec![4, 5]);
         assert_eq!(r.publisher_families, 1);
         assert_eq!(r.spatial_candidates.len(), 1);
-        assert_ne!(r.spatial_candidates[0].webcam_id, r.spatial_candidates[0].gis_id);
+        assert_ne!(
+            r.spatial_candidates[0].webcam_id,
+            r.spatial_candidates[0].gis_id
+        );
     }
 
     #[test]
