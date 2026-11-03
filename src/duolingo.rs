@@ -329,9 +329,20 @@ mod tests {
         ] {
             let report = lookup(&OneResponse::json(200, body), "a@example.com", "s", 1)
                 .expect("provider failures stay typed reports");
-            assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift, "{body}");
-            assert!(report.entities.is_empty(), "{body}: malformed response leaked candidates");
-            assert_ne!(report.outcome.found, Some(1), "{body}: partial response counted as success");
+            assert_eq!(
+                report.outcome.kind,
+                SourceOutcomeKind::SchemaDrift,
+                "{body}"
+            );
+            assert!(
+                report.entities.is_empty(),
+                "{body}: malformed response leaked candidates"
+            );
+            assert_ne!(
+                report.outcome.found,
+                Some(1),
+                "{body}: partial response counted as success"
+            );
         }
     }
 
