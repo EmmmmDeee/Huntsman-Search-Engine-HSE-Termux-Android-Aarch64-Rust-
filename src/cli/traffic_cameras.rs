@@ -22,22 +22,30 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--district" if district.is_none() => {
-                let Some(value) = args.next() else { return fail(EX_USAGE, USAGE); };
+                let Some(value) = args.next() else {
+                    return fail(EX_USAGE, USAGE);
+                };
                 if value.trim().is_empty() || value.len() > 80 {
                     return fail(EX_USAGE, USAGE);
                 }
                 district = Some(value);
             }
             "--locality" if locality.is_none() => {
-                let Some(value) = args.next() else { return fail(EX_USAGE, USAGE); };
+                let Some(value) = args.next() else {
+                    return fail(EX_USAGE, USAGE);
+                };
                 if value.trim().is_empty() || value.len() > 120 {
                     return fail(EX_USAGE, USAGE);
                 }
                 locality = Some(value);
             }
             "--limit" => {
-                let Some(value) = args.next() else { return fail(EX_USAGE, USAGE); };
-                let Ok(parsed) = value.parse::<usize>() else { return fail(EX_USAGE, USAGE); };
+                let Some(value) = args.next() else {
+                    return fail(EX_USAGE, USAGE);
+                };
+                let Ok(parsed) = value.parse::<usize>() else {
+                    return fail(EX_USAGE, USAGE);
+                };
                 if !(1..=MAX_CAMERAS).contains(&parsed) {
                     return fail(EX_USAGE, USAGE);
                 }
@@ -58,10 +66,14 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     let accepted = report.outcome.kind.is_accepted();
     let provider_total = report.cameras.len();
     if let Some(filter) = district {
-        report.cameras.retain(|entry| entry.district.eq_ignore_ascii_case(filter));
+        report
+            .cameras
+            .retain(|entry| entry.district.eq_ignore_ascii_case(filter));
     }
     if let Some(filter) = locality {
-        report.cameras.retain(|entry| entry.locality.eq_ignore_ascii_case(filter));
+        report
+            .cameras
+            .retain(|entry| entry.locality.eq_ignore_ascii_case(filter));
     }
     let matching = report.cameras.len();
     report.cameras.truncate(limit);
@@ -77,5 +89,9 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         Ok(text) => println!("{text}"),
         Err(_) => return fail(EX_DATAERR, "unable to serialize camera catalogue"),
     }
-    if accepted { ExitCode::SUCCESS } else { ExitCode::from(EX_UNAVAILABLE) }
+    if accepted {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EX_UNAVAILABLE)
+    }
 }
