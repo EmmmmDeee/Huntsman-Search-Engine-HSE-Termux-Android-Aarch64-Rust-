@@ -52,8 +52,14 @@ fn osint_matrix_http_contract_is_read_only_authenticated_and_bounded() {
     );
     assert!(head.starts_with("HTTP/1.1 200 OK"));
     assert_eq!(head.split_once("\r\n\r\n").unwrap().1, "");
-    let get_len = answer.lines().find(|line| line.starts_with("Content-Length:")).unwrap();
-    let head_len = head.lines().find(|line| line.starts_with("Content-Length:")).unwrap();
+    let get_len = answer
+        .lines()
+        .find(|line| line.starts_with("Content-Length:"))
+        .unwrap();
+    let head_len = head
+        .lines()
+        .find(|line| line.starts_with("Content-Length:"))
+        .unwrap();
     assert_eq!(get_len, head_len);
     let denied = response_for_request(
         "GET /api/osint/matrix HTTP/1.1\r\nHost: public.example\r\n\r\n",
