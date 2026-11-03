@@ -59,7 +59,10 @@ fn handset_verdict_requires_an_exact_success_record() {
 
     for (report, expected) in [
         ("PASS  TERMUX_RUNTIME_ACCEPTANCE\n", true),
-        ("PASS  HOST_RUNTIME_ACCEPTANCE (not a handset pass)\n", false),
+        (
+            "PASS  HOST_RUNTIME_ACCEPTANCE (not a handset pass)\n",
+            false,
+        ),
         ("INFO  TERMUX_RUNTIME_ACCEPTANCE\n", false),
         ("FAIL  TERMUX_RUNTIME_ACCEPTANCE\n", false),
         ("PASS  TERMUX_RUNTIME_ACCEPTANCE_MOCK\n", false),
@@ -73,6 +76,10 @@ fn handset_verdict_requires_an_exact_success_record() {
             ])
             .status()
             .expect("CI provides bash and grep");
-        assert_eq!(status.success(), expected, "unexpected verdict for {report:?}");
+        assert_eq!(
+            status.success(),
+            expected,
+            "unexpected verdict for {report:?}"
+        );
     }
 }
