@@ -3177,6 +3177,7 @@ fn every_page_route_refuses_other_sites_through_one_guard() {
     let routes = Routes {
         lookups: Some(echo_lookups()),
         research: None,
+        people_discover: None,
         radar: Some(unused_sensor()),
         cells: Some(unused_sensor()),
         track: Some(unused_sensor()),
