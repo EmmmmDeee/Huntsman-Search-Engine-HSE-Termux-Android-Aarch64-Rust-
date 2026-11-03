@@ -34,8 +34,11 @@ never implement alternative source-independence estimates.
 | Username | public code, forums, social, platform presence |
 | Organisation, ABN/ACN | community knowledge graph (separate from official registry), authoritative register, dated public search, code |
 | IP, ASN, netblock | infrastructure attribution, historical indexes |
-| Person | community knowledge graph, official public records and dated public search |
+| Person | community knowledge graph, official public records, dated search and public human-source statements |
+| Coordinates | geocoding/satellite GEOINT, dated transport, public NETINT, consented RF and archives |
 | MAC, SSID | consented, explicitly aged radio observations |
+
+The `human_public` acquisition class is limited to attributable published material or consented submissions; it does not perform human elicitation, impersonation or account matching. Coordinate `netint` suggestions are about public infrastructure coverage, never person location. `nominatim`, `stac` and `opensky` are classified as acquisition metadata sources only, and never prove who was present. Existing Web UI analysis renders the shared `orthogonal` report with no parallel engine.
 
 These are **hypothesis classes** to investigate. The module does not
 assert that a provider is configured, reachable or authorised. A

@@ -1,0 +1,3 @@
+- Extend the canonical bounded orthogonal acquisition planner for coordinate GEOINT, transport, NETINT, RF and dated archives.
+- Add published human-source checks for person and username entities without elicitation or identity inference.
+- Reuse existing shared analysis JSON and phone Web UI; add regression tests and a SHA-anchored file matrix without runtime dependencies or new network calls.
