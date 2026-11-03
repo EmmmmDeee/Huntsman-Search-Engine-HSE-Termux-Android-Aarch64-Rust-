@@ -97,6 +97,7 @@ fn is_network(args: &[String]) -> bool {
         || args.first().is_some_and(|a| a == "email")
         || args.first().is_some_and(|a| a == "exposure")
         || args.first().is_some_and(|a| a == "username")
+        || args.first().is_some_and(|a| a == "people-discover")
         || args.first().is_some_and(|a| a == "query")
         || args.first().is_some_and(|a| a == "domain")
         || args.first().is_some_and(|a| a == "ip")
