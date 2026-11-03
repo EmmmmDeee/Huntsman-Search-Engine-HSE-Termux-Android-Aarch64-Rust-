@@ -350,6 +350,96 @@ fn wifi_radar_requires_same_origin_lookup_header_and_public_bind_token() {
 }
 
 #[test]
+fn traffic_camera_api_is_explicitly_triggered_guarded_and_preserves_source_outcomes() {
+    let config = ServeConfig::parse("0.0.0.0:8080", Some("secret".into())).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let routes = Routes {
+        traffic_cameras: Some(Sensor {
+            handler: Arc::new(move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "webcam": {"outcome":{"kind":"success"},"cameras":[{"id":136}]},
+                    "gis": {"outcome":{"kind":"rate_limited"},"cameras":[]},
+                    "reconciliation": null,
+                    "independent_publisher_families": 1
+                }))
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
+        }),
+        ..Routes::default()
+    };
+    let request = |method: &str, headers: &str, path: &str| {
+        text(respond(
+            &format!("{method} {path} HTTP/1.1\r\n{headers}\r\n"),
+            &config,
+            &routes,
+        ))
+    };
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let auth = "Authorization: Bearer secret\r\n";
+    let lookup = "X-Huntsman-Lookup: 1\r\n";
+    assert!(request("GET", lookup, TRAFFIC_CAMERAS_PATH).starts_with("HTTP/1.1 401"));
+    assert!(request("GET", auth, TRAFFIC_CAMERAS_PATH).starts_with("HTTP/1.1 403"));
+    assert!(
+        request(
+            "GET",
+            &format!("{auth}{lookup}Sec-Fetch-Site: cross-site\r\n"),
+            TRAFFIC_CAMERAS_PATH,
+        )
+        .starts_with("HTTP/1.1 403")
+    );
+    assert!(
+        request("POST", &format!("{auth}{lookup}"), TRAFFIC_CAMERAS_PATH)
+            .starts_with("HTTP/1.1 405")
+    );
+    assert!(
+        request("HEAD", &format!("{auth}{lookup}"), TRAFFIC_CAMERAS_PATH)
+            .starts_with("HTTP/1.1 405")
+    );
+    assert!(
+        request(
+            "GET",
+            &format!("{auth}{lookup}"),
+            "/api/traffic/cameras?q=untrusted",
+        )
+        .starts_with("HTTP/1.1 400")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "refused requests must not fetch");
+    let response = request("GET", &format!("{auth}{lookup}"), TRAFFIC_CAMERAS_PATH);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let body: serde_json::Value =
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(body["webcam"]["cameras"][0]["id"], 136);
+    assert_eq!(body["gis"]["outcome"]["kind"], "rate_limited");
+    assert!(body["reconciliation"].is_null());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        text(respond(
+            &format!("GET {TRAFFIC_CAMERAS_PATH} HTTP/1.1\r\n{auth}{lookup}\r\n"),
+            &config,
+            &Routes::default(),
+        ))
+        .starts_with("HTTP/1.1 404")
+    );
+}
+
+#[test]
+fn traffic_camera_radar_ui_only_fetches_on_button_press() {
+    for needle in [
+        r#"id="qtread""#,
+        r#"id="qtrows""#,
+        r#"id="qtconflicts""#,
+        r#"id="qtjson""#,
+        "$('qtread').onclick=async",
+        "api('/api/traffic/cameras')",
+        "Nearby different-ID",
+    ] {
+        assert!(INDEX_HTML.contains(needle), "missing camera UI contract: {needle}");
+    }
+}
+
+#[test]
 fn wifi_radar_busy_and_adapter_error_are_failures_not_empty_scans() {
     let config = ServeConfig::parse("127.0.0.1:8080", None).unwrap();
     let live = Arc::new(AtomicUsize::new(1));
