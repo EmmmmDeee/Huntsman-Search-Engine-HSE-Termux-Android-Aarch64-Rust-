@@ -332,7 +332,9 @@ fn write_complete_public_body<W: Write>(
     if response.truncated {
         return Err("raw response truncated at transport byte limit".into());
     }
-    if !(200..300).contains(&response.status)
+    // A 206 Partial Content is not the full published object, even when the
+    // transport read the entire range without setting truncated.
+    if response.status != 200
         || !matches!(
             kind,
             SourceOutcomeKind::Inconclusive
@@ -341,7 +343,7 @@ fn write_complete_public_body<W: Write>(
         )
     {
         return Err(format!(
-            "raw response was not a usable HTTP 2xx (HTTP {}, outcome {})",
+            "raw response was not a complete HTTP 200 (HTTP {}, outcome {})",
             response.status,
             kind.as_str()
         ));
@@ -396,6 +398,8 @@ mod tests {
         assert_eq!(output, source.body);
         for (status, truncated, outcome) in [
             (200, true, SourceOutcomeKind::Inconclusive),
+            (206, false, SourceOutcomeKind::Inconclusive),
+            (204, false, SourceOutcomeKind::Inconclusive),
             (403, false, SourceOutcomeKind::Upstream4xx),
             (200, false, SourceOutcomeKind::BotWaf),
             (429, false, SourceOutcomeKind::RateLimited),
