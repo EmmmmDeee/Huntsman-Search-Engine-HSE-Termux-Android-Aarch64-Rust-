@@ -4,10 +4,21 @@
 //! (keyless). Blocking, over an injected [`crate::http::Transport`]. Challenge pages,
 //! truncated bodies, and non-success HTTP statuses are never turned into evidence.
 //!
-//! Live Connect has returned an immediate 403 WAF since 2026-08-04; this module is
-//! a library with fake-transport tests. `people` calls it; a WAF is [`Error::Invalid`]
-//! so it cannot be read as "no director records", and `people_cli` records that
-//! without aborting other sources. Coordinates
+//! Live Connect is an Oracle ADF (JSF) application: observed 2026-11-03, a `GET` with
+//! `searchText` answers 200 with the 90 KB search *landing page* (`javax.faces.ViewState`, the
+//! `af_document` splash), because the register search runs only through a browser's JavaScript
+//! POST session; before 2026-08-04 it answered an immediate 403 WAF. Neither is evidence: the
+//! landing page is recorded as [`SourceOutcomeKind::InteractionDrift`] (the source needs an
+//! interaction this client does not perform — a contract to re-verify, not a retry), a WAF is
+//! [`Error::Invalid`], and no 2xx page without an explicit empty-result marker is read as "no
+//! director records". ASIC's own register pages confirm the limit (checked 2026-11-03,
+//! <https://www.asic.gov.au/online-services/search-asic-registers/company-and-organisation-registers>):
+//! the free search returns organisation basics only, and officeholder details are sold as paid
+//! company extracts ($10–$23); the RegistryConnect APIs are for approved brokers and
+//! digital service providers, with new applications closed until 2027. So a keyless
+//! director-by-name search has no official channel today. `people` calls it and `people_cli`
+//! records the outcome without aborting other sources; the request is kept as the live probe
+//! that notices if Connect ever serves results to a `GET` again. Coordinates
 //! use [`crate::postcode_au::offline_centroid`] (L3). ATT&CK
 //! self-labels from the legacy module are not copied.
 
@@ -52,7 +63,9 @@ pub struct Report {
 /// # Errors
 ///
 /// [`Error::Network`] when egress blocks the request. [`Error::Invalid`] when
-/// the request never produced readable HTML and nothing was emitted.
+/// the request never produced readable HTML and nothing was emitted. Connect's interactive
+/// landing page is not an error: it is returned as a report whose one outcome is
+/// [`SourceOutcomeKind::InteractionDrift`].
 pub fn lookup<T: Transport + ?Sized>(
     transport: &T,
     name: &str,
@@ -76,6 +89,14 @@ pub fn lookup<T: Transport + ?Sized>(
         .header("Accept", "text/html,application/xhtml+xml");
     let fetched = fetch::fetch(transport, request, None, &options, SRC, now_unix)?;
     let (outcome, mut entities) = parse_fetched(fetched, name, scan_id, now_unix);
+    if outcome.kind == SourceOutcomeKind::InteractionDrift {
+        // Connect answered, with its interactive landing page: a verdict about the source's
+        // contract, recorded as such so the scan shows it, never an error about the request.
+        return Ok(Report {
+            entities: Vec::new(),
+            outcomes: vec![outcome],
+        });
+    }
     let html_read_ok = outcome.kind.is_accepted();
     let found_any = !entities.is_empty();
     if request_failed(html_read_ok, found_any) {
@@ -146,6 +167,16 @@ fn parse_fetched(
     }
 
     let rows = parse_asic_html(&html, full_name);
+    if rows.is_empty() && is_interactive_landing_page(&html) {
+        return some_status(
+            SourceOutcomeKind::InteractionDrift,
+            Some(response.status),
+            Some(
+                "ASIC Connect served its JavaScript search landing page (Oracle ADF, javax.faces.ViewState); the register search runs only in a browser session, so a GET cannot read director records"
+                    .into(),
+            ),
+        );
+    }
     if rows.is_empty() && !explicit_empty_response(&html) {
         return some_status(
             SourceOutcomeKind::Inconclusive,
@@ -172,6 +203,17 @@ fn parse_fetched(
         SourceExecutionOutcome::success(SRC, now_unix, rows.len()).with_http_status(response.status)
     };
     (outcome, entities)
+}
+
+/// Whether `html` is Connect's ADF search landing page rather than a result page: it carries the
+/// JSF view state the JavaScript search posts back, together with the landing title or the ADF
+/// document splash. A result page would carry the register rows instead. **Pure.**
+fn is_interactive_landing_page(html: &str) -> bool {
+    html.contains("javax.faces.ViewState")
+        && (html.contains("af_document")
+            || html
+                .to_ascii_lowercase()
+                .contains("search company and other registers"))
 }
 
 // A 2xx response may be a landing, session, or unexpected error page.
@@ -453,6 +495,32 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    /// The shape Connect answered a `GET` with on 2026-11-03: its ADF landing page, carrying the
+    /// JSF view state the browser's search would post back and no register rows.
+    const ADF_LANDING: &str = r#"<!DOCTYPE HTML><html class="p_AFMaximized" dir="ltr" lang="en-AU"><head><title>Search Company and Other Registers</title></head><body class="af_document p_AFMaximized"><noscript>This page uses JavaScript and requires a JavaScript enabled browser.</noscript><div id="afr::Splash" class="af_document_splash-screen"></div><form id="f1" name="f1" method="POST"><input type="hidden" name="javax.faces.ViewState" value="!-abc123"></form></body></html>"#;
+
+    #[test]
+    fn adf_landing_page_is_interaction_drift_not_inconclusive() {
+        let fake = ScriptedTransport::new(vec![Ok(html_ok(ADF_LANDING))]);
+        let report = lookup(&fake, "Haigen Bamford", "scan", 1).expect("recorded, not an error");
+        assert!(report.entities.is_empty(), "{:?}", report.entities);
+        let outcome = &report.outcomes[0];
+        assert_eq!(outcome.kind, SourceOutcomeKind::InteractionDrift);
+        assert_eq!(outcome.found, None);
+        assert_eq!(outcome.http_status, Some(200));
+        assert!(
+            outcome.detail.as_deref().is_some_and(
+                |d| d.contains("javax.faces.ViewState") && d.contains("browser session")
+            ),
+            "{outcome:?}"
+        );
+        // A plain page with the view state but a real result row is not the landing page.
+        assert!(is_interactive_landing_page(ADF_LANDING));
+        assert!(!is_interactive_landing_page(
+            "<html><body>Welcome to ASIC Connect</body></html>"
+        ));
     }
 
     #[test]

@@ -244,7 +244,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <form class="toolbar" id="allsearch"><input type="search" id="allq" class="grow" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search every scan: text, *wild*, /re/" aria-label="Search every scan: plain text, a *wild*card or a /regular expression/"><button class="btn" type="submit">Search</button></form>
 <div id="allhits" hidden><div class="toolbar"><span class="when grow" id="allcount"></span><button class="btn" id="allclose" type="button">Close</button></div><div class="panel" id="allresults"></div></div>
 <div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><button class="btn" id="scompare" type="button">Compare</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
-<div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
+<div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Sources</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Alerts <span class="badge" id="alerts-n"></span> <button class="btn" id="alertsload" type="button">Show</button></div><div class="table-wrap" id="alertswrap" hidden><table><thead><tr><th>When</th><th>Raised</th><th>Earlier</th><th>Later</th><th>Reasons</th></tr></thead><tbody id="alerts"></tbody></table></div></div>
 </div>
 </section>
@@ -604,6 +604,7 @@ const live=s=>ACTIVE.includes(s);
 const stTone=s=>s==='FINISHED'?'ok':/FAIL/.test(s)?'bad':/ABORT/.test(s)?'warn':'info';
 const RISK=[['high','High','bad'],['medium','Medium','warn'],['low','Low','info'],['info','Info','ok']];
 const riskTone=r=>(RISK.find(x=>x[0]===String(r||'').toLowerCase())||[0,0,''])[2];
+function sources(s){const n=(s.modules_run||[]).length,e=Number(s.errors)||0,w=el('span','risks',n?n+(n===1?' source':' sources'):(live(s.status)?'':'none ran'));if(e)w.append(' ',el('span','label '+(n?'warn':'bad'),e+' unresolved'));return w}
 function risks(c){const w=el('span','risks');for(const [k,name,t] of RISK){const b=el('span','label '+t,(c&&c[k])||0);b.append(el('span','sr',' '+name));w.append(b)}return w}
 const VIEWS=['scans','newscan','scan','compare','analyze','radar','inspect','settings','about'];
 let view='',gen=0,timer=0,resume=null,detailed=false;
@@ -805,11 +806,11 @@ function showScans(){
     a.href='#/scan/'+enc(s.id);
     const pick=el('span','pick');pick.append(tick('Select '+name,picked.has(s.id),on=>{if(on)picked.add(s.id);else picked.delete(s.id);bulk()}),a);
     put(tr,'Name',pick);put(tr,'Target',el('span','mono',s.target));put(tr,'Started',when(s.started||s.created)).className='nw';put(tr,'Finished',when(s.ended)).className='nw';
-    put(tr,'Status',el('span','label '+stTone(s.status),s.status));put(tr,'Elements',s.elements);put(tr,'Correlations',risks(s.correlations));
+    put(tr,'Status',el('span','label '+stTone(s.status),s.status));put(tr,'Elements',s.elements);put(tr,'Correlations',risks(s.correlations));put(tr,'Sources',sources(s));
     act.append(live(s.status)?button('Stop',()=>act1('stop',[s.id])):button('Delete',()=>act1('delete',[s.id])),button('Re-run',()=>act1('rerun',[s.id])),button('Export',()=>exportJson([s.id])));
     put(tr,'Action',act);tb.append(tr);
   }
-  if(!shown.length)none(tb,'No scan matches this filter.',8);
+  if(!shown.length)none(tb,'No scan matches this filter.',9);
   $('sempty').hidden=scans.length>0;$('slist').hidden=!scans.length;bulk();
 }
 function bulk(){
