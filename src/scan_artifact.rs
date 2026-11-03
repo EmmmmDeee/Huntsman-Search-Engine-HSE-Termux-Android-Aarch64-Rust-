@@ -208,10 +208,7 @@ impl ArtifactHistory {
     }
 
     /// Borrow matching history identifiers to avoid copying the entire index.
-    pub(crate) fn scan_ids_for_entity_ref(
-        &self,
-        uid: &str,
-    ) -> impl Iterator<Item = &str> {
+    pub(crate) fn scan_ids_for_entity_ref(&self, uid: &str) -> impl Iterator<Item = &str> {
         self.by_uid
             .get(uid)
             .into_iter()
@@ -333,6 +330,38 @@ impl ScanArtifact {
 mod tests {
     use super::*;
     use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
+
+    #[test]
+    fn saved_source_observations_reach_analyze_web_contract() {
+        let mut domain = Entity::new(EntityKind::Domain, "example.org", 0.8, "saved");
+        domain.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "saved"), "DNS A record")
+                .with_attr("ip", "192.0.2.5"),
+        );
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.5", 0.8, "saved");
+        ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "saved"),
+            "registered network observation",
+        ));
+        let mut history = ArtifactHistory::default();
+        history
+            .by_uid
+            .entry(domain.uid.clone())
+            .or_default()
+            .insert("saved".to_owned());
+        history.by_scan.insert("saved".to_owned(), vec![domain, ip]);
+
+        let body = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .expect("analysis from saved source evidence");
+        let links = body["synergy"]["links"].as_array().expect("join array");
+        assert_eq!(links.len(), 1, "{body}");
+        assert_eq!(links[0]["relation"], "reported_dns_address");
+        assert_eq!(links[0]["status"], "independently_observed_target");
+        assert_eq!(links[0]["source_scan_id"], "saved");
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("scan-artifact-{name}-{}", std::process::id()));
