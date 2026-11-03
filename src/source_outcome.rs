@@ -1076,11 +1076,13 @@ mod tests {
                 SourceReach::Failed(_)
             ));
         }
-        assert!(none_accepted::<()>(
-            &[SourceExecutionOutcome::valid_zero("verified", 7)],
-            "lookup"
-        )
-        .is_none());
+        assert!(
+            none_accepted::<()>(
+                &[SourceExecutionOutcome::valid_zero("verified", 7)],
+                "lookup"
+            )
+            .is_none()
+        );
     }
 
     #[test]
