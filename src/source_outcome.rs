@@ -161,13 +161,14 @@ impl Joined {
     /// not; else inconclusive. **Pure.**
     #[must_use]
     pub fn of(answers: &[EndpointAnswer]) -> Self {
-        let found: usize = answers
-            .iter()
-            .map(|answer| match answer {
+        // Provider counts are untrusted: preserve the maximum representable total
+        // rather than overflowing or panicking when aggregating large responses.
+        let found = answers.iter().fold(0usize, |total, answer| {
+            total.saturating_add(match answer {
                 EndpointAnswer::Found(count) => *count,
                 _ => 0,
             })
-            .sum();
+        });
         if found > 0 {
             return Self::Found(found);
         }
@@ -618,6 +619,37 @@ pub fn classify_fetch(status: u16, body: &str) -> SourceOutcomeKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joined_count_saturates_for_untrusted_provider_totals() {
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Found(usize::MAX), EndpointAnswer::Found(1)]),
+            Joined::Found(usize::MAX)
+        );
+    }
+
+    #[test]
+    fn joined_positive_counts_are_order_invariant() {
+        let a = EndpointAnswer::Found(7);
+        let b = EndpointAnswer::Found(11);
+        let failed = EndpointAnswer::Failed(SourceOutcomeKind::RateLimited);
+        assert_eq!(Joined::of(&[a, b, failed]), Joined::Found(18));
+        assert_eq!(Joined::of(&[failed, b, a]), Joined::Found(18));
+    }
+
+    #[test]
+    fn unverified_or_partial_answers_cannot_prove_absence() {
+        assert_eq!(Joined::of(&[]), Joined::Inconclusive);
+        assert_eq!(Joined::of(&[EndpointAnswer::Found(0)]), Joined::Inconclusive);
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Unvouched]),
+            Joined::Inconclusive
+        );
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Failed(SourceOutcomeKind::BotWaf)]),
+            Joined::Inconclusive
+        );
+    }
 
     #[test]
     fn none_accepted_names_why_and_always_exits_unavailable() {
