@@ -52,11 +52,28 @@ fn reserve_reader_slot() -> bool {
     }
 }
 
-fn uptime_secs() -> Option<f64> {
-    let data = read_bounded(Path::new("/proc/uptime"), 128).ok()?;
-    let first = std::str::from_utf8(&data).ok()?.split_whitespace().next()?;
-    let seconds = first.parse::<f64>().ok()?;
-    (seconds.is_finite() && seconds >= 0.0).then_some(seconds)
+/// Use the same boot-clock diagnostic for the CLI, tracking and Web UI.
+/// Unknown/malformed clocks are evidence gaps, not a reason to trust old scans.
+fn parse_uptime(data: &[u8]) -> Result<f64, &'static str> {
+    let text = std::str::from_utf8(data).map_err(|_| "uptime_invalid_utf8")?;
+    let first = text.split_whitespace().next().ok_or("uptime_missing")?;
+    let seconds = first.parse::<f64>().map_err(|_| "uptime_parse_failed")?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err("uptime_invalid_value");
+    }
+    Ok(seconds)
+}
+
+fn uptime_secs() -> Result<f64, &'static str> {
+    let data = read_bounded(Path::new("/proc/uptime"), 128).map_err(|_| "uptime_read_failed")?;
+    parse_uptime(&data)
+}
+
+fn parse_live_wifi(raw: &[u8]) -> Result<wifi_radar::WifiScan, huntsman_recon::error::Error> {
+    let clock = uptime_secs();
+    let mut scan = wifi_radar::parse_scan(raw, clock.as_ref().ok().copied())?;
+    scan.boot_clock_status = clock.map_or_else(|reason| reason, |_| "uptime_valid");
+    Ok(scan)
 }
 
 /// Collect real Android cached scan results. An independent reader drains the
@@ -156,7 +173,7 @@ fn collect_termux_cells() -> Result<Vec<u8>, String> {
 /// No root and no active scan. Missing Termux:API is an explicit error.
 pub(super) fn capture_wifi() -> Result<wifi_radar::WifiScan, String> {
     let data = collect_termux_wifi()?;
-    wifi_radar::parse_scan(&data, uptime_secs()).map_err(|e| e.to_string())
+    parse_live_wifi(&data).map_err(|e| e.to_string())
 }
 
 /// The cells Android reports, shared by the CLI and the mobile Web UI: no root, no modem scan.
@@ -310,7 +327,7 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     let result = if replay {
         wifi_radar::parse_replay(&raw)
     } else {
-        wifi_radar::parse_scan(&raw, uptime_secs())
+        parse_live_wifi(&raw)
     };
     let parsed = match result {
         Ok(parsed) => parsed,
@@ -560,7 +577,7 @@ fn track_cmd(args: &[String]) -> ExitCode {
     let wifi = if replay {
         wifi_radar::parse_replay(&raw)
     } else {
-        wifi_radar::parse_scan(&raw, uptime_secs())
+        parse_live_wifi(&raw)
     };
     let wifi = match wifi {
         Ok(wifi) => wifi,
@@ -673,7 +690,17 @@ fn render_track(report: &radar::TrackReport) -> String {
 // variant even when the internal tracking implementation changes.
 #[cfg(test)]
 mod track_storage_contract_tests {
-    use super::{radar, track_log_lookup_error};
+    use super::{parse_uptime, radar, track_log_lookup_error};
+
+    #[test]
+    fn uptime_parser_reports_distinct_evidence_failures() {
+        assert_eq!(parse_uptime(b"787200.16 123.45"), Ok(787_200.16));
+        assert_eq!(parse_uptime(b""), Err("uptime_missing"));
+        assert_eq!(parse_uptime(b"bad 1.0"), Err("uptime_parse_failed"));
+        assert_eq!(parse_uptime(b"-1 0"), Err("uptime_invalid_value"));
+        assert_eq!(parse_uptime(b"NaN 0"), Err("uptime_invalid_value"));
+        assert_eq!(parse_uptime(&[0xff]), Err("uptime_invalid_utf8"));
+    }
 
     #[test]
     fn unavailable_track_write_maps_to_http_503_without_losing_reason() {

@@ -519,6 +519,9 @@ fn the_radar_table_shows_every_observation_field() {
         "o.channel_bandwidth_mhz??''",
         "o.capabilities||o.sighting?.encryption||''",
         "o.os_timestamp_us??''",
+        "o.freshness_reason||'not_reported_by_binary'",
+        "scan.boot_clock_status||'not_reported_by_binary'",
+        "<th>Freshness</th><th>Reason</th>",
         "<th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th>",
     ] {
         assert!(INDEX_HTML.contains(needed), "the page lacks {needed}");
