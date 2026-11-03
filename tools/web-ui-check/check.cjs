@@ -39,7 +39,7 @@ const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isM
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter; four more the
 // Radar tab's cell intelligence (PCI, site, timing advance, neighbours, anomaly indicators).
 // Six more KiB cover the read-only Rhinser source directory.
-const PAGE_BUDGET = 142 * 1024;
+const PAGE_BUDGET = 144 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -662,6 +662,12 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check(`${scheme}: Analysis shows every count the API answers`,
         analysed.counts && Object.keys(analysed.counts).length > 0 && Object.entries(analysed.counts).every(([k, v]) => counts[k] === String(v)) && (await page.textContent('#areport')).length > 0,
         { counts, api: analysed.counts });
+      check(`${scheme}: orthogonal opportunities match saved scan analysis`,
+        analysed.report && analysed.report.orthogonal &&
+        (await page.$$('#orthlist details')).length === analysed.report.orthogonal.opportunities.length &&
+        (await page.textContent('#orthnote')).includes('Not executed'),
+        { reported: analysed.report && analysed.report.orthogonal && analysed.report.orthogonal.opportunities.length,
+          visible: (await page.$$('#orthlist details')).length });
       await audit(page, `${scheme} analysis`);
 
       // Browse: the data types, then one type's elements with the full raw record behind each.

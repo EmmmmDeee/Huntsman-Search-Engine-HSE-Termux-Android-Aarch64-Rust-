@@ -7,6 +7,9 @@ on:
   pull_request:
     paths:
       - '.github/workflows/verify-public-live-canaries.yml'
+      - 'src/orthogonal_osint.rs'
+      - 'src/web_ui.html'
+      - 'tests/orthogonal_osint.rs'
   workflow_dispatch:
 
 permissions:

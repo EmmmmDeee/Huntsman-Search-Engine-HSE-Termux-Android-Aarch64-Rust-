@@ -307,7 +307,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
 <div id="rmitm" hidden><div class="panel-heading">MITM / evil-twin indicators (not confirmed attacks)</div><p class="note" id="rmitmstatus" role="status"></p><div class="table-wrap"><table><thead><tr><th>Severity</th><th>Indicator</th><th>SSID</th><th>BSSID</th><th>Evidence</th><th>Suggested action</th></tr></thead><tbody id="rmitmrows"></tbody></table></div></div>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th><th>Age (s)</th><th>Freshness</th><th>Reason</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
 </div>
 <div class="panel" id="rcresult" hidden>
 <div class="panel-heading">Cells Android reports <span class="badge" id="rcrows-n"></span></div>
@@ -391,6 +391,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Counts</div><dl class="kv" id="acounts"></dl></div>
 <div class="panel"><div class="panel-heading">Limitations</div><dl class="kv" id="alimits"></dl></div>
 </div>
+<div class="panel"><div class="panel-heading">Orthogonal OSINT opportunities</div><p class="help pad" id="orthnote" role="status">Evidence coverage only; missing sources have not been queried and modalities are not proof of independence.</p><div class="pad" id="orthlist"></div></div>
 <div class="panel"><div class="panel-heading">Analysis report</div><p class="help pad">Offline, over the saved entities only: the relations, pivots and coverage derived from what the scan kept, as the server returns them. Refused while the scan runs or once an element is flagged a false positive.</p><div id="areport"></div></div>
 </div>
 <div id="pane-settings" hidden>
@@ -689,6 +690,7 @@ $('rread').onclick=async()=>{
       o.os_timestamp_us??'',
       o.age_secs==null?'unknown':Math.round(o.age_secs),
       o.freshness||'unknown',
+      o.freshness_reason||'not_reported_by_binary',
       radarPivot(o)
     ]);
     const mitm=scan.mitm_assessment;
@@ -700,7 +702,8 @@ $('rread').onclick=async()=>{
     }
     $('rsummary').textContent='Cache requested at '+radarReadAt.toLocaleString()+
       ' (browser clock; not observation time) · Source: '+scan.source+' · status: '+scan.status+
-      ' · records: '+scan.observed+' · rejected: '+scan.rejected;
+      ' · records: '+scan.observed+' · rejected: '+scan.rejected+
+      ' · boot clock: '+(scan.boot_clock_status||'not_reported_by_binary');
     $('rstatus').textContent=scan.status==='inconclusive'
       ?'Android returned no usable cached observations. Nearby networks may still exist.'
       :scan.status==='stale_only'
@@ -1493,6 +1496,17 @@ async function analysis(){
   kv('acounts',Object.entries(r.counts||{}));
   kv('alimits',Object.entries(r.limitations||{}).map(([k,v])=>[k,String(v)]));
   $('areport').replaceChildren(value(r.report));
+  const orth=r.report&&r.report.orthogonal, rows=orth&&orth.opportunities||[];
+  $('orthnote').textContent=orth
+    ?rows.length+' proposed checks · '+(orth.omitted_opportunities||0)+' omitted by limit. Not executed; distinct modalities are not proven-independent evidence.'
+    :'This build returned no orthogonal analysis; no collection coverage is implied.';
+  const area=$('orthlist');area.replaceChildren();
+  for(const o of rows){
+    const item=el('details'),head=el('summary','',show(o.entity_kind)+': '+show(o.entity_uid)+' · missing '+show(o.missing_modality));
+    const p=el('p','help',show(o.suggested_check));
+    const evidence=el('p','when','Observed: '+(o.observed_modalities||[]).join(', ')+' · ancestry: '+show(o.independence_status)+' · proven routes: '+show(o.proven_independent_routes));
+    item.append(head,p,evidence);area.append(item);
+  }
 }
 function scanSettings(){
   const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;

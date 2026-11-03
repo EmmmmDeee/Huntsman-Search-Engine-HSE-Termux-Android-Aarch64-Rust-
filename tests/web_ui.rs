@@ -42,7 +42,7 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// Raised to 142 KiB for the Rhinser offline source directory in Multi-hop Analysis:
 /// 83 locally served catalogue references, on-page filtering, and explicit HTTPS link opening.
 /// Phone-browser runtime performance remains an independent acceptance gate.
-const PAGE_BUDGET: usize = 142 * 1024;
+const PAGE_BUDGET: usize = 144 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
