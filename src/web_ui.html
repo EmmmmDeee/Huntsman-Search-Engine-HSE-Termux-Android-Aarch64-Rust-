@@ -489,6 +489,9 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="table-wrap"><table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>closeness</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="acorrelations-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table></div><p class="note" id="anote"></p></div>
+<div class="panel"><div class="panel-heading">Orthogonal OSINT joins <span class="badge" id="asynergy-n"></span></div>
+<p class="help pad">Joined evidence across source types. These are investigative leads, not verified ownership, identity or confirmed relationships.</p>
+<div class="table-wrap"><table><thead><tr><th>source entity</th><th>reported link</th><th>target entity</th><th>status</th><th>provenance</th></tr></thead><tbody id="asynergy"></tbody></table></div><p class="note" id="asynergy-note"></p></div>
 <div class="panel"><div class="panel-heading">Saved scans <span class="badge" id="ascans-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>entity</th><th>tier</th><th>saved scans</th></tr></thead><tbody id="ascans"></tbody></table></div><p class="note" id="ascan"></p></div>
 <div class="panel"><div class="panel-heading">Gaps <span class="badge" id="agaps-n"></span></div>
@@ -1690,6 +1693,9 @@ function showAnalysis(saved){
   fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,Number(p.closeness).toFixed(2),p.articulation?'yes':'']);
   fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
   $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
+  const synergy=body.synergy||{links:[],truncated:false};
+  fill('asynergy',synergy.links||[],l=>[who(l.from_uid),show(l.relation),who(l.to_uid),show(l.status),(l.source||'')+(l.target_source?' + '+l.target_source:'')]);
+  $('asynergy-note').textContent=synergy.truncated?'TRUNCATED: the bounded join inventory is incomplete.':'No relationship is verified by this join; independent target observation is not proof of the link.';
   const cross=body.cross_scan;
   $('ascan').textContent=cross==null?'No saved scans were given to this server.':cross==='None'?'No saved scan shares an entity with these seeds.':'';
   const bridged=cross&&cross!=='None'?(cross.Transitive?cross.Transitive.links.map(l=>[who(l.via_entity_uid),show(l.tier),l.origin_scan_id+' -> '+l.target_scan_id]):(cross.Historical||cross.Relation).matches.map(b=>[who(b.entity.uid),show(b.tier),b.overlapping_scans.join(', ')])):[];
