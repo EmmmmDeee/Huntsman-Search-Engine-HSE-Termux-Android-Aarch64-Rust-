@@ -325,7 +325,8 @@ mod tests {
             assert!(
                 report.entities.iter().any(|entity| {
                     entity.kind == EntityKind::Url
-                        && entity.raw_value == format!("https://www.duolingo.com/profile/{username}")
+                        && entity.raw_value
+                            == format!("https://www.duolingo.com/profile/{username}")
                 }),
                 "missing profile for {username}"
             );
