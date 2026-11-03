@@ -39,7 +39,7 @@ fn sources_routes_a_domain_through_multiple_source_classes() {
 
 #[test]
 fn sources_routes_au_phone_in_canonical_e164_as_discovery_only() {
-    for raw in ["+61 405 409 302", "0405 409 302"] {
+    for raw in ["+61 412 345 678", "0412 345 678"] {
         let out = bin().args(["sources", raw]).output().unwrap();
         assert!(
             out.status.success(),
@@ -60,7 +60,7 @@ fn sources_routes_au_phone_in_canonical_e164_as_discovery_only() {
             );
         }
         assert!(
-            stdout.matches("%22%2B61405409302%22").count() == 2,
+            stdout.matches("%22%2B61412345678%22").count() == 2,
             "{stdout}"
         );
     }
