@@ -442,6 +442,7 @@ struct RecursionJson<'a> {
     correlations: &'a [Correlation],
     metrics: &'a huntsman_recon::metrics::ScanMetrics,
     gaps: &'a huntsman_recon::gap::GapReport,
+    orthogonal: &'a huntsman_recon::orthogonal_osint::OrthogonalReport,
     pivots: &'a [huntsman_recon::pivot::PivotScore],
     /// Every entity's exposure score and the tags behind it, highest first.
     exposures: &'a [huntsman_recon::exposure::ExposureFinding],
@@ -482,6 +483,7 @@ fn recursion_json<'a>(
         correlations: &analysis.correlations,
         metrics: &analysis.metrics,
         gaps: &analysis.gaps,
+        orthogonal: &analysis.orthogonal,
         pivots: &analysis.pivots,
         exposures: &analysis.intelligence.exposures,
         outcomes: &report.outcomes,
@@ -666,6 +668,20 @@ fn print_recursion_analysis(
             escape_controls(&orphan.kind),
             escape_controls(&orphan.value),
             orphan.action
+        );
+    }
+    println!(
+        "orthogonal opportunities={} omitted={} independent_routes_require_proof=true",
+        analysis.orthogonal.opportunities.len(),
+        analysis.orthogonal.omitted_opportunities
+    );
+    for opportunity in &analysis.orthogonal.opportunities {
+        println!(
+            "orthogonal\t{}\tmissing={}\tproof={}\t{}",
+            label(&opportunity.entity_uid),
+            opportunity.missing_modality,
+            opportunity.independence_status,
+            opportunity.suggested_check
         );
     }
     println!("pivots={}", analysis.pivots.len());
