@@ -137,13 +137,14 @@ fn acquisition_modality(source: &str) -> &'static str {
         // Wikidata is community-curated: never mislabel it as an official
         // identity registry or an independent identity proof.
         "wikidata" => "knowledge_graph",
-        "peeringdb" | "rdap" | "rdap_legs" | "dns" | "crtsh"
-        | "certspotter" | "bgpview" | "dnsbl" => "infra",
-        "wayback_cdx" | "common_crawl" | "archived_page" | "web_query"
-        | "public_osint" | "bing" | "brave" | "mojeek" => "search",
+        "peeringdb" | "rdap" | "rdap_legs" | "dns" | "crtsh" | "certspotter" | "bgpview"
+        | "dnsbl" => "infra",
+        "wayback_cdx" | "common_crawl" | "archived_page" | "web_query" | "public_osint"
+        | "bing" | "brave" | "mojeek" => "search",
         "gitlab_user" | "github_repos" | "docker_hub_user" => "code",
-        "bluesky_user" | "mastodon_user" | "atproto" | "tiktok_public_contact"
-        | "keybase" => "social",
+        "bluesky_user" | "mastodon_user" | "atproto" | "tiktok_public_contact" | "keybase" => {
+            "social"
+        }
         "wifi_radar" | "cell_radar" | "opencellid" => "rf",
         "xposedornot" => "breach",
         _ => source_family(source),
