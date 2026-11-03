@@ -27,6 +27,10 @@ pub enum JoinStatus {
 pub struct SynergyLink {
     pub from_uid: String,
     pub to_uid: String,
+    pub from_kind: &'static str,
+    pub from_value: String,
+    pub to_kind: &'static str,
+    pub to_value: String,
     pub relation: &'static str,
     pub attribute: &'static str,
     pub source: String,
@@ -147,6 +151,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
                         let new_link = SynergyLink {
                             from_uid: entity.uid.clone(),
                             to_uid: target.uid.clone(),
+                            from_kind: entity.kind.as_str(),
+                            from_value: entity.value.clone(),
+                            to_kind: target.kind.as_str(),
+                            to_value: target.value.clone(),
                             relation,
                             attribute,
                             source: evidence.provenance.source.clone(),
