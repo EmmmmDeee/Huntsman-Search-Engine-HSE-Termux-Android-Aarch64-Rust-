@@ -27,7 +27,9 @@ struct Probe {
 }
 
 /// This is an acquisition *hypothesis* catalogue, not a source capability
-/// assertion. Existing correlator taxonomy is the sole modality classifier.
+/// assertion. The correlator taxonomy is the default. A narrow, explicit
+/// acquisition-only adapter recognises newer live collectors without changing
+/// the global corroboration categories or their identity rules.
 const DOMAIN: &[Probe] = &[
     Probe {
         modality: "infra",
@@ -76,6 +78,10 @@ const USERNAME: &[Probe] = &[
 ];
 const ORG: &[Probe] = &[
     Probe {
+        modality: "knowledge_graph",
+        check: "Check source-attributed public knowledge-graph identifiers; community claims are not official registry records.",
+    },
+    Probe {
         modality: "identity_registry",
         check: "Check relevant authoritative business or organisation register identifiers.",
     },
@@ -100,6 +106,10 @@ const IP: &[Probe] = &[
 ];
 const PERSON: &[Probe] = &[
     Probe {
+        modality: "knowledge_graph",
+        check: "Cross-check explicitly sourced public knowledge-graph statements; namesakes and community assertions do not establish identity.",
+    },
+    Probe {
         modality: "identity_registry",
         check: "Check publicly available authoritative records with exact identifiers.",
     },
@@ -112,6 +122,34 @@ const RF: &[Probe] = &[Probe {
     modality: "rf",
     check: "Compare consented radio observations with their acquisition and freshness evidence; never infer location from a cache.",
 }];
+
+/// A more granular *acquisition* modality than the corroborator's family.
+/// Keeping this adapter local avoids silently changing identity/correlation
+/// rules that consume `correlator::source_family` for different purposes.
+/// Exact IDs are the canonical live collector IDs, never user-supplied
+/// `provenance.source_family` labels. Neither a collector ID nor a modality
+/// proves that evidence is true or independent.
+fn acquisition_modality(source: &str) -> &'static str {
+    match source.trim().to_ascii_lowercase().as_str() {
+        // Official registries and regulatory filing clients are source
+        // modalities only; their lineage is NOT authenticated by this tag.
+        "acnc" | "sec_edgar" | "gleif" | "asic_persons" => "identity_registry",
+        // Wikidata is community-curated: never mislabel it as an official
+        // identity registry or an independent identity proof.
+        "wikidata" => "knowledge_graph",
+        "peeringdb" | "rdap" | "rdap_legs" | "dns" | "crtsh" | "certspotter" | "bgpview"
+        | "dnsbl" => "infra",
+        "wayback_cdx" | "common_crawl" | "archived_page" | "web_query" | "public_osint"
+        | "bing" | "brave" | "mojeek" => "search",
+        "gitlab_user" | "github_repos" | "docker_hub_user" => "code",
+        "bluesky_user" | "mastodon_user" | "atproto" | "tiktok_public_contact" | "keybase" => {
+            "social"
+        }
+        "wifi_radar" | "cell_radar" | "opencellid" => "rf",
+        "xposedornot" => "breach",
+        _ => source_family(source),
+    }
+}
 
 fn probes(kind: &EntityKind) -> &'static [Probe] {
     match kind {
@@ -130,7 +168,7 @@ fn probes(kind: &EntityKind) -> &'static [Probe] {
 pub struct OrthogonalOpportunity {
     pub entity_uid: String,
     pub entity_kind: String,
-    /// The reused correlator taxonomy; categories can overlap upstream origins.
+    /// Acquisition modality derived from canonical collector IDs, not independently proven origins.
     pub observed_modalities: Vec<String>,
     pub missing_modality: &'static str,
     pub suggested_check: &'static str,
@@ -211,7 +249,7 @@ pub fn discover(entities: &[Entity], ancestry: &EvidenceAncestryGraph) -> Orthog
             }
             let lineage = Lineage::of(evidence);
             let collector = evidence.provenance.corroboration_key();
-            let classified = source_family(&evidence.provenance.source);
+            let classified = acquisition_modality(&evidence.provenance.source);
             // The ABR collector is admitted only through the existing verified
             // registry lineage gate, never through a user-written family label.
             let family = if classified == "other"
