@@ -147,6 +147,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
                             },
                             interpretation: "discovery lead only; relationship not independently verified",
                         };
+                        if !links.contains_key(&key) && links.len() >= MAX_LINKS {
+                            truncated = true;
+                            break 'entities;
+                        }
                         match links.entry(key) {
                             std::collections::btree_map::Entry::Occupied(mut entry) => {
                                 if entry.get().status == JoinStatus::SourceClaimOnly
@@ -156,10 +160,6 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
                                 }
                             }
                             std::collections::btree_map::Entry::Vacant(entry) => {
-                                if links.len() >= MAX_LINKS {
-                                    truncated = true;
-                                    break 'entities;
-                                }
                                 entry.insert(new_link);
                             }
                         }
