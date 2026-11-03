@@ -130,6 +130,7 @@ pub mod intelligence;
 pub mod internetdb;
 pub mod ip_cli;
 pub mod ipinfo;
+pub mod ipinfo_lite;
 pub mod ipqs;
 pub mod isc;
 pub mod itunes;
