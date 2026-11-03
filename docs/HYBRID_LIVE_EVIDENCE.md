@@ -10,7 +10,8 @@ redaction, or terminal markup**. Public HTTPS URLs only; the parser refuses
 `--allow-private`, `--bearer`, `--header` and `--keys` in raw mode.
 
 The raw mode fails before emitting any bytes for a truncated transport response,
-a non-2xx HTTP response or a classified challenge/WAF/error. The hybrid
+any status other than HTTP 200 (including 206 Partial Content) or a classified
+challenge/WAF/error. The hybrid
 script supplies `--max-redirects 0`, so a redirected response is not silently
 attributed to the initial URL; a 3xx is a failed capture, not evidence. An ordinary HTTP
 200 body remains an *observed response body*, **not** evidence that a returned
@@ -45,11 +46,15 @@ Each completed receipt is under `$HUNTSMAN_HOME/hybrid/receipt-XXXXXX` (else
   source URL, body byte count, separate SHA-256 digests of those three files,
   typed per-provider outcomes and semantic limitations.
 
-A `PASS` requires a complete non-challenge public 2xx source response,
+A `PASS` requires a complete non-challenge public HTTP 200 source response,
 a successful offline candidate extraction and at least one observed
 search-engine discovery lead with a zero command exit.
 In other cases a successfully retrieved source body remains saved and tagged
-`PARTIAL` (exit 69). A failed raw retrieval publishes no completed receipt.
+`PARTIAL` (exit 69). A failed raw retrieval publishes no completed receipt. An HTML/JSON text body
+can be extracted as candidates; a binary or non-UTF-8 source body is still kept
+byte-for-byte with an extraction failure and a `PARTIAL` verdict, never falsely
+labelled as containing zero entities. Failed search JSON also retains the raw
+source, the separate search-output hash and the extraction command status.
 Source capture has a 1 MiB local admission limit. Search and extracted outputs
 are individually limited to 1 MiB. If those limits are insufficient, do not
 silently truncate bytes and then claim source completeness.
