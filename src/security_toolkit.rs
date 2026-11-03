@@ -65,7 +65,11 @@ pub const TOOLS: &[ToolCapability] = &[
         status: "unavailable",
         commands: &[],
         implemented: &[],
-        missing: &["SQL injection detection", "DBMS fingerprinting", "SQLmap-compatible payloads"],
+        missing: &[
+            "SQL injection detection",
+            "DBMS fingerprinting",
+            "SQLmap-compatible payloads",
+        ],
         termux_constraint: "No SQL injection tests are performed by this entry",
     },
     ToolCapability {
@@ -85,7 +89,11 @@ pub const TOOLS: &[ToolCapability] = &[
         status: "existing_subset",
         commands: &["radar wifi --json", "mitm audit"],
         implemented: &["Read-only OS-cached Wi-Fi metadata and advisory anomaly checks"],
-        missing: &["Monitor-mode capture", "packet injection", "WPA key recovery"],
+        missing: &[
+            "Monitor-mode capture",
+            "packet injection",
+            "WPA key recovery",
+        ],
         termux_constraint: "Raw 802.11 monitor/injection operations are not available in ordinary unprivileged Android userland",
     },
     ToolCapability {
@@ -94,7 +102,9 @@ pub const TOOLS: &[ToolCapability] = &[
         category: "passive_dns",
         status: "existing_subset",
         commands: &["domain DOMAIN", "scan DOMAIN -k domain"],
-        implemented: &["Native passive subdomain sources, CT certificates, DNS and evidence pivots"],
+        implemented: &[
+            "Native passive subdomain sources, CT certificates, DNS and evidence pivots",
+        ],
         missing: &["Subfinder provider-for-provider coverage and equivalent tuning"],
         termux_constraint: "Ordinary HTTPS/DNS only; no root required",
     },
@@ -104,7 +114,10 @@ pub const TOOLS: &[ToolCapability] = &[
         category: "forensics",
         status: "existing_subset",
         commands: &["exif IMAGE-FILE", "docmeta FILE"],
-        implemented: &["Native bounded EXIF/GPS parsing", "XMP and document metadata extraction"],
+        implemented: &[
+            "Native bounded EXIF/GPS parsing",
+            "XMP and document metadata extraction",
+        ],
         missing: &["Complete ExifTool format/tag catalogue", "metadata writing"],
         termux_constraint: "Local file access only; embedded location is an unverified claim",
     },
