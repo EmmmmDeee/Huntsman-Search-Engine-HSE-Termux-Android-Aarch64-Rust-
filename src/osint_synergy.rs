@@ -74,6 +74,7 @@ fn attributes(kind: &EntityKind) -> &'static [(&'static str, EntityKind, &'stati
         EntityKind::IpAddress => &[
             ("asn", EntityKind::Asn, "reported_routing_asn"),
             ("hostname", EntityKind::Domain, "reported_reverse_hostname"),
+            ("ptr", EntityKind::Domain, "reported_reverse_hostname"),
         ],
         _ => &[],
     }
@@ -117,6 +118,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
             }
             let family = evidence.provenance.corroboration_key();
             for &(attribute, ref target_kind, relation) in attributes(&entity.kind) {
+                // Never silently omit a collector's additional multi-valued attributes.
+                if evidence.attr_values(attribute).nth(MAX_VALUES_PER_ATTRIBUTE).is_some() {
+                    truncated = true;
+                }
                 for value in evidence
                     .attr_values(attribute)
                     .take(MAX_VALUES_PER_ATTRIBUTE)
