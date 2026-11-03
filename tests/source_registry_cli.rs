@@ -59,7 +59,10 @@ fn sources_routes_au_phone_in_canonical_e164_as_discovery_only() {
                 "{raw}: {stdout}"
             );
         }
-        assert!(stdout.matches("%22%2B61405409302%22").count() == 2, "{stdout}");
+        assert!(
+            stdout.matches("%22%2B61405409302%22").count() == 2,
+            "{stdout}"
+        );
     }
 }
 
