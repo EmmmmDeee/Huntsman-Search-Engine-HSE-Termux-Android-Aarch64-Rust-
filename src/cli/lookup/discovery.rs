@@ -244,6 +244,7 @@ pub(in crate::cli) fn people_discover_cmd(args: &[String]) -> ExitCode {
 
     let mut region = Region::Au;
     let mut region_seen = false;
+    let mut bibliography_only = false;
     let mut name_parts = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -260,6 +261,13 @@ pub(in crate::cli) fn people_discover_cmd(args: &[String]) -> ExitCode {
                 index += 2;
             }
             "--region" => return fail(EX_USAGE, "people-discover accepts --region once"),
+            "--bibliography-only" if !bibliography_only => {
+                bibliography_only = true;
+                index += 1;
+            }
+            "--bibliography-only" => {
+                return fail(EX_USAGE, "people-discover accepts --bibliography-only once");
+            }
             flag if flag.starts_with('-') => {
                 return fail(EX_USAGE, &format!("unknown people-discover option {flag}"));
             }
@@ -272,14 +280,37 @@ pub(in crate::cli) fn people_discover_cmd(args: &[String]) -> ExitCode {
     if name_parts.is_empty() {
         return fail(EX_USAGE, people_discovery::PEOPLE_DISCOVER_USAGE);
     }
+    let name = name_parts.join(" ");
     let transport = UreqTransport::new(&TransportConfig::default());
-    match people_discovery::discover(&transport, &name_parts.join(" "), region, clock::unix_now()) {
+    if bibliography_only {
+        return match huntsman_recon::openlibrary_author::lookup(
+            &transport,
+            &name,
+            clock::unix_now(),
+        ) {
+            Ok(report) => {
+                match terminal_json_pretty(&report) {
+                    Ok(body) => println!("{body}"),
+                    Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+                }
+                if report.leads.is_empty() {
+                    ExitCode::from(EX_UNAVAILABLE)
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(Error::Invalid(message)) => fail(EX_USAGE, &message),
+            Err(Error::Network(message)) => fail(EX_NOPERM, &message),
+            Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+        };
+    }
+    match people_discovery::discover(&transport, &name, region, clock::unix_now()) {
         Ok(report) => {
             match terminal_json_pretty(&report) {
                 Ok(body) => println!("{body}"),
                 Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
             }
-            if report.candidates.is_empty() {
+            if report.candidates.is_empty() && report.bibliography.leads.is_empty() {
                 ExitCode::from(EX_UNAVAILABLE)
             } else {
                 ExitCode::SUCCESS
