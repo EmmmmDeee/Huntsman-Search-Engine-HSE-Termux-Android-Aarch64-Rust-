@@ -1,0 +1,3 @@
+- Added offline, source-validated public account exposure assessment via `huntsman-recon privacy-audit PUBLIC-GRAPH.json`.
+- Preserves existing breach scoring and web routes; refuses malformed provenance and identity overclaims.
+- Runs without network requests, provider keys or Android root.

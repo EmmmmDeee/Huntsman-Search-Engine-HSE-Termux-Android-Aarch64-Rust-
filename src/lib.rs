@@ -188,6 +188,7 @@ pub mod pipeline_limits;
 pub mod pivot;
 pub mod planner;
 pub mod postcode_au;
+pub mod privacy_audit;
 pub mod profiles;
 pub mod proof;
 pub mod provider_credentials;

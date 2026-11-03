@@ -284,3 +284,4 @@ osint_casework	leaf	source-linked casework model reached through osint case; rec
 osint_area_risk	leaf	bounded public-event pressure estimator reached through osint area-risk and area-compare; never a safety guarantee
 osint_blueprint	exporter	OSINT app blueprint registry reached through the blueprint command, GET /api/blueprint and the About view's .docx download
 public_osint	adapter	independent GDELT news, FBI notices and multi-engine public dossier front-end reached through public-osint and GET /api/lookup kinds news, notices, web and dossier
+privacy_audit	leaf	Bounded offline public-evidence privacy classifier reached through the privacy-audit CLI; no network activity, keys, or account ownership inference
