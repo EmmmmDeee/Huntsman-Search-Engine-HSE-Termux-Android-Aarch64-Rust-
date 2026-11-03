@@ -150,7 +150,7 @@ fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
     let invalid = response_for_request(
         &loopback_request(
             "POST",
-            "X-Huntsman-Lookup: 1\\r\\n",
+            "X-Huntsman-Lookup: 1\r\n",
             &unconsented,
         ),
         None,
@@ -160,7 +160,7 @@ fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
     let malformed = response_for_request(
         &loopback_request(
             "POST",
-            "X-Huntsman-Lookup: 1\\r\\n",
+            "X-Huntsman-Lookup: 1\r\n",
             "not-json",
         ),
         None,
