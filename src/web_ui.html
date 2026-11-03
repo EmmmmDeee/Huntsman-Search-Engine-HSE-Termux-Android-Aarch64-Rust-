@@ -1821,6 +1821,8 @@ $('rhinser-native-file').onchange=async ev=>{
   const generation=rhinserNativeGeneration;
   const file=ev.target.files&&ev.target.files[0];
   if(!file)return;
+  // An unsuccessful replacement must not leave the previous capture in the form.
+  $('rhinser-native-input').value='';
   if(!file.size||file.size>20000){
     $('rhinser-native-output').textContent='Import refused: capture file must be 1–20000 bytes. Use the CLI for larger captures.';
     ev.target.value='';
