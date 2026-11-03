@@ -699,6 +699,16 @@ pub fn is_enrichment_source(source: &str) -> bool {
     ENRICHMENT_ONLY_SOURCES.contains(&source)
 }
 
+/// Readers of the operator's own input: the metadata and container parsers that `inspect` runs
+/// over a file the operator supplied. Each describes those bytes and observes no one, so two of
+/// them agreeing is one file read twice, never two sources corroborating an entity.
+pub const LOCAL_INPUT_SOURCES: &[&str] = &["apk_intel", "apk_set", "docmeta", "exif"];
+
+#[must_use]
+pub fn is_local_input_source(source: &str) -> bool {
+    LOCAL_INPUT_SOURCES.contains(&source)
+}
+
 #[must_use]
 pub fn is_promotion_source(source: &str) -> bool {
     matches!(
@@ -710,6 +720,7 @@ pub fn is_promotion_source(source: &str) -> bool {
 #[must_use]
 pub fn is_non_corroborating_source(source: &str) -> bool {
     is_enrichment_source(source)
+        || is_local_input_source(source)
         || matches!(source, RECALL_SOURCE | CROSS_SCAN_SOURCE | CONSENSUS_SOURCE)
 }
 
