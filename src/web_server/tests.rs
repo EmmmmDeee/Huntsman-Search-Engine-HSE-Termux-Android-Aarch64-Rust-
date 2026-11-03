@@ -182,6 +182,7 @@ fn rhinser_native_browser_submission_matches_protected_http_contract() {
         "if(generation!==rhinserNativeGeneration)return;",
         "function rhinserLoopbackOrigin(){",
         "Capture inspection requires loopback HSE on this device. No capture was sent.",
+        "Capture file import requires loopback HSE on this device. No file was read or sent.",
         "if(generation!==rhinserNativeGeneration||submitted!==",
         "Capture changed during inspection. Inspect the current input again.",
         "if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');",
