@@ -155,13 +155,11 @@ pub fn lookup<T: Transport + ?Sized>(
             .last()
             .map(|issuance: &Issuance| issuance.id.as_str());
         let url = issuances_url(domain, after);
-        let page = match api_leg::get(transport, &API, keys, &url, now_unix) {
-            Ok(Answer::Body(body)) => api_leg::decode::<Vec<Issuance>>(&body),
-            // Cert Spotter answers a domain with no certificates `[]` at 200, and `sfp_certspotter`
-            // reads any status but 200 and 429 as an error: a 404 is no empty page.
-            Ok(Answer::NotFound(_)) => Err(LegError::Unexpected(404)),
-            Err(error) => Err(error),
-        };
+        // Cert Spotter answers a domain with no certificates `[]` at 200, and `sfp_certspotter`
+        // reads any status but 200 and 429 as an error: a 404 is no empty page.
+        let page = api_leg::get(transport, &API, keys, &url, now_unix)
+            .and_then(Answer::body_or_unexpected)
+            .and_then(|body| api_leg::decode::<Vec<Issuance>>(&body));
         match page {
             Ok(page) if page.is_empty() => {
                 exhausted = true;

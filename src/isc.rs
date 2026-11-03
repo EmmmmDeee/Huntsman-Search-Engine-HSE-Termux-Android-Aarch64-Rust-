@@ -12,7 +12,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::api_leg::{self, Answer, Api, LegError};
+use crate::api_leg::{self, Api, LegError};
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -100,12 +100,10 @@ pub fn lookup(
     let Some(url) = url(indicator) else {
         return Ok(None);
     };
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => decode(&body, indicator),
-        // ISC answers every address with a 200 (one it has no record of has null fields), and
-        // `sfp_isc` reads any other status as an error: a 404 is no record of the address.
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    // ISC answers every address with a 200 (one it has no record of has null fields), and
+    // `sfp_isc` reads any other status as an error: a 404 is no record of the address.
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    decode(&body, indicator)
 }
 
 /// A count, zero when absent or not a number. **Pure.**

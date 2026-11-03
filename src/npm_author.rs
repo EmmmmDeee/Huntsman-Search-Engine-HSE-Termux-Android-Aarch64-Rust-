@@ -53,14 +53,9 @@ const PACKAGE_URL_CONF: f64 = 0.62;
 /// The host of a package link, as a pivot.
 const DOMAIN_CONF: f64 = 0.60;
 
-/// Code forges whose host is noise as a `Domain` pivot: a package link there is already a `Url`.
-const CODE_FORGES: &[&str] = &[
-    "github.com",
-    "gitlab.com",
-    "bitbucket.org",
-    "npmjs.com",
-    "npmjs.org",
-];
+/// The registry's own hosts: a package link there is already a `Url`, so the host is noise as a
+/// `Domain` pivot, as a code forge's is ([`crate::domains::is_code_forge_host`]).
+const REGISTRY_HOSTS: &[&str] = &["npmjs.com", "npmjs.org"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
@@ -420,7 +415,10 @@ fn add_package_links(
             );
         }
         if let Some((kind, host)) = crate::entity::link_host(link) {
-            if !CODE_FORGES.contains(&host.as_str()) && seen.domains.insert(host.clone()) {
+            if !crate::domains::is_code_forge_host(&host)
+                && !REGISTRY_HOSTS.contains(&host.as_str())
+                && seen.domains.insert(host.clone())
+            {
                 push_entity(
                     entities,
                     kind,

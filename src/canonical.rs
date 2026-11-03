@@ -128,6 +128,35 @@ pub fn is_domain_label(label: &str) -> bool {
     crate::value_syntax::is_domain_label(label)
 }
 
+/// Whether `raw` is an HTTPS origin an operator may point a guarded source at: see
+/// [`crate::value_syntax::is_https_origin`].
+#[must_use]
+pub fn is_https_origin(raw: &str) -> bool {
+    crate::value_syntax::is_https_origin(raw)
+}
+
+/// The HTTPS origin a guarded source sends its requests to: the operator's `configured` value
+/// when it is an HTTPS origin ([`is_https_origin`]), `public` when none is
+/// set, and otherwise — a value that is set but is not such an origin, or is not Unicode — the
+/// one refusal every source gives, naming `env`, so a mistyped origin never reaches the
+/// transport and never silently falls back to the public service. **Pure.**
+///
+/// # Errors
+/// The refusal message when `configured` is set but unusable.
+pub fn configured_https_origin(
+    configured: Result<Option<String>, std::env::VarError>,
+    public: &str,
+    env: &str,
+) -> Result<String, String> {
+    match configured {
+        Ok(Some(origin)) if is_https_origin(&origin) => Ok(origin),
+        Ok(None) => Ok(public.to_owned()),
+        Ok(Some(_)) | Err(_) => Err(format!(
+            "{env} must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment"
+        )),
+    }
+}
+
 #[must_use]
 pub fn canonical_domain_host(raw: &str) -> Option<String> {
     crate::value_syntax::canonical_domain_host(raw)
@@ -442,6 +471,40 @@ pub fn canonicalise_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_source_origin_is_the_operator_value_the_public_default_or_one_refusal() {
+        let public = "https://public.example.org";
+        assert_eq!(
+            configured_https_origin(
+                Ok(Some("https://geo.example.net:8443".into())),
+                public,
+                "X_ENV"
+            ),
+            Ok("https://geo.example.net:8443".to_owned())
+        );
+        assert_eq!(
+            configured_https_origin(Ok(None), public, "X_ENV"),
+            Ok(public.to_owned())
+        );
+        let refusal = "X_ENV must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment";
+        assert_eq!(
+            configured_https_origin(Ok(Some("http://geo.example.net".into())), public, "X_ENV"),
+            Err(refusal.to_owned())
+        );
+        assert_eq!(
+            configured_https_origin(Ok(Some(String::new())), public, "X_ENV"),
+            Err(refusal.to_owned())
+        );
+        assert_eq!(
+            configured_https_origin(
+                Err(std::env::VarError::NotUnicode(std::ffi::OsString::new())),
+                public,
+                "X_ENV"
+            ),
+            Err(refusal.to_owned())
+        );
+    }
 
     #[test]
     fn only_public_blocks_are_canonical_netblocks() {

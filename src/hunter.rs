@@ -16,7 +16,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_email;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
@@ -139,10 +139,8 @@ pub fn search<T: Transport + ?Sized>(
     domain: &str,
     now_unix: u64,
 ) -> Result<Search, LegError> {
-    match api_leg::get(transport, &API, keys, &url(domain), now_unix)? {
-        Answer::Body(body) => decode(&body, domain),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::get(transport, &API, keys, &url(domain), now_unix)?.body_or_unexpected()?;
+    decode(&body, domain)
 }
 
 /// One answer body for `domain`. An address that is not canonical or not at `domain` (or one of
@@ -284,10 +282,9 @@ pub fn verify(
     let Indicator::Email(email) = indicator else {
         return Ok(None);
     };
-    match api_leg::get(transport, &API, keys, &verify_url(email), now_unix)? {
-        Answer::Body(body) => decode_verification(&body, email).map(Some),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body =
+        api_leg::get(transport, &API, keys, &verify_url(email), now_unix)?.body_or_unexpected()?;
+    decode_verification(&body, email).map(Some)
 }
 
 /// One verifier answer for `email`. **Pure.**

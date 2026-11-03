@@ -4,7 +4,7 @@
 //! Requires `HUNTSMAN_OPENCELLID_KEY`. 1000 credits/day. Returns lat, lon, range, samples.
 //! A missing cell is HTTP 200 with an error body: that is a valid zero.
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
@@ -78,12 +78,10 @@ pub fn lookup(
         return Ok(None);
     };
     let url = url(&cell);
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => decode(&body),
-        // OpenCelliD documents missing cells as HTTP 200 / code 1.
-        // HTTP 404 means an endpoint is unavailable or misconfigured, not zero results.
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    // OpenCelliD documents missing cells as HTTP 200 / code 1.
+    // HTTP 404 means an endpoint is unavailable or misconfigured, not zero results.
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    decode(&body)
 }
 
 /// A position is evidence only when both coordinates lie inside their geographic bounds.
@@ -238,17 +236,16 @@ pub fn area<T: Transport + ?Sized>(
             "OpenCelliD area coordinates out of range".into(),
         ));
     }
-    match api_leg::get(
+    // A zero area is HTTP 200 with an empty cells array (or code 1).
+    let body = api_leg::get(
         transport,
         &API,
         keys,
         &area_url(&BBox::around(lat, lon)),
         now_unix,
-    )? {
-        Answer::Body(body) => decode_area(&body),
-        // A zero area is HTTP 200 with an empty cells array (or code 1).
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    )?
+    .body_or_unexpected()?;
+    decode_area(&body)
 }
 
 /// Decode an area answer. An empty area is `{"count":0,"cells":[]}`, and "Cell not found"

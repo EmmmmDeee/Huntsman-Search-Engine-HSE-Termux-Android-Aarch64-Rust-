@@ -10,7 +10,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::keys::Keys;
 
@@ -96,10 +96,8 @@ pub fn verify<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Verification, LegError> {
     let url = url(e164).ok_or_else(|| LegError::Refused("not an E.164 number".into()))?;
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => decode(&body, e164),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    decode(&body, e164)
 }
 
 /// One answer body for `e164`. **Pure.**

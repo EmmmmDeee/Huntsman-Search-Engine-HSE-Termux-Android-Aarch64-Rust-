@@ -241,25 +241,46 @@ pub fn parse_lte(bytes: &[u8]) -> Result<LteCsvReport, Error> {
 
 #[must_use]
 pub fn render(report: &LteCsvReport) -> String {
+    render_survey(
+        [
+            report.source,
+            report.csv_version,
+            report.status,
+            &report.observed.to_string(),
+            &report.rejected.to_string(),
+        ],
+        report.observations.iter().map(|record| {
+            (
+                &record.observation,
+                record.group_number,
+                record.location_age_ms,
+            )
+        }),
+    )
+}
+
+/// The text report of a Network Survey CSV, for LTE and NR alike: one header line
+/// (`source`, `version`, `status`, `observed`, `rejected`) and one line per observed cell led
+/// by its technology, with control characters escaped and an absent value written `unknown`.
+/// **Pure.**
+pub(crate) fn render_survey<'a>(
+    [source, version, status, observed, rejected]: [&str; 5],
+    rows: impl Iterator<Item = (&'a CellObservation, Option<u64>, Option<u64>)>,
+) -> String {
     let mut out = format!(
-        "source={}\tversion={}\tstatus={}\tobserved={}\trejected={}\n",
-        report.source, report.csv_version, report.status, report.observed, report.rejected
+        "source={source}\tversion={version}\tstatus={status}\tobserved={observed}\trejected={rejected}\n"
     );
-    for record in &report.observations {
-        let cell = &record.observation;
+    for (cell, group_number, location_age_ms) in rows {
         let _ = writeln!(
             out,
-            "lte\tid={}\ttime={}\tregistered={}\tgroup={}\tlocation_age_ms={}",
+            "{}\tid={}\ttime={}\tregistered={}\tgroup={}\tlocation_age_ms={}",
+            cell.technology,
             escape_controls(&cell.sighting.network_id),
             escape_controls(cell.sighting.observed_at.as_deref().unwrap_or("unknown")),
             cell.registered
                 .map_or("unknown", |v| if v { "yes" } else { "no" }),
-            record
-                .group_number
-                .map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
-            record
-                .location_age_ms
-                .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
+            group_number.map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
+            location_age_ms.map_or_else(|| "unknown".to_owned(), |n| n.to_string())
         );
     }
     out
@@ -327,5 +348,28 @@ mod tests {
         assert_eq!(parse_lte(data.as_bytes()).unwrap().observed, 1);
         let too_big = vec![b'x'; usize::try_from(MAX_SURVEY_CSV_BYTES).unwrap() + 1];
         assert!(parse_lte(&too_big).is_err());
+    }
+
+    #[test]
+    fn the_text_report_leads_each_cell_with_its_technology_and_writes_absent_values_unknown() {
+        let data = format!(
+            "{HEADER}2025-10-10T13:58:27.603261-04:00,37.7749,-122.4194,22,1,2,310-01,12345,12345678,36,-112.0,39,true,4916,SECRET\n"
+        );
+        let report = parse_lte(data.as_bytes()).unwrap();
+        let text = render(&report);
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            format!(
+                "source={}\tversion={}\tstatus={}\tobserved=1\trejected=0",
+                report.source, report.csv_version, report.status
+            )
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "lte\tid=lte:310-01-12345-12345678\ttime=2025-10-10T13:58:27.603261-04:00\tregistered=yes\tgroup=2\tlocation_age_ms=4916"
+        );
+        assert_eq!(lines.next(), None);
+        assert!(!text.contains("SECRET"));
     }
 }

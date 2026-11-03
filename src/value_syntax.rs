@@ -128,6 +128,40 @@ pub fn phone_e164_error(value: &str) -> Option<PhoneE164Error> {
 }
 
 /// One DNS label: 1 to 63 ASCII letters, digits or hyphens, not starting or ending with a hyphen.
+/// Whether `raw` is an operator-configured HTTPS origin the guarded transport may be pointed
+/// at: `https://` then a qualified hostname (every label a DNS label, an alphabetic suffix of
+/// two or more letters, at most 253 bytes) and an optional nonzero decimal port — no path,
+/// userinfo, query or fragment. Syntax only: the public-egress checks still apply to the
+/// addresses the hostname resolves to. **Pure.**
+#[must_use]
+pub fn is_https_origin(raw: &str) -> bool {
+    let Some(authority) = raw.strip_prefix("https://") else {
+        return false;
+    };
+    if authority.is_empty() || authority.len() > 253 {
+        return false;
+    }
+    let (hostname, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    if port.is_some_and(|port| {
+        port.is_empty()
+            || port.len() > 5
+            || !port.bytes().all(|c| c.is_ascii_digit())
+            || !port.parse::<u16>().is_ok_and(|number| number != 0)
+    }) {
+        return false;
+    }
+    if hostname.len() > 253 || !hostname.contains('.') || hostname.ends_with('.') {
+        return false;
+    }
+    hostname.split('.').all(is_domain_label)
+        && hostname.rsplit_once('.').is_some_and(|(_, suffix)| {
+            suffix.len() >= 2 && suffix.bytes().all(|c| c.is_ascii_alphabetic())
+        })
+}
+
 #[must_use]
 pub fn is_domain_label(label: &str) -> bool {
     !label.is_empty()
@@ -628,6 +662,41 @@ mod form_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_https_origin_is_a_qualified_host_and_optional_port_and_nothing_else() {
+        for ok in [
+            "https://nominatim.example.org",
+            "https://wikibase.example.net:8443",
+            "https://a-b.c-d.example",
+        ] {
+            assert!(is_https_origin(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "http://nominatim.example.org",
+            "https://",
+            "https://localhost",
+            "https://example.org/",
+            "https://example.org/search",
+            "https://example.org?x=1",
+            "https://example.org#f",
+            "https://user@example.org",
+            "https://user:pw@example.org",
+            "https://example..org",
+            "https://-bad.example.org",
+            "https://example.org.",
+            "https://example.123",
+            "https://example.org:",
+            "https://example.org:0",
+            "https://example.org:abc",
+            "https://example.org:65536",
+            "https://example.org:443:443",
+            "https://203.0.113.9",
+        ] {
+            assert!(!is_https_origin(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn labels_and_dotted_handles_follow_the_domain_rules() {

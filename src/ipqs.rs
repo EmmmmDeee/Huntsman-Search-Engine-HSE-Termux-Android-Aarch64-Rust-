@@ -16,7 +16,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_coordinates;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
@@ -209,10 +209,8 @@ pub fn lookup(
     let Some(url) = url(indicator) else {
         return Ok(None);
     };
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => decode(&body, indicator).map(Some),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    decode(&body, indicator).map(Some)
 }
 
 /// The error an IPQS `success: false` message means. **Pure.**
