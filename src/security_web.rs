@@ -107,7 +107,9 @@ pub struct PathReport {
 pub fn checked_origin(raw: &str) -> Result<String, String> {
     if raw.len() > 240
         || !raw.starts_with("https://")
-        || raw.contains(['?', '#', '@'])
+        || raw.contains('?')
+        || raw.contains('#')
+        || raw.contains('@')
         || raw.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
     {
         return Err("expected an HTTPS origin without userinfo, query or fragment".into());
@@ -147,7 +149,10 @@ pub fn parse_paths(input: &[u8]) -> Result<Vec<String>, String> {
         if path.is_empty() || path.starts_with('#') {
             continue;
         }
-        let path = path.trim_start_matches('/');
+        if path.starts_with("//") {
+            return Err("absolute network paths are not allowed".into());
+        }
+        let path = path.strip_prefix('/').unwrap_or(path);
         if path.is_empty()
             || path.len() > 128
             || path.contains("..")
@@ -252,7 +257,7 @@ pub fn discover_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{TransportFailure, Transport};
+    use crate::http::{Transport, TransportFailure};
     use std::cell::RefCell;
 
     struct Fake {
