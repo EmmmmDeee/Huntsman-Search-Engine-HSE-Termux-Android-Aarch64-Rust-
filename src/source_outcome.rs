@@ -179,20 +179,26 @@ impl Joined {
         {
             return Self::Absent;
         }
-        let failures: Vec<(usize, SourceOutcomeKind)> = answers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, answer)| match answer {
-                EndpointAnswer::Failed(kind) => Some((index, *kind)),
-                _ => None,
-            })
-            .collect();
-        let why = failures
-            .iter()
-            .find(|(_, kind)| *kind != SourceOutcomeKind::RefusedBeforeSending)
-            .or_else(|| failures.first());
-        match why {
-            Some(&(index, kind)) if failures.len() == answers.len() => {
+        // A single pass avoids allocating a failure vector for every source.
+        // Preserve the first non-refusal failure, otherwise the first failure.
+        let mut first_failure = None;
+        let mut first_non_refusal = None;
+        let mut failure_count = 0usize;
+        for (index, answer) in answers.iter().enumerate() {
+            if let EndpointAnswer::Failed(kind) = answer {
+                failure_count += 1;
+                if first_failure.is_none() {
+                    first_failure = Some((index, *kind));
+                }
+                if *kind != SourceOutcomeKind::RefusedBeforeSending
+                    && first_non_refusal.is_none()
+                {
+                    first_non_refusal = Some((index, *kind));
+                }
+            }
+        }
+        match first_non_refusal.or(first_failure) {
+            Some((index, kind)) if failure_count == answers.len() => {
                 Self::Unanswered { index, kind }
             }
             _ => Self::Inconclusive,
