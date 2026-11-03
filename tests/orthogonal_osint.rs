@@ -1,17 +1,16 @@
 //! End-to-end diagnostic contracts for orthogonal OSINT acquisition proposals.
 //! These tests never reach external services and never establish identity links.
 
+use huntsman_recon::analysis::analyze_snapshot;
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use huntsman_recon::evidence_ancestry::EvidenceAncestryGraph;
 use huntsman_recon::orthogonal_osint::{MAX_OPPORTUNITIES, discover};
 use huntsman_recon::pipeline::AnalysisSnapshot;
-use huntsman_recon::analysis::analyze_snapshot;
 
 fn email_from_two_mirrors() -> Entity {
     let mut entity = Entity::new(EntityKind::Email, "person@example.org", 0.55, "test");
     entity.add_evidence(
-        Evidence::new(EvidenceProvenance::new("hibp"), "Corpus")
-            .with_attr("breach", "Adobe"),
+        Evidence::new(EvidenceProvenance::new("hibp"), "Corpus").with_attr("breach", "Adobe"),
     );
     entity.add_evidence(
         Evidence::new(EvidenceProvenance::new("dehashed"), "Same upstream")
@@ -38,24 +37,40 @@ fn two_collectors_one_corpus_do_not_become_independent_or_complete() {
         assert_eq!(opportunity.independence_status, "not_recorded");
     }
     assert_eq!(
-        report.opportunities.iter().map(|o| o.missing_modality).collect::<Vec<_>>(),
+        report
+            .opportunities
+            .iter()
+            .map(|o| o.missing_modality)
+            .collect::<Vec<_>>(),
         ["email_intel", "code"]
     );
 }
 
 #[test]
 fn authenticated_registry_lineage_is_not_spoofable_by_serialized_labels() {
-    let mut good = Entity::new(EntityKind::Organisation, "Example Organisation", 0.7, "test");
+    let mut good = Entity::new(
+        EntityKind::Organisation,
+        "Example Organisation",
+        0.7,
+        "test",
+    );
     good.add_evidence(
         Evidence::new(EvidenceProvenance::new("abn_lookup"), "ABR row")
             .with_attr("registry", "ABR"),
     );
     let good_result = discover(&[good], &EvidenceAncestryGraph::default());
     assert_eq!(
-        good_result.opportunities.iter().map(|x| x.missing_modality).collect::<Vec<_>>(),
+        good_result
+            .opportunities
+            .iter()
+            .map(|x| x.missing_modality)
+            .collect::<Vec<_>>(),
         ["search", "code"]
     );
-    assert_eq!(good_result.opportunities[0].declared_upstream_families, ["abr"]);
+    assert_eq!(
+        good_result.opportunities[0].declared_upstream_families,
+        ["abr"]
+    );
 
     let mut fake = Entity::new(EntityKind::Organisation, "Other Organisation", 0.7, "test");
     let mut evidence = Evidence::new(EvidenceProvenance::new("mirror"), "Claimed register")
@@ -64,8 +79,16 @@ fn authenticated_registry_lineage_is_not_spoofable_by_serialized_labels() {
     fake.add_evidence(evidence);
     let fake_result = discover(&[fake], &EvidenceAncestryGraph::default());
     assert_eq!(fake_result.opportunities.len(), 3);
-    assert!(fake_result.opportunities.iter().all(|o| o.declared_upstream_families.is_empty()));
-    assert_eq!(fake_result.opportunities[0].missing_modality, "identity_registry");
+    assert!(
+        fake_result
+            .opportunities
+            .iter()
+            .all(|o| o.declared_upstream_families.is_empty())
+    );
+    assert_eq!(
+        fake_result.opportunities[0].missing_modality,
+        "identity_registry"
+    );
 }
 
 #[test]
@@ -76,14 +99,22 @@ fn inferred_enrichment_is_not_an_observed_acquisition() {
     entity.add_evidence(inferred);
     let result = discover(&[entity], &EvidenceAncestryGraph::default());
     assert_eq!(result.opportunities.len(), 3);
-    assert!(result.opportunities.iter().all(|o| o.observed_modalities.is_empty()));
+    assert!(
+        result
+            .opportunities
+            .iter()
+            .all(|o| o.observed_modalities.is_empty())
+    );
 }
 
 #[test]
 fn ordering_duplicate_entities_and_overflow_are_deterministic() {
     let a = email_from_two_mirrors();
     let mut b = Entity::new(EntityKind::Username, "public_handle", 0.6, "test");
-    b.add_evidence(Evidence::new(EvidenceProvenance::new("hacker_news"), "Public post"));
+    b.add_evidence(Evidence::new(
+        EvidenceProvenance::new("hacker_news"),
+        "Public post",
+    ));
     let graph = EvidenceAncestryGraph::default();
     let baseline = discover(&[a.clone(), b.clone()], &graph);
     let shuffled = discover(&[b, a.clone(), a], &graph);
@@ -114,7 +145,13 @@ fn immutable_analysis_fanout_exports_the_same_orthogonal_report() {
     let report = analyze_snapshot(&snapshot);
     assert_eq!(report.orthogonal, discover(&entities, &snapshot.ancestry));
     let json = serde_json::to_value(&report).unwrap();
-    assert_eq!(json["orthogonal"]["opportunities"][0]["missing_modality"], "email_intel");
-    assert_eq!(json["orthogonal"]["opportunities"][0]["proven_independent_routes"], 0);
+    assert_eq!(
+        json["orthogonal"]["opportunities"][0]["missing_modality"],
+        "email_intel"
+    );
+    assert_eq!(
+        json["orthogonal"]["opportunities"][0]["proven_independent_routes"],
+        0
+    );
     assert!(!json["orthogonal"]["truncated"].as_bool().unwrap());
 }
