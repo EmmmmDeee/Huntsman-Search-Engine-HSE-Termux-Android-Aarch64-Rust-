@@ -35,12 +35,27 @@ pub fn initial_bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option
     }
     let phi1 = lat1.to_radians();
     let phi2 = lat2.to_radians();
-    // Normalize the angular difference to avoid a 360-degree discontinuity
-    // at the international date line.
-    let delta = (lon2 - lon1).rem_euclid(360.0).to_radians();
+    // Normalize to the shortest signed longitude arc without rem_euclid:
+    // negative sub-microscopic deltas must not lose precision by rounding
+    // through approximately 360 degrees.
+    let mut delta_deg = lon2 - lon1;
+    if delta_deg > 180.0 {
+        delta_deg -= 360.0;
+    } else if delta_deg < -180.0 {
+        delta_deg += 360.0;
+    }
+    // Exactly coincident and antipodal endpoints have no unique initial
+    // bearing. A fixed absolute threshold on x/y incorrectly discards
+    // distinct, representable near-neighbour points.
+    if ((lat1 - lat2).abs() == 0.0 && delta_deg.abs() == 0.0)
+        || ((lat1 + lat2).abs() == 0.0 && delta_deg.abs() == 180.0)
+    {
+        return None;
+    }
+    let delta = delta_deg.to_radians();
     let y = delta.sin() * phi2.cos();
     let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * delta.cos();
-    if y.abs() < 1e-14 && x.abs() < 1e-14 {
+    if y == 0.0 && x == 0.0 {
         return None;
     }
     Some(y.atan2(x).to_degrees().rem_euclid(360.0))
@@ -117,6 +132,21 @@ mod tests {
     fn equivalent_antimeridian_longitudes_are_coincident() {
         assert_eq!(initial_bearing_deg(0.0, -180.0, 0.0, 180.0), None);
         assert_eq!(initial_bearing_deg(10.0, -180.0, 10.0, 180.0), None);
+    }
+
+    #[test]
+    fn distinct_nearby_points_keep_defined_signed_bearings() {
+        // Distinct representable longitudes must not be silently collapsed
+        // by a fixed trigonometric magnitude threshold or wrap rounding.
+        let tiny = 1e-13;
+        let east = initial_bearing_deg(0.0, 0.0, 0.0, tiny).unwrap();
+        let west = initial_bearing_deg(0.0, 0.0, 0.0, -tiny).unwrap();
+        let north = initial_bearing_deg(0.0, 0.0, tiny, 0.0).unwrap();
+        assert!((east - 90.0).abs() < 1e-9, "{east}");
+        assert!((west - 270.0).abs() < 1e-9, "{west}");
+        assert!(north.abs() < 1e-9, "{north}");
+        assert_eq!(initial_bearing_deg(0.0, 0.0, 0.0, 0.0), None);
+        assert_eq!(initial_bearing_deg(0.0, 0.0, 0.0, 180.0), None);
     }
 
     #[test]
