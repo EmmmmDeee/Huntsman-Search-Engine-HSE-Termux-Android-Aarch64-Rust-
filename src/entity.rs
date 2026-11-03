@@ -974,22 +974,19 @@ mod tests {
 
     #[test]
     fn builder_matches_hand_rolled_entity() {
+        // Both paths must receive the same observation. Creating evidence twice reads
+        // the wall clock twice and makes this equality test flaky at a second boundary.
+        let observation = evidence("wayback", "3 snapshots")
+            .with_attr("snapshot_count", "3")
+            .with_attr("first_seen", "2020");
         let mut hand = Entity::new(EntityKind::Domain, "Example.COM", 0.83, "scan-1");
         hand.tag("archived");
         hand.tag(crate::tags::WEB);
-        hand.add_evidence(
-            evidence("wayback", "3 snapshots")
-                .with_attr("snapshot_count", "3")
-                .with_attr("first_seen", "2020"),
-        );
+        hand.add_evidence(observation.clone());
         let built = Entity::builder(EntityKind::Domain, "Example.COM", 0.83, "scan-1")
             .tag("archived")
             .tag(crate::tags::WEB)
-            .evidence(
-                evidence("wayback", "3 snapshots")
-                    .with_attr("snapshot_count", "3")
-                    .with_attr("first_seen", "2020"),
-            )
+            .evidence(observation)
             .build();
         assert_eq!(built.uid, hand.uid);
         assert_eq!(built.tags, hand.tags);
