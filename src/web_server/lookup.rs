@@ -64,7 +64,7 @@ pub(super) fn sensor_response<T: serde::Serialize + Send + 'static>(
         return json_error(503, &format!("could not start a {noun} worker"));
     }
     match receiver.recv_timeout(RADAR_WAIT) {
-        Ok(Ok(Ok(report))) => match serialize_lookup(&report) {
+        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, &format!("{noun} observations could not be encoded")),
         },
