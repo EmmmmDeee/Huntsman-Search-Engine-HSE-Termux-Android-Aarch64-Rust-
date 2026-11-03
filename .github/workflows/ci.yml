@@ -55,7 +55,10 @@ jobs:
           set -euo pipefail
           bash -n scripts/termux-online-acceptance.sh
           bash -n tests/termux_online_acceptance.sh
+          bash -n scripts/termux-hybrid-evidence.sh
+          bash -n tests/termux_hybrid_evidence.sh
           bash tests/termux_online_acceptance.sh
+          bash tests/termux_hybrid_evidence.sh
 
   web-ui:
     name: Web UI in a phone browser
