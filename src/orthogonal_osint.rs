@@ -155,16 +155,25 @@ pub fn discover(entities: &[Entity], ancestry: &EvidenceAncestryGraph) -> Orthog
             if evidence.is_inferred {
                 continue;
             }
+            let lineage = Lineage::of(evidence);
             let collector = evidence.provenance.corroboration_key();
-            let family = source_family(&evidence.provenance.source);
-            // "other" includes synthetic seeds and unsupported collectors; do
-            // not silently claim an observed acquisition modality for them.
+            let classified = source_family(&evidence.provenance.source);
+            // The ABR collector is admitted only through the existing verified
+            // registry lineage gate, never through a user-written family label.
+            let family = if classified == "other"
+                && matches!(lineage, Lineage::Upstream { kind: crate::lineage::UpstreamKind::Registry, .. })
+            {
+                "identity_registry"
+            } else {
+                classified
+            };
+            // "other" includes synthetic seeds and unsupported collectors.
             if family == "other" {
                 continue;
             }
             entry.collectors.insert(collector);
             entry.modalities.insert(family);
-            if let Some(upstream) = Lineage::of(evidence).family() {
+            if let Some(upstream) = lineage.family() {
                 entry.upstream.insert(upstream.to_owned());
             }
             if let Some(node) = &evidence.ancestry_node {
