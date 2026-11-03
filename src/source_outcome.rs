@@ -1068,7 +1068,7 @@ mod tests {
             );
             assert!(!contradictory.is_accepted());
             assert!(matches!(
-                none_accepted::<()>(&[contradictory.clone()], "lookup"),
+                none_accepted::<()>(std::slice::from_ref(&contradictory), "lookup"),
                 Some(SourceRun::Failed(_))
             ));
             assert!(matches!(
