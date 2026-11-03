@@ -140,7 +140,7 @@ fn rhinser_sources_are_accessible_from_the_analysis_web_view() {
         "id=\"rhinser-source-search\"",
         "id=\"rhinser-source-list\"",
         "api('/api/rhinser/catalog')",
-        "else if(v==='analyze')loadRhinserCatalog();",
+        "else if(v==='analyze'){loadRhinserCatalog();loadOsintMatrix();}",
         "link.rel='noopener noreferrer'",
         "link.referrerPolicy='no-referrer'",
     ] {
