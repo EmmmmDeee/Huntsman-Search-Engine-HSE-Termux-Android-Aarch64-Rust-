@@ -64,6 +64,13 @@ mkdir -- "$lock" 2>/dev/null || die "another rebuild may be active ($lock); chec
 owned_lock=1
 work="$(mktemp -d "$TMPDIR/huntsman-rebuild.XXXXXXXX")"
 mkdir -p "$work/state"
+# An installed standard-library directory is not proof that rustc can link a
+# native Android executable. Fail before downloading/building the large crate.
+cat > "$work/probe.rs" <<'RS'
+fn main() { println!("native-std-ok"); }
+RS
+rustc "$work/probe.rs" -o "$work/probe" || die 'native Rust standard-library link probe failed'
+[[ "$("$work/probe")" == "native-std-ok" ]] || die 'native Rust execution probe failed'
 report="$cache/last-acceptance.txt"
 server_log="$cache/last-server.log"
 note 'Fetching one immutable main snapshot'
@@ -82,6 +89,10 @@ note "Rust host: $host; compiler: $(rustc --version)"
 # memory. Respect an explicit operator override without silently raising it.
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
 export CARGO_INCREMENTAL=0
+# CI uses the same debug-info reductions: do not spend scarce phone storage
+# or linker memory on development/test DWARF data for this verification run.
+export CARGO_PROFILE_DEV_DEBUG=0
+export CARGO_PROFILE_TEST_DEBUG=0
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$cache/target}"
 export HUNTSMAN_BUILD_SHA="$revision"
 case "$CARGO_BUILD_JOBS" in
