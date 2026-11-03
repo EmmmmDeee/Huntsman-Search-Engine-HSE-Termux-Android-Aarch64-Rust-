@@ -39,7 +39,10 @@ fn bind_for(token: Option<&str>) -> SocketAddr {
 fn embedded_web_ui_has_unique_dom_ids_across_all_views() {
     let mut ids = BTreeSet::new();
     for remainder in INDEX_HTML.split(r#" id=""#).skip(1) {
-        let id = remainder.split('"').next().expect("valid HTML id attribute");
+        let id = remainder
+            .split('"')
+            .next()
+            .expect("valid HTML id attribute");
         assert!(ids.insert(id), "duplicate HTML id: {id}");
     }
     assert!(ids.contains("ssynergy"));
