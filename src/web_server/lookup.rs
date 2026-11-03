@@ -560,7 +560,7 @@ mod tests {
         );
         assert_eq!(
             json["synergy"]["links"][0]["status"],
-            "independently_observed_target"
+            "separately_observed_target"
         );
         assert_eq!(json["synergy"]["links"][0]["source_scan_id"], "live-a");
         assert_eq!(json["synergy"]["links"][0]["target_scan_id"], "live-b");
