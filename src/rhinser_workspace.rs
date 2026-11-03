@@ -168,10 +168,7 @@ impl Workspace {
         for case in &self.cases {
             for lead in &case.source_leads {
                 lead_count += 1;
-                references
-                    .entry(&lead.url)
-                    .or_default()
-                    .insert(&case.id);
+                references.entry(&lead.url).or_default().insert(&case.id);
             }
         }
         let shared_source_urls = references
@@ -366,17 +363,28 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.create_case("case-b", "Second").unwrap();
         workspace.create_case("case-a", "First").unwrap();
-        workspace.add_lead("case-b", "a", "https://example.org/a", "Lead", 1).unwrap();
-        workspace.add_lead("case-b", "b", "https://example.org/a", "Same case", 2).unwrap();
-        workspace.add_lead("case-a", "c", "https://example.org/a", "Another case", 3).unwrap();
-        workspace.add_lead("case-a", "d", "https://example.org/b", "Different page", 4).unwrap();
+        workspace
+            .add_lead("case-b", "a", "https://example.org/a", "Lead", 1)
+            .unwrap();
+        workspace
+            .add_lead("case-b", "b", "https://example.org/a", "Same case", 2)
+            .unwrap();
+        workspace
+            .add_lead("case-a", "c", "https://example.org/a", "Another case", 3)
+            .unwrap();
+        workspace
+            .add_lead("case-a", "d", "https://example.org/b", "Different page", 4)
+            .unwrap();
         let report = workspace.source_overlaps().unwrap();
         assert_eq!(report.cases_considered, 2);
         assert_eq!(report.source_leads_considered, 4);
         assert_eq!(report.shared_source_urls.len(), 1);
         assert_eq!(report.shared_source_urls[0].url, "https://example.org/a");
         assert_eq!(report.shared_source_urls[0].case_ids, ["case-a", "case-b"]);
-        assert_eq!(report.evidence_status, "reused_unverified_leads_not_independent_corroboration");
+        assert_eq!(
+            report.evidence_status,
+            "reused_unverified_leads_not_independent_corroboration"
+        );
         assert_eq!(workspace.source_overlaps().unwrap(), report);
     }
 
@@ -385,12 +393,23 @@ mod tests {
         let mut workspace = Workspace::default();
         workspace.create_case("a", "A").unwrap();
         workspace.create_case("b", "B").unwrap();
-        workspace.add_lead("a", "a1", "https://example.org/one", "Lead", 1).unwrap();
-        workspace.add_lead("a", "a2", "https://example.org/one", "Repeat", 1).unwrap();
-        workspace.add_lead("b", "b1", "https://example.org/two", "Lead", 1).unwrap();
-        assert!(workspace.source_overlaps().unwrap().shared_source_urls.is_empty());
+        workspace
+            .add_lead("a", "a1", "https://example.org/one", "Lead", 1)
+            .unwrap();
+        workspace
+            .add_lead("a", "a2", "https://example.org/one", "Repeat", 1)
+            .unwrap();
+        workspace
+            .add_lead("b", "b1", "https://example.org/two", "Lead", 1)
+            .unwrap();
+        assert!(
+            workspace
+                .source_overlaps()
+                .unwrap()
+                .shared_source_urls
+                .is_empty()
+        );
         workspace.cases[1].source_leads[0].evidence_status = "verified".to_owned();
         assert!(workspace.source_overlaps().is_err());
     }
-
 }
