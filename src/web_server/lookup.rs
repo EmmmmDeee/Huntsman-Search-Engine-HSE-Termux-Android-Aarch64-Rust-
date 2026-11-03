@@ -30,6 +30,18 @@ pub(super) fn sensor_response<T: serde::Serialize + Send + 'static>(
     noun: &str,
     method: Method,
 ) -> String {
+    sensor_response_with_wait(parsed, sensor, noun, method, RADAR_WAIT)
+}
+
+/// Shared protected worker for read-only or sensor handlers. A catalogue fetch can
+/// take two 15-second source deadlines; it must not inherit the 18-second radio wait.
+pub(super) fn sensor_response_with_wait<T: serde::Serialize + Send + 'static>(
+    parsed: &ParsedRequest<'_>,
+    sensor: Option<&Sensor<T>>,
+    noun: &str,
+    method: Method,
+    wait: std::time::Duration,
+) -> String {
     let Some(sensor) = sensor else {
         return json_error(404, &format!("{noun} is not enabled on this server"));
     };
@@ -61,7 +73,7 @@ pub(super) fn sensor_response<T: serde::Serialize + Send + 'static>(
     if worker.is_err() {
         return json_error(503, &format!("could not start a {noun} worker"));
     }
-    match receiver.recv_timeout(RADAR_WAIT) {
+    match receiver.recv_timeout(wait) {
         Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, &format!("{noun} observations could not be encoded")),
