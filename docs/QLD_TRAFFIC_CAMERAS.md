@@ -1,0 +1,100 @@
+# Queensland traffic camera catalogue (public GeoJSON)
+
+Read-only, rootless Termux integration, based on the QLDTraffic API specification v1.10
+(19 February 2025), section 2.1.1.1 and sections 4.4–4.5 and 5.3.
+
+## Run
+
+```sh
+cargo run --locked -- traffic-cameras --limit 5
+cargo run --locked -- traffic-cameras --district Metropolitan --limit 50
+cargo run --locked -- traffic-cameras --district 'North Coast' --locality Nambour
+```
+
+The command requests the official GeoJSON collection **once** through Huntsman's
+guarded HTTPS transport and prints a JSON report with provider total, filter
+matches, returned rows, rejected features, collection timestamp and a typed
+source outcome. The command does **not** download or refresh camera images.
+It makes no HTTP requests until an operator explicitly executes it.
+
+## Upstream sources and roles
+
+| Source | Endpoint | Role |
+| --- | --- | --- |
+| TMR / QLDTraffic | https://api.qldtraffic.qld.gov.au/v1/webcams | Primary dynamic webcam metadata |
+| TMR state-road GIS | https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Transportation/StateRoadInformation/MapServer/4 | Separate GIS asset catalogue; *not* an image availability proof |
+| Queensland OpenDataSoft | https://queensland.opendatasoft.com/explore/assets/live-traffic-cameras-gold-coast/ | Republished webcam data; different schema |
+| Brisbane City Council | https://data.brisbane.qld.gov.au/explore/dataset/traffic-cctv-cameras/ | Municipality CCTV locations; **not** a public video feed |
+
+The QLDTraffic public developer key is documented in the official API spec
+and globally shared at **100 requests per minute**. A global limit is not
+a per-device allowance: the CLI intentionally uses one request, with a paced
+circuit breaker; repeated requests must be operator-controlled. A private key
+must never be placed into the public-key constant. For production, register a
+separate key with TMR and implement it via the existing origin-bound
+`fetch::Credential` mechanism; do not interpolate user secrets into URLs.
+
+## Live public-feed comparison, 2026-11-03 UTC
+
+A direct API read returned **152** camera features; the OpenDataSoft
+catalogue reported **152** records; the separate GIS query reported **158**.
+Reconciling **camera IDs** returned:
+
+* **123** IDs in both official API and ArcGIS.
+* **29** IDs in the official API only.
+* **35** IDs in ArcGIS only.
+
+Thus the six-record difference in totals is *not* six extra live cameras.
+Asset GIS and real-time web camera inventories have materially different
+membership; no claim is made that GIS-only cameras have live imagery.
+Counts can change at any time. Recompute them before displaying an operational
+coverage percentage. Use provenance-qualified keys
+`qldtraffic:ID` and `qld-state-gis:ID`, compare by camera ID, and use
+coordinates only as spatial context, not as identity.
+
+## Semantics and security
+
+* GeoJSON positions are `[longitude, latitude]`. The feed returns an
+  `EPSG:7844` CRS hint. Coordinate timestamps are not present.
+* Reject malformed coordinates, duplicate identifiers, empty required fields,
+  non-HTTPS or unapproved image hosts and malformed feature collections.
+* The derived camera metadata URL uses the official fixed API origin.
+  Untrusted URL fields must not become arbitrary HTTP fetch destinations.
+* An HTTP 429, 403, timeout, WAF, parser error or partial/truncated response is
+  **never** a verified zero-camera result.
+* A camera `image_url` references the publisher's current JPEG location but
+  is **not proof of freshness**, continuous live video, recording capability,
+  face recognition, ANPR or access to internal municipal CCTV.
+* Any later image checker must preserve time fetched, Last-Modified/ETag when
+  present, digest, HTTP status and content type, use a positive JPEG signature,
+  enforce size/time caps, and classify repeated image hashes as **unchanged**,
+  not as evidence that the camera itself is offline.
+* TMR's QLDTraffic website says imagery refreshes approximately every
+  **60 seconds**, but a web page's schedule alone does not attest each image.
+* Include attribution: © State of Queensland (Department of Transport and
+  Main Roads), QLDTraffic API specification, licensed CC BY 4.0 AU.
+  Check the applicable licence for each separate catalogue before combining.
+* The Brisbane Council CCTV *location* dataset must never be interpreted as
+  public permission to retrieve CCTV footage.
+
+## Test and release gates
+
+Offline module tests cover valid and empty FeatureCollections, coordinate
+order, duplications, untrusted image URLs, malformed input, HTTP status
+classification and one-shot guarded requests.
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked qld_traffic_cameras
+cargo run --locked -- traffic-cameras --limit 2
+```
+
+The final command is a **live network test** and must run on the actual
+rootless Android Termux AArch64 target before claiming device support. No
+claim that CI or a desktop build is a substitute for a phone validation.
+
+**Current scope:** A one-shot read-only Rust library and CLI catalogue.
+Web UI catalogue cards, stored change history, registered-key support, image
+freshness checks and municipality-specific location layers are not delivered
+by this initial change.
