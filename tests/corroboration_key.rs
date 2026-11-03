@@ -128,6 +128,34 @@ fn au_003_fires(entity: &Entity) -> bool {
     !rule_au_003_high_corroboration(&RuleContext::new(&entities, &[]), "scan-1", 0).is_empty()
 }
 
+/// `inspect` reads one supplied file with two parsers, `exif` and `docmeta`. Each describes
+/// the operator's own bytes and observes no one, so their agreement is one file read twice:
+/// it counts as one source, corroborates nothing, and never fires AU-003 "high corroboration"
+/// (as a saved `452.jpg` scan on a handset did, with both parsers reporting *no* metadata).
+/// A real collector beside them still counts, and two real collectors still fire the rule.
+#[test]
+fn local_input_readers_are_one_file_read_twice_not_corroboration() {
+    let file = reloaded_at(0.9, &["exif", "docmeta"], &[]);
+    assert_eq!(file.source_count(), 1, "one input, however many parsers");
+    assert!(file.corroborating_sources().is_empty());
+    assert!(
+        !au_003_fires(&file),
+        "AU-003 fired on two readers of one file"
+    );
+    let apk = reloaded_at(0.9, &["apk_intel", "apk_set"], &[]);
+    assert!(!au_003_fires(&apk));
+
+    let observed_once = reloaded_at(0.9, &["exif", "hibp"], &[]);
+    assert_eq!(observed_once.corroborating_sources(), set(&["hibp"]));
+    assert!(!au_003_fires(&observed_once));
+    let observed_twice = reloaded_at(0.9, &["exif", "hibp", "dehashed"], &[]);
+    assert_eq!(observed_twice.source_count(), 2);
+    assert!(
+        au_003_fires(&observed_twice),
+        "two real collectors still corroborate"
+    );
+}
+
 /// On main a spoofed second family lifted `source_count` from 1 to 2. With two sources
 /// `effective` is `1 - 0.65 * (1 - c)`, which crosses `VERIFIED_MIN` (0.75) and fires
 /// AU-003 from confidence 0.6154 (`1 - 0.25/0.65`) up; one source stays Probable below
