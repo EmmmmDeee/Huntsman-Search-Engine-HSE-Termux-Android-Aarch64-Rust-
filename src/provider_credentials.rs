@@ -121,7 +121,6 @@ fn wigle_probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> ProbeState 
                 _ => ProbeState::Indeterminate,
             }
         }
-        200 => ProbeState::Indeterminate,
         401 | 403 => ProbeState::Rejected,
         429 => ProbeState::RateLimited,
         _ => ProbeState::Indeterminate,
@@ -708,7 +707,7 @@ mod tests {
         for (status, body, expected) in [
             (200, r#"{"success":true,"userid":"Ada"}"#, ProbeState::Valid),
             (200, r#"{"success":false}"#, ProbeState::Indeterminate),
-            (200, r#"{}"#, ProbeState::Indeterminate),
+            (200, r"{}", ProbeState::Indeterminate),
             (200, r#"{"userid":"Ada"}"#, ProbeState::Indeterminate),
             (200, r#"{"success":"true"}"#, ProbeState::Indeterminate),
             (200, r#"{"success":1}"#, ProbeState::Indeterminate),
