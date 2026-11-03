@@ -196,6 +196,7 @@ pub mod radar;
 pub mod rdap;
 pub mod rdap_legs;
 pub mod recon;
+pub mod security_tool_registry;
 pub mod recursion;
 pub mod redact;
 pub mod relation;
