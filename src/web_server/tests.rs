@@ -405,7 +405,11 @@ fn traffic_camera_api_is_explicitly_triggered_guarded_and_preserves_source_outco
         )
         .starts_with("HTTP/1.1 400")
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "refused requests must not fetch");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "refused requests must not fetch"
+    );
     let response = request("GET", &format!("{auth}{lookup}"), TRAFFIC_CAMERAS_PATH);
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     let body: serde_json::Value =
@@ -435,7 +439,10 @@ fn traffic_camera_radar_ui_only_fetches_on_button_press() {
         "api('/api/traffic/cameras')",
         "nearby different-ID candidates",
     ] {
-        assert!(INDEX_HTML.contains(needle), "missing camera UI contract: {needle}");
+        assert!(
+            INDEX_HTML.contains(needle),
+            "missing camera UI contract: {needle}"
+        );
     }
 }
 
