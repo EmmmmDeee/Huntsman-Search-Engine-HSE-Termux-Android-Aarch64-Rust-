@@ -231,20 +231,16 @@ fn web_people_discover(
 ) -> Result<serde_json::Value, LookupError> {
     let transport =
         huntsman_recon::http::UreqTransport::new(&huntsman_recon::http::TransportConfig::default());
-    let report = huntsman_recon::people_discovery::discover(
-        &transport,
-        name,
-        region,
-        clock::unix_now(),
-    )
-    .map_err(|error| LookupError {
-        status: if matches!(error, Error::Invalid(_)) {
-            400
-        } else {
-            502
-        },
-        message: error.to_string(),
-    })?;
+    let report =
+        huntsman_recon::people_discovery::discover(&transport, name, region, clock::unix_now())
+            .map_err(|error| LookupError {
+                status: if matches!(error, Error::Invalid(_)) {
+                    400
+                } else {
+                    502
+                },
+                message: error.to_string(),
+            })?;
     serde_json::to_value(report).map_err(|error| LookupError {
         status: 500,
         message: format!("people discovery JSON unavailable: {error}"),

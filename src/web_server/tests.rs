@@ -68,7 +68,10 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
         head.replace("X-Huntsman-Lookup: 1\r\n", ""),
         head.replace("same-origin", "cross-site"),
         head.replace("POST /api/people/discover", "GET /api/people/discover"),
-        head.replace("/api/people/discover HTTP", "/api/people/discover?name=Jane HTTP"),
+        head.replace(
+            "/api/people/discover HTTP",
+            "/api/people/discover?name=Jane HTTP",
+        ),
         head.replace("Jane Example", "Jane\\nExample"),
         head.replace("\"au\"", "\"unknown\""),
         head.replace("Content-Length: 37", "Content-Length: 999"),

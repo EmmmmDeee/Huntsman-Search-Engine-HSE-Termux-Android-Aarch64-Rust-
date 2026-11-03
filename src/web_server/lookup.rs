@@ -16,9 +16,8 @@ use crate::value_syntax::form_decode;
 
 use super::{
     LOOKUP_STACK_BYTES, LookupQuery, LookupReport, Lookups, MAX_LOOKUPS, MAX_RADAR_REQUESTS,
-    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES, Sensor,
-    Slot,
-    json_error, json_ok, page_refusal, response, response_bytes,
+    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES,
+    Sensor, Slot, json_error, json_ok, page_refusal, response, response_bytes,
 };
 
 /// Read a sensor (Android's OS-cached Wi-Fi scan, or the cells it reports) or record one track
@@ -305,7 +304,10 @@ pub(super) fn people_discover_response(
         return refusal;
     }
     if !parsed.query.is_empty() {
-        return json_error(400, "people discovery parameters belong in the request body");
+        return json_error(
+            400,
+            "people discovery parameters belong in the request body",
+        );
     }
     let length = match parsed.content_length {
         Some(length @ 1..=512) => length,
@@ -365,9 +367,10 @@ pub(super) fn people_discover_response(
         Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
             json_error(500, "people discovery failed unexpectedly")
         }
-        Err(RecvTimeoutError::Timeout) => {
-            json_error(504, "people discovery timed out; no completed report was saved")
-        }
+        Err(RecvTimeoutError::Timeout) => json_error(
+            504,
+            "people discovery timed out; no completed report was saved",
+        ),
     }
 }
 

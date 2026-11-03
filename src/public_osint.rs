@@ -586,7 +586,10 @@ mod tests {
         assert!(search(&silent, Source::All, "", "s", 1).is_err());
         assert!(search(&silent, Source::All, "a\"b", "s", 1).is_err());
         for bad in ["\ntext", "text\r", "\ttext", "te\0xt"] {
-            assert!(search(&silent, Source::All, bad, "s", 1).is_err(), "{bad:?}");
+            assert!(
+                search(&silent, Source::All, bad, "s", 1).is_err(),
+                "{bad:?}"
+            );
         }
         assert!(search(&silent, Source::All, &"x".repeat(161), "s", 1).is_err());
     }
