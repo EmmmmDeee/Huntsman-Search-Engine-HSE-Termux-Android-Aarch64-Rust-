@@ -48,7 +48,7 @@ pub fn initial_bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option
     // bearing. A fixed absolute threshold on x/y incorrectly discards
     // distinct, representable near-neighbour points.
     if ((lat1 - lat2).abs() == 0.0 && delta_deg.abs() == 0.0)
-        || ((lat1 + lat2).abs() == 0.0 && delta_deg.abs() == 180.0)
+        || ((lat1 + lat2).abs() == 0.0 && delta_deg.abs().total_cmp(&180.0).is_eq())
     {
         return None;
     }
