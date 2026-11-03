@@ -88,11 +88,15 @@ pub fn lookup<T: Transport + ?Sized>(
             .chars()
             .any(|character| character.is_control() || matches!(character, '"' | '\\' | '<' | '>'))
     {
-        return Err(Error::Invalid("invalid bounded bibliographic author name".into()));
+        return Err(Error::Invalid(
+            "invalid bounded bibliographic author name".into(),
+        ));
     }
     let name = canonical_name(raw_name);
     if !people_cli::is_name(&name) {
-        return Err(Error::Invalid("bibliography requires a full personal name".into()));
+        return Err(Error::Invalid(
+            "bibliography requires a full personal name".into(),
+        ));
     }
     let url = append_query_param(
         &append_query_param(API, "q", &name),
@@ -109,13 +113,15 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, now_unix).unwrap_or_else(|outcome| Report {
-        leads: Vec::new(),
-        outcome,
-        total_reported: None,
-        total_exact: false,
-        truncated: false,
-    }))
+    Ok(
+        interpret(&fetched, now_unix).unwrap_or_else(|outcome| Report {
+            leads: Vec::new(),
+            outcome,
+            total_reported: None,
+            total_exact: false,
+            truncated: false,
+        }),
+    )
 }
 
 /// One immutable response. Any malformed author row fails closed and leaks no
@@ -169,10 +175,7 @@ fn interpret(fetched: &Fetched, now_unix: u64) -> Result<Report, SourceExecution
             ));
         };
         let name = name.trim();
-        if !valid_author_id(id)
-            || name.is_empty()
-            || name.chars().any(char::is_control)
-        {
+        if !valid_author_id(id) || name.is_empty() || name.chars().any(char::is_control) {
             return Err(drift(
                 SourceOutcomeKind::SchemaDrift,
                 "Open Library author row has invalid id or name",
@@ -215,10 +218,12 @@ mod tests {
         assert_eq!(report.leads.len(), 2);
         assert_ne!(report.leads[0].id, report.leads[1].id);
         assert!(!report.truncated);
-        assert!(report
-            .leads
-            .iter()
-            .all(|lead| lead.status == "unverified_bibliographic_name_search_lead"));
+        assert!(
+            report
+                .leads
+                .iter()
+                .all(|lead| lead.status == "unverified_bibliographic_name_search_lead")
+        );
     }
 
     #[test]
