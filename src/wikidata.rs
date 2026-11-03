@@ -218,27 +218,12 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
 
 fn configured_base() -> Result<String, Error> {
     match crate::environment::wikidata_base_url() {
-        Ok(Some(base)) if valid_base(&base) => Ok(base),
+        Ok(Some(base)) if crate::canonical::is_https_origin(&base) => Ok(base),
         Ok(None) => Ok(PUBLIC_BASE.to_owned()),
         Ok(Some(_)) | Err(_) => Err(Error::Invalid(format!(
             "{BASE_URL_ENV} must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment"
         ))),
     }
-}
-
-/// Reject userinfo, query, fragments, paths and non-HTTPS schemes before the guarded transport
-/// sees a replacement endpoint. DNS-based public-egress checks still apply to resolved addresses.
-fn valid_base(base: &str) -> bool {
-    let Some(authority) = base.strip_prefix("https://") else {
-        return false;
-    };
-    if authority.is_empty() || authority.len() > 253 || authority.contains(['/', '?', '#', '@']) {
-        return false;
-    }
-    let host = authority.split(':').next().unwrap_or(authority);
-    host.rsplit_once('.').is_some_and(|(_, suffix)| {
-        suffix.len() >= 2 && suffix.bytes().all(|c| c.is_ascii_alphabetic())
-    })
 }
 
 /// Whether `query` is a bare Wikidata item id (`Q` followed by digits), case-insensitively.

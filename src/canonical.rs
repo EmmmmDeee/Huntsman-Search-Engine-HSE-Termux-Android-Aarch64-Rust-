@@ -128,6 +128,13 @@ pub fn is_domain_label(label: &str) -> bool {
     crate::value_syntax::is_domain_label(label)
 }
 
+/// Whether `raw` is an HTTPS origin an operator may point a guarded source at: see
+/// [`crate::value_syntax::is_https_origin`].
+#[must_use]
+pub fn is_https_origin(raw: &str) -> bool {
+    crate::value_syntax::is_https_origin(raw)
+}
+
 #[must_use]
 pub fn canonical_domain_host(raw: &str) -> Option<String> {
     crate::value_syntax::canonical_domain_host(raw)

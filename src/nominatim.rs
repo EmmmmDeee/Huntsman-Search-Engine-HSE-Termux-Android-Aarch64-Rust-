@@ -35,47 +35,9 @@ const PUBLIC_BASE: &str = "https://nominatim.openstreetmap.org";
 /// When absent, the public OSMF endpoint is used subject to its usage policy.
 pub const BASE_URL_ENV: &str = crate::environment::NOMINATIM_BASE_URL_ENV;
 
-/// Reject userinfo, query, fragments, paths, non-HTTPS schemes and unqualified
-/// hostnames before the guarded transport sees a replacement endpoint.
-/// This does not replace DNS-based public-egress checks on resolved addresses.
-fn valid_base(base: &str) -> bool {
-    let Some(authority) = base.strip_prefix("https://") else {
-        return false;
-    };
-    if authority.len() > 253 || authority.is_empty() {
-        return false;
-    }
-    let (hostname, port) = match authority.split_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (authority, None),
-    };
-    if port.is_some_and(|port| {
-        port.is_empty()
-            || port.len() > 5
-            || !port.bytes().all(|c| c.is_ascii_digit())
-            || !port.parse::<u16>().is_ok_and(|number| number != 0)
-    }) {
-        return false;
-    }
-    if hostname.len() > 253 || !hostname.contains('.') || hostname.ends_with('.') {
-        return false;
-    }
-    hostname.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'-')
-    }) && hostname.rsplit_once('.').is_some_and(|(_, suffix)| {
-        suffix.len() >= 2 && suffix.bytes().all(|c| c.is_ascii_alphabetic())
-    })
-}
-
 fn configured_base() -> Result<String, Error> {
     match crate::environment::nominatim_base_url() {
-        Ok(Some(base)) if valid_base(&base) => Ok(base),
+        Ok(Some(base)) if crate::canonical::is_https_origin(&base) => Ok(base),
         Ok(None) => Ok(PUBLIC_BASE.to_owned()),
         Ok(Some(_)) | Err(_) => Err(Error::Invalid(format!(
             "{BASE_URL_ENV} must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment"
