@@ -226,14 +226,42 @@ pub fn classify_probe_response(service: &ServiceDef, response: &Response) -> Pro
     if response.status == 400 && looks_like_auth_failure_text(&response.text()) {
         return ProbeVerdict::Rejected;
     }
-    if (200..300).contains(&response.status) {
-        if service.success_indicates_valid_key {
+    if !(200..300).contains(&response.status)
+        || !service.success_indicates_valid_key
+        || response.truncated
+    {
+        return ProbeVerdict::Indeterminate;
+    }
+    // A 2xx status alone does not prove that the provider authenticated the key:
+    // interstitials, errors and malformed bodies can all be returned with HTTP 200.
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&response.body) else {
+        return ProbeVerdict::Indeterminate;
+    };
+    if body.get("error").is_some_and(|error| !error.is_null())
+        || body.get("success") == Some(&serde_json::Value::Bool(false))
+    {
+        return ProbeVerdict::Indeterminate;
+    }
+    // These account endpoints have stable affirmative fields; requiring them avoids
+    // misclassifying an empty JSON object as proof of an authorised account.
+    match service.name {
+        "shodan" => match body.get("plan").and_then(serde_json::Value::as_str) {
+            Some(plan) if !plan.trim().is_empty() => ProbeVerdict::Valid,
+            _ => ProbeVerdict::Indeterminate,
+        },
+        "hibp" => match (
+            body.get("SubscriptionName").and_then(serde_json::Value::as_str),
+            body.get("Rpm").and_then(serde_json::Value::as_u64),
+        ) {
+            (Some(name), Some(_)) if !name.trim().is_empty() => ProbeVerdict::Valid,
+            _ => ProbeVerdict::Indeterminate,
+        },
+        _ if body.as_object().is_some_and(|fields| !fields.is_empty())
+            || body.as_array().is_some_and(|items| !items.is_empty()) =>
+        {
             ProbeVerdict::Valid
-        } else {
-            ProbeVerdict::Indeterminate
         }
-    } else {
-        ProbeVerdict::Indeterminate
+        _ => ProbeVerdict::Indeterminate,
     }
 }
 
@@ -333,7 +361,17 @@ pub fn probe_service<T: Transport + ?Sized>(
         )
     })?;
     let verdict = classify_probe_response(service, &response);
-    let evidence = extract_probe_evidence(service.name, &response);
+    // Only release allowlisted metadata from an authenticated response. A malicious
+    // upstream could echo the submitted key in a free-form plan/subscription field;
+    // never let such a value cross the diagnostic boundary.
+    let evidence = if verdict == ProbeVerdict::Valid {
+        extract_probe_evidence(service.name, &response)
+            .into_iter()
+            .filter(|(_, value)| !value.contains(secret.expose()))
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(ProbeResult { verdict, evidence })
 }
 
@@ -512,6 +550,18 @@ mod tests {
                     truncated: false,
                 }
             ),
+            ProbeVerdict::Indeterminate
+        );
+        assert_eq!(
+            classify_probe_response(
+                shodan,
+                &Response {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: br#"{"plan":"oss","query_credits":0}"#.to_vec(),
+                    truncated: false,
+                }
+            ),
             ProbeVerdict::Valid
         );
         assert_eq!(
@@ -538,6 +588,78 @@ mod tests {
                 }
             ),
             ProbeVerdict::Indeterminate
+        );
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_success_responses_do_not_validate_credentials() {
+        for service_name in ["shodan", "hibp"] {
+            let service = find_service(service_name).expect("service");
+            for payload in [
+                "{}",
+                r#"{"error":"invalid key","plan":"oss","SubscriptionName":"Core 1","Rpm":10}"#,
+                r#"{"success":false,"plan":"oss","SubscriptionName":"Core 1","Rpm":10}"#,
+                "[]",
+                "not-json",
+            ] {
+                assert_eq!(
+                    classify_probe_response(
+                        service,
+                        &Response {
+                            status: 200,
+                            headers: Vec::new(),
+                            body: payload.as_bytes().to_vec(),
+                            truncated: false,
+                        }
+                    ),
+                    ProbeVerdict::Indeterminate,
+                    "{service_name} payload {payload}"
+                );
+            }
+            let valid_body = if service_name == "shodan" {
+                br#"{"plan":"oss"}"#.to_vec()
+            } else {
+                br#"{"SubscriptionName":"Core 1","Rpm":10}"#.to_vec()
+            };
+            assert_eq!(
+                classify_probe_response(
+                    service,
+                    &Response {
+                        status: 200,
+                        headers: Vec::new(),
+                        body: valid_body,
+                        truncated: true,
+                    }
+                ),
+                ProbeVerdict::Indeterminate,
+                "{service_name} truncated answer"
+            );
+        }
+        let shodan = find_service("shodan").expect("shodan");
+        let malformed = Response {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"plan":""}"#.to_vec(),
+            truncated: false,
+        };
+        assert_eq!(
+            classify_probe_response(shodan, &malformed),
+            ProbeVerdict::Indeterminate
+        );
+    }
+
+    #[test]
+    fn successful_probe_never_returns_an_echoed_credential_as_evidence() {
+        let key = Secret::new("private-test-secret-123456789").expect("key");
+        let fake = answering(
+            200,
+            r#"{"plan":"private-test-secret-123456789","query_credits":0}"#,
+        );
+        let result = probe_service(&fake, "shodan", &key).expect("probe");
+        assert_eq!(result.verdict, ProbeVerdict::Valid);
+        assert_eq!(
+            result.evidence,
+            vec![("query_credits".to_string(), "0".to_string())]
         );
     }
 
