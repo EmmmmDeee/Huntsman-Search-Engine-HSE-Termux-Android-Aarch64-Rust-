@@ -225,7 +225,10 @@ mod tests {
                     blocked: false,
                 });
             }
-            if request.url.starts_with("https://openlibrary.org/search/authors.json") {
+            if request
+                .url
+                .starts_with("https://openlibrary.org/search/authors.json")
+            {
                 return Ok(Response {
                     status: 200,
                     headers: vec![("content-type".into(), "application/json".into())],
@@ -286,11 +289,13 @@ mod tests {
         assert!(!report.truncated);
         assert_eq!(report.bibliography.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(report.bibliography.leads.len(), 2);
-        assert!(report
-            .bibliography
-            .leads
-            .iter()
-            .all(|lead| lead.status == "unverified_bibliographic_name_search_lead"));
+        assert!(
+            report
+                .bibliography
+                .leads
+                .iter()
+                .all(|lead| lead.status == "unverified_bibliographic_name_search_lead")
+        );
         assert_eq!(
             fixture
                 .seen
