@@ -10,7 +10,9 @@ redaction, or terminal markup**. Public HTTPS URLs only; the parser refuses
 `--allow-private`, `--bearer`, `--header` and `--keys` in raw mode.
 
 The raw mode fails before emitting any bytes for a truncated transport response,
-a non-2xx HTTP response or a classified challenge/WAF/error. An ordinary HTTP
+a non-2xx HTTP response or a classified challenge/WAF/error. The hybrid
+script supplies `--max-redirects 0`, so a redirected response is not silently
+attributed to the initial URL; a 3xx is a failed capture, not evidence. An ordinary HTTP
 200 body remains an *observed response body*, **not** evidence that a returned
 claim is correct. The body is whatever bytes the Huntsman HTTP transport provides
 after HTTP-layer handling, **not** a packet capture, TLS wire trace, or a signed
@@ -43,8 +45,9 @@ Each completed receipt is under `$HUNTSMAN_HOME/hybrid/receipt-XXXXXX` (else
   source URL, body byte count, separate SHA-256 digests of those three files,
   typed per-provider outcomes and semantic limitations.
 
-A `PASS` requires both a complete non-challenge public 2xx source response and
-at least one observed search-engine discovery lead with a zero command exit.
+A `PASS` requires a complete non-challenge public 2xx source response,
+a successful offline candidate extraction and at least one observed
+search-engine discovery lead with a zero command exit.
 In other cases a successfully retrieved source body remains saved and tagged
 `PARTIAL` (exit 69). A failed raw retrieval publishes no completed receipt.
 Source capture has a 1 MiB local admission limit. Search and extracted outputs
