@@ -164,8 +164,8 @@ pub fn investigate_offline_with_history(
             .take(MAX_JOIN_ENTITIES)
             .cloned()
             .collect();
-        let mut incomplete = snapshot.entities.len() > MAX_JOIN_ENTITIES
-            || snapshot.entities.len() > MAX_JOIN_SEEDS;
+        let mut incomplete =
+            snapshot.entities.len() > MAX_JOIN_ENTITIES || snapshot.entities.len() > MAX_JOIN_SEEDS;
         let mut visited = std::collections::BTreeSet::new();
         'seeds: for seed in snapshot.entities.iter().take(MAX_JOIN_SEEDS) {
             for id in history.scan_ids_for_entity_ref(&seed.uid) {
