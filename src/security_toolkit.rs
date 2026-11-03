@@ -114,7 +114,9 @@ pub const TOOLS: &[ToolCapability] = &[
         category: "public_osint",
         status: "existing_subset",
         commands: &["domain DOMAIN", "osint lookup domain DOMAIN", "query QUERY"],
-        implemented: &["Public domain/email/host lead aggregation using existing source collectors"],
+        implemented: &[
+            "Public domain/email/host lead aggregation using existing source collectors",
+        ],
         missing: &["Full theHarvester source parity and output-format compatibility"],
         termux_constraint: "Remote sources are subject to keys, rate limits and egress policy",
     },
@@ -170,7 +172,12 @@ pub fn audit_sha256(expected_hex: &str, wordlist: &[u8]) -> Result<Sha256Audit, 
         matched: false,
         matched_line: None,
     };
-    for line in wordlist.split_terminator(|byte| *byte == b'\n') {
+    let payload = if wordlist.last() == Some(&b'\n') {
+        &wordlist[..wordlist.len() - 1]
+    } else {
+        wordlist
+    };
+    for line in payload.split(|byte| *byte == b'\n') {
         report.lines_scanned += 1;
         // CRLF and LF line endings produce identical candidates, while spaces
         // remain significant password bytes.
@@ -204,16 +211,30 @@ mod tests {
         let mut ids = std::collections::BTreeSet::new();
         for tool in catalog.tools {
             assert!(ids.insert(tool.id));
-            assert!(matches!(tool.status, "native_subset" | "existing_subset" | "unavailable"));
+            assert!(matches!(
+                tool.status,
+                "native_subset" | "existing_subset" | "unavailable"
+            ));
             assert!(!tool.termux_constraint.is_empty());
         }
-        assert_eq!(catalog.tools.iter().filter(|tool| tool.id == "sqlmap").count(), 1);
+        assert_eq!(
+            catalog
+                .tools
+                .iter()
+                .filter(|tool| tool.id == "sqlmap")
+                .count(),
+            1
+        );
     }
 
     #[test]
     fn sha256_matches_without_exposing_plaintext() {
         let digest = hex32(&sha256(b"known candidate"));
-        let report = audit_sha256(&digest.to_ascii_uppercase(), b"wrong\r\nknown candidate\r\nunused\n").unwrap();
+        let report = audit_sha256(
+            &digest.to_ascii_uppercase(),
+            b"wrong\r\nknown candidate\r\nunused\n",
+        )
+        .unwrap();
         assert!(report.matched);
         assert_eq!(report.matched_line, Some(2));
         assert_eq!(report.candidates_tested, 2);
@@ -236,7 +257,13 @@ mod tests {
         assert!(audit_sha256("short", b"abc\n").is_err());
         assert!(audit_sha256(&"g".repeat(64), b"abc\n").is_err());
         assert!(audit_sha256(&"0".repeat(64), b"").is_err());
-        assert!(audit_sha256(&"0".repeat(64), &vec![b'a'; MAX_WORDLIST_BYTES as usize + 1]).is_err());
+        assert!(
+            audit_sha256(
+                &"0".repeat(64),
+                &vec![b'a'; MAX_WORDLIST_BYTES as usize + 1]
+            )
+            .is_err()
+        );
     }
 
     #[test]
