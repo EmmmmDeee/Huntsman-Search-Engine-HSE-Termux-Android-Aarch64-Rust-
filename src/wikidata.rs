@@ -217,13 +217,12 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
 }
 
 fn configured_base() -> Result<String, Error> {
-    match crate::environment::wikidata_base_url() {
-        Ok(Some(base)) if crate::canonical::is_https_origin(&base) => Ok(base),
-        Ok(None) => Ok(PUBLIC_BASE.to_owned()),
-        Ok(Some(_)) | Err(_) => Err(Error::Invalid(format!(
-            "{BASE_URL_ENV} must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment"
-        ))),
-    }
+    crate::canonical::configured_https_origin(
+        crate::environment::wikidata_base_url(),
+        PUBLIC_BASE,
+        BASE_URL_ENV,
+    )
+    .map_err(Error::Invalid)
 }
 
 /// Whether `query` is a bare Wikidata item id (`Q` followed by digits), case-insensitively.

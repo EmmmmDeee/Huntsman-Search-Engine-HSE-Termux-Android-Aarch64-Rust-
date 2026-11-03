@@ -36,13 +36,12 @@ const PUBLIC_BASE: &str = "https://nominatim.openstreetmap.org";
 pub const BASE_URL_ENV: &str = crate::environment::NOMINATIM_BASE_URL_ENV;
 
 fn configured_base() -> Result<String, Error> {
-    match crate::environment::nominatim_base_url() {
-        Ok(Some(base)) if crate::canonical::is_https_origin(&base) => Ok(base),
-        Ok(None) => Ok(PUBLIC_BASE.to_owned()),
-        Ok(Some(_)) | Err(_) => Err(Error::Invalid(format!(
-            "{BASE_URL_ENV} must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment"
-        ))),
-    }
+    crate::canonical::configured_https_origin(
+        crate::environment::nominatim_base_url(),
+        PUBLIC_BASE,
+        BASE_URL_ENV,
+    )
+    .map_err(Error::Invalid)
 }
 
 fn search_url_at(base: &str, query: &str) -> String {
