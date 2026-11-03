@@ -62,6 +62,29 @@ fn malformed_content_lengths_are_rejected_before_routing() {
 }
 
 #[test]
+fn whitespace_in_header_field_names_is_rejected_as_bad_request() {
+    // RFC 9112 section 5.1: whitespace before ':' is invalid, even if
+    // the server would otherwise ignore the unrecognised field name.
+    for header in [
+        "Content-Length : 0\r\n",
+        "Content-Length\t: 0\r\n",
+        " Transfer-Encoding: chunked\r\n",
+        "Transfer-Encoding : chunked\r\n",
+        "Host : localhost\r\n",
+        "X-Custom Header: value\r\n",
+        ": value\r\n",
+    ] {
+        let request = format!("GET /api/health HTTP/1.1\r\nHost: localhost\r\n{header}\r\n");
+        let answer = response_for_request(&request, None, loopback_bind());
+        assert!(answer.starts_with("HTTP/1.1 400"), "{header:?}: {answer}");
+    }
+    // OWS belongs after the colon, never in the field name.
+    let allowed = "GET /api/health HTTP/1.1\r\nHost:\t localhost \t\r\nContent-Length: \t0\t\r\n\r\n";
+    let answer = response_for_request(allowed, None, loopback_bind());
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+}
+
+#[test]
 fn maximum_content_length_does_not_overflow_the_socket_reader() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
