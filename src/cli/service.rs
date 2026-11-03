@@ -259,6 +259,38 @@ fn web_cells() -> Result<huntsman_recon::cell_radar::CellScan, LookupError> {
     })
 }
 
+/// On-demand, read-only public camera + state GIS catalogue correlation.
+/// The transport, collectors, source failure outcomes, and provenance are shared
+/// with `traffic-cameras --reconcile`. Neither feed proves current JPEG access.
+fn web_traffic_cameras() -> Result<serde_json::Value, LookupError> {
+    use huntsman_recon::http::{TransportConfig, UreqTransport};
+    use huntsman_recon::qld_traffic_cameras::{self, MAX_CATALOGUE_BYTES};
+    use huntsman_recon::qld_traffic_cameras::reconcile;
+
+    let http = UreqTransport::new(&TransportConfig {
+        timeout: std::time::Duration::from_secs(15),
+        max_body: MAX_CATALOGUE_BYTES,
+        ..TransportConfig::default()
+    });
+    let now = clock::unix_now();
+    let webcam = qld_traffic_cameras::collect(&http, now).map_err(|error| LookupError {
+        status: 503,
+        message: format!("camera catalogue request refused: {error}"),
+    })?;
+    let gis = reconcile::collect_gis(&http, now).map_err(|error| LookupError {
+        status: 503,
+        message: format!("GIS catalogue request refused: {error}"),
+    })?;
+    let comparison = reconcile::reconcile(&webcam, &gis);
+    Ok(serde_json::json!({
+        "source_scope": "TMR public webcam and GIS metadata; images not downloaded",
+        "independent_publisher_families": 1,
+        "webcam": webcam,
+        "gis": gis,
+        "reconciliation": comparison
+    }))
+}
+
 /// Mobile radar records one sweep into the same track log `radar track` keeps.
 fn web_track() -> Result<huntsman_recon::radar::TrackReport, LookupError> {
     let log = super::scans::default_radar_log().ok_or_else(|| LookupError {
@@ -429,6 +461,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
                 .with_radar(std::sync::Arc::new(web_radar))
                 .with_radar_cells(std::sync::Arc::new(web_cells))
                 .with_radar_track(std::sync::Arc::new(web_track))
+                .with_traffic_cameras(std::sync::Arc::new(web_traffic_cameras))
                 .with_inspect(std::sync::Arc::new(web_inspect))
                 .with_investigate(std::sync::Arc::new(web_investigate))
                 .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
