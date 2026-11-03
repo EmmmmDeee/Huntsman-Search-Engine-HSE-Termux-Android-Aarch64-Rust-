@@ -279,8 +279,7 @@ mod tests {
                 && join.status == JoinStatus::IndependentlyObservedTarget
         }));
         assert!(joins.links.iter().any(|join| {
-            join.relation == "reported_mail_exchanger"
-                && join.status == JoinStatus::SourceClaimOnly
+            join.relation == "reported_mail_exchanger" && join.status == JoinStatus::SourceClaimOnly
         }));
     }
 
