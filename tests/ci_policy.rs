@@ -139,6 +139,8 @@ fn live_collector_smoke_is_manual_read_only_and_secret_free() {
         "/elements",
         "/export?format=csv",
         "web-ui-flow",
+        "ui-content",
+        "graph-dangling-edges",
     ] {
         assert!(script.contains(flow), "the UI smoke lacks {flow:?}");
     }
