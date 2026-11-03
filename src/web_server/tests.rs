@@ -270,6 +270,7 @@ fn a_loopback_server_needs_no_token_even_when_one_is_supplied() {
             let routes = Routes {
                 lookups: Some(lookups.clone()),
                 research: None,
+                people_discover: None,
                 radar: None,
                 cells: None,
                 track: None,
@@ -1319,6 +1320,7 @@ fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> Stri
     let routes = Routes {
         lookups: lookups.cloned(),
         research: None,
+        people_discover: None,
         radar: None,
         cells: None,
         track: None,
@@ -1496,6 +1498,7 @@ fn saved_lookup_routes(
             ..echo_lookups()
         }),
         research: None,
+        people_discover: None,
         radar: None,
         cells: None,
         track: None,
@@ -1797,6 +1800,7 @@ fn analyses(
     Routes {
         lookups: None,
         research: None,
+        people_discover: None,
         radar: None,
         cells: None,
         track: None,
