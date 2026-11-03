@@ -127,6 +127,9 @@ const TRACK_PATH: &str = "/api/radar/track";
 const OSINT_CASE_PATH: &str = "/api/osint/case";
 const OSINT_RISK_PATH: &str = "/api/osint/area-risk";
 const INVESTIGATE_PATH: &str = "/api/investigate";
+/// Explicit, source-scoped keyless people discovery. Body carries the name so
+/// neither browser history nor routine URL logs expose the search subject.
+const PEOPLE_DISCOVER_PATH: &str = "/api/people/discover";
 /// Explicitly initiated autonomous recursive investigation, stored as an ordinary saved scan.
 const RESEARCH_MISSION_PATH: &str = "/api/research/mission";
 /// The largest file `/api/inspect` reads: the bound the `exif` and `docmeta` commands read from
@@ -195,6 +198,13 @@ pub struct LookupError {
 pub type ResearchHandler =
     Arc<dyn Fn(&str) -> Result<serde_json::Value, LookupError> + Send + Sync>;
 
+/// The live CLI's source-scoped people-index discovery, without a second collector.
+pub type PeopleDiscoverHandler = Arc<
+    dyn Fn(&str, crate::people_discovery::Region) -> Result<serde_json::Value, LookupError>
+        + Send
+        + Sync,
+>;
+
 /// Runs one lookup. Installed by the binary, which owns transport construction.
 pub type LookupHandler =
     Arc<dyn Fn(&LookupQuery) -> Result<LookupReport, LookupError> + Send + Sync>;
@@ -202,6 +212,12 @@ pub type LookupHandler =
 #[derive(Clone)]
 struct Research {
     handler: ResearchHandler,
+    live: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct PeopleDiscover {
+    handler: PeopleDiscoverHandler,
     live: Arc<AtomicUsize>,
 }
 
@@ -275,6 +291,7 @@ type Radar = Sensor<WifiScan>;
 struct Routes {
     lookups: Option<Lookups>,
     research: Option<Research>,
+    people_discover: Option<PeopleDiscover>,
     radar: Option<Radar>,
     cells: Option<Sensor<CellScan>>,
     track: Option<Sensor<TrackReport>>,
@@ -382,6 +399,16 @@ impl Server {
     #[must_use]
     pub fn with_research(mut self, handler: ResearchHandler) -> Self {
         self.routes.research = Some(Research {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
+        self
+    }
+
+    /// Serve POST /api/people/discover with the same bounded collectors as the CLI.
+    #[must_use]
+    pub fn with_people_discover(mut self, handler: PeopleDiscoverHandler) -> Self {
+        self.routes.people_discover = Some(PeopleDiscover {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
@@ -1392,6 +1419,7 @@ fn protected_path(path: &str) -> bool {
             | "/api/command"
             | "/api/lookup"
             | "/api/research"
+            | PEOPLE_DISCOVER_PATH
             | RESEARCH_MISSION_PATH
             | "/api/analyze"
             | "/api/evidence"
@@ -1480,6 +1508,7 @@ fn route(
         },
         "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
         "/api/research" => lookup::research_response(parsed, routes.research.as_ref()),
+        PEOPLE_DISCOVER_PATH => lookup::people_discover_response(parsed, routes.people_discover.as_ref()),
         RESEARCH_MISSION_PATH => lookup::research_mission_response(parsed, routes.scans.as_ref()),
         "/api/radar/wifi" => {
             sensor_response(parsed, routes.radar.as_ref(), "Wi-Fi radar", Method::Get)
