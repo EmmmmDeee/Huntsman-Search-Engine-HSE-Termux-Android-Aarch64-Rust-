@@ -39,12 +39,30 @@ pub struct HeaderReport {
 #[must_use]
 pub fn assess_headers(url: &str, response: &Response) -> HeaderReport {
     let checks = [
-        ("strict-transport-security", "HSTS is a HTTPS-only browser policy"),
-        ("content-security-policy", "CSP mitigates some script-injection impact"),
-        ("x-content-type-options", "nosniff helps resist MIME confusion"),
-        ("referrer-policy", "Referrer-Policy controls referrer disclosure"),
-        ("x-frame-options", "CSP frame-ancestors can replace this legacy header"),
-        ("permissions-policy", "Permissions-Policy restricts some browser features"),
+        (
+            "strict-transport-security",
+            "HSTS is a HTTPS-only browser policy",
+        ),
+        (
+            "content-security-policy",
+            "CSP mitigates some script-injection impact",
+        ),
+        (
+            "x-content-type-options",
+            "nosniff helps resist MIME confusion",
+        ),
+        (
+            "referrer-policy",
+            "Referrer-Policy controls referrer disclosure",
+        ),
+        (
+            "x-frame-options",
+            "CSP frame-ancestors can replace this legacy header",
+        ),
+        (
+            "permissions-policy",
+            "Permissions-Policy restricts some browser features",
+        ),
     ]
     .into_iter()
     .map(|(name, note)| HeaderCheck {
@@ -110,7 +128,9 @@ pub fn checked_origin(raw: &str) -> Result<String, String> {
         || raw.contains('?')
         || raw.contains('#')
         || raw.contains('@')
-        || raw.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || raw
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
     {
         return Err("expected an HTTPS origin without userinfo, query or fragment".into());
     }
@@ -129,7 +149,10 @@ pub fn checked_origin(raw: &str) -> Result<String, String> {
     {
         return Err("HTTPS origin must use a simple DNS hostname or IPv4 address".into());
     }
-    if uri.path_and_query().is_some_and(|item| item.as_str() != "/") {
+    if uri
+        .path_and_query()
+        .is_some_and(|item| item.as_str() != "/")
+    {
         return Err("origin must not contain a non-root path".into());
     }
     Ok(raw.trim_end_matches('/').to_ascii_lowercase())
@@ -157,9 +180,9 @@ pub fn parse_paths(input: &[u8]) -> Result<Vec<String>, String> {
             || path.len() > 128
             || path.contains("..")
             || path.contains("//")
-            || !path
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/'))
+            || !path.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/')
+            })
         {
             return Err("unsafe path in wordlist; use relative ASCII path segments".into());
         }
