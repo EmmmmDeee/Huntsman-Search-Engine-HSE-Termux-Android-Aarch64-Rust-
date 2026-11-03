@@ -427,7 +427,7 @@ fn outcome_claim(outcome: &SourceExecutionOutcome, policy: SavePolicy) -> Result
         component: component.into(),
         technique_id: None,
         status: Status::Unverified,
-        evidence_level: if outcome.kind.is_accepted() {
+        evidence_level: if outcome.is_accepted() {
             EvidenceLevel::PrimaryEvidence
         } else {
             EvidenceLevel::Assertion
@@ -613,6 +613,35 @@ mod tests {
             entries
                 .iter()
                 .all(|entry| entry.claim.status == Status::Unverified)
+        );
+    }
+
+    #[test]
+    fn a_contradictory_outcome_is_preserved_but_never_elevated_to_primary_evidence() {
+        for (kind, found) in [
+            (SourceOutcomeKind::Success, Some(0)),
+            (SourceOutcomeKind::ValidZero, Some(2)),
+        ] {
+            let contradiction = SourceExecutionOutcome::observed(
+                "duolingo",
+                7,
+                kind,
+                Some(200),
+                found,
+                "provider count contradicts its label",
+            );
+            assert!(!contradiction.is_accepted());
+            let saved = outcome_claim(&contradiction, EMAIL_POLICY).unwrap();
+            assert_eq!(saved.evidence_level, EvidenceLevel::Assertion);
+            assert_eq!(saved.source, "duolingo");
+            assert_eq!(saved.component, "src/duolingo.rs");
+            let roundtrip: SourceExecutionOutcome = serde_json::from_str(&saved.claim).unwrap();
+            assert_eq!(roundtrip, contradiction);
+        }
+        let valid = SourceExecutionOutcome::valid_zero("duolingo", 7);
+        assert_eq!(
+            outcome_claim(&valid, EMAIL_POLICY).unwrap().evidence_level,
+            EvidenceLevel::PrimaryEvidence
         );
     }
 
