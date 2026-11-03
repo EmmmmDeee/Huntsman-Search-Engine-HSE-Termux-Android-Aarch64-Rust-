@@ -17,7 +17,7 @@ use crate::http::{Request, Transport};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE_GIS: &str = "qld_state_road_camera_gis";
-/// Fixed and encoded ArcGIS query. `outSR=4326` explicitly requests WGS84 lon/lat,
+/// Fixed and encoded `ArcGIS` query. `outSR=4326` explicitly requests WGS84 lon/lat,
 /// rather than the layer's default Web Mercator metre coordinates.
 pub const GIS_URL: &str = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Transportation/StateRoadInformation/MapServer/4/query?where=1%3D1&outFields=camera_id%2Cdescription%2Cdirection%2Clocality&returnGeometry=true&outSR=4326&f=geojson";
 
