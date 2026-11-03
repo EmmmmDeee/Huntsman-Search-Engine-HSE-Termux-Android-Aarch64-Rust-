@@ -1,0 +1,49 @@
+{
+  "source_definitions": {
+    "S1": {
+      "url": "https://example.org/creator",
+      "observed_on": "2026-11-03"
+    }
+  },
+  "nodes": [
+    {
+      "id": "example:hub",
+      "type": "link_hub",
+      "sources": [
+        "S1"
+      ]
+    },
+    {
+      "id": "example:profile",
+      "type": "social_profile",
+      "sources": [
+        "S1"
+      ]
+    },
+    {
+      "id": "example:payment",
+      "type": "payment_handle",
+      "sources": [
+        "S1"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "example:hub",
+      "to": "example:profile",
+      "predicate": "publicly_links_to",
+      "sources": [
+        "S1"
+      ]
+    },
+    {
+      "from": "example:hub",
+      "to": "example:payment",
+      "predicate": "publicly_links_to",
+      "sources": [
+        "S1"
+      ]
+    }
+  ]
+}
