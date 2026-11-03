@@ -454,11 +454,11 @@ impl ScanCollector<'_> {
         for outcome in &found.outcomes {
             self.errors = self
                 .errors
-                .saturating_add(usize::from(is_error_outcome(outcome.kind)));
+                .saturating_add(usize::from(is_error_outcome(outcome)));
             self.service.log(
                 self.id,
                 &outcome.module,
-                outcome_log_level(outcome.kind),
+                outcome_log_level(outcome),
                 outcome_line(outcome),
             );
         }
@@ -1575,11 +1575,11 @@ impl ScanService {
             Ok(output) => {
                 let mut failed = 0;
                 for outcome in &output.outcomes {
-                    failed += usize::from(is_error_outcome(outcome.kind));
+                    failed += usize::from(is_error_outcome(outcome));
                     self.log(
                         id,
                         &outcome.module,
-                        outcome_log_level(outcome.kind),
+                        outcome_log_level(outcome),
                         outcome_line(outcome),
                     );
                 }
@@ -1778,7 +1778,7 @@ impl ScanService {
         let errors = found
             .outcomes
             .iter()
-            .filter(|outcome| is_error_outcome(outcome.kind))
+            .filter(|outcome| is_error_outcome(outcome))
             .count();
         let (entities, outcomes) = (found.entities.len(), found.outcomes.len());
         let crawl = Crawl {
@@ -1952,13 +1952,13 @@ fn placeholder(id: &str) -> ScanRecord {
 
 /// Whether a source outcome is an error of the scan. An answer is not, and neither is a keyed
 /// source skipped for want of its key: nothing failed, and the skip is still logged in full.
-fn is_error_outcome(kind: SourceOutcomeKind) -> bool {
-    !kind.is_accepted() && !kind.is_not_configured()
+fn is_error_outcome(outcome: &SourceExecutionOutcome) -> bool {
+    !outcome.is_accepted() && !outcome.kind.is_not_configured()
 }
 
 /// The level one source outcome is logged at: an error only when it is an error of the scan.
-fn outcome_log_level(kind: SourceOutcomeKind) -> LogLevel {
-    if is_error_outcome(kind) {
+fn outcome_log_level(outcome: &SourceExecutionOutcome) -> LogLevel {
+    if is_error_outcome(outcome) {
         LogLevel::Error
     } else {
         LogLevel::Info
@@ -1977,6 +1977,9 @@ fn outcome_line(outcome: &SourceExecutionOutcome) -> String {
     }
     if let Some(retry) = outcome.retry_after_secs {
         parts.insert("retry_after_s", retry.to_string());
+    }
+    if outcome.kind.is_accepted() && !outcome.is_accepted() {
+        parts.insert("outcome_count_conflict", "true".to_owned());
     }
     let mut line = outcome.kind.as_str().to_owned();
     for (key, value) in parts {
@@ -4259,20 +4262,43 @@ mod tests {
 
     #[test]
     fn a_skipped_keyed_source_is_logged_as_information_and_is_not_a_scan_error() {
-        for kind in [
-            SourceOutcomeKind::ValidZero,
-            SourceOutcomeKind::NotConfigured,
+        for outcome in [
+            SourceExecutionOutcome::valid_zero("fixture", 7),
+            SourceExecutionOutcome::not_configured("fixture", 7),
         ] {
-            assert!(!is_error_outcome(kind), "{kind:?}");
-            assert_eq!(outcome_log_level(kind), LogLevel::Info, "{kind:?}");
+            assert!(!is_error_outcome(&outcome), "{outcome:?}");
+            assert_eq!(outcome_log_level(&outcome), LogLevel::Info, "{outcome:?}");
         }
         for kind in [
             SourceOutcomeKind::AuthRequired,
             SourceOutcomeKind::RateLimited,
             SourceOutcomeKind::Inconclusive,
         ] {
-            assert!(is_error_outcome(kind), "{kind:?}");
-            assert_eq!(outcome_log_level(kind), LogLevel::Error, "{kind:?}");
+            let outcome = SourceExecutionOutcome::failed("fixture", 7, kind, None, "failure");
+            assert!(is_error_outcome(&outcome), "{outcome:?}");
+            assert_eq!(outcome_log_level(&outcome), LogLevel::Error, "{outcome:?}");
         }
+    }
+
+    #[test]
+    fn contradictory_source_counts_are_errors_across_scan_paths_and_logs() {
+        for (kind, found) in [
+            (SourceOutcomeKind::Success, Some(0)),
+            (SourceOutcomeKind::ValidZero, Some(2)),
+        ] {
+            let outcome = SourceExecutionOutcome::observed(
+                "provider", 7, kind, Some(200), found, "count mismatch",
+            );
+            assert!(!outcome.is_accepted(), "{outcome:?}");
+            assert!(is_error_outcome(&outcome), "{outcome:?}");
+            assert_eq!(outcome_log_level(&outcome), LogLevel::Error);
+            let log = outcome_line(&outcome);
+            assert!(log.contains("outcome_count_conflict=true"), "{log}");
+            assert!(log.contains("count mismatch"), "{log}");
+        }
+        let accepted = SourceExecutionOutcome::success("provider", 7, 2);
+        assert!(!is_error_outcome(&accepted));
+        assert_eq!(outcome_log_level(&accepted), LogLevel::Info);
+        assert!(!outcome_line(&accepted).contains("outcome_count_conflict"));
     }
 }
