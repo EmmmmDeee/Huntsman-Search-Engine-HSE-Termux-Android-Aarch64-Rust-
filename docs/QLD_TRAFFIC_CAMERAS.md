@@ -163,6 +163,23 @@ export. Not delivered: persisted longitudinal change history, a dedicated
 registered API-key slot, JPEG freshness validation, independent third-party
 corroboration or municipal CCTV imagery.
 
+**Native phone acceptance:** Once the exact reviewed feature revision has been built
+and installed in rootless Termux, start the embedded Web UI locally and run:
+
+```sh
+pkg install jq curl
+bash scripts/termux/traffic-camera-acceptance.sh
+```
+
+The script refuses non-Termux, non-AArch64 and root contexts, checks the
+binary build SHA, exercises both guarded collectors from the CLI and the
+live Web API, and independently verifies inventory arithmetic and publisher
+family semantics. It writes temporary JSON with mode-700 containment and
+removes it at exit; it makes no repeated/background source requests. Its
+`PASS` is **on-device evidence** only when executed on the phone; adding the
+script to GitHub does not constitute on-device testing. Only run it against
+an intentional and verified checkout of the feature revision.
+
 **Release acceptance:** `cargo gate full` on the tested commit; CI's Android
 cross-build and browser tests; then a live one-shot camera request and
 `huntsman-recon doctor serve` on the actual rootless Termux phone. Cloud
