@@ -48,7 +48,7 @@ struct Entry {
     frequency: u64,
     #[serde(default)]
     lastseen: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "number_or_decimal_string")]
     confidence: Option<f64>,
     #[serde(default)]
     torexit: u8,
@@ -91,6 +91,24 @@ pub fn lookup(
         Answer::Body(body) => decode(&body, indicator),
         Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
+}
+
+/// A score the service writes either as a JSON number or as a decimal string (`"40.00"`);
+/// any other string is not a score and fails the decode.
+fn number_or_decimal_string<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let score = match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::Number(number)) => number.as_f64(),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<f64>().ok(),
+        Some(_) => None,
+    };
+    score
+        .filter(|score| score.is_finite())
+        .map(Some)
+        .ok_or_else(|| serde::de::Error::custom("confidence is not a number"))
 }
 
 /// One answer body for `indicator`. **Pure.**
@@ -148,6 +166,23 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The service writes `confidence` as a number for some records and as a decimal string for
+    /// others (`"confidence":"40.00"`, live 2026-11-03); both are the same score.
+    #[test]
+    fn a_confidence_written_as_a_string_is_the_same_score() {
+        let body = r#"{"success":1,"email":{"value":"test@example.com","appears":1,"frequency":3,"lastseen":"2026-10-31 11:47:01","confidence":"40.00"}}"#;
+        let f = decode(body.as_bytes(), Indicator::Email("test@example.com"))
+            .unwrap()
+            .expect("a finding");
+        assert!(
+            f.attrs
+                .iter()
+                .any(|(k, v)| *k == "confidence" && v == "40.00")
+        );
+        let bad = body.replace(r#""40.00""#, r#""high""#);
+        assert!(decode(bad.as_bytes(), Indicator::Email("test@example.com")).is_err());
+    }
 
     /// Recorded for `185.220.101.1` and `test@example.com` on 2026-10-14.
     const RECORDED: &str = r#"{"success":1,"ip":{"value":"185.220.101.1","appears":1,"frequency":91,"lastseen":"2026-10-13 07:37:12","torexit":1,"asn":60729,"country":"de","confidence":95.29},"email":{"value":"test@example.com","appears":1,"frequency":2,"lastseen":"2026-09-14 16:30:38","confidence":0.56}}"#;
