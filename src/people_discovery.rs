@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::canonical::canonical_name;
 use crate::error::Error;
 use crate::http::{Transport, parse_http_uri};
+use crate::openlibrary_author;
 use crate::people_cli;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::web_query;
@@ -18,7 +19,7 @@ pub const MAX_NAME_BYTES: usize = 120;
 pub const MAX_CANDIDATES: usize = 80;
 pub const PEOPLE_DISCOVER_USAGE: &str =
     "usage: huntsman-recon people-discover [--region au|us] FULL NAME...";
-pub const PEOPLE_DISCOVER_HELP: &str = "people-discover [--region au|us] FULL NAME...\nRun four bounded, keyless public-index searches using the actual Rust Bing, Brave and Mojeek collectors. Cross-source discovery covers public professional profiles (LinkedIn), development footprints (GitHub), research identifiers (ORCID) and jurisdiction-specific official pages (ASIC for AU, SEC for US). This is separate from the existing people lookup, which collects structured records. Returns JSON with the exact index URLs, admitted domains, per-engine typed outcomes, discarded out-of-scope links and explicit truncation. Every hit is an UNVERIFIED LEAD: matching names, URL occurrence and multiple indexes do not prove identity, employment or control. No breach lookup, location tracing, private API, or automatic recursive expansion.";
+pub const PEOPLE_DISCOVER_HELP: &str = "people-discover [--region au|us] FULL NAME...\nRun four bounded, keyless public-index searches using the actual Rust Bing, Brave and Mojeek collectors. Cross-source discovery covers public professional profiles (LinkedIn), development footprints (GitHub), research identifiers (ORCID) and jurisdiction-specific official pages (ASIC for AU, SEC for US). This is separate from the existing people lookup, which collects structured records. Returns JSON with the exact index URLs, admitted domains, per-engine typed outcomes, discarded out-of-scope links and explicit truncation. A separate bounded, keyless Open Library Authors API lookup adds bibliographic catalogue candidates, with independent source status and no identity attribution. Use --bibliography-only for one direct public-author request without the search-engine fanout. Every hit is an UNVERIFIED LEAD: matching names, URL occurrence and multiple indexes do not prove identity, employment or control. No breach lookup, location tracing, private API, or automatic recursive expansion.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,6 +73,9 @@ pub struct Report {
     pub region: Region,
     pub facets: Vec<SearchFacet>,
     pub candidates: Vec<Candidate>,
+    /// Separate direct, keyless public catalogue evidence. Catalogue names do not
+    /// corroborate any account, identity or index-source match.
+    pub bibliography: openlibrary_author::Report,
     pub truncated: bool,
     pub attribution: &'static str,
     pub discovery_completeness: &'static str,
@@ -181,11 +185,17 @@ pub fn discover<T: Transport + ?Sized>(
         });
     }
 
+    // The catalogue is independent of search-index fanout. A failed live lookup
+    // must not erase valid index leads or pretend the catalogue said "no match".
+    let bibliography = openlibrary_author::lookup(transport, &name, now_unix)
+        .unwrap_or_else(|error| openlibrary_author::unavailable(now_unix, &error.to_string()));
+
     Ok(Report {
         subject: name,
         region,
         facets,
         candidates: candidates.into_values().collect(),
+        bibliography,
         truncated,
         attribution: "none_established; indexed_page_is_not_proof_of_person_or_account",
         discovery_completeness: "unknown_beyond_four_index_queries",
@@ -213,6 +223,14 @@ mod tests {
                     kind: SourceOutcomeKind::TlsFailure,
                     detail: "offline test".into(),
                     blocked: false,
+                });
+            }
+            if request.url.starts_with("https://openlibrary.org/search/authors.json") {
+                return Ok(Response {
+                    status: 200,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: br#"{"numFound":2,"numFoundExact":true,"docs":[{"key":"OL776398A","name":"Clara Ashwell"},{"key":"OL8288549A","name":"Clara Ashwell"}]}"#.to_vec(),
+                    truncated: false,
                 });
             }
             let body = concat!(
@@ -266,6 +284,23 @@ mod tests {
             "none_established; indexed_page_is_not_proof_of_person_or_account"
         );
         assert!(!report.truncated);
+        assert_eq!(report.bibliography.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.bibliography.leads.len(), 2);
+        assert!(report
+            .bibliography
+            .leads
+            .iter()
+            .all(|lead| lead.status == "unverified_bibliographic_name_search_lead"));
+        assert_eq!(
+            fixture
+                .seen
+                .borrow()
+                .iter()
+                .filter(|url| url.starts_with("https://openlibrary.org/search/authors.json"))
+                .count(),
+            1,
+            "one direct catalogue request, no extra index-engine fanout"
+        );
     }
 
     #[test]
