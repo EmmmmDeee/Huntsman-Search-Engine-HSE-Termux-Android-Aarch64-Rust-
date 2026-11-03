@@ -65,8 +65,7 @@ fn parse_uptime(data: &[u8]) -> Result<f64, &'static str> {
 }
 
 fn uptime_secs() -> Result<f64, &'static str> {
-    let data = read_bounded(Path::new("/proc/uptime"), 128)
-        .map_err(|_| "uptime_read_failed")?;
+    let data = read_bounded(Path::new("/proc/uptime"), 128).map_err(|_| "uptime_read_failed")?;
     parse_uptime(&data)
 }
 
