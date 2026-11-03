@@ -532,8 +532,11 @@ mod tests {
     fn live_lookup_json_includes_canonical_source_join_without_mutating_evidence() {
         let mut domain = Entity::new(EntityKind::Domain, "example.org", 0.8, "live-a");
         domain.add_evidence(
-            Evidence::new(EvidenceProvenance::for_scan("dns", "live-a"), "DNS response")
-                .with_attr("ip", "192.0.2.9"),
+            Evidence::new(
+                EvidenceProvenance::for_scan("dns", "live-a"),
+                "DNS response",
+            )
+            .with_attr("ip", "192.0.2.9"),
         );
         let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.9", 0.8, "live-b");
         ip.add_evidence(Evidence::new(
@@ -551,7 +554,10 @@ mod tests {
         };
         let encoded = serialize_lookup(&report).expect("encode lookup");
         let json: serde_json::Value = serde_json::from_str(&encoded).expect("JSON");
-        assert_eq!(json["synergy"]["links"][0]["relation"], "reported_dns_address");
+        assert_eq!(
+            json["synergy"]["links"][0]["relation"],
+            "reported_dns_address"
+        );
         assert_eq!(
             json["synergy"]["links"][0]["status"],
             "independently_observed_target"
