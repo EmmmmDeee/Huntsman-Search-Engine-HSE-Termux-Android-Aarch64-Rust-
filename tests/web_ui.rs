@@ -900,7 +900,7 @@ fn scans_live_on_the_server_and_only_the_analysis_is_kept_for_the_tab() {
 }
 
 /// Scan targets, which may contain personal identifiers, must not go in the new-scan URL.
-/// URLSearchParams as a fetch body preserves application/x-www-form-urlencoded semantics
+/// `URLSearchParams` as a fetch body preserves application/x-www-form-urlencoded semantics
 /// and the shared API helper supplies the same-origin lookup header.
 #[test]
 fn new_scan_sends_target_and_name_in_the_post_body() {
