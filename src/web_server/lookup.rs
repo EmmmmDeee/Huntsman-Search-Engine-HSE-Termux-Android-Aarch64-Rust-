@@ -2,6 +2,8 @@
 //! the authorization, same-site, body-bound and timeout gates of `web_server.rs`; behaviour is
 //! unchanged from the handlers that lived in `web_server.rs`.
 
+use serde::Serialize;
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
@@ -62,7 +64,7 @@ pub(super) fn sensor_response<T: serde::Serialize + Send + 'static>(
         return json_error(503, &format!("could not start a {noun} worker"));
     }
     match receiver.recv_timeout(RADAR_WAIT) {
-        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
+        Ok(Ok(Ok(report))) => match serialize_lookup(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, &format!("{noun} observations could not be encoded")),
         },
@@ -74,6 +76,22 @@ pub(super) fn sensor_response<T: serde::Serialize + Send + 'static>(
             json_error(504, &format!("{noun} did not answer in time"))
         }
     }
+}
+
+/// One shared response contract for live and saved lookups. Deriving a lead
+/// does not mutate collected entities, so the original evidence remains intact.
+#[derive(Serialize)]
+struct LookupWithSynergy<'a> {
+    #[serde(flatten)]
+    report: &'a LookupReport,
+    synergy: crate::osint_synergy::SynergyReport,
+}
+
+fn serialize_lookup(report: &LookupReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&LookupWithSynergy {
+        report,
+        synergy: crate::osint_synergy::discover(&report.entities),
+    })
 }
 
 /// `GET /api/lookup`: one lookup, answered with its report. With saved scans on, the lookup runs
@@ -134,7 +152,7 @@ pub(super) fn lookup_response(
         return json_error(503, "could not start a lookup worker");
     }
     match receiver.recv_timeout(until.saturating_duration_since(Instant::now())) {
-        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
+        Ok(Ok(Ok(report))) => match serialize_lookup(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, "report could not be encoded"),
         },
@@ -211,7 +229,7 @@ fn saved_lookup(service: &Arc<ScanService>, query: &LookupQuery, until: Instant)
         scan: Some(record.id.clone()),
         status: Some(record.status.as_str()),
     };
-    match serde_json::to_string(&report) {
+    match serialize_lookup(&report) {
         Ok(body) => json_ok(&body, false),
         Err(_) => json_error(500, "report could not be encoded"),
     }
