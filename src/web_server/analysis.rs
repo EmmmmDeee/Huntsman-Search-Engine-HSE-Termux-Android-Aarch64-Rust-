@@ -21,9 +21,16 @@ use super::{
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
 /// seeds, one per line. It is refused cross-site like a lookup, but needs no lookup header: it
 /// makes no network request and spends no key.
+/// All offline analyses use the same bounded, authorized JSON POST contract.
+pub(super) enum OfflineOsintMode {
+    Case,
+    Risk,
+    WorkspaceOverlaps,
+}
+
 /// Reuse Huntsman's existing authorization and same-site gates for both
 /// bounded, offline JSON OSINT methods. No remote provider request is made.
-pub(super) fn osint_offline_response(parsed: &ParsedRequest<'_>, risk: bool) -> String {
+pub(super) fn osint_offline_response(parsed: &ParsedRequest<'_>, mode: OfflineOsintMode) -> String {
     if parsed.method != Method::Post {
         return json_error(405, "OSINT source analysis requires POST");
     }
@@ -51,7 +58,18 @@ pub(super) fn osint_offline_response(parsed: &ParsedRequest<'_>, risk: bool) -> 
     if body.len() != length {
         return json_error(400, "OSINT analysis body incomplete or invalid UTF-8");
     }
-    if risk {
+    if matches!(mode, OfflineOsintMode::WorkspaceOverlaps) {
+        return match crate::rhinser_workspace::Workspace::from_json(body.as_bytes())
+            .and_then(|workspace| workspace.source_overlaps())
+        {
+            Ok(report) => serde_json::to_string(&report).map_or_else(
+                |_| json_error(500, "Rhinser overlap serialization failed"),
+                |json| json_ok(&json, false),
+            ),
+            Err(_) => json_error(400, "Rhinser workspace input invalid"),
+        };
+    }
+    if matches!(mode, OfflineOsintMode::Risk) {
         match crate::osint_area_risk::estimate_json(body.as_bytes()) {
             Ok(report) => serde_json::to_string(&report).map_or_else(
                 |_| json_error(500, "OSINT area result serialization failed"),
