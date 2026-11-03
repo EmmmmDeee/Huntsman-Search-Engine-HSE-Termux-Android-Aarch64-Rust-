@@ -9,7 +9,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_coordinates;
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
@@ -78,10 +78,8 @@ pub fn lookup(
     let Indicator::Ip(ip) = indicator else {
         return Ok(None);
     };
-    match api_leg::get(transport, &API, keys, &url(ip), now_unix)? {
-        Answer::Body(body) => decode(&body, ip),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::get(transport, &API, keys, &url(ip), now_unix)?.body_or_unexpected()?;
+    decode(&body, ip)
 }
 
 /// One answer body for `ip`. **Pure.**

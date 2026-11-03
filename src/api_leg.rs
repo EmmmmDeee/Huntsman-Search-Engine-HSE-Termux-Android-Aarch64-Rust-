@@ -111,6 +111,21 @@ pub enum Answer {
     NotFound(Vec<u8>),
 }
 
+impl Answer {
+    /// The 2xx body of a provider that never answers 404 for a legitimate miss: its 404 means a
+    /// missing or misconfigured endpoint, so it is [`LegError::Unexpected`]`(404)`, never
+    /// "nothing known". Providers whose 404 *is* a miss match [`Answer::NotFound`] themselves.
+    ///
+    /// # Errors
+    /// [`LegError::Unexpected`]`(404)` for [`Answer::NotFound`].
+    pub fn body_or_unexpected(self) -> Result<Vec<u8>, LegError> {
+        match self {
+            Self::Body(body) => Ok(body),
+            Self::NotFound(_) => Err(LegError::Unexpected(404)),
+        }
+    }
+}
+
 /// Why a leg gave no answer. No variant carries the key or a response body.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LegError {
@@ -484,6 +499,18 @@ mod tests {
     use super::*;
     use crate::http::{Method, TransportFailure};
     use std::sync::Mutex;
+
+    #[test]
+    fn a_404_is_never_a_miss_for_a_provider_that_takes_the_body_or_unexpected() {
+        assert_eq!(
+            Answer::Body(b"{}".to_vec()).body_or_unexpected(),
+            Ok(b"{}".to_vec())
+        );
+        assert_eq!(
+            Answer::NotFound(b"gone".to_vec()).body_or_unexpected(),
+            Err(LegError::Unexpected(404))
+        );
+    }
 
     const KEY: &str = "leg-test-key-0123456789abcdef";
     const SLOT: &str = crate::environment::ABUSEIPDB_KEY_ENV;

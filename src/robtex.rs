@@ -21,7 +21,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::api_leg::{self, Answer, Api, LegError};
+use crate::api_leg::{self, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -113,12 +113,10 @@ pub fn lookup(
     let Some(url) = url(indicator) else {
         return Ok(None);
     };
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => match indicator {
-            Indicator::Domain(domain) => decode_forward(&body, domain),
-            _ => decode_ip(&body),
-        },
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    match indicator {
+        Indicator::Domain(domain) => decode_forward(&body, domain),
+        _ => decode_ip(&body),
     }
 }
 

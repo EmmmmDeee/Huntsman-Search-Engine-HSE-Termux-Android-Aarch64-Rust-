@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_url;
 use crate::http::Transport;
 use crate::keys::Keys;
@@ -54,10 +54,9 @@ pub fn search<T: Transport + ?Sized>(
         "type": "lite",
         "numResults": MAX_RESULTS
     });
-    match api_leg::post_json(transport, &API, keys, URL, &body, now_unix)? {
-        Answer::Body(bytes) => decode(&bytes),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let bytes =
+        api_leg::post_json(transport, &API, keys, URL, &body, now_unix)?.body_or_unexpected()?;
+    decode(&bytes)
 }
 
 /// Validate the documented Exa search response and canonicalize the returned URLs.

@@ -17,7 +17,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_email;
 use crate::domains::is_proxy_registrant;
 use crate::http::{Transport, percent_encode_component};
@@ -156,12 +156,10 @@ pub fn lookup(
             return Ok(None);
         }
     };
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => match email {
-            Some(_) => decode_reverse(&body),
-            None => decode(&body, indicator.value()),
-        },
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    match email {
+        Some(_) => decode_reverse(&body),
+        None => decode(&body, indicator.value()),
     }
 }
 

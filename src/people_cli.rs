@@ -448,7 +448,7 @@ mod tests {
         assert!(entities[0].has_tag("wikidata-item-scoped"));
         assert!(!entities[0].has_tag(crate::tags::NAME_SEARCH_LEAD));
         assert_eq!(entities[1].value, "stranger.example");
-        assert_eq!(entities[1].confidence, 0.55);
+        assert!((entities[1].confidence - 0.55).abs() < 1e-12);
         // The shared name-search-lead tag, the one the ACNC and SEC EDGAR legs use, so one tag
         // finds every name-only lead in a report, the Web UI and an export.
         assert!(entities[1].has_tag(crate::tags::NAME_SEARCH_LEAD));

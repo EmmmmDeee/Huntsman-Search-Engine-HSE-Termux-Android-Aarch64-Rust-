@@ -12,7 +12,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
@@ -83,17 +83,16 @@ pub fn lookup(
     indicator: Indicator<'_>,
     now_unix: u64,
 ) -> Result<Option<Finding>, LegError> {
-    match api_leg::post_form(
+    let body = api_leg::post_form(
         transport,
         &API,
         keys,
         URL,
         &[("host", indicator.value())],
         now_unix,
-    )? {
-        Answer::Body(body) => decode(&body, indicator),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    )?
+    .body_or_unexpected()?;
+    decode(&body, indicator)
 }
 
 fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {

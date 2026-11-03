@@ -62,11 +62,9 @@ pub fn lookup(
         let Some(url) = url(indicator, page) else {
             return Ok(None);
         };
-        let read =
-            api_leg::get(transport, &API, keys, &url, now_unix).and_then(|answer| match answer {
-                Answer::Body(body) => decode_page(&body, indicator),
-                Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-            });
+        let read = api_leg::get(transport, &API, keys, &url, now_unix)
+            .and_then(Answer::body_or_unexpected)
+            .and_then(|body| decode_page(&body, indicator));
         let page_rows = match read {
             Ok(page_rows) => page_rows,
             // On the first page nothing is read yet, so its failure fails the lookup here too.

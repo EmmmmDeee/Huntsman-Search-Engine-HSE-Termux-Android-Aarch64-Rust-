@@ -213,10 +213,7 @@ fn texts<'a>(value: &'a Value, pointer: &str) -> Vec<&'a str> {
 /// # Errors
 /// [`LegError::Decode`] for a body that is not the documented shape or is about something else.
 pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
-    let body = match answer {
-        Answer::NotFound(_) => return Err(LegError::Unexpected(404)),
-        Answer::Body(body) => body,
-    };
+    let body = answer.body_or_unexpected()?;
     let raw: Value = api_leg::decode(&body)?;
     let mut body: Body = api_leg::decode_value(&raw)?;
     if !is_about(&body, indicator) {
