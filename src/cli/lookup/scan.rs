@@ -602,11 +602,6 @@ fn print_recursion(seed_count: usize, report: &RecursionReport, analysis: &Inves
     );
 }
 
-/// Print the shared analysis spine's report over everything the crawl reached: the correlation
-/// findings (each citing the real kind:value of every entity it links), the by-kind element and
-/// relation summary `SpiderFoot` leads a scan with, the capability gaps (which seeds nothing linked
-/// to), and the graph-pivot ranking (which discovered entity is the linkage linchpin). Every value
-/// in full — no uid masking, no counts in place of values, nothing summarised away.
 /// Render one bounded, evidence-only cross-modality acquisition worklist.
 fn print_orthogonal_opportunities(
     analysis: &InvestigationReport,
@@ -628,6 +623,11 @@ fn print_orthogonal_opportunities(
     }
 }
 
+/// Print the shared analysis spine's report over everything the crawl reached: the correlation
+/// findings (each citing the real kind:value of every entity it links), the by-kind element and
+/// relation summary `SpiderFoot` leads a scan with, the capability gaps (which seeds nothing linked
+/// to), and the graph-pivot ranking (which discovered entity is the linkage linchpin). Every value
+/// in full — no uid masking, no counts in place of values, nothing summarised away.
 fn print_recursion_analysis(
     entities: &[huntsman_recon::entity::Entity],
     analysis: &InvestigationReport,
