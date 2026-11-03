@@ -85,7 +85,7 @@ Queensland Transport and Main Roads.
 
 - Dynamic public webcam GeoJSON (152 records observed on 2026-11-03).
 - Static GIS state-road camera assets, MapServer layer 4 (158 observed).
-  The fixed query requests `camera_id,description,locality`, `outSR=4326`
+  The fixed query requests `camera_id,description,direction,locality`, `outSR=4326`
   and `f=geojson`. GIS defaults to Web Mercator (metres), so the explicit
   WGS84 projection request is necessary for correct distance calculations.
 
@@ -106,7 +106,7 @@ conflicts over 100 metres: camera 136 (approximately 1886 metres), 39
 in the webcam API but **North** in GIS, while camera 39 was **North**
 in the API and **NorthWest** in GIS. These contradicting metadata assertions
 are retained explicitly for review, not resolved automatically.
- The difference between 152 and 158 totals
+The difference between 152 and 158 totals
 alone would mask 64 differing records. No camera presence, image freshness,
 operational state, vehicle or person identity is inferred from catalogue
 membership. Both sources belong to the same publisher family, and
@@ -138,7 +138,32 @@ The final command is a **live network test** and must run on the actual
 rootless Android Termux AArch64 target before claiming device support. No
 claim that CI or a desktop build is a substitute for a phone validation.
 
-**Current scope:** A one-shot read-only Rust library and CLI catalogue.
-Web UI catalogue cards, stored change history, registered-key support, image
-freshness checks and municipality-specific location layers are not delivered
-by this initial change.
+## Web UI (manual collection, rootless Android)
+
+The Radar page has an explicit **Compare live camera catalogues** button.
+The page calls `GET /api/traffic/cameras`, which uses exactly the same
+Rust `collect` and `collect_gis` functions as the CLI. The endpoint has:
+
+- the existing bearer-token gate on non-loopback binds;
+- same-origin and `X-Huntsman-Lookup: 1` request guards;
+- a single bounded worker, a 40-second response deadline, no URL parameters,
+  and no network request until the operator presses the button;
+- source outcomes exposed individually rather than a fabricated empty list;
+- concise disagreement tables and client-side JSON export of the complete
+  retrieved metadata (no privileged device APIs or image downloads).
+
+The response may contain sensitive investigation *context* if subsequently
+combined with separate data; do not infer person/vehicle identity or
+camera-operational status from metadata alone. The page only displays text
+using DOM `textContent` and has no external JS, CSS or image dependencies.
+
+**Delivered scope:** One-shot read-only Rust library, CLI, guarded API, manual
+phone Web UI, exact ID/location/direction differences and structured JSON
+export. Not delivered: persisted longitudinal change history, a dedicated
+registered API-key slot, JPEG freshness validation, independent third-party
+corroboration or municipal CCTV imagery.
+
+**Release acceptance:** `cargo gate full` on the tested commit; CI's Android
+cross-build and browser tests; then a live one-shot camera request and
+`huntsman-recon doctor serve` on the actual rootless Termux phone. Cloud
+CI and an Android cross-build are not on-device acceptance receipts.
