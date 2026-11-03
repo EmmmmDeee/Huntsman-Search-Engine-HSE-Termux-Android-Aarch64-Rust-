@@ -27,6 +27,10 @@ pub const INTEL: Source = Source {
 struct Body {
     ip: String,
     #[serde(default)]
+    bogon: bool,
+    #[serde(default)]
+    anycast: bool,
+    #[serde(default)]
     asn: Option<String>,
     #[serde(default)]
     as_name: Option<String>,
@@ -79,6 +83,9 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
     if actual != expected {
         return Err(LegError::Decode("answer names another address".into()));
     }
+    if body.bogon {
+        return Ok(None);
+    }
     let mut finding = Finding::new(format!(
         "IPinfo Lite: {}",
         body.as_name.as_deref().or(body.asn.as_deref()).unwrap_or("network not given")
@@ -89,7 +96,8 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
     .opt_attr("country", body.country.as_deref())
     .opt_attr("country_code", body.country_code.as_deref())
     .opt_attr("continent", body.continent.as_deref())
-    .opt_attr("continent_code", body.continent_code.as_deref());
+    .opt_attr("continent_code", body.continent_code.as_deref())
+    .tag_if(body.anycast, "anycast");
     if let Some(asn) = body.asn.as_deref() {
         finding = finding.pivot(PivotKind::Asn, asn, "Origin ASN reported by IPinfo Lite");
     }
@@ -134,6 +142,15 @@ mod tests {
     fn ipv6_equivalent_spellings_match() {
         let response = br#"{"ip":"2001:4860:4860::8888","asn":"AS15169"}"#;
         assert!(decode(response, "2001:4860:4860:0:0:0:0:8888").is_ok());
+    }
+
+    #[test]
+    fn bogon_is_valid_zero_and_anycast_is_tagged() {
+        let bogon = br#"{"ip":"10.0.0.1","bogon":true}"#;
+        assert_eq!(decode(bogon, "10.0.0.1"), Ok(None));
+        let anycast = br#"{"ip":"8.8.8.8","anycast":true}"#;
+        let finding = decode(anycast, "8.8.8.8").unwrap().unwrap();
+        assert!(finding.tags.contains(&"anycast"));
     }
 
     #[test]
