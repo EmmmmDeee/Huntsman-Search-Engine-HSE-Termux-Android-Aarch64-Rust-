@@ -17,6 +17,39 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     crate::geohash::haversine_km(lat1, lon1, lat2, lon2) * 1000.0
 }
 
+
+/// Initial great-circle bearing in degrees clockwise from true north.
+///
+/// Returns `None` for invalid coordinates or coincident/antipodal points,
+/// where a unique direction cannot be established. This is a spherical
+/// bearing, not a magnetic heading or a road-routing direction.
+#[must_use]
+pub fn initial_bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option<f64> {
+    if !valid_coordinate(lat1, lon1) || !valid_coordinate(lat2, lon2) {
+        return None;
+    }
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    // Normalize the angular difference to avoid a 360-degree discontinuity
+    // at the international date line.
+    let delta = (lon2 - lon1).to_radians();
+    let y = delta.sin() * phi2.cos();
+    let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * delta.cos();
+    if y.abs() < 1e-14 && x.abs() < 1e-14 {
+        return None;
+    }
+    Some(y.atan2(x).to_degrees().rem_euclid(360.0))
+}
+
+/// Strict WGS84 latitude/longitude domain check, shared by GEOINT callers.
+#[must_use]
+pub fn valid_coordinate(lat: f64, lon: f64) -> bool {
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,4 +80,23 @@ mod tests {
     fn rejects_out_of_range() {
         assert!(parse_latlon("91,0").is_err());
     }
+    #[test]
+    fn bearings_are_normalized_and_cross_the_date_line() {
+        let east = initial_bearing_deg(0.0, 179.0, 0.0, -179.0).unwrap();
+        let west = initial_bearing_deg(0.0, -179.0, 0.0, 179.0).unwrap();
+        assert!((east - 90.0).abs() < 1e-9, "{east}");
+        assert!((west - 270.0).abs() < 1e-9, "{west}");
+        assert!((initial_bearing_deg(0.0, 0.0, 90.0, 0.0).unwrap()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bearing_refuses_undefined_or_invalid_geometry() {
+        assert_eq!(initial_bearing_deg(0.0, 0.0, 0.0, 0.0), None);
+        assert_eq!(initial_bearing_deg(0.0, 0.0, 0.0, 180.0), None);
+        assert_eq!(initial_bearing_deg(f64::NAN, 0.0, 1.0, 1.0), None);
+        assert_eq!(initial_bearing_deg(91.0, 0.0, 1.0, 1.0), None);
+        assert!(!valid_coordinate(0.0, f64::INFINITY));
+        assert!(valid_coordinate(-90.0, 180.0));
+    }
+
 }
