@@ -12,7 +12,10 @@ collection is not an executed search. An absent modality is only an
 
 `pipeline::AnalysisSnapshot.entities` and `.ancestry` feed the
 single `orthogonal_osint::discover` implementation. The shared
-`correlator::source_family` classifies observed collector categories;
+`correlator::source_family` classifies established collector categories; a
+narrow `orthogonal_osint::acquisition_modality` adapter additionally recognises
+live providers without changing the correlator's identity-related source
+families or using user-supplied `source_family` values;
 `lineage::Lineage::of` interprets admissible upstream dataset or
 verified registry fields; and
 `evidence_ancestry::proven_independent_route_count` is the *only*
@@ -29,9 +32,9 @@ never implement alternative source-independence estimates.
 | Domain, URL | infrastructure, code metadata, indexed/archived web |
 | Email | authorised breach notices, public mail/key metadata, code |
 | Username | public code, forums, social, platform presence |
-| Organisation, ABN/ACN | authoritative register, dated public search, code |
+| Organisation, ABN/ACN | community knowledge graph (separate from official registry), authoritative register, dated public search, code |
 | IP, ASN, netblock | infrastructure attribution, historical indexes |
-| Person | official public records and dated public search |
+| Person | community knowledge graph, official public records and dated public search |
 | MAC, SSID | consented, explicitly aged radio observations |
 
 These are **hypothesis classes** to investigate. The module does not
@@ -44,6 +47,7 @@ broad collector class can contain several distinct techniques: one
 - A copied breach corpus mirrored through multiple collectors remains
   one *declared upstream family*. Declared lineage is not itself proof.
 - An unrecognised or inferred source does not satisfy a modality.
+- Genuine collector identifiers such as `wikidata`, `peeringdb`, `crtsh`, `certspotter`, `wayback_cdx` and `bluesky_user` satisfy their respective *acquisition* modality when source evidence is recorded. Wikidata is `knowledge_graph`, **not** an authoritative identity registry; PeeringDB is `infra` rather than proof of a network operator's identity.
 - The verified ABR registry origin is admitted only through the
   existing source-aware registry lineage gate. A forged stored
   `source_family` label cannot pass it.
