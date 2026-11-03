@@ -190,9 +190,7 @@ impl Joined {
                 if first_failure.is_none() {
                     first_failure = Some((index, *kind));
                 }
-                if *kind != SourceOutcomeKind::RefusedBeforeSending
-                    && first_non_refusal.is_none()
-                {
+                if *kind != SourceOutcomeKind::RefusedBeforeSending && first_non_refusal.is_none() {
                     first_non_refusal = Some((index, *kind));
                 }
             }
@@ -652,7 +650,10 @@ mod tests {
             Joined::Inconclusive
         );
         assert_eq!(
-            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Failed(SourceOutcomeKind::BotWaf)]),
+            Joined::of(&[
+                EndpointAnswer::Absent,
+                EndpointAnswer::Failed(SourceOutcomeKind::BotWaf)
+            ]),
             Joined::Inconclusive
         );
     }
