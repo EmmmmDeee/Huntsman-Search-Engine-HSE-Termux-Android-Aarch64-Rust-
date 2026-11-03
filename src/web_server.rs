@@ -1146,8 +1146,10 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
 
     // The head ends at the first blank line; anything after it is body, never a header.
     for line in lines.take_while(|line| !line.is_empty()) {
+        // Every header line must contain the field-name/value delimiter.
+        // Ignoring a malformed line could disagree with another HTTP parser.
         let Some((name, value)) = line.split_once(':') else {
-            continue;
+            return None;
         };
         // RFC 9112 §5.1 requires HTTP servers to reject whitespace in
         // field names (especially before ':') with 400 Bad Request.
@@ -1156,11 +1158,12 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             return None;
         }
         if name.eq_ignore_ascii_case("host") {
-            // First Host wins; a second one is malformed and is ignored rather than
-            // allowed to override the first.
-            if host.is_none() {
-                host = Some(value.trim());
+            // RFC 9112 Section 3.2 forbids multiple Host field lines,
+            // including duplicates with equal values. Do not choose a winner.
+            if host.is_some() {
+                return None;
             }
+            host = Some(value.trim());
         } else if name.eq_ignore_ascii_case("authorization") {
             authorization = Some(value.trim());
         } else if name.trim().eq_ignore_ascii_case(LOOKUP_HEADER) {
