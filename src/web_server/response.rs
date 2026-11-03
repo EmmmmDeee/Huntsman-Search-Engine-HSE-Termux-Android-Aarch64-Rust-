@@ -26,7 +26,12 @@ pub(super) fn json_ok(body: &str, head: bool) -> String {
 /// Large saved-scan reports can occupy many MiB on a low-memory Android handset.
 fn json_line(status: u16, body: &str, head: bool) -> String {
     let content_length = body.len() + 1;
-    let mut out = response_head(status, "application/json; charset=utf-8", content_length, "");
+    let mut out = response_head(
+        status,
+        "application/json; charset=utf-8",
+        content_length,
+        "",
+    );
     if !head {
         out.reserve(content_length);
         out.push_str(body);
@@ -150,8 +155,14 @@ mod tests {
         let get = response_bytes(200, "application/octet-stream", &data, false, "");
         let head = response_bytes(200, "application/octet-stream", &data, true, "");
         let separator = b"\r\n\r\n";
-        let get_mark = get.windows(separator.len()).position(|x| x == separator).unwrap();
-        let head_mark = head.windows(separator.len()).position(|x| x == separator).unwrap();
+        let get_mark = get
+            .windows(separator.len())
+            .position(|x| x == separator)
+            .unwrap();
+        let head_mark = head
+            .windows(separator.len())
+            .position(|x| x == separator)
+            .unwrap();
         assert_eq!(&get[..get_mark], &head[..head_mark]);
         assert_eq!(&get[get_mark + separator.len()..], data);
         assert_eq!(&head[head_mark + separator.len()..], b"");
