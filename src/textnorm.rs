@@ -20,6 +20,14 @@ pub fn escape_html(raw: &str) -> String {
     out
 }
 
+/// Whether `value` is operator or record text an input gate accepts: not blank, at most `max`
+/// bytes, and free of control characters, so a field can neither be empty, oversize nor carry a
+/// terminal or line control into a report. **Pure.**
+#[must_use]
+pub fn is_bounded_text(value: &str, max: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+}
+
 /// Whether [`escape_controls`] writes `c` escaped: a control character, a line or paragraph
 /// separator, or a bidirectional embedding, override or isolate control. The separators start a new
 /// line for readers that split on them, and the others reorder the text around them, so a name can
@@ -702,6 +710,17 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_text_is_nonblank_within_the_byte_limit_and_free_of_controls() {
+        assert!(super::is_bounded_text("abc", 3));
+        assert!(super::is_bounded_text(" a ", 3));
+        assert!(!super::is_bounded_text("abcd", 3));
+        assert!(!super::is_bounded_text("   ", 3));
+        assert!(!super::is_bounded_text("", 3));
+        assert!(!super::is_bounded_text("a\tb", 3));
+        assert!(!super::is_bounded_text("a\u{85}", 8));
+    }
+
     #[test]
     fn escape_html_neutralises_the_five_markup_characters_and_keeps_the_rest() {
         assert_eq!(
