@@ -1838,9 +1838,18 @@ $('rhinser-native-file').onchange=async ev=>{
   }
   ev.target.value='';
 };
+// Capture bytes must never be sent to a remotely hosted HSE server.
+function rhinserLoopbackOrigin(){
+  const host=location.hostname.toLowerCase();
+  return host==='localhost'||host==='127.0.0.1'||host==='[::1]'||host==='::1';
+}
 $('rhinser-native-form').onsubmit=async ev=>{
   ev.preventDefault();
   invalidateRhinserReport();
+  if(!rhinserLoopbackOrigin()){
+    $('rhinser-native-output').textContent='Capture inspection requires loopback HSE on this device. No capture was sent.';
+    return;
+  }
   const generation=rhinserNativeGeneration;
   const submitted=$('rhinser-native-input').value;
   const result=await osintOffline('/api/rhinser/native','rhinser-native-input','rhinser-native-output','rhinser-native-run');
