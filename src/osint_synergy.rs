@@ -70,6 +70,8 @@ fn attributes(kind: &EntityKind) -> &'static [(&'static str, EntityKind, &'stati
             ("ipv4", EntityKind::IpAddress, "reported_dns_address"),
             ("ipv6", EntityKind::IpAddress, "reported_dns_address"),
             ("hostname", EntityKind::Domain, "reported_hostname"),
+            ("ns", EntityKind::Domain, "reported_name_server"),
+            ("mx", EntityKind::Domain, "reported_mail_exchanger"),
         ],
         EntityKind::IpAddress => &[
             ("asn", EntityKind::Asn, "reported_routing_asn"),
@@ -250,6 +252,28 @@ mod tests {
         let result = discover(&[domain, target]);
         assert_eq!(result.links.len(), 1);
         assert_eq!(result.links[0].status, JoinStatus::SourceClaimOnly);
+    }
+
+    #[test]
+    fn distinct_name_server_and_mail_exchanger_leads_from_live_dns() {
+        let mut apex = observed(EntityKind::Domain, "example.org", "dns", "live");
+        apex.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "live"), "zone records")
+                .with_attr("ns", "NS1.example.org")
+                .with_attr("mx", "mail.example.org"),
+        );
+        let ns = observed(EntityKind::Domain, "ns1.example.org", "rdap", "registrar");
+        let mx = observed(EntityKind::Domain, "mail.example.org", "dns", "live");
+        let joins = discover(&[apex, ns, mx]);
+        assert_eq!(joins.links.len(), 2);
+        assert!(joins.links.iter().any(|join| {
+            join.relation == "reported_name_server"
+                && join.status == JoinStatus::IndependentlyObservedTarget
+        }));
+        assert!(joins.links.iter().any(|join| {
+            join.relation == "reported_mail_exchanger"
+                && join.status == JoinStatus::SourceClaimOnly
+        }));
     }
 
     #[test]
