@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::textnorm::escape_html;
+
 pub const MAX_DOSSIER_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Inline CSS hash is included in the dossier page's dedicated CSP by `web_server`.
@@ -41,21 +43,6 @@ const GROUPS: [(&str, &str); 6] = [
     ("actions", "Verification actions"),
     ("sources", "Sources and provenance"),
 ];
-
-fn escape(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for c in raw.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
 
 fn readable(key: &str) -> String {
     key.replace('_', " ")
@@ -127,7 +114,7 @@ pub fn load() -> Result<Value, String> {
 }
 
 fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
-    let _ = write!(out, "<dt>{}</dt><dd>", escape(&readable(key)));
+    let _ = write!(out, "<dt>{}</dt><dd>", escape_html(&readable(key)));
     // Reference arrays must be traversed as JSON values: serializing the whole array
     // first turns ["S01"] into a token that cannot match the validated id S01.
     // Preserve the complete JSON representation, linking only exact known IDs.
@@ -140,9 +127,9 @@ fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
                 }
                 let serialized = item.to_string();
                 if let Some(id) = item.as_str().filter(|id| ids.contains(*id)) {
-                    let _ = write!(out, "<a href=\"#{id}\">{}</a>", escape(&serialized));
+                    let _ = write!(out, "<a href=\"#{id}\">{}</a>", escape_html(&serialized));
                 } else {
-                    out.push_str(&escape(&serialized));
+                    out.push_str(&escape_html(&serialized));
                 }
             }
             out.push(']');
@@ -154,7 +141,7 @@ fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
         .as_str()
         .map_or_else(|| value.to_string(), str::to_owned);
     if key == "url" && (value.starts_with("https://") || value.starts_with("http://")) {
-        let val = escape(&value);
+        let val = escape_html(&value);
         let _ = write!(
             out,
             "<a rel=\"noopener noreferrer\" referrerpolicy=\"no-referrer\" href=\"{val}\">{val}</a>"
@@ -164,11 +151,11 @@ fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
             if ids.contains(word) {
                 let _ = write!(out, "<a href=\"#{word}\">{word}</a> ");
             } else {
-                let _ = write!(out, "{} ", escape(word));
+                let _ = write!(out, "{} ", escape_html(word));
             }
         }
     } else {
-        out.push_str(&escape(&value));
+        out.push_str(&escape_html(&value));
     }
     out.push_str("</dd>");
 }
@@ -196,7 +183,7 @@ pub fn render(document: &Value) -> Result<String, String> {
         out,
         "<p class=\"muted\">{} indexed records · {} </p>",
         count,
-        escape(
+        escape_html(
             root.get("updated_at")
                 .and_then(Value::as_str)
                 .unwrap_or("date not supplied")
@@ -225,7 +212,7 @@ pub fn render(document: &Value) -> Result<String, String> {
             let _ = write!(
                 out,
                 "<article id=\"{id}\"><h3><code>{id}</code> — {}</h3><dl>",
-                escape(heading)
+                escape_html(heading)
             );
             for (field_name, value) in obj {
                 if field_name != "id" {
@@ -242,7 +229,7 @@ pub fn render(document: &Value) -> Result<String, String> {
     out.push_str("<section id=\"context\"><h2>Additional provenance, media and audit data</h2>");
     for (key, value) in root {
         if !GROUPS.iter().any(|(group, _)| *group == key.as_str()) {
-            let _ = write!(out, "<article><h3>{}</h3><dl>", escape(&readable(key)));
+            let _ = write!(out, "<article><h3>{}</h3><dl>", escape_html(&readable(key)));
             field(&mut out, key, value, &ids);
             out.push_str("</dl></article>");
         }

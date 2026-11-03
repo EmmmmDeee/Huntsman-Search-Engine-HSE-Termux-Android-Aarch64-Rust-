@@ -12,7 +12,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
@@ -83,27 +83,16 @@ pub fn lookup(
     indicator: Indicator<'_>,
     now_unix: u64,
 ) -> Result<Option<Finding>, LegError> {
-    match api_leg::post_form(
+    let body = api_leg::post_form(
         transport,
         &API,
         keys,
         URL,
         &[("host", indicator.value())],
         now_unix,
-    )? {
-        Answer::Body(body) => decode(&body, indicator),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
-}
-
-fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for value in values.filter_map(|v| api_leg::clean(Some(v))) {
-        if !out.contains(&value) {
-            out.push(value);
-        }
-    }
-    out
+    )?
+    .body_or_unexpected()?;
+    decode(&body, indicator)
 }
 
 /// One answer body for `indicator`. **Pure.**
@@ -142,8 +131,8 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         .iter()
         .filter(|u| u.url_status.as_deref() == Some("online"))
         .count();
-    let threats = distinct(urls.iter().filter_map(|u| u.threat.as_deref()));
-    let malware = distinct(
+    let threats = api_leg::distinct(urls.iter().filter_map(|u| u.threat.as_deref()));
+    let malware = api_leg::distinct(
         urls.iter()
             .flat_map(|u| u.tags.iter().flatten())
             .map(String::as_str),
@@ -166,7 +155,7 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         .iter()
         .filter_map(|u| u.id.as_ref().and_then(api_leg::scalar))
         .collect();
-    let ids = distinct(id_text.iter().map(String::as_str));
+    let ids = api_leg::distinct(id_text.iter().map(String::as_str));
     let first_added = urls.iter().filter_map(|u| u.date_added.as_deref()).min();
     let mut finding = Finding::new(format!("URLhaus: {count} malware URL(s), {online} online"))
         .attr("url_count", count.to_string())
@@ -177,7 +166,7 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         .list_attr("url_ids", &ids)
         .list_attr(
             "reporters",
-            &distinct(urls.iter().filter_map(|u| u.reporter.as_deref())),
+            &api_leg::distinct(urls.iter().filter_map(|u| u.reporter.as_deref())),
         )
         .opt_attr("first_seen", body.firstseen.as_deref())
         .opt_attr("first_added", first_added)
@@ -188,10 +177,10 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         finding = finding.attr("blocklist_verdicts", verdict);
     }
     // A URL can hold a comma, so each is its own value rather than a joined list.
-    for url in distinct(urls.iter().filter_map(|u| u.url.as_deref())) {
+    for url in api_leg::distinct(urls.iter().filter_map(|u| u.url.as_deref())) {
         finding = finding.attr("urls", url);
     }
-    for page in distinct(urls.iter().filter_map(|u| u.urlhaus_reference.as_deref())) {
+    for page in api_leg::distinct(urls.iter().filter_map(|u| u.urlhaus_reference.as_deref())) {
         finding = finding.attr("url_references", page);
     }
     Ok(Some(finding.attr("raw_answer", whole.to_string())))

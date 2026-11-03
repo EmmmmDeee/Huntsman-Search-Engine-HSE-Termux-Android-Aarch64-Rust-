@@ -13,7 +13,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::circuit::host_of;
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
@@ -108,10 +108,9 @@ pub fn lookup(
     indicator: Indicator<'_>,
     now_unix: u64,
 ) -> Result<Option<Finding>, LegError> {
-    match api_leg::post_json(transport, &API, keys, URL, &body(indicator), now_unix)? {
-        Answer::Body(body) => decode(&body, indicator),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::post_json(transport, &API, keys, URL, &body(indicator), now_unix)?
+        .body_or_unexpected()?;
+    decode(&body, indicator)
 }
 
 /// Whether the IOC `ioc` names `indicator` itself. **Pure.**

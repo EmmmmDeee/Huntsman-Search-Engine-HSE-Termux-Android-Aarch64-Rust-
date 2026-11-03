@@ -18,6 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use huntsman_recon::clock::unix_now;
+use huntsman_recon::textnorm::escape_html;
 use serde_json::Value;
 
 const MAX_HANDLES: usize = 20;
@@ -299,21 +300,6 @@ fn checked_handles(raw: &str) -> Result<Vec<String>, &'static str> {
     Ok(handles)
 }
 
-fn html_escape(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    for character in input.chars() {
-        match character {
-            '&' => output.push_str("&amp;"),
-            '<' => output.push_str("&lt;"),
-            '>' => output.push_str("&gt;"),
-            '"' => output.push_str("&quot;"),
-            '\'' => output.push_str("&#39;"),
-            _ => output.push(character),
-        }
-    }
-    output
-}
-
 fn preview_json(value: &serde_json::Value) -> String {
     let raw = serde_json::to_string_pretty(value).unwrap_or_default();
     let mut shown = String::new();
@@ -323,21 +309,21 @@ fn preview_json(value: &serde_json::Value) -> String {
     if raw.chars().count() > MAX_PREVIEW_CHARS {
         shown.push_str("\n[Preview truncated: full response remains in JSON export]");
     }
-    html_escape(&shown)
+    escape_html(&shown)
 }
 
 fn render_endpoint(out: &mut String, label: &str, result: &super::EndpointResult) {
     let _ = write!(
         out,
         "<section class=\"endpoint\"><div class=\"endpoint-head\"><strong>{}</strong><span class=\"badge\">{}</span></div>",
-        html_escape(label),
-        html_escape(result.state)
+        escape_html(label),
+        escape_html(result.state)
     );
     if let Some(status) = result.http_status {
         let _ = write!(out, "<p class=\"small\">HTTP {status}</p>");
     }
     if let Some(message) = &result.message {
-        let _ = write!(out, "<p>{}</p>", html_escape(message));
+        let _ = write!(out, "<p>{}</p>", escape_html(message));
     }
     if let Some(data) = &result.data {
         let _ = write!(
@@ -353,24 +339,24 @@ fn render_report(out: &mut String, report: &Report) {
     let _ = write!(
         out,
         "<article class=\"report\"><h3>@{}</h3><p class=\"small\">{} · {}</p>",
-        html_escape(&report.username),
-        html_escape(report.provider),
-        html_escape(report.verification)
+        escape_html(&report.username),
+        escape_html(report.provider),
+        escape_html(report.verification)
     );
     if let Some(discovery) = &report.discovery {
         let _ = write!(
             out,
             "<h4>Public indexed URL leads · {}</h4><p class=\"small\">{} · {} candidate(s). Index links are not profile or identity verification.</p>",
-            html_escape(discovery.state),
-            html_escape(discovery.evidence_role),
+            escape_html(discovery.state),
+            escape_html(discovery.evidence_role),
             discovery.hits.len()
         );
         for hit in &discovery.hits {
-            let link = html_escape(&hit.url);
+            let link = escape_html(&hit.url);
             let _ = write!(
                 out,
                 "<p class=\"hit\">{} · <a target=\"_blank\" rel=\"noopener noreferrer\" href=\"{}\">{}</a></p>",
-                html_escape(&hit.engine),
+                escape_html(&hit.engine),
                 link,
                 link
             );
@@ -380,8 +366,8 @@ fn render_report(out: &mut String, report: &Report) {
             let _ = write!(
                 out,
                 "<p>{}: {}</p>",
-                html_escape(&outcome.module),
-                html_escape(outcome.kind.as_str())
+                escape_html(&outcome.module),
+                escape_html(outcome.kind.as_str())
             );
         }
         out.push_str("</details>");
@@ -448,13 +434,13 @@ fn render_page(state: &WebState, message: Option<&str>) -> String {
     let _ = write!(
         out,
         "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
-        html_escape(&state.csrf)
+        escape_html(&state.csrf)
     );
     out.push_str("<label for=\"handles\">Facebook page handles (one per line, up to 20)</label>");
     let _ = write!(
         out,
         "<textarea id=\"handles\" name=\"handles\" maxlength=\"3000\" required spellcheck=\"false\" placeholder=\"nasa&#10;HackUnderway\">{}</textarea>",
-        html_escape(&saved.handles)
+        escape_html(&saved.handles)
     );
     out.push_str("<label for=\"mode\">Collection mode</label><select name=\"mode\" id=\"mode\">");
     for (mode, label) in [
@@ -476,7 +462,7 @@ fn render_page(state: &WebState, message: Option<&str>) -> String {
         let _ = write!(
             out,
             "<option value=\"{mode}\"{selected}>{}</option>",
-            html_escape(label)
+            escape_html(label)
         );
     }
     out.push_str("</select><label><input type=\"checkbox\" name=\"business\" value=\"yes\"");
@@ -490,7 +476,7 @@ fn render_page(state: &WebState, message: Option<&str>) -> String {
         let _ = write!(
             out,
             "<p role=\"status\" class=\"notice\">{}</p>",
-            html_escape(message)
+            escape_html(message)
         );
     }
     out.push_str("</section><section class=\"card\"><h2>Results</h2>");
@@ -506,7 +492,7 @@ fn render_page(state: &WebState, message: Option<&str>) -> String {
         let _ = write!(
             out,
             "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
-            html_escape(&state.csrf)
+            escape_html(&state.csrf)
         );
         out.push_str("<button name=\"format\" value=\"json\" type=\"submit\">Export JSON</button>");
         out.push_str(
@@ -931,7 +917,7 @@ mod tests {
     fn renderer_escapes_hostile_provider_text() {
         let malicious = "<script>alert('x') & \"unsafe\"</script>";
         assert_eq!(
-            html_escape(malicious),
+            escape_html(malicious),
             "&lt;script&gt;alert(&#39;x&#39;) &amp; &quot;unsafe&quot;&lt;/script&gt;"
         );
     }

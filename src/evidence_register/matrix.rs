@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 
 use crate::scan_store::{ScanRecord, ScanResults, ScanStatus};
 use crate::sf_elements::DataElement;
-use crate::sha256::{hex32, sha256};
 use crate::textnorm::escape_unsafe_text;
 
 use super::{MAX_RECORDS, MAX_RENDER_BYTES};
@@ -22,11 +21,7 @@ struct Cell {
 }
 
 fn stable_id(kind: &str, value: &str) -> String {
-    let mut bytes = Vec::with_capacity(kind.len() + value.len() + 1);
-    bytes.extend_from_slice(kind.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(value.as_bytes());
-    format!("HSE-MX-{}", &hex32(&sha256(&bytes))[..20])
+    super::stable_record_id("HSE-MX-", kind, value)
 }
 
 /// Report DNS-like equivalence candidates without coalescing original observations.

@@ -392,9 +392,14 @@ mod tests {
 
     #[test]
     fn the_box_is_one_square_degree_clamped_at_the_poles_and_antimeridian() {
-        assert_eq!(bounding_box(-33.9, 151.2), [-34.4, 150.7, -33.4, 151.7]);
-        assert_eq!(bounding_box(89.8, 179.9), [89.3, 179.4, 90.0, 180.0]);
-        assert_eq!(bounding_box(-89.9, -179.8), [-90.0, -180.0, -89.4, -179.3]);
+        fn assert_box(got: [f64; 4], want: [f64; 4]) {
+            for (g, w) in got.iter().zip(want) {
+                assert!((g - w).abs() < 1e-9, "{got:?} != {want:?}");
+            }
+        }
+        assert_box(bounding_box(-33.9, 151.2), [-34.4, 150.7, -33.4, 151.7]);
+        assert_box(bounding_box(89.8, 179.9), [89.3, 179.4, 90.0, 180.0]);
+        assert_box(bounding_box(-89.9, -179.8), [-90.0, -180.0, -89.4, -179.3]);
         let url = url(-33.9, 151.2);
         assert!(url.starts_with(STATES), "{url}");
         for part in [

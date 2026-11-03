@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(report.status, "historical_unverified");
         let record = &report.observations[0];
         assert_eq!(record.bssid, "3c:5a:b4:11:22:33");
-        assert_eq!(record.signal_dbm, -57.0);
+        assert!((record.signal_dbm - -57.0).abs() < 1e-12);
         assert_eq!(record.band, Some("2.4GHz"));
         assert_eq!(record.reported_accuracy_m, Some(22.0));
         assert_eq!(record.location_age_ms, Some(4916));

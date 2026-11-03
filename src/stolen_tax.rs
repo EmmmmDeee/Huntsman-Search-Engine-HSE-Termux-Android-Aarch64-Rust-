@@ -64,7 +64,9 @@ use serde_json::Value;
 use crate::credential_origin::AuthenticationAuthority;
 use crate::deadline::{Clock, Deadline, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, normalise};
-use crate::fetch::{AuthStyle, Credential, FetchOptions, Fetched, RedirectPolicy, fetch_within};
+use crate::fetch::{
+    AuthStyle, Credential, FetchOptions, Fetched, RedirectPolicy, fetch_within, json_error_detail,
+};
 use crate::http::{Request, Transport, TransportConfig};
 use crate::keys::{Keys, Secret};
 use crate::redact::{scrub_bounded, scrub_secrets};
@@ -489,17 +491,7 @@ const PROVIDER_WORDS_MAX_CHARS: usize = 120;
 /// A response that is not the v2 envelope: the error's category and position only.
 /// Never serde's message, which can quote the body. **Pure.**
 fn decode_error_text(e: &serde_json::Error) -> String {
-    let category = match e.classify() {
-        serde_json::error::Category::Io => "io",
-        serde_json::error::Category::Syntax => "syntax",
-        serde_json::error::Category::Data => "data",
-        serde_json::error::Category::Eof => "eof",
-    };
-    format!(
-        "could not decode response: {category} error at line {} column {}",
-        e.line(),
-        e.column()
-    )
+    format!("could not decode response: {}", json_error_detail(e))
 }
 
 /// The provider's `error` text as it may appear in a diagnostic. In this order:

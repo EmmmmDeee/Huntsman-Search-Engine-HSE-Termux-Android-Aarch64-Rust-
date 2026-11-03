@@ -43,15 +43,6 @@ const CRATE_URL_CONF: f64 = 0.62;
 /// The host of a crate URL, as a pivot.
 const DOMAIN_CONF: f64 = 0.60;
 
-/// Code forges whose host is noise as a `Domain` pivot: the link is already a `Url`.
-const CODE_FORGES: &[&str] = &[
-    "github.com",
-    "gitlab.com",
-    "bitbucket.org",
-    "codeberg.org",
-    "sr.ht",
-];
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
     pub entities: Vec<Entity>,
@@ -436,7 +427,7 @@ fn add_one_link(
         );
     }
     if let Some((kind, host)) = crate::entity::link_host(link) {
-        if !CODE_FORGES.contains(&host.as_str()) && seen_domains.insert(host.clone()) {
+        if !crate::domains::is_code_forge_host(&host) && seen_domains.insert(host.clone()) {
             push_entity(
                 entities,
                 kind,

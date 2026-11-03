@@ -19,7 +19,7 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, LegError};
+use crate::api_leg::{self, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
@@ -91,10 +91,9 @@ fn lookup_domain(
 ) -> Result<Option<Finding>, LegError> {
     let registered =
         crate::domains::registrable_domain(domain).unwrap_or_else(|| domain.to_owned());
-    let finding = match api_leg::get(transport, &API, keys, &url(&registered), now_unix)? {
-        Answer::Body(body) => decode(&body)?,
-        Answer::NotFound(_) => return Err(LegError::Unexpected(404)),
-    };
+    let body =
+        api_leg::get(transport, &API, keys, &url(&registered), now_unix)?.body_or_unexpected()?;
+    let finding = decode(&body)?;
     Ok(finding.map(|mut finding| {
         if registered != domain {
             finding.summary = format!(
@@ -123,10 +122,9 @@ fn lookup_email(
     if email.is_empty() {
         return Ok(None);
     }
-    match api_leg::get(transport, &API, keys, &email_url(email), now_unix)? {
-        Answer::Body(body) => decode_email(&body),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body =
+        api_leg::get(transport, &API, keys, &email_url(email), now_unix)?.body_or_unexpected()?;
+    decode_email(&body)
 }
 
 /// Decode one domain answer. **Pure.**

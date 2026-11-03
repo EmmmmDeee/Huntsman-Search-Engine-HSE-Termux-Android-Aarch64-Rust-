@@ -13,7 +13,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::api_leg::{self, Answer, Api, LegError};
+use crate::api_leg::{self, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -109,12 +109,10 @@ pub fn lookup(
     let Some(url) = url(indicator) else {
         return Ok(None);
     };
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => decode(&body, indicator),
-        // An address or name Maltiverse has not seen is a 200 (it records it as it answers);
-        // `sfp_maltiverse` reads a 404 as "API endpoint not found", never as nothing known.
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    // An address or name Maltiverse has not seen is a 200 (it records it as it answers);
+    // `sfp_maltiverse` reads a 404 as "API endpoint not found", never as nothing known.
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    decode(&body, indicator)
 }
 
 /// A field's scalar as text, as [`api_leg::scalar`] reads it; `None` when absent. **Pure.**
