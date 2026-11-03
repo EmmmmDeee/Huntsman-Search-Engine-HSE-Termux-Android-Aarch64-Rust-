@@ -135,8 +135,10 @@ for _ in $(seq 1 50); do curl -fsS "http://127.0.0.1:$port/api/health" > /dev/nu
 # to completion, and each scan tab the page opens.
 base="http://127.0.0.1:$port"
 lookup='X-Huntsman-Lookup: 1'
+mkdir -p "$out/ui"
 ui_get() {
-  printf '%s %s\n' "$1" "$(curl -sS -H "$lookup" -o /dev/null -w '%{http_code} %{size_download}B' "$base$1")"
+  body="$out/ui/${2:-other}"
+  printf '%s %s\n' "$1" "$(curl -sS -H "$lookup" -o "$body" -w '%{http_code} %{size_download}B' "$base$1")"
 }
 {
   for path in /api/health /api/modules / /api/settings /api/settings/keys /api/scans \
@@ -154,17 +156,51 @@ ui_get() {
       case "$state" in RUNNING*|STARTING*|CREATED*|None*|"") sleep 2 ;; *) break ;; esac
     done
     printf 'scan-state %s\n' "$state"
-    for tab in "" /summary /elements /correlations /graph /log "/export?format=csv" \
+    ui_get "/api/scans/$id" detail
+    for tab in /summary /elements /correlations /graph /log "/export?format=csv" \
       "/export?format=json" "/correlations?format=csv"; do
-      ui_get "/api/scans/$id$tab"
+      ui_get "/api/scans/$id$tab" "$(printf '%s' "$tab" | tr -c 'A-Za-z0-9' '_')"
     done
   fi
 } > "$out/serve.tsv"
+# What the scan's views say agrees: the detail's element count is the elements list, the JSON and
+# CSV exports and the per-type summary totals; the graph holds each element plus its root, and
+# every edge joins two of its nodes; the correlations JSON and CSV list the same rules.
+python3 - "$out/ui" >> "$out/serve.tsv" <<'PY'
+import csv, io, json, pathlib, sys
+ui = pathlib.Path(sys.argv[1])
+def load(name):
+    return json.loads((ui / name).read_text())
+problems = []
+try:
+    detail, elements = load("detail"), load("_elements")
+    exported, summary, graph = load("_export_format_json"), load("_summary"), load("_graph")
+    correlations = load("_correlations")
+    rows = list(csv.reader(io.StringIO((ui / "_export_format_csv").read_text())))[1:]
+    corr_rows = list(csv.reader(io.StringIO((ui / "_correlations_format_csv").read_text())))[1:]
+    n = detail.get("elements")
+    for label, count in [("elements", len(elements)), ("export-json", len(exported)),
+                         ("export-csv", len(rows)), ("summary-total", sum(t["total"] for t in summary))]:
+        if count != n:
+            problems.append(f"{label}={count} detail={n}")
+    nodes = {node["id"] for node in graph["nodes"]}
+    if len(graph["nodes"]) != n + 1:
+        problems.append(f"graph-nodes={len(graph['nodes'])} detail+root={n + 1}")
+    dangling = [e for e in graph["edges"] if e["source"] not in nodes or e["target"] not in nodes]
+    if dangling:
+        problems.append(f"graph-dangling-edges={len(dangling)}")
+    if len(correlations) != len(corr_rows):
+        problems.append(f"correlations-json={len(correlations)} csv={len(corr_rows)}")
+except Exception as error:  # a missing or malformed view is itself a failure
+    problems.append(f"unreadable: {error!r}")
+print("ui-content", "PASS" if not problems else "FAIL " + "; ".join(problems))
+PY
 # Every UI request answered 200, the scan finished, and it holds more than its seed.
 ui_ok=1
-awk '!/^(POST|scan-state) / && !/ 200 / { bad = 1 } END { exit !bad }' "$out/serve.tsv" && ui_ok=0
+awk '!/^(POST|scan-state|ui-content) / && !/ 200 / { bad = 1 } END { exit !bad }' "$out/serve.tsv" && ui_ok=0
 grep -q '^POST /api/scans NO-ID' "$out/serve.tsv" && ui_ok=0
 grep -qE '^scan-state FINISHED ([2-9]|[1-9][0-9]+)$' "$out/serve.tsv" || ui_ok=0
+grep -qx 'ui-content PASS' "$out/serve.tsv" || ui_ok=0
 printf 'web-ui-flow %s\n' "$([ "$ui_ok" = 1 ] && echo PASS || echo FAIL)" >> "$out/serve.tsv"
 kill "$serve_pid" 2>/dev/null
 cat "$out/serve.tsv"
