@@ -161,13 +161,13 @@ impl Joined {
     /// not; else inconclusive. **Pure.**
     #[must_use]
     pub fn of(answers: &[EndpointAnswer]) -> Self {
-        let found: usize = answers
-            .iter()
-            .map(|answer| match answer {
+        // Saturate untrusted provider totals rather than overflow on extreme inputs.
+        let found = answers.iter().fold(0usize, |total, answer| {
+            total.saturating_add(match answer {
                 EndpointAnswer::Found(count) => *count,
                 _ => 0,
             })
-            .sum();
+        });
         if found > 0 {
             return Self::Found(found);
         }
@@ -584,6 +584,14 @@ pub fn classify_fetch(status: u16, body: &str) -> SourceOutcomeKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joined_found_count_saturates_instead_of_overflowing() {
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Found(usize::MAX), EndpointAnswer::Found(1)]),
+            Joined::Found(usize::MAX)
+        );
+    }
 
     #[test]
     fn failure_constructors_record_no_row_count_and_keep_their_fields() {
