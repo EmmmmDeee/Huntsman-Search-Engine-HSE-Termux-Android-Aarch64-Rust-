@@ -1821,6 +1821,11 @@ $('rhinser-native-file').onchange=async ev=>{
   const generation=rhinserNativeGeneration;
   const file=ev.target.files&&ev.target.files[0];
   if(!file)return;
+  if(!rhinserLoopbackOrigin()){
+    $('rhinser-native-output').textContent='Capture file import requires loopback HSE on this device. No file was read or sent.';
+    ev.target.value='';
+    return;
+  }
   // An unsuccessful replacement must not leave the previous capture in the form.
   $('rhinser-native-input').value='';
   if(!file.size||file.size>20000){
