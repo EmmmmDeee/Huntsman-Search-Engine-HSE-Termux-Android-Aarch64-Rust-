@@ -126,6 +126,8 @@ const TRACK_PATH: &str = "/api/radar/track";
 /// [`MAX_FORM_BYTES`]; a longer text is for `investigate --file` in Termux.
 const OSINT_CASE_PATH: &str = "/api/osint/case";
 const OSINT_RISK_PATH: &str = "/api/osint/area-risk";
+/// Explicitly requested public traffic-camera and state-road GIS reconciliation.
+const TRAFFIC_CAMERAS_PATH: &str = "/api/traffic/cameras";
 const INVESTIGATE_PATH: &str = "/api/investigate";
 /// Explicitly initiated autonomous recursive investigation, stored as an ordinary saved scan.
 const RESEARCH_MISSION_PATH: &str = "/api/research/mission";
@@ -244,6 +246,10 @@ struct Upload {
 /// Installed by the process boundary; the server library owns no sensor subprocess.
 pub type RadarHandler = Arc<dyn Fn() -> Result<WifiScan, LookupError> + Send + Sync>;
 
+/// One read of two public camera catalogues, executed only when the page requests it.
+pub type TrafficCamerasHandler =
+    Arc<dyn Fn() -> Result<serde_json::Value, LookupError> + Send + Sync>;
+
 /// One bounded, no-root read of the cells Android reports, as `radar cells` reads them.
 pub type CellsHandler = Arc<dyn Fn() -> Result<CellScan, LookupError> + Send + Sync>;
 
@@ -278,6 +284,7 @@ struct Routes {
     radar: Option<Radar>,
     cells: Option<Sensor<CellScan>>,
     track: Option<Sensor<TrackReport>>,
+    traffic_cameras: Option<Sensor<serde_json::Value>>,
     analyze: Option<AnalyzeHandler>,
     inspect: Option<Inspect>,
     investigate: Option<InvestigateHandler>,
@@ -415,6 +422,17 @@ impl Server {
     #[must_use]
     pub fn with_radar_track(mut self, handler: TrackHandler) -> Self {
         self.routes.track = Some(Sensor {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
+        self
+    }
+
+    /// Enable the public camera catalogue reconciliation endpoint, initiated by the UI.
+    /// The same one-shot, same-origin, lookup-header and concurrency gates as radar apply.
+    #[must_use]
+    pub fn with_traffic_cameras(mut self, handler: TrafficCamerasHandler) -> Self {
+        self.routes.traffic_cameras = Some(Sensor {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
@@ -1406,6 +1424,7 @@ fn protected_path(path: &str) -> bool {
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
+            | TRAFFIC_CAMERAS_PATH
     ) || ScanApi::handles(path)
 }
 
@@ -1488,6 +1507,12 @@ fn route(
             sensor_response(parsed, routes.cells.as_ref(), "cell radar", Method::Get)
         }
         TRACK_PATH => sensor_response(parsed, routes.track.as_ref(), "radar track", Method::Post),
+        TRAFFIC_CAMERAS_PATH => sensor_response(
+            parsed,
+            routes.traffic_cameras.as_ref(),
+            "traffic camera catalogue",
+            Method::Get,
+        ),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
         "/evidence" => dossier_page_response(parsed, config),
         "/api/evidence" => dossier_json_response(parsed, config),
