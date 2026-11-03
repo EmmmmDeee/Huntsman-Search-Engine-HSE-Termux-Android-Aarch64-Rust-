@@ -438,8 +438,8 @@ fn traffic_camera_radar_ui_only_fetches_on_button_press() {
         "$('qtread').onclick=async",
         "api('/api/traffic/cameras')",
         "Export JSON",
-        "r.position_conflicts",
-        "r.direction_conflicts",
+        "JSON.stringify(r||",
+        "GIS-only",
     ] {
         assert!(
             INDEX_HTML.contains(needle),
