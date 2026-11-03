@@ -717,11 +717,7 @@ pub fn report(scan: &ScanRecord, results: &ScanResults) -> String {
         esc(crate::diagnostics::embedded_build_sha()),
     );
 
-    let answered = results
-        .outcomes
-        .iter()
-        .filter(|o| o.is_accepted())
-        .count();
+    let answered = results.outcomes.iter().filter(|o| o.is_accepted()).count();
     let _ = writeln!(
         out,
         "<h2>Summary</h2><p>{} finding{} from {} of {} source{} consulted{}; {} correlation{}.</p>",
@@ -1391,10 +1387,7 @@ mod tests {
         let html = text(&render(&scan, &results, "html", None).unwrap());
         assert!(html.contains("from 0 of 2 sources consulted"), "{html}");
         assert!(!html.contains("Every source consulted answered."), "{html}");
-        assert!(
-            html.contains("<li><b>untrusted_a</b>: success,"),
-            "{html}"
-        );
+        assert!(html.contains("<li><b>untrusted_a</b>: success,"), "{html}");
         assert!(
             html.contains("<li><b>untrusted_b</b>: valid_zero,"),
             "{html}"
