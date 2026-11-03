@@ -60,6 +60,28 @@ fn rhinser_catalogue_http_contract_is_read_only_and_complete() {
 }
 
 #[test]
+fn security_tools_http_catalogue_is_bounded_and_guarded() {
+    let answer = response_for_request(
+        "GET /api/security-tools HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+        None,
+        loopback_bind(),
+    );
+    assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+    let body = answer.split_once("\r\n\r\n").unwrap().1;
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(parsed["count"], 9);
+    assert_eq!(parsed["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(parsed["tools"][3]["id"], "sqlmap");
+    assert_eq!(parsed["tools"][3]["status"], "unavailable");
+    let refused = response_for_request(
+        "GET /api/security-tools HTTP/1.1\r\nHost: public.example\r\n\r\n",
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+}
+
+#[test]
 fn local_evidence_cannot_be_read_from_a_public_bind_even_with_token() {
     for path in ["/evidence", "/api/evidence"] {
         let request = format!(
