@@ -2243,43 +2243,6 @@ fn saved_scans_answer_through_serve_behind_the_lookup_guards() {
             "{refused}"
         );
     }
-    // New-scan targets and names may use a form body. The legacy query form still works.
-    let payload = "target=ada%40example.com&name=case+notes&kind=email&depth=0";
-    let created = ask(format!(
-        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{payload}",
-        payload.len()
-    ));
-    assert!(created.starts_with("HTTP/1.1 202"), "{created}");
-    assert!(
-        created.contains("\"target\":\"ada@example.com\""),
-        "{created}"
-    );
-    assert!(created.contains("\"name\":\"case notes\""), "{created}");
-    let legacy = ask(format!(
-        "POST /api/scans?target=example.org&kind=domain HTTP/1.1\r\n{HEADER}\r\n"
-    ));
-    assert!(legacy.starts_with("HTTP/1.1 202"), "{legacy}");
-    let mixed = ask(format!(
-        "POST /api/scans?target=example.org HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{payload}",
-        payload.len()
-    ));
-    assert!(mixed.starts_with("HTTP/1.1 400"), "{mixed}");
-    let truncated = ask(format!(
-        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{payload}",
-        payload.len() + 1
-    ));
-    assert!(truncated.starts_with("HTTP/1.1 400"), "{truncated}");
-    let oversized = ask(format!(
-        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n",
-        MAX_FORM_BYTES + 1
-    ));
-    assert!(oversized.starts_with("HTTP/1.1 413"), "{oversized}");
-    let bad_encoding = "target=%FF&kind=email";
-    let malformed = ask(format!(
-        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{bad_encoding}",
-        bad_encoding.len()
-    ));
-    assert!(malformed.starts_with("HTTP/1.1 400"), "{malformed}");
     // Other saved-scan mutations still refuse bodies.
     let body = ask(format!(
         "POST /api/scans/{id}/fp?ids=a&fp=1 HTTP/1.1\r\nContent-Length: 3\r\n{HEADER}\r\nx=1"
@@ -2337,6 +2300,51 @@ fn saved_scans_answer_through_serve_behind_the_lookup_guards() {
         &format!("GET /api/settings HTTP/1.1\r\nAuthorization: Bearer s3cret\r\n{HEADER}\r\n"),
     );
     assert!(signed.starts_with("HTTP/1.1 200"), "{signed}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Scan creation transports are equivalent, and invalid or ambiguous bodies are refused.
+#[test]
+fn new_scan_form_body_is_bounded_and_preserves_query_clients() {
+    let (routes, _, dir) = scan_routes("form-body");
+    let ask = |request: String| scans_request(&routes, None, &request);
+    // New-scan targets and names may use a form body. The legacy query form still works.
+    let payload = "target=ada%40example.com&name=case+notes&kind=email&depth=0";
+    let created = ask(format!(
+        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{payload}",
+        payload.len()
+    ));
+    assert!(created.starts_with("HTTP/1.1 202"), "{created}");
+    assert!(
+        created.contains("\"target\":\"ada@example.com\""),
+        "{created}"
+    );
+    assert!(created.contains("\"name\":\"case notes\""), "{created}");
+    let legacy = ask(format!(
+        "POST /api/scans?target=example.org&kind=domain HTTP/1.1\r\n{HEADER}\r\n"
+    ));
+    assert!(legacy.starts_with("HTTP/1.1 202"), "{legacy}");
+    let mixed = ask(format!(
+        "POST /api/scans?target=example.org HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{payload}",
+        payload.len()
+    ));
+    assert!(mixed.starts_with("HTTP/1.1 400"), "{mixed}");
+    let truncated = ask(format!(
+        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{payload}",
+        payload.len() + 1
+    ));
+    assert!(truncated.starts_with("HTTP/1.1 400"), "{truncated}");
+    let oversized = ask(format!(
+        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n",
+        MAX_FORM_BYTES + 1
+    ));
+    assert!(oversized.starts_with("HTTP/1.1 413"), "{oversized}");
+    let bad_encoding = "target=%FF&kind=email";
+    let malformed = ask(format!(
+        "POST /api/scans HTTP/1.1\r\nContent-Length: {}\r\n{HEADER}\r\n{bad_encoding}",
+        bad_encoding.len()
+    ));
+    assert!(malformed.starts_with("HTTP/1.1 400"), "{malformed}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
