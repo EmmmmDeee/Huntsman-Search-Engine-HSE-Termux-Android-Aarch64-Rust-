@@ -31,7 +31,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::credential_origin::AuthenticationAuthority;
-use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
+use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch, json_error_detail};
 use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_component};
 use crate::keys::{Keys, Secret};
 use crate::redact::{scrub_bounded, scrub_secrets};
@@ -656,16 +656,9 @@ fn widen(slot: &mut Option<String>, candidate: &str, better: impl Fn(&str, &str)
 /// A body that is not the envelope: the error's category and position, never serde's message,
 /// which can quote the body. **Pure.**
 fn decode_error(e: &serde_json::Error) -> OathnetError {
-    let category = match e.classify() {
-        serde_json::error::Category::Io => "io",
-        serde_json::error::Category::Syntax => "syntax",
-        serde_json::error::Category::Data => "data",
-        serde_json::error::Category::Eof => "eof",
-    };
     OathnetError::Decode(format!(
-        "unexpected response shape: {category} error at line {} column {}",
-        e.line(),
-        e.column()
+        "unexpected response shape: {}",
+        json_error_detail(e)
     ))
 }
 
