@@ -114,10 +114,9 @@ fn interpret(
     // Fail the entire response closed: dropping malformed records while retaining
     // well-formed ones falsely reports complete coverage of the email lookup.
     if users.iter().any(|user| {
-        !user
-            .username
+        user.username
             .as_deref()
-            .is_some_and(|username| !username.trim().is_empty())
+            .is_none_or(|username| username.trim().is_empty())
     }) {
         return Err(failed(
             SourceOutcomeKind::SchemaDrift,
