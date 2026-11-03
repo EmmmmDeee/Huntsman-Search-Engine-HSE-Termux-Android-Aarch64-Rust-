@@ -94,6 +94,9 @@ fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
             body.len()
         )
     };
+    let loopback_request = |method: &str, headers: &str, body: &str| {
+        request(method, headers, body).replace("Host: public.example", "Host: 127.0.0.1:8080")
+    };
     let denied = response_for_request(
         &request("POST", "X-Huntsman-Lookup: 1\r\n", fixture),
         Some("secret"),
@@ -145,23 +148,23 @@ fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
         "\"operator_consented\":false",
     );
     let invalid = response_for_request(
-        &request(
+        &loopback_request(
             "POST",
-            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            "X-Huntsman-Lookup: 1\\r\\n",
             &unconsented,
         ),
-        Some("secret"),
-        public_bind(),
+        None,
+        loopback_bind(),
     );
     assert!(invalid.starts_with("HTTP/1.1 400"), "{invalid}");
     let malformed = response_for_request(
-        &request(
+        &loopback_request(
             "POST",
-            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            "X-Huntsman-Lookup: 1\\r\\n",
             "not-json",
         ),
-        Some("secret"),
-        public_bind(),
+        None,
+        loopback_bind(),
     );
     assert!(malformed.starts_with("HTTP/1.1 400"), "{malformed}");
 }
