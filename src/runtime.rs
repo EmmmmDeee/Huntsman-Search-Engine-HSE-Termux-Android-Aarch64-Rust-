@@ -17,12 +17,12 @@ use crate::gap::GapReport;
 use crate::graph::EntityRelation;
 use crate::ledger::LedgerEntry;
 use crate::meta_plan::MetaPlan;
+use crate::osint_synergy::SynergyReport;
 use crate::pipeline::{
     AnalysisSnapshot, InvestigationInput, InvestigationMode, NormalizedSeed, PipelineLimits,
     SeedNormalization, SeedRejection, normalize_observations, normalize_seeds,
 };
 use crate::pivot::PivotScore;
-use crate::osint_synergy::SynergyReport;
 use crate::planner::{DispatchAction, DispatchPlan, PlannerPolicy, build_dispatch_plan};
 use crate::scan_artifact::ArtifactHistory;
 use crate::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
