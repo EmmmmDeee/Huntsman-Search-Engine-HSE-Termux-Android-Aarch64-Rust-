@@ -80,7 +80,7 @@ pub const TOOLS: &[ToolCapability] = &[
         commands: &["security-tools paths HTTPS_ORIGIN WORDLIST --authorized", "domain DOMAIN"],
         implemented: &["Anonymous, consent-gated bounded web path discovery", "Historical and indexed URL leads"],
         missing: &["Full DIRB response classifiers, recursion, extension tuning and broad wordlist parity"],
-        termux_constraint: "Existing domain research does not brute-force URL paths",
+        termux_constraint: "Bounded anonymous HTTPS path probes are explicit opt-in, not broad DIRB parity"
     },
     ToolCapability {
         id: "aircrack-ng",
