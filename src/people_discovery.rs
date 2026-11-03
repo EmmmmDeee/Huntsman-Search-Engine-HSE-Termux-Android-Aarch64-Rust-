@@ -78,13 +78,20 @@ pub struct Report {
 }
 
 fn checked_name(raw: &str) -> Result<String, Error> {
-    let name = canonical_name(raw);
-    if !people_cli::is_name(&name)
-        || name.len() > MAX_NAME_BYTES
-        || name
+    // Check the *original bytes* before canonical_name collapses whitespace.
+    // Otherwise a newline, tab or NUL can disappear and be accepted as a
+    // legitimate name, despite the command's safety and input contract.
+    if raw.len() > MAX_NAME_BYTES
+        || raw
             .chars()
             .any(|c| c.is_control() || matches!(c, '"' | '\\' | '<' | '>'))
     {
+        return Err(Error::Invalid(
+            "people-discover requires a bounded full name (two alphabetic tokens), without quotes, controls or HTML delimiters".into(),
+        ));
+    }
+    let name = canonical_name(raw);
+    if !people_cli::is_name(&name) {
         return Err(Error::Invalid(
             "people-discover requires a bounded full name (two alphabetic tokens), without quotes, controls or HTML delimiters".into(),
         ));
@@ -306,6 +313,9 @@ mod tests {
             "A Example",
             "Jane \"Example\"",
             "Jane\nExample",
+            "Jane\tExample",
+            "Jane\rExample",
+            "Jane\u{0}Example",
             "Jane <Example>",
             &"X".repeat(130),
         ] {
