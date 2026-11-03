@@ -65,6 +65,10 @@ a generation check so earlier activity cannot overwrite/export a newer input.
 The real phone-sized browser acceptance now exercises import, HTTP validation,
 redacted export and malformed/oversized input refusals.
 
+After successful inspection the browser clears its raw APDU/NDEF textarea; only the
+redacted report remains available for download. This does not guarantee the bytes
+were never held in browser, operating-system or network buffers during processing.
+
 The HTTP handler calls the **same Rust parser** as the CLI and never persists
 the raw APDU/NDEF capture. On successful validation, the page can export
 **only the redacted Rust report** as a JSON file; export remains disabled
