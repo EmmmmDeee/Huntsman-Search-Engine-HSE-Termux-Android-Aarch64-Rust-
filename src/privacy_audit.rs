@@ -339,7 +339,8 @@ mod tests {
     #[test]
     fn duplicate_links_do_not_inflate_correlation() {
         let mut value: serde_json::Value = serde_json::from_slice(&fixture()).unwrap();
-        value["edges"].as_array_mut().unwrap().push(value["edges"][0].clone());
+        let first_edge = value["edges"][0].clone();
+        value["edges"].as_array_mut().unwrap().push(first_edge);
         let report = assess_public_graph(value.to_string().as_bytes()).unwrap();
         assert_eq!(report.advertised_links, 2);
         assert_eq!(report.findings.len(), 3);
