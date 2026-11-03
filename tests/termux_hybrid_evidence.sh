@@ -5,6 +5,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 script="$root/scripts/termux-hybrid-evidence.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+printf '{"domain":"example.org"}\n' > "$tmp/expected.txt"
 printf '\000\377DATA\n' > "$tmp/expected.bin"
 cat > "$tmp/mock-huntsman" <<'MOCK'
 #!/usr/bin/env bash
@@ -17,13 +18,14 @@ case "$1" in
     [ "$2" = https://www.example.org/public ] && [ "$3" = --raw-body ] && [ "$4" = --max-redirects ] && [ "$5" = 0 ] || exit 64
     case "$MOCK_MODE" in
       fetchfail) printf 'bad' >&2; exit 69 ;;
-      *) printf '\000\377DATA\n' ;;
+      binary) printf '\000\377DATA\n' ;;
+      *) printf '{"domain":"example.org"}\n' ;;
     esac
     ;;
   query)
     [ "$2" = --adaptive ] && [ "$3" = 'public test' ] || exit 64
     case "$MOCK_MODE" in
-      success)
+      success|binary)
         printf '%s\n' '{"rounds":[{"outcomes":[{"module":"bing","kind":"success","http_status":200,"found":1}]}],"hits":[{"url":"https://example.net/lead"}],"stop_reason":"budget"}'
         ;;
       partial)
@@ -39,13 +41,17 @@ case "$1" in
     ;;
   investigate)
     [ "$2" = --file ] && [ -s "$3" ] || exit 64
+    if [ "$MOCK_MODE" = binary ]; then
+      echo 'investigate input is not UTF-8' >&2
+      exit 65
+    fi
     echo 'entities=0'
     ;;
   *) exit 64 ;;
 esac
 MOCK
 chmod +x "$tmp/mock-huntsman"
-for mode in success partial invalid fetchfail; do
+for mode in success partial invalid fetchfail binary; do
   mkdir -p "$tmp/$mode"
   result=0
   MOCK_MODE="$mode" HSE_BIN="$tmp/mock-huntsman" HUNTSMAN_HOME="$tmp/$mode" \
@@ -53,7 +59,7 @@ for mode in success partial invalid fetchfail; do
     > "$tmp/$mode/out" 2> "$tmp/$mode/err" || result=$?
   case "$mode" in
     success) [ "$result" -eq 0 ] ;;
-    partial|invalid) [ "$result" -eq 69 ] ;;
+    partial|invalid|binary) [ "$result" -eq 69 ] ;;
     fetchfail) [ "$result" -ne 0 ] ;;
   esac || { echo "unexpected $mode exit=$result"; exit 1; }
   mapfile -t receipts < <(find "$tmp/$mode/hybrid" -maxdepth 1 -name 'receipt-*' -type d)
@@ -63,16 +69,20 @@ for mode in success partial invalid fetchfail; do
   fi
   [ "${#receipts[@]}" -eq 1 ] || { echo "missing receipt: $mode"; exit 1; }
   receipt="${receipts[0]}"
-  cmp "$tmp/expected.bin" "$receipt/source-body.bin"
+  expected="$tmp/expected.txt"
+  [ "$mode" != binary ] || expected="$tmp/expected.bin"
+  cmp "$expected" "$receipt/source-body.bin"
+  expected_size="$(wc -c < "$expected" | tr -d '[:space:]')"
   hash="$(sha256sum "$receipt/source-body.bin")"
   hash="${hash%% *}"
-  jq -e --arg digest "$hash" --argjson expected_success "$([ "$mode" = success ] && echo true || echo false)" '
+  jq -e --arg digest "$hash" --argjson expected_size "$expected_size" --argjson expected_success "$([ "$mode" = success ] && echo true || echo false)" --argjson expected_extract "$([ "$mode" = binary ] && echo 65 || echo 0)" '
     (.source.body_sha256 == $digest) and
-    (.source.body_bytes == 7) and
+    (.source.body_bytes == $expected_size) and
     (.source.claims_verified == false) and
-    (.hybrid_online_success == $expected_success)
+    (.hybrid_online_success == $expected_success) and
+    (.extraction.command_exit == $expected_extract)
   ' "$receipt/manifest.json" >/dev/null
   [ "$(stat -c %a "$receipt/source-body.bin")" = 600 ] ||
     { echo 'raw receipt permissions are not private'; exit 1; }
 done
-printf 'PASS  raw byte-preserving hybrid receipt: success, blocked, malformed, fetch failure\n'
+printf 'PASS  raw byte-preserving hybrid receipt: text, binary, blocked, malformed, fetch failure\n'
