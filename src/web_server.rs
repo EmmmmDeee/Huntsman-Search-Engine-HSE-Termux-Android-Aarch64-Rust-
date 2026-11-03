@@ -119,6 +119,8 @@ const INSPECT_PATH: &str = "/api/inspect";
 const BLUEPRINT_PATH: &str = "/api/blueprint";
 /// Offline, unverified Rhinser source directory exposed to authenticated local clients.
 const RHINSER_CATALOG_PATH: &str = "/api/rhinser/catalog";
+/// Operator-supplied private casebook correlation; never fetches third-party sources.
+const RHINSER_OVERLAPS_PATH: &str = "/api/rhinser/overlaps";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
 /// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
@@ -1403,6 +1405,7 @@ fn protected_path(path: &str) -> bool {
             | INSPECT_PATH
             | BLUEPRINT_PATH
             | RHINSER_CATALOG_PATH
+            | RHINSER_OVERLAPS_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
@@ -1493,8 +1496,9 @@ fn route(
         "/api/evidence" => dossier_json_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes),
-        OSINT_CASE_PATH => osint_offline_response(parsed, false),
-        OSINT_RISK_PATH => osint_offline_response(parsed, true),
+        OSINT_CASE_PATH => osint_offline_response(parsed, OfflineOsintMode::Case),
+        OSINT_RISK_PATH => osint_offline_response(parsed, OfflineOsintMode::Risk),
+        RHINSER_OVERLAPS_PATH => osint_offline_response(parsed, OfflineOsintMode::WorkspaceOverlaps),
         INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
@@ -1564,7 +1568,7 @@ mod lookup;
 mod page;
 mod response;
 mod settings;
-use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response};
+use analysis::{OfflineOsintMode, analyze_response, inspect_response, investigate_response, osint_offline_response};
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use page::{FAVICON_SVG, PAGE, PAGE_ID};
