@@ -52,7 +52,10 @@ fn rebuild_preserves_native_canonical_acceptance_and_rollback_gates() {
 #[test]
 fn handset_verdict_requires_an_exact_success_record() {
     let guard = "grep -Eq '^PASS[[:space:]]+TERMUX_RUNTIME_ACCEPTANCE[[:space:]]*$'";
-    assert!(SCRIPT.contains(guard), "installer must require an exact handset PASS");
+    assert!(
+        SCRIPT.contains(guard),
+        "installer must require an exact handset PASS"
+    );
 
     for (report, expected) in [
         ("PASS  TERMUX_RUNTIME_ACCEPTANCE\n", true),
@@ -61,10 +64,15 @@ fn handset_verdict_requires_an_exact_success_record() {
         ("FAIL  TERMUX_RUNTIME_ACCEPTANCE\n", false),
         ("PASS  TERMUX_RUNTIME_ACCEPTANCE_MOCK\n", false),
     ] {
-        let output = Command::new("bash")
-            .args(["-c", "printf '%s' \"$1\" | grep -Eq '^PASS[[:space:]]+TERMUX_RUNTIME_ACCEPTANCE[[:space:]]*$'", "--", report])
+        let status = Command::new("bash")
+            .args([
+                "-c",
+                r#"printf '%s' "$1" | grep -Eq '^PASS[[:space:]]+TERMUX_RUNTIME_ACCEPTANCE[[:space:]]*$'"#,
+                "--",
+                report,
+            ])
             .status()
             .expect("CI provides bash and grep");
-        assert_eq!(output.success(), expected, "unexpected verdict for {report:?}");
+        assert_eq!(status.success(), expected, "unexpected verdict for {report:?}");
     }
 }
