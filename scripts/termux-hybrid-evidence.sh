@@ -67,7 +67,7 @@ if [ "$JSON_OK" = 1 ]; then
        source:{url:$source,body_file:"source-body.bin",body_sha256:$raw,
          body_bytes:$bytes,transport:"huntsman_public_only_anonymous",
          semantics:"exact_transport_response_body_bytes_not_tls_wire_capture",
-         admission:"complete_2xx_non_challenge",claims_verified:false},
+         admission:"complete_http_200_non_challenge",claims_verified:false},
        discovery:{query:$query,report_file:"search-discovery.json",sha256:$search_sha,
          command_exit:$query_rc,hits:($r.hits|length),rounds:($r.rounds|length),
          outcomes:[$r.rounds[].outcomes[]|{module,kind,http_status,found}],
@@ -83,13 +83,18 @@ else
   jq -n --arg url "$URL" --arg utc "$START" --arg build "$SHA" --arg raw "$RAW_SHA" \
     --arg search_sha "$SEARCH_SHA" --arg extract_sha "$EXTRACT_SHA" \
     --argjson bytes "$BYTES" --argjson query_rc "$QUERY_RC" \
+    --argjson extract_rc "$EXTRACT_RC" --arg query "$QUERY" \
     '{schema_version:1,collected_at_utc:$utc,build_sha:$build,
       source:{url:$url,body_file:"source-body.bin",body_sha256:$raw,body_bytes:$bytes,
-        admission:"complete_2xx_non_challenge",claims_verified:false},
-      discovery:{report_file:"search-discovery.json",sha256:$search_sha,command_exit:$query_rc,
-        status:"invalid_or_absent_json"},
-      extraction:{file:"extracted-candidates.txt",sha256:$extract_sha},
-      hybrid_online_success:false,independent_corroboration:"not_established"}' \
+        transport:"huntsman_public_only_anonymous",
+        semantics:"exact_transport_response_body_bytes_not_tls_wire_capture",
+        admission:"complete_http_200_non_challenge",claims_verified:false},
+      discovery:{query:$query,report_file:"search-discovery.json",sha256:$search_sha,command_exit:$query_rc,
+        status:"invalid_or_absent_json",outcomes:null},
+      extraction:{file:"extracted-candidates.txt",sha256:$extract_sha,
+        command_exit:$extract_rc,evidence_role:"derived_candidates_not_verified"},
+      hybrid_online_success:false,independent_corroboration:"not_established",
+      unredacted_source_body:true,content_private_to_local_casebook:true}' \
     > "$STAGE/manifest.json"
 fi
 chmod 600 "$STAGE"/*
