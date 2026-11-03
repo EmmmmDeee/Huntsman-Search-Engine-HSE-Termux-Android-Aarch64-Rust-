@@ -250,7 +250,8 @@ pub fn classify_probe_response(service: &ServiceDef, response: &Response) -> Pro
             _ => ProbeVerdict::Indeterminate,
         },
         "hibp" => match (
-            body.get("SubscriptionName").and_then(serde_json::Value::as_str),
+            body.get("SubscriptionName")
+                .and_then(serde_json::Value::as_str),
             body.get("Rpm").and_then(serde_json::Value::as_u64),
         ) {
             (Some(name), Some(_)) if !name.trim().is_empty() => ProbeVerdict::Valid,
