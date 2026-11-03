@@ -251,12 +251,12 @@ pub fn reconcile(webcam: &Catalogue, gis: &GisCatalogue) -> Option<Reconciliatio
     let secondary: BTreeMap<u64, &GisCamera> = gis.cameras.iter().map(|c| (c.id, c)).collect();
     let webcam_only_ids: Vec<u64> = primary
         .keys()
-        .filter(|id| !secondary.contains_key(id))
+        .filter(|id| !secondary.contains_key(*id))
         .copied()
         .collect();
     let gis_only_ids: Vec<u64> = secondary
         .keys()
-        .filter(|id| !primary.contains_key(id))
+        .filter(|id| !primary.contains_key(*id))
         .copied()
         .collect();
     let mut shared_ids = 0;
