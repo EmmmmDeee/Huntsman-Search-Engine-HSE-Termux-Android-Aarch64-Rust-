@@ -69,6 +69,14 @@ After successful inspection the browser clears its raw APDU/NDEF textarea; only 
 redacted report remains available for download. This does not guarantee the bytes
 were never held in browser, operating-system or network buffers during processing.
 
+The native import adapter additionally redacts arbitrary NDEF record TYPE strings,
+because untrusted type metadata may itself contain identifiers. It preserves only
+the standard well-known `T`, `U` and `Sp` labels; other types become
+`redacted_type`. Offline `osint nfc ndef HEX` inspection retains its existing
+behavior for compatibility; browser/native imported reports apply this stricter
+privacy boundary. A regression fixture verifies identifier-like TYPE strings
+cannot appear in the native JSON response.
+
 The HTTP handler calls the **same Rust parser** as the CLI and never persists
 the raw APDU/NDEF capture. On successful validation, the page can export
 **only the redacted Rust report** as a JSON file; export remains disabled
