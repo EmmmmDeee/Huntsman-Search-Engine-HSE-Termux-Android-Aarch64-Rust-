@@ -307,7 +307,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
 <div id="rmitm" hidden><div class="panel-heading">MITM / evil-twin indicators (not confirmed attacks)</div><p class="note" id="rmitmstatus" role="status"></p><div class="table-wrap"><table><thead><tr><th>Severity</th><th>Indicator</th><th>SSID</th><th>BSSID</th><th>Evidence</th><th>Suggested action</th></tr></thead><tbody id="rmitmrows"></tbody></table></div></div>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th><th>Age (s)</th><th>Freshness</th><th>Reason</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
 </div>
 <div class="panel" id="rcresult" hidden>
 <div class="panel-heading">Cells Android reports <span class="badge" id="rcrows-n"></span></div>
@@ -689,6 +689,7 @@ $('rread').onclick=async()=>{
       o.os_timestamp_us??'',
       o.age_secs==null?'unknown':Math.round(o.age_secs),
       o.freshness||'unknown',
+      o.freshness_reason||'not_reported_by_binary',
       radarPivot(o)
     ]);
     const mitm=scan.mitm_assessment;
@@ -700,7 +701,8 @@ $('rread').onclick=async()=>{
     }
     $('rsummary').textContent='Cache requested at '+radarReadAt.toLocaleString()+
       ' (browser clock; not observation time) · Source: '+scan.source+' · status: '+scan.status+
-      ' · records: '+scan.observed+' · rejected: '+scan.rejected;
+      ' · records: '+scan.observed+' · rejected: '+scan.rejected+
+      ' · boot clock: '+(scan.boot_clock_status||'not_reported_by_binary');
     $('rstatus').textContent=scan.status==='inconclusive'
       ?'Android returned no usable cached observations. Nearby networks may still exist.'
       :scan.status==='stale_only'
