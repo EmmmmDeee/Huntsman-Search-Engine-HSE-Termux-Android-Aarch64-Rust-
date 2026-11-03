@@ -78,6 +78,23 @@ const SOCIAL: &[&str] = &[
     "vk.com",
 ];
 
+/// Code forges. A link there is already a `Url`, so its bare host is noise as a `Domain` pivot:
+/// it names the forge, never the account owner's own domain.
+pub const CODE_FORGES: &[&str] = &[
+    "github.com",
+    "gitlab.com",
+    "bitbucket.org",
+    "codeberg.org",
+    "sr.ht",
+];
+
+/// Whether `host` is exactly one of the [`CODE_FORGES`] (a subdomain such as `docs.gitlab.com`
+/// is not: it may be the owner's own project site).
+#[must_use]
+pub fn is_code_forge_host(host: &str) -> bool {
+    CODE_FORGES.contains(&host)
+}
+
 pub const INFRA_PROVIDER_ROOTS: &[&str] = &[
     "cloudflare.com",
     "amazonaws.com",
@@ -363,6 +380,28 @@ pub fn vn_domain_registrant(domain: &str) -> Option<(&'static str, &'static str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_code_forge_host_is_exactly_a_listed_forge() {
+        for forge in [
+            "github.com",
+            "gitlab.com",
+            "bitbucket.org",
+            "codeberg.org",
+            "sr.ht",
+        ] {
+            assert!(is_code_forge_host(forge), "{forge}");
+        }
+        for other in [
+            "docs.gitlab.com",
+            "github.io",
+            "example.com",
+            "GitHub.com",
+            "",
+        ] {
+            assert!(!is_code_forge_host(other), "{other}");
+        }
+    }
 
     #[test]
     fn url_helpers_match_contract() {
