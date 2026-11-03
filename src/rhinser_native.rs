@@ -105,9 +105,16 @@ pub fn inspect_capture_json(bytes: &[u8]) -> Result<NativeCaptureReport, String>
         let observation = match event {
             CaptureEvent::Ndef { hex } => {
                 let data = rhinser_nfc::decode_hex(&hex)?;
-                NativeObservation::Ndef {
-                    inspection: rhinser_nfc::inspect_ndef(&data)?,
+                let mut inspection = rhinser_nfc::inspect_ndef(&data)?;
+                // NDEF record TYPE is caller-controlled metadata, not an authenticated
+                // schema name. Do not echo arbitrary type strings into native reports:
+                // they can encode identifiers even when the payload is suppressed.
+                for record_type in &mut inspection.record_types {
+                    if !matches!(record_type.as_str(), "T" | "U" | "Sp") {
+                        *record_type = "redacted_type".to_owned();
+                    }
                 }
+                NativeObservation::Ndef { inspection }
             }
             CaptureEvent::Apdu { hex } => {
                 let data = rhinser_nfc::decode_hex(&hex)?;
