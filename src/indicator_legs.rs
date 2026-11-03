@@ -31,6 +31,7 @@ pub const SOURCES: &[Source] = &[
     otx::INTEL,
     urlscan::INTEL,
     ipinfo::INTEL,
+    crate::ipinfo_lite::INTEL,
     robtex::INTEL,
     hackertarget::INTEL,
     submd::INTEL,
