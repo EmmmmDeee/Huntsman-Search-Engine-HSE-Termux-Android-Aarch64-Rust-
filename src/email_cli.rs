@@ -663,6 +663,58 @@ mod tests {
         );
     }
 
+    /// Regression across Duolingo decoding, the email front-end, provenance and the
+    /// shared text renderer: an incomplete provider answer is not a partial hit,
+    /// and other providers still contribute independently trusted outcomes.
+    #[test]
+    fn mixed_duolingo_schema_never_contaminates_email_entities_or_text() {
+        let duolingo = r#"{"users":[{"id":14,"username":"untrusted_account_8791"},{"id":99}]}"#;
+        let transport = three(
+            reply(404, ""),
+            reply(200, duolingo),
+            reply(404, "No key found"),
+        );
+        let EmailRun::Printed { text, report } = run(&transport, "ada@example.com", 1) else {
+            panic!("unrelated successful zero replies should still yield a report");
+        };
+        assert_eq!(transport.seen.borrow().len(), 3);
+        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(
+            report
+                .outcomes
+                .iter()
+                .map(|outcome| (outcome.module.as_str(), outcome.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("gravatar", SourceOutcomeKind::ValidZero),
+                ("duolingo", SourceOutcomeKind::SchemaDrift),
+                ("openpgp_keys", SourceOutcomeKind::ValidZero),
+            ]
+        );
+        assert_eq!(
+            report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.is_accepted())
+                .count(),
+            2
+        );
+        assert!(
+            report.entities.iter().all(|entity| {
+                !entity.tags.iter().any(|tag| tag == duolingo::SRC)
+                    && entity
+                        .evidence
+                        .iter()
+                        .all(|evidence| evidence.provenance.source != duolingo::SRC)
+            }),
+            "incomplete provider record was added to the entity graph"
+        );
+        assert!(!text.contains("untrusted_account_8791"), "{text}");
+        assert!(text.contains("duolingo\tschema_drift"), "{text}");
+        assert!(text.contains("gravatar\tvalid_zero"), "{text}");
+        assert!(text.contains("openpgp_keys\tvalid_zero"), "{text}");
+    }
+
     #[test]
     fn without_keys_only_the_keyless_address_checks_are_added() {
         let unkeyed = ScriptedTransport::new(vec![
