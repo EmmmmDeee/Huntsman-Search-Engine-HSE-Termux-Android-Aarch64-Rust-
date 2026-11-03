@@ -24,7 +24,7 @@ fn two_collectors_one_corpus_do_not_become_independent_or_complete() {
     let email = email_from_two_mirrors();
     let initial = email.clone();
     let graph = EvidenceAncestryGraph::default();
-    let report = discover(&[email.clone()], &graph);
+    let report = discover(std::slice::from_ref(&email), &graph);
     assert_eq!(email, initial);
     assert_eq!(report.entities_examined, 1);
     assert_eq!(report.eligible_entities, 1);
