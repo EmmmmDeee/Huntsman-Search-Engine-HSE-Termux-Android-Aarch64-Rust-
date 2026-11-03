@@ -106,32 +106,39 @@ fn interpret(
             "Duolingo JSON has no users field",
         ));
     };
-    if users.is_empty() {
-        return Err(
-            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-        );
-    }
-    // Fail the entire response closed: dropping malformed records while retaining
-    // well-formed ones falsely reports complete coverage of the email lookup.
-    if users.iter().any(|user| {
-        user.username
-            .as_deref()
-            .is_none_or(|username| username.trim().is_empty())
-    }) {
+    // Collect the validated username beside its source row. Option's iterator
+    // collection fails atomically when *any* row lacks a usable username, so a
+    // partial provider response cannot emit a success-shaped set of entities.
+    let accounts: Option<Vec<(&User, &str)>> = users
+        .iter()
+        .map(|user| {
+            user.username
+                .as_deref()
+                .map(str::trim)
+                .filter(|username| !username.is_empty())
+                .map(|username| (user, username))
+        })
+        .collect();
+    let Some(accounts) = accounts else {
         return Err(failed(
             SourceOutcomeKind::SchemaDrift,
             "Duolingo users carry no username",
         ));
+    };
+    if accounts.is_empty() {
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
 
     let mut entities = Vec::new();
-    for user in &users {
-        build_entities(user, scan_id, &mut entities);
+    for (user, username) in &accounts {
+        build_entities(user, username, scan_id, &mut entities);
     }
     merge_by_uid(&mut entities);
     Ok(Report {
         entities,
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, users.len())
+        outcome: SourceExecutionOutcome::success(SRC, now_unix, accounts.len())
             .with_http_status(response.status),
     })
 }
@@ -143,10 +150,7 @@ fn empty(outcome: SourceExecutionOutcome) -> Report {
     }
 }
 
-fn build_entities(user: &User, scan_id: &str, entities: &mut Vec<Entity>) {
-    let Some(username) = user.username.as_deref().map(str::trim) else {
-        return;
-    };
+fn build_entities(user: &User, username: &str, scan_id: &str, entities: &mut Vec<Entity>) {
     let profile_url = format!(
         "https://www.duolingo.com/profile/{}",
         crate::http::percent_encode_unreserved(username)
@@ -295,6 +299,37 @@ mod tests {
         );
         // A one-word display name is not a person.
         assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Person));
+    }
+
+    #[test]
+    fn complete_multi_account_response_preserves_all_accounts_and_trimmed_handles() {
+        let report = lookup(
+            &OneResponse::json(
+                200,
+                r#"{"users":[{"id":14,"username":"  Luis  "},{"id":15,"username":"Mara"}]}"#,
+            ),
+            "a@example.com",
+            "s",
+            1,
+        )
+        .unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.outcome.found, Some(2));
+        for username in ["Luis", "Mara"] {
+            assert!(
+                report.entities.iter().any(|entity| {
+                    entity.kind == EntityKind::Username && entity.raw_value == username
+                }),
+                "missing {username}"
+            );
+            assert!(
+                report.entities.iter().any(|entity| {
+                    entity.kind == EntityKind::Url
+                        && entity.raw_value == format!("https://www.duolingo.com/profile/{username}")
+                }),
+                "missing profile for {username}"
+            );
+        }
     }
 
     #[test]
