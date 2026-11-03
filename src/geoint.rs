@@ -31,7 +31,7 @@ pub fn initial_bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option
     let phi2 = lat2.to_radians();
     // Normalize the angular difference to avoid a 360-degree discontinuity
     // at the international date line.
-    let delta = (lon2 - lon1).to_radians();
+    let delta = (lon2 - lon1).rem_euclid(360.0).to_radians();
     let y = delta.sin() * phi2.cos();
     let x = phi1.cos() * phi2.sin() - phi1.sin() * phi2.cos() * delta.cos();
     if y.abs() < 1e-14 && x.abs() < 1e-14 {
@@ -96,5 +96,19 @@ mod tests {
         assert_eq!(initial_bearing_deg(91.0, 0.0, 1.0, 1.0), None);
         assert!(!valid_coordinate(0.0, f64::INFINITY));
         assert!(valid_coordinate(-90.0, 180.0));
+    }
+
+    #[test]
+    fn equivalent_antimeridian_longitudes_are_coincident() {
+        assert_eq!(initial_bearing_deg(0.0, -180.0, 0.0, 180.0), None);
+        assert_eq!(initial_bearing_deg(10.0, -180.0, 10.0, 180.0), None);
+    }
+
+    #[test]
+    fn bearing_handles_both_longitude_wrap_directions() {
+        let east = initial_bearing_deg(0.0, 170.0, 0.0, -170.0).unwrap();
+        let west = initial_bearing_deg(0.0, -170.0, 0.0, 170.0).unwrap();
+        assert!((east - 90.0).abs() < 1e-9, "{east}");
+        assert!((west - 270.0).abs() < 1e-9, "{west}");
     }
 }
