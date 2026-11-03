@@ -6,6 +6,8 @@
 !HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md
 !src/
 !src/**
+!docs/
+!docs/OSINT_DISCIPLINE_MATRIX.json
 !xtask/
 !xtask/Cargo.toml
 !xtask/src/
