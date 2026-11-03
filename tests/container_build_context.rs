@@ -50,3 +50,23 @@ fn every_workspace_member_is_in_the_image_build_context() {
         );
     }
 }
+
+#[test]
+fn embedded_osint_catalog_is_available_to_container_builder() {
+    let dockerfile = fs::read_to_string("Dockerfile").expect("Dockerfile");
+    let ignore = fs::read_to_string(".dockerignore").expect(".dockerignore");
+    let catalog = "docs/OSINT_DISCIPLINE_MATRIX.json";
+    assert!(
+        dockerfile.contains("COPY docs/OSINT_DISCIPLINE_MATRIX.json ./docs/OSINT_DISCIPLINE_MATRIX.json"),
+        "the container must copy the canonical JSON alongside embedded Rust source"
+    );
+    assert!(
+        ignore.lines().any(|line| line == "!docs/"),
+        "the parent docs directory must be re-included in the Docker context"
+    );
+    assert!(
+        ignore.lines().any(|line| line == format!("!{catalog}")),
+        "the embedded JSON must be allowed through .dockerignore"
+    );
+    assert!(fs::metadata(catalog).expect("embedded OSINT catalogue").is_file());
+}
