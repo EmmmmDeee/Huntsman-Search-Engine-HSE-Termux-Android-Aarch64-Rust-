@@ -14,13 +14,13 @@ const MAX_EVIDENCE_PER_ENTITY: usize = 32;
 const MAX_VALUES_PER_ATTRIBUTE: usize = 16;
 const MAX_LINKS: usize = 256;
 
-/// Whether the target itself was observed by a different source family.
-/// Neither status establishes that the claimed relationship is true.
+/// Whether the target itself was observed via another collector. This is NOT
+/// proof that the upstream datasets were independent or that the relation is true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JoinStatus {
     SourceClaimOnly,
-    IndependentlyObservedTarget,
+    SeparatelyObservedTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -38,6 +38,9 @@ pub struct SynergyLink {
     pub source_scan_id: Option<String>,
     pub target_scan_id: Option<String>,
     pub status: JoinStatus,
+    /// Only an evidence-ancestry proof can establish independence. Collector
+    /// names and different scan IDs cannot, so a join never claims it.
+    pub independence_status: &'static str,
     pub interpretation: &'static str,
 }
 
@@ -163,11 +166,12 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
                             target_scan_id: independent
                                 .and_then(|item| item.provenance.scan_id.clone()),
                             status: if independent.is_some() {
-                                JoinStatus::IndependentlyObservedTarget
+                                JoinStatus::SeparatelyObservedTarget
                             } else {
                                 JoinStatus::SourceClaimOnly
                             },
-                            interpretation: "discovery lead only; relationship not independently verified",
+                            independence_status: "not_proven",
+                            interpretation: "separate source observation only; independence and relationship not proven",
                         };
                         if !links.contains_key(&key) && links.len() >= MAX_LINKS {
                             truncated = true;
@@ -176,7 +180,7 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
                         match links.entry(key) {
                             std::collections::btree_map::Entry::Occupied(mut entry) => {
                                 if entry.get().status == JoinStatus::SourceClaimOnly
-                                    && new_link.status == JoinStatus::IndependentlyObservedTarget
+                                    && new_link.status == JoinStatus::SeparatelyObservedTarget
                                 {
                                     entry.insert(new_link);
                                 }
@@ -224,7 +228,7 @@ mod tests {
         assert_eq!(result.links.len(), 1);
         assert_eq!(
             result.links[0].status,
-            JoinStatus::IndependentlyObservedTarget
+            JoinStatus::SeparatelyObservedTarget
         );
         assert_eq!(result.links[0].source_scan_id.as_deref(), Some("scan-a"));
         assert_eq!(result.links[0].target_scan_id.as_deref(), Some("scan-b"));
@@ -276,11 +280,31 @@ mod tests {
         assert_eq!(joins.links.len(), 2);
         assert!(joins.links.iter().any(|join| {
             join.relation == "reported_name_server"
-                && join.status == JoinStatus::IndependentlyObservedTarget
+                && join.status == JoinStatus::SeparatelyObservedTarget
         }));
         assert!(joins.links.iter().any(|join| {
             join.relation == "reported_mail_exchanger" && join.status == JoinStatus::SourceClaimOnly
         }));
+    }
+
+    #[test]
+    fn mirrored_collectors_cannot_claim_proven_independence() {
+        let mut domain = observed(EntityKind::Domain, "example.org", "feed-a", "one");
+        domain.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("feed-a", "one"), "upstream record")
+                .with_attr("ip", "192.0.2.7")
+                .with_attr("dataset", "same upstream"),
+        );
+        let mut target = observed(EntityKind::IpAddress, "192.0.2.7", "feed-b", "two");
+        target.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("feed-b", "two"), "mirror record")
+                .with_attr("dataset", "same upstream"),
+        );
+        let report = discover(&[domain, target]);
+        assert_eq!(report.links.len(), 1);
+        assert_eq!(report.links[0].status, JoinStatus::SeparatelyObservedTarget);
+        assert_eq!(report.links[0].independence_status, "not_proven");
+        assert!(report.links[0].interpretation.contains("not proven"));
     }
 
     #[test]
