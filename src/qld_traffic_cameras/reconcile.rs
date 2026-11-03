@@ -19,12 +19,13 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 pub const SOURCE_GIS: &str = "qld_state_road_camera_gis";
 /// Fixed and encoded ArcGIS query. `outSR=4326` explicitly requests WGS84 lon/lat,
 /// rather than the layer's default Web Mercator metre coordinates.
-pub const GIS_URL: &str = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Transportation/StateRoadInformation/MapServer/4/query?where=1%3D1&outFields=camera_id%2Cdescription%2Clocality&returnGeometry=true&outSR=4326&f=geojson";
+pub const GIS_URL: &str = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Transportation/StateRoadInformation/MapServer/4/query?where=1%3D1&outFields=camera_id%2Cdescription%2Cdirection%2Clocality&returnGeometry=true&outSR=4326&f=geojson";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GisCamera {
     pub id: u64,
     pub description: String,
+    pub direction: Option<String>,
     pub locality: Option<String>,
     pub latitude: f64,
     pub longitude: f64,
@@ -44,6 +45,20 @@ pub struct GisCatalogue {
 pub struct PositionConflict {
     pub id: u64,
     pub separation_metres: f64,
+    pub webcam_description: String,
+    pub gis_description: String,
+    pub webcam_latitude: f64,
+    pub webcam_longitude: f64,
+    pub gis_latitude: f64,
+    pub gis_longitude: f64,
+}
+
+/// Distinct official directions for the same publisher camera identifier.
+#[derive(Debug, Clone, Serialize)]
+pub struct DirectionConflict {
+    pub id: u64,
+    pub webcam_direction: String,
+    pub gis_direction: String,
 }
 
 /// Nearby records with different IDs; **never** automatic identity links.
@@ -64,6 +79,7 @@ pub struct Reconciliation {
     pub webcam_only_ids: Vec<u64>,
     pub gis_only_ids: Vec<u64>,
     pub position_conflicts: Vec<PositionConflict>,
+    pub direction_conflicts: Vec<DirectionConflict>,
     pub spatial_candidates: Vec<SpatialCandidate>,
     pub candidate_search_truncated: bool,
     pub publisher_families: usize,
@@ -153,6 +169,7 @@ fn row(feature: &Value) -> Option<GisCamera> {
     Some(GisCamera {
         id,
         description: bounded_text(props.get("description"), 250)?,
+        direction: bounded_text(props.get("direction"), 50),
         locality: bounded_text(props.get("locality"), 120),
         latitude,
         longitude,
@@ -261,6 +278,7 @@ pub fn reconcile(webcam: &Catalogue, gis: &GisCatalogue) -> Option<Reconciliatio
         .collect();
     let mut shared_ids = 0;
     let mut position_conflicts = Vec::new();
+    let mut direction_conflicts = Vec::new();
     for (id, one) in &primary {
         if let Some(two) = secondary.get(id) {
             shared_ids += 1;
@@ -269,7 +287,22 @@ pub fn reconcile(webcam: &Catalogue, gis: &GisCatalogue) -> Option<Reconciliatio
                 position_conflicts.push(PositionConflict {
                     id: *id,
                     separation_metres: separation,
+                    webcam_description: one.description.clone(),
+                    gis_description: two.description.clone(),
+                    webcam_latitude: one.latitude,
+                    webcam_longitude: one.longitude,
+                    gis_latitude: two.latitude,
+                    gis_longitude: two.longitude,
                 });
+            }
+            if let Some(direction) = &two.direction {
+                if !direction.eq_ignore_ascii_case(&one.direction) {
+                    direction_conflicts.push(DirectionConflict {
+                        id: *id,
+                        webcam_direction: one.direction.clone(),
+                        gis_direction: direction.clone(),
+                    });
+                }
             }
         }
     }
@@ -313,6 +346,7 @@ pub fn reconcile(webcam: &Catalogue, gis: &GisCatalogue) -> Option<Reconciliatio
         webcam_only_ids,
         gis_only_ids,
         position_conflicts,
+        direction_conflicts,
         spatial_candidates,
         candidate_search_truncated,
         publisher_families: 1,
@@ -331,7 +365,7 @@ mod tests {
             .map(|id| json!({
                 "type":"Feature",
                 "geometry":{"type":"Point","coordinates":[153.008_697_5,-27.555_179_6]},
-                "properties":{"camera_id":id,"description":"Sample camera","locality":"Archerfield"}
+                "properties":{"camera_id":id,"description":"Sample camera","direction":"North","locality":"Archerfield"}
             }))
             .collect();
         parse_gis(&json!({"type":"FeatureCollection","features":features}), 10, 200)
@@ -413,6 +447,18 @@ mod tests {
         let r = reconcile(&webcam(&[1]), &g).expect("accepted sources");
         assert_eq!(r.shared_ids, 1);
         assert_eq!(r.position_conflicts.len(), 1);
+    }
+
+    #[test]
+    fn opposite_orientation_is_a_separate_source_conflict() {
+        let mut g = gis(&[1]);
+        g.cameras[0].direction = Some("South".into());
+        let r = reconcile(&webcam(&[1]), &g).expect("accepted sources");
+        assert_eq!(r.shared_ids, 1);
+        assert_eq!(r.direction_conflicts.len(), 1);
+        assert_eq!(r.direction_conflicts[0].webcam_direction, "North");
+        assert_eq!(r.direction_conflicts[0].gis_direction, "South");
+        assert!(r.position_conflicts.is_empty());
     }
 
     #[test]
