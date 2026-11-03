@@ -125,6 +125,10 @@ const TRACK_PATH: &str = "/api/radar/track";
 /// `investigate` command for text pasted in the browser. The text is the body, read whole within
 /// [`MAX_FORM_BYTES`]; a longer text is for `investigate --file` in Termux.
 const OSINT_CASE_PATH: &str = "/api/osint/case";
+/// Source-code inventory, never a claim of live OSINT availability.
+const OSINT_MATRIX_PATH: &str = "/api/osint/matrix";
+/// Offline import of operator-supplied Rhinser JSON into the canonical Rust parser.
+const RHINSER_NATIVE_PATH: &str = "/api/osint/native";
 const OSINT_RISK_PATH: &str = "/api/osint/area-risk";
 const INVESTIGATE_PATH: &str = "/api/investigate";
 /// Explicitly initiated autonomous recursive investigation, stored as an ordinary saved scan.
@@ -1405,6 +1409,8 @@ fn protected_path(path: &str) -> bool {
             | RHINSER_CATALOG_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
+            | OSINT_MATRIX_PATH
+            | RHINSER_NATIVE_PATH
             | INVESTIGATE_PATH
     ) || ScanApi::handles(path)
 }
@@ -1469,6 +1475,13 @@ fn route(
             json_ok(&body, head)
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
+        OSINT_MATRIX_PATH => {
+            match serde_json::to_string_pretty(&crate::osint_matrix::report()) {
+                Ok(body) => json_ok(&body, head),
+                Err(_) => json_error(500, "OSINT source matrix unavailable"),
+            }
+        }
+        RHINSER_NATIVE_PATH => rhinser_native_response(parsed),
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
@@ -1564,7 +1577,7 @@ mod lookup;
 mod page;
 mod response;
 mod settings;
-use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response};
+use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response, rhinser_native_response};
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use page::{FAVICON_SVG, PAGE, PAGE_ID};
