@@ -111,7 +111,7 @@ pub fn inspect_capture_json(bytes: &[u8]) -> Result<NativeCaptureReport, String>
                 // they can encode identifiers even when the payload is suppressed.
                 for record_type in &mut inspection.record_types {
                     if !matches!(record_type.as_str(), "T" | "U" | "Sp") {
-                        *record_type = "redacted_type".to_owned();
+                        "redacted_type".clone_into(record_type);
                     }
                 }
                 NativeObservation::Ndef { inspection }
@@ -235,14 +235,12 @@ mod tests {
     fn native_ndef_report_does_not_echo_untrusted_type_identifiers() {
         // TYPE metadata is not proof that an identifier is safe to display.
         // A crafted external-type record can contain personally identifying text.
-        let hidden = b"user@example.invalid";
-        let mut record = vec![0xd4, u8::try_from(hidden.len()).unwrap(), 1];
-        record.extend_from_slice(hidden);
-        record.push(b'X');
-        let hex: String = record.iter().map(|byte| format!("{byte:02X}")).collect();
+        // Single short external-type NDEF record, whose TYPE is
+        // "user@example.invalid"; its one-byte payload is "X".
+        let hex = "D4140175736572406578616D706C652E696E76616C696458";
         let fixture = serde_json::json!({
             "schema_version": 1,
-            "captured_unix_ms": 1730000000000_u64,
+            "captured_unix_ms": 1_730_000_000_000_u64,
             "operator_consented": true,
             "events": [{"kind": "ndef", "hex": hex}]
         });
