@@ -433,7 +433,7 @@ fn traffic_camera_radar_ui_only_fetches_on_button_press() {
         r#"id="qtjson""#,
         "$('qtread').onclick=async",
         "api('/api/traffic/cameras')",
-        "Nearby different-ID",
+        "nearby different-ID candidates",
     ] {
         assert!(INDEX_HTML.contains(needle), "missing camera UI contract: {needle}");
     }
