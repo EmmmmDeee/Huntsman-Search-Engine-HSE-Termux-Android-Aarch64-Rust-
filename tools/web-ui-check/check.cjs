@@ -877,7 +877,8 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         captureReport?.radio_access === false &&
         captureReport?.device_attested === false &&
         captureReport?.observations?.[1]?.signal_class === 'medium' &&
-        !(await page.textContent('#rhinser-native-output')).includes('D101055402656E4869'), captureReport);
+        !(await page.textContent('#rhinser-native-output')).includes('D101055402656E4869') &&
+        await page.inputValue('#rhinser-native-input') === '', captureReport);
       const [captureDownload] = await Promise.all([
         page.waitForEvent('download', { timeout: 10000 }),
         page.click('#rhinser-native-export'),
