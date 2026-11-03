@@ -171,7 +171,14 @@ pub fn render_front_end(
 /// `valid_zero` when any answered with nothing, else the first source's kind.
 #[must_use]
 pub fn front_end_row(module: &str, found: usize, outcomes: &[SourceExecutionOutcome]) -> String {
-    let any = |kind: SourceOutcomeKind| outcomes.iter().any(|o| o.kind == kind);
+    // Keep the front-end verdict aligned with SourceReach's canonical acceptance
+    // contract: a success labelled with zero findings, or a zero with findings,
+    // must not become an accepted answer merely because of its wire kind.
+    let any = |kind: SourceOutcomeKind| {
+        outcomes
+            .iter()
+            .any(|outcome| outcome.is_accepted() && outcome.kind == kind)
+    };
     let kind = if any(SourceOutcomeKind::Success) {
         SourceOutcomeKind::Success.as_str()
     } else if any(SourceOutcomeKind::ValidZero) {
@@ -179,19 +186,15 @@ pub fn front_end_row(module: &str, found: usize, outcomes: &[SourceExecutionOutc
     } else {
         outcomes
             .first()
-            .map_or(SourceOutcomeKind::Inconclusive.as_str(), |o| {
-                o.kind.as_str()
+            .map_or(SourceOutcomeKind::Inconclusive.as_str(), |outcome| {
+                if outcome.kind.is_accepted() && !outcome.is_accepted() {
+                    SourceOutcomeKind::Inconclusive.as_str()
+                } else {
+                    outcome.kind.as_str()
+                }
             })
     };
-    let answered = outcomes
-        .iter()
-        .filter(|o| {
-            matches!(
-                o.kind,
-                SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero
-            )
-        })
-        .count();
+    let answered = outcomes.iter().filter(|outcome| outcome.is_accepted()).count();
     format!(
         "{}\t{kind}\tfound={found}\tdetail=sources answered {answered}/{}",
         escape_controls(module),
@@ -273,6 +276,37 @@ mod tests {
         assert_eq!(
             front_end_row("domain_cli", 0, &[]),
             "domain_cli\tinconclusive\tfound=0\tdetail=sources answered 0/0"
+        );
+    }
+
+    #[test]
+    fn front_end_acceptance_agrees_with_source_reach_for_contradictory_counts() {
+        let false_success = SourceExecutionOutcome::observed(
+            "untrusted",
+            1,
+            SourceOutcomeKind::Success,
+            Some(200),
+            Some(0),
+            "success label contradicted by count",
+        );
+        let false_zero = SourceExecutionOutcome::observed(
+            "untrusted",
+            1,
+            SourceOutcomeKind::ValidZero,
+            Some(200),
+            Some(2),
+            "zero label contradicted by count",
+        );
+        let verified_zero = SourceExecutionOutcome::valid_zero("verified", 1);
+        assert!(!false_success.is_accepted());
+        assert!(!false_zero.is_accepted());
+        assert_eq!(
+            front_end_row("email", 3, &[false_success.clone(), verified_zero]),
+            "email\tvalid_zero\tfound=3\tdetail=sources answered 1/2"
+        );
+        assert_eq!(
+            front_end_row("email", 3, &[false_success, false_zero]),
+            "email\tinconclusive\tfound=3\tdetail=sources answered 0/2"
         );
     }
 
