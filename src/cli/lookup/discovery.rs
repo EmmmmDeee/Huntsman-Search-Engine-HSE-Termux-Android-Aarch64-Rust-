@@ -273,12 +273,7 @@ pub(in crate::cli) fn people_discover_cmd(args: &[String]) -> ExitCode {
         return fail(EX_USAGE, people_discovery::PEOPLE_DISCOVER_USAGE);
     }
     let transport = UreqTransport::new(&TransportConfig::default());
-    match people_discovery::discover(
-        &transport,
-        &name_parts.join(" "),
-        region,
-        clock::unix_now(),
-    ) {
+    match people_discovery::discover(&transport, &name_parts.join(" "), region, clock::unix_now()) {
         Ok(report) => {
             match terminal_json_pretty(&report) {
                 Ok(body) => println!("{body}"),
