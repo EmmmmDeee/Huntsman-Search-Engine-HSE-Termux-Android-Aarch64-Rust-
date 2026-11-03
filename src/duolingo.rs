@@ -106,20 +106,19 @@ fn interpret(
             "Duolingo JSON has no users field",
         ));
     };
-    let accounts: Vec<&User> = users
-        .iter()
-        .filter(|user| {
-            user.username
-                .as_deref()
-                .is_some_and(|u| !u.trim().is_empty())
-        })
-        .collect();
-    if accounts.is_empty() {
-        if users.is_empty() {
-            return Err(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-            );
-        }
+    if users.is_empty() {
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
+    }
+    // Fail the entire response closed: dropping malformed records while retaining
+    // well-formed ones falsely reports complete coverage of the email lookup.
+    if users.iter().any(|user| {
+        !user
+            .username
+            .as_deref()
+            .is_some_and(|username| !username.trim().is_empty())
+    }) {
         return Err(failed(
             SourceOutcomeKind::SchemaDrift,
             "Duolingo users carry no username",
@@ -127,13 +126,13 @@ fn interpret(
     }
 
     let mut entities = Vec::new();
-    for user in &accounts {
+    for user in &users {
         build_entities(user, scan_id, &mut entities);
     }
     merge_by_uid(&mut entities);
     Ok(Report {
         entities,
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, accounts.len())
+        outcome: SourceExecutionOutcome::success(SRC, now_unix, users.len())
             .with_http_status(response.status),
     })
 }
@@ -317,6 +316,22 @@ mod tests {
                 report.outcome.kind
             );
             assert!(report.entities.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_mixed_user_list_with_missing_handles_is_schema_drift_not_partial_success() {
+        for body in [
+            r#"{"users":[{"id":14,"username":"Luis"},{"id":99}]}"#,
+            r#"{"users":[{"id":14,"username":"Luis"},{"id":99,"username":""}]}"#,
+            r#"{"users":[{"id":99},{"id":14,"username":"Luis"}]}"#,
+            r#"{"users":[{"id":14,"username":"Luis"},{"id":99,"username":"  "}]}"#,
+        ] {
+            let report = lookup(&OneResponse::json(200, body), "a@example.com", "s", 1)
+                .expect("provider failures stay typed reports");
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift, "{body}");
+            assert!(report.entities.is_empty(), "{body}: malformed response leaked candidates");
+            assert_ne!(report.outcome.found, Some(1), "{body}: partial response counted as success");
         }
     }
 
