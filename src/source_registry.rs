@@ -78,6 +78,7 @@ const IDENTITY_SEARCH: &[EntityKind] = &[
 const DOMAIN_ONLY: &[EntityKind] = &[EntityKind::Domain];
 const IP_ONLY: &[EntityKind] = &[EntityKind::IpAddress];
 const USERNAME_ONLY: &[EntityKind] = &[EntityKind::Username];
+const PHONE_ONLY: &[EntityKind] = &[EntityKind::Phone];
 const COORDINATES_ONLY: &[EntityKind] = &[EntityKind::Coordinates];
 // Australian registry and archival discovery: links only, not fetched evidence.
 const AU_BUSINESS: &[EntityKind] = &[EntityKind::Organisation, EntityKind::AbnAcn];
@@ -100,6 +101,28 @@ static SOURCES: &[SourceDescriptor] = &[
         id: "bing_exact",
         name: "Bing exact search",
         accepted_kinds: IDENTITY_SEARCH,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.bing.com/search?q=%22{value}%22",
+        reference_url: "https://www.bing.com/",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    // Phone-number matches in search indexes are unverified leads, not subscriber
+    // identity or carrier evidence. Exact matches retain the canonical +E.164 form.
+    SourceDescriptor {
+        id: "google_phone_exact",
+        name: "Google exact phone-number search",
+        accepted_kinds: PHONE_ONLY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.google.com/search?q=%22{value}%22",
+        reference_url: "https://www.google.com/",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "bing_phone_exact",
+        name: "Bing exact phone-number search",
+        accepted_kinds: PHONE_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
         url_template: "https://www.bing.com/search?q=%22{value}%22",
@@ -301,6 +324,22 @@ mod tests {
         );
         assert!(routes.iter().any(|route| route.source_id == "wayback"));
         assert!(routes.iter().any(|route| route.source_id == "crtsh"));
+    }
+
+    #[test]
+    fn canonical_phone_routes_are_public_leads_not_identity_evidence() {
+        let routes = routes_for(&EntityKind::Phone, "+61405409302");
+        assert_eq!(routes.len(), 2);
+        assert_eq!(
+            routes.iter().map(|route| route.source_id).collect::<Vec<_>>(),
+            ["google_phone_exact", "bing_phone_exact"]
+        );
+        assert!(routes.iter().all(|route| {
+            route.access == SourceAccess::Public
+                && route.execution == ExecutionMode::SearchUrl
+                && route.evidence_role == EvidenceRole::LeadOnly
+                && route.url.contains("%22%2B61405409302%22")
+        }));
     }
 
     #[test]
