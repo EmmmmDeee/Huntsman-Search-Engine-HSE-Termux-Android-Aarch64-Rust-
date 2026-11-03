@@ -43,16 +43,16 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
     let seen = Arc::clone(&calls);
     let routes = Routes {
         people_discover: Some(PeopleDiscover {
-        handler: Arc::new(move |name, region| {
-            assert_eq!(name, "Jane Example");
-            assert_eq!(region, crate::people_discovery::Region::Au);
-            seen.fetch_add(1, Ordering::SeqCst);
-            Ok(serde_json::json!({
-                "candidates": [],
-                "attribution": "none_established"
-            }))
-        }),
-        live: Arc::new(AtomicUsize::new(0)),
+            handler: Arc::new(move |name, region| {
+                assert_eq!(name, "Jane Example");
+                assert_eq!(region, crate::people_discovery::Region::Au);
+                seen.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "candidates": [],
+                    "attribution": "none_established"
+                }))
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
         }),
         ..Routes::default()
     };
