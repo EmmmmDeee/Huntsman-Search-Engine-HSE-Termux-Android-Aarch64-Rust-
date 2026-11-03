@@ -41,8 +41,8 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
 
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&calls);
-    let mut routes = Routes::default();
-    routes.people_discover = Some(PeopleDiscover {
+    let routes = Routes {
+        people_discover: Some(PeopleDiscover {
         handler: Arc::new(move |name, region| {
             assert_eq!(name, "Jane Example");
             assert_eq!(region, crate::people_discovery::Region::Au);
@@ -53,7 +53,9 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
             }))
         }),
         live: Arc::new(AtomicUsize::new(0)),
-    });
+        }),
+        ..Routes::default()
+    };
     let config = test_config(loopback_bind(), None);
     let body = r#"{"name":"Jane Example","region":"au"}"#;
     let head = format!(
