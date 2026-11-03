@@ -371,8 +371,9 @@ pub(super) fn research_mission_response(
 /// binary's [`ScanApi`]. A scan makes network requests and spends keys, and its results are the
 /// operator's, so every call is guarded as a lookup is: refused cross-site or same-site, it needs
 /// the lookup header (which another origin cannot send without a preflight this server never
-/// approves), and on a public bind the bearer token. Parameters travel in the query string, so a
-/// request that sends a body is refused rather than half read.
+/// approves), and on a public bind the bearer token. New scan creation accepts bounded
+/// form-encoded POST bodies to keep targets out of URLs; old query-string clients still work.
+/// All other saved-scan routes continue to refuse bodies.
 pub(super) fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> Vec<u8> {
     let Some(scans) = scans else {
         return json_error(404, "saved scans are not enabled on this server").into_bytes();
@@ -380,10 +381,36 @@ pub(super) fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<Scan
     if let Some(refused) = page_refusal(parsed, "scan request", true) {
         return refused.into_bytes();
     }
-    if parsed.has_body {
-        return json_error(400, "send the parameters in the query string, with no body")
-            .into_bytes();
-    }
+    // New scans may carry private selectors in a form-encoded POST body rather than the
+    // URL. This is the only scan route that accepts a body; existing query-based
+    // clients remain compatible. Reject a mixed body and query instead of guessing.
+    let parameters = if parsed.method == Method::Post
+        && parsed.path == "/api/scans"
+        && parsed.has_body
+    {
+        if !parsed.query.is_empty() {
+            return json_error(400, "new scan parameters must use either body or query, not both")
+                .into_bytes();
+        }
+        let Some(length) = parsed.content_length else {
+            return json_error(400, "new scan body needs a Content-Length").into_bytes();
+        };
+        if length == 0 || length > super::MAX_FORM_BYTES {
+            return json_error(413, "new scan body exceeds the form size limit").into_bytes();
+        }
+        let Some(body) = parsed.body else {
+            return json_error(400, "new scan body missing").into_bytes();
+        };
+        if body.len() != length {
+            return json_error(400, "new scan body incomplete or invalid UTF-8").into_bytes();
+        }
+        body
+    } else {
+        if parsed.has_body || parsed.body.is_some_and(|body| !body.is_empty()) {
+            return json_error(400, "this scan route takes no request body").into_bytes();
+        }
+        parsed.query
+    };
     // Keep the permit until the complete HTTP response is encoded, not merely until the
     // ScanApi worker finishes. A panicking worker or a failed spawn also releases it.
     let _permit = if heavy_saved_scan_response(parsed.method, parsed.path) {
@@ -402,7 +429,7 @@ pub(super) fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<Scan
         Arc::clone(scans),
         parsed.method.as_str(),
         parsed.path.to_owned(),
-        parsed.query.to_owned(),
+        parameters.to_owned(),
     );
     let worker = thread::Builder::new()
         .name("serve-scans".into())
