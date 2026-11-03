@@ -61,7 +61,7 @@ if [ "$STRUCTURE" -eq 1 ]; then
       outcomes: ($outcomes | map({module, kind, http_status, found})),
       accepted_executions: ($outcomes | map(select(.kind == "success" or .kind == "valid_zero")) | length),
       unresolved_executions: ($outcomes | map(select(.kind != "success" and .kind != "valid_zero")) | length),
-      online_leads_observed: (($s.hits | length) > 0 and ($outcomes | any(.kind == "success"))),
+      online_leads_observed: ($exit_code == 0 and ($s.hits | length) > 0 and ($outcomes | any(.kind == "success"))),
       limitation: "search_engine_results_are_discovery_leads_not_verified_primary_evidence"
     }' > "$TEMP/summary.json"
 else
