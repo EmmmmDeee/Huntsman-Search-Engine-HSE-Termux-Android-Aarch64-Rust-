@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn canonical_phone_routes_are_public_leads_not_identity_evidence() {
-        let routes = routes_for(&EntityKind::Phone, "+61405409302");
+        let routes = routes_for(&EntityKind::Phone, "+61412345678");
         assert_eq!(routes.len(), 2);
         assert_eq!(
             routes
@@ -341,7 +341,7 @@ mod tests {
             route.access == SourceAccess::Public
                 && route.execution == ExecutionMode::SearchUrl
                 && route.evidence_role == EvidenceRole::LeadOnly
-                && route.url.contains("%22%2B61405409302%22")
+                && route.url.contains("%22%2B61412345678%22")
         }));
     }
 
