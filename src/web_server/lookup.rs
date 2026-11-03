@@ -308,7 +308,7 @@ pub(super) fn people_discover_response(
         return json_error(400, "people discovery parameters belong in the request body");
     }
     let length = match parsed.content_length {
-        Some(1..=512) => parsed.content_length.unwrap_or(0),
+        Some(length @ 1..=512) => length,
         Some(0) | None => return json_error(400, "people discovery needs a JSON body"),
         _ => return json_error(413, "people discovery JSON exceeds 512 bytes"),
     };
