@@ -455,7 +455,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="rhinser-native-panel">
 <div class="panel-heading">Rhinser native capture inspector (operator import)</div>
 <div class="panel-body">
-<p class="help">Paste a capture JSON envelope exported with explicit permission by an Android companion. The Rust server checks structure and returns redacted observations only. Imported timestamps and consent are unverified operator claims. This is not live NFC or Bluetooth scanning.</p>
+<p class="help">Paste a capture JSON envelope exported with explicit permission by an Android companion. The Rust server checks structure and returns redacted observations only. Imported timestamps and consent are unverified operator claims. Raw input is cleared after a successful inspection. This is not live NFC or Bluetooth scanning.</p>
 <form id="rhinser-native-form">
 <label for="rhinser-native-file">Import authorized capture file (JSON, maximum 20 KB)</label>
 <input type="file" id="rhinser-native-file" accept=".json,application/json" aria-label="Import authorized Rhinser capture">
@@ -1860,6 +1860,8 @@ $('rhinser-native-form').onsubmit=async ev=>{
     return;
   }
   if(result&&result.evidence_role==='operator_submitted_unverified'&&result.radio_access===false&&Array.isArray(result.observations)){
+    // Do not keep unredacted APDU/NDEF material in a browser form after validation.
+    $('rhinser-native-input').value='';
     rhinserNativeReport=result;
     $('rhinser-native-export').disabled=false;
   }else if(result){
