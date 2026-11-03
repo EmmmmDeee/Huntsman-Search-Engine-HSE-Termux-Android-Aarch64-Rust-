@@ -239,6 +239,10 @@ pub fn classify_probe_response(service: &ServiceDef, response: &Response) -> Pro
     };
     if body.get("error").is_some_and(|error| !error.is_null())
         || body.get("success") == Some(&serde_json::Value::Bool(false))
+        || body
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(looks_like_auth_failure_text)
     {
         return ProbeVerdict::Indeterminate;
     }
@@ -588,6 +592,21 @@ mod tests {
                     truncated: false,
                 }
             ),
+            ProbeVerdict::Indeterminate
+        );
+    }
+
+    #[test]
+    fn successful_http_status_with_authentication_failure_message_is_not_valid() {
+        let service = find_service("securitytrails").expect("securitytrails");
+        let response = Response {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"message":"invalid api key"}"#.to_vec(),
+            truncated: false,
+        };
+        assert_eq!(
+            classify_probe_response(service, &response),
             ProbeVerdict::Indeterminate
         );
     }
