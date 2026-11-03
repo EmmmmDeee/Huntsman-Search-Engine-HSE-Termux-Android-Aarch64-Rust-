@@ -10,12 +10,7 @@ pub(super) const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server wa
 
 pub(super) fn json_error(status: u16, message: &str) -> String {
     let body = serde_json::json!({ "error": message }).to_string();
-    response(
-        status,
-        "application/json; charset=utf-8",
-        &format!("{body}\n"),
-        false,
-    )
+    json_line(status, &body, false)
 }
 
 /// A `200 OK` answer carrying an already-rendered JSON `body`. It owns the one JSON success
@@ -23,12 +18,26 @@ pub(super) fn json_error(status: u16, message: &str) -> String {
 /// `application/json; charset=utf-8` content type and the single trailing newline every answer
 /// ends with. `head` drops the body for a `HEAD` request while keeping its `Content-Length`.
 pub(super) fn json_ok(body: &str, head: bool) -> String {
-    response(
-        200,
+    json_line(200, body, head)
+}
+
+/// Append JSON's single newline directly into the final response instead of allocating
+/// a second, temporary copy of the entire JSON payload via `format!("{body}\\n")`.
+/// Large saved-scan reports can occupy many MiB on a low-memory Android handset.
+fn json_line(status: u16, body: &str, head: bool) -> String {
+    let content_length = body.len() + 1;
+    let mut out = response_head(
+        status,
         "application/json; charset=utf-8",
-        &format!("{body}\n"),
-        head,
-    )
+        content_length,
+        "",
+    );
+    if !head {
+        out.reserve(content_length);
+        out.push_str(body);
+        out.push('\n');
+    }
+    out
 }
 
 pub(super) fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
@@ -107,4 +116,55 @@ pub(super) fn response_head(
     format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n{extra}\r\n"
     )
+}
+
+// Regression contract: JSON is not copied through a temporary formatted payload.
+// GET and HEAD must keep identical Content-Length, including UTF-8 byte counts.
+#[cfg(test)]
+mod tests {
+    use super::{json_error, json_ok, response_bytes};
+
+    #[test]
+    fn json_get_and_head_keep_identical_headers_and_exact_length() {
+        let body = r#"{"label":"café","items":[1,2,3]}"#;
+        let get = json_ok(body, false);
+        let head = json_ok(body, true);
+        let (get_headers, get_body) = get.split_once("\r\n\r\n").unwrap();
+        let (head_headers, head_body) = head.split_once("\r\n\r\n").unwrap();
+        assert_eq!(get_headers, head_headers);
+        assert_eq!(head_body, "");
+        assert_eq!(get_body, format!("{body}\n"));
+        assert!(get_headers.contains(&format!("Content-Length: {}", body.len() + 1)));
+        assert_eq!(get_body.len(), body.len() + 1);
+    }
+
+    #[test]
+    fn json_error_escapes_input_and_ends_with_one_newline() {
+        let answer = json_error(422, "invalid \"value\"\n\u{1f50e}");
+        let (headers, body) = answer.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("HTTP/1.1 422 Unprocessable Content"));
+        assert!(headers.contains(&format!("Content-Length: {}", body.len())));
+        assert!(body.ends_with('\n') && !body.ends_with("\n\n"));
+        let data: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(data["error"], "invalid \"value\"\n\u{1f50e}");
+    }
+
+    #[test]
+    fn byte_response_head_preserves_binary_length() {
+        let data = [0, 127, 255, 42];
+        let get = response_bytes(200, "application/octet-stream", &data, false, "");
+        let head = response_bytes(200, "application/octet-stream", &data, true, "");
+        let separator = b"\r\n\r\n";
+        let get_mark = get
+            .windows(separator.len())
+            .position(|x| x == separator)
+            .unwrap();
+        let head_mark = head
+            .windows(separator.len())
+            .position(|x| x == separator)
+            .unwrap();
+        assert_eq!(&get[..get_mark], &head[..head_mark]);
+        assert_eq!(&get[get_mark + separator.len()..], data);
+        assert_eq!(&head[head_mark + separator.len()..], b"");
+    }
 }
