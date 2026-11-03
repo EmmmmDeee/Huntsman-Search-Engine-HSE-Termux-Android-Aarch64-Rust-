@@ -4287,7 +4287,12 @@ mod tests {
             (SourceOutcomeKind::ValidZero, Some(2)),
         ] {
             let outcome = SourceExecutionOutcome::observed(
-                "provider", 7, kind, Some(200), found, "count mismatch",
+                "provider",
+                7,
+                kind,
+                Some(200),
+                found,
+                "count mismatch",
             );
             assert!(!outcome.is_accepted(), "{outcome:?}");
             assert!(is_error_outcome(&outcome), "{outcome:?}");
