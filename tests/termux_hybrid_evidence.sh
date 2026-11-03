@@ -75,12 +75,26 @@ for mode in success partial invalid fetchfail binary; do
   expected_size="$(wc -c < "$expected" | tr -d '[:space:]')"
   hash="$(sha256sum "$receipt/source-body.bin")"
   hash="${hash%% *}"
-  jq -e --arg digest "$hash" --argjson expected_size "$expected_size" --argjson expected_success "$([ "$mode" = success ] && echo true || echo false)" --argjson expected_extract "$([ "$mode" = binary ] && echo 65 || echo 0)" '
+  search_hash="$(sha256sum "$receipt/search-discovery.json")"
+  search_hash="${search_hash%% *}"
+  extract_hash="$(sha256sum "$receipt/extracted-candidates.txt")"
+  extract_hash="${extract_hash%% *}"
+  jq -e --arg digest "$hash" --arg search_hash "$search_hash" --arg extract_hash "$extract_hash" \
+    --argjson expected_size "$expected_size" \
+    --argjson expected_valid "$([ "$mode" = invalid ] && echo false || echo true)" \
+    --argjson expected_success "$([ "$mode" = success ] && echo true || echo false)" \
+    --argjson expected_extract "$([ "$mode" = binary ] && echo 65 || echo 0)" '
     (.source.body_sha256 == $digest) and
     (.source.body_bytes == $expected_size) and
     (.source.claims_verified == false) and
+    (.source.transport == "huntsman_public_only_anonymous") and
+    (.source.admission == "complete_http_200_non_challenge") and
+    (.discovery.sha256 == $search_hash) and
+    (.extraction.sha256 == $extract_hash) and
+    (.discovery.valid_online_report == $expected_valid) and
     (.hybrid_online_success == $expected_success) and
-    (.extraction.command_exit == $expected_extract)
+    (.extraction.command_exit == $expected_extract) and
+    (.discovery | has("query") and has("hits") and has("rounds") and has("outcomes") and has("status"))
   ' "$receipt/manifest.json" >/dev/null
   [ "$(stat -c %a "$receipt/source-body.bin")" = 600 ] ||
     { echo 'raw receipt permissions are not private'; exit 1; }
