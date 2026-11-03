@@ -99,6 +99,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         }
         "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
+        "people-discover" => huntsman_recon::people_discovery::PEOPLE_DISCOVER_HELP,
         "email" => EMAIL_HELP,
         "exposure" => EXPOSURE_HELP,
         "username" => USERNAME_HELP,
