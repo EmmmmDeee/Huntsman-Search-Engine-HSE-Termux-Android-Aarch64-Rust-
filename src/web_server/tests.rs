@@ -36,6 +36,34 @@ fn bind_for(token: Option<&str>) -> SocketAddr {
 }
 
 #[test]
+fn osint_matrix_http_contract_is_read_only_authenticated_and_bounded() {
+    let request = "GET /api/osint/matrix HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n";
+    let answer = response_for_request(request, None, loopback_bind());
+    assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+    let body = answer.split_once("\r\n\r\n").unwrap().1;
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(parsed["schema"], "huntsman.osint.disciplines");
+    assert_eq!(parsed["collection"], "none");
+    assert_eq!(parsed["disciplines"].as_array().unwrap().len(), 15);
+    let head = response_for_request(
+        "HEAD /api/osint/matrix HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+        None,
+        loopback_bind(),
+    );
+    assert!(head.starts_with("HTTP/1.1 200 OK"));
+    assert_eq!(head.split_once("\r\n\r\n").unwrap().1, "");
+    let get_len = answer.lines().find(|line| line.starts_with("Content-Length:")).unwrap();
+    let head_len = head.lines().find(|line| line.starts_with("Content-Length:")).unwrap();
+    assert_eq!(get_len, head_len);
+    let denied = response_for_request(
+        "GET /api/osint/matrix HTTP/1.1\r\nHost: public.example\r\n\r\n",
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+}
+
+#[test]
 fn rhinser_catalogue_http_contract_is_read_only_and_complete() {
     let request = "GET /api/rhinser/catalog HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n";
     let answer = response_for_request(request, None, loopback_bind());
