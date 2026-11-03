@@ -154,7 +154,13 @@ mod tests {
     fn defaults_are_anonymous_public_only_and_quiet() {
         let a = parse("https://a.example/").expect("parse");
         assert_eq!(a.url, "https://a.example/");
-        assert!(!a.print_body && !a.raw_body && !a.allow_private && a.auth.is_none() && a.keys_file.is_none());
+        assert!(
+            !a.print_body
+                && !a.raw_body
+                && !a.allow_private
+                && a.auth.is_none()
+                && a.keys_file.is_none()
+        );
         assert_eq!(a.max_redirects, DEFAULT_MAX_REDIRECTS);
     }
 
