@@ -170,6 +170,7 @@ pub mod numverify;
 pub mod oathnet;
 pub mod openpgp_keys;
 pub mod opensky;
+pub mod orthogonal_osint;
 pub mod osint_area_risk;
 pub mod osint_blueprint;
 pub mod osint_casework;

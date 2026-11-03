@@ -15,6 +15,7 @@ use crate::gap::{self, GapReport};
 use crate::graph::Graph;
 use crate::intelligence::{self, IntelligenceReport};
 use crate::metrics::{self, ScanMetrics};
+use crate::orthogonal_osint::{self, OrthogonalReport};
 use crate::osint_synergy::{self, SynergyReport};
 use crate::pipeline::{AnalysisSnapshot, PipelineLimits};
 use crate::pivot::{self, PivotScore};
@@ -28,6 +29,8 @@ pub struct InvestigationReport {
     pub intelligence: IntelligenceReport,
     pub metrics: ScanMetrics,
     pub gaps: GapReport,
+    /// Read-only, bounded, source-family-aware acquisition proposals.
+    pub orthogonal: OrthogonalReport,
     pub pivots: Vec<PivotScore>,
     pub coreference: Vec<CorefCluster>,
     pub correlations: Vec<Correlation>,
@@ -68,6 +71,7 @@ fn base_report(snapshot: &AnalysisSnapshot, expand_floor: f64) -> InvestigationR
         ),
         metrics: metrics::compute(&snapshot.entities, &snapshot.relations),
         gaps: gap::analyze_on(&graph, &snapshot.entities, expand_floor),
+        orthogonal: orthogonal_osint::discover(&snapshot.entities, &snapshot.ancestry),
         pivots: pivot::rank_pivots(&graph),
         coreference: coref::cluster_entities(&snapshot.entities),
         // The rules read domain relations, which they derive from the entities. The snapshot's
