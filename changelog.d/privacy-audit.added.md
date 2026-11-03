@@ -1,0 +1,1 @@
+Added offline, source-validated public account exposure assessment via `huntsman-recon privacy-audit PUBLIC-GRAPH.json`. Preserves breach scoring and existing web routes. Rejects malformed provenance and identity overclaims; no network or keys required.

@@ -96,6 +96,7 @@ pub mod exa;
 pub mod exif;
 pub mod exit;
 pub mod exposure;
+pub mod privacy_audit;
 pub mod exposure_cli;
 pub mod federated_osint;
 pub mod fetch;

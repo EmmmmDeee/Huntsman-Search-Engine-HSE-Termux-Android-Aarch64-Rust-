@@ -101,6 +101,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "people" => PEOPLE_HELP,
         "email" => EMAIL_HELP,
         "exposure" => EXPOSURE_HELP,
+        "privacy-audit" => super::privacy::PRIVACY_HELP,
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "network" => NETWORK_HELP,
