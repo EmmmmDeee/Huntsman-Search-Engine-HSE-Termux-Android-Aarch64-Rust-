@@ -36,6 +36,19 @@ fn bind_for(token: Option<&str>) -> SocketAddr {
 }
 
 #[test]
+fn embedded_web_ui_has_unique_dom_ids_across_all_views() {
+    let mut ids = BTreeSet::new();
+    for remainder in INDEX_HTML.split(" id=\\"").skip(1) {
+        let id = remainder.split('"').next().expect("valid HTML id attribute");
+        assert!(ids.insert(id), "duplicate HTML id: {id}");
+    }
+    assert!(ids.contains("ssynergy"));
+    assert!(ids.contains("asynergy"));
+    assert!(ids.contains("aoffline-note"));
+    assert!(ids.contains("anote"));
+}
+
+#[test]
 fn rhinser_catalogue_http_contract_is_read_only_and_complete() {
     let request = "GET /api/rhinser/catalog HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n";
     let answer = response_for_request(request, None, loopback_bind());
