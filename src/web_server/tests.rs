@@ -2250,7 +2250,10 @@ fn saved_scans_answer_through_serve_behind_the_lookup_guards() {
         payload.len()
     ));
     assert!(created.starts_with("HTTP/1.1 202"), "{created}");
-    assert!(created.contains("\"target\":\"ada@example.com\""), "{created}");
+    assert!(
+        created.contains("\"target\":\"ada@example.com\""),
+        "{created}"
+    );
     assert!(created.contains("\"name\":\"case notes\""), "{created}");
     let legacy = ask(format!(
         "POST /api/scans?target=example.org&kind=domain HTTP/1.1\r\n{HEADER}\r\n"
