@@ -339,7 +339,7 @@ pub(super) fn people_discover_response(
     else {
         return json_error(400, "people discovery region must be au or us");
     };
-    if name.len() > crate::people_discovery::MAX_NAME_BYTES || name.is_empty() {
+    if name.len() > crate::people_discovery::MAX_DISCOVERY_NAME_BYTES || name.is_empty() {
         return json_error(400, "people discovery name must be 1..120 bytes");
     }
     // Four sequential source facets can perform twelve guarded engine calls.
