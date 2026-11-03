@@ -239,6 +239,7 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "otx" => ("otx", "src/otx.rs"),
         "urlscan" => ("urlscan", "src/urlscan.rs"),
         "ipinfo" => ("ipinfo", "src/ipinfo.rs"),
+        "ipinfo_lite" => ("ipinfo_lite", "src/ipinfo_lite.rs"),
         "kickbox" => ("kickbox", "src/kickbox.rs"),
         "robtex" => ("robtex", "src/robtex.rs"),
         "hackertarget" => ("hackertarget", "src/hackertarget.rs"),

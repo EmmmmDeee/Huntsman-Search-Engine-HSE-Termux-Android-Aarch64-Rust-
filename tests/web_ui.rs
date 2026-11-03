@@ -1058,6 +1058,27 @@ fn the_analysis_shows_what_was_cut_and_how_sure_each_link_is() {
     assert!(script.contains("fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,Number(p.closeness).toFixed(2),p.articulation?'yes':'']);"));
 }
 
+/// The Scans list says how many sources each scan ran and how many ended unresolved, from the
+/// `modules_run` and `errors` every `/api/scans` row already carries: a people scan of a name no
+/// register knows reads "6 sources · 1 unresolved" instead of a bare "1 element", and one whose
+/// lookup never ran reads "none ran".
+#[test]
+fn the_scans_list_shows_each_scans_sources_and_unresolved_count() {
+    let script = inline("script");
+    assert!(PAGE.contains(
+        "<th>Elements</th><th>Correlations</th><th>Sources</th><th>Action</th></tr></thead><tbody id=\"scans\">"
+    ));
+    assert!(script.contains("put(tr,'Sources',sources(s));"));
+    assert!(
+        script.contains(
+            "function sources(s){const n=(s.modules_run||[]).length,e=Number(s.errors)||0,"
+        )
+    );
+    assert!(script.contains("'none ran'"));
+    assert!(script.contains("e+' unresolved'"));
+    assert!(script.contains("none(tb,'No scan matches this filter.',9);"));
+}
+
 #[test]
 fn the_page_stays_within_its_budget() {
     assert!(

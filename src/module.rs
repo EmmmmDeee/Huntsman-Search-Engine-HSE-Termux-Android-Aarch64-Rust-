@@ -1165,6 +1165,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "IPinfo hostname, origin AS and city-level location (optional free token)",
     },
     ReachableModule {
+        name: "ipinfo_lite",
+        command: "ip ADDRESS",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Infrastructure,
+        attack_techniques: &["T1590.005"],
+        description: "IPinfo Lite country and origin AS for an address, with bogon and anycast flags (free IPinfo token)",
+    },
+    ReachableModule {
         name: "robtex",
         command: "ip ADDRESS | domain DOMAIN",
         access: "keyless",
