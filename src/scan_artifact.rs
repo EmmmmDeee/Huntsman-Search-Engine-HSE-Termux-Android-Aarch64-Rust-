@@ -359,7 +359,7 @@ mod tests {
         let links = body["synergy"]["links"].as_array().expect("join array");
         assert_eq!(links.len(), 1, "{body}");
         assert_eq!(links[0]["relation"], "reported_dns_address");
-        assert_eq!(links[0]["status"], "independently_observed_target");
+        assert_eq!(links[0]["status"], "separately_observed_target");
         assert_eq!(links[0]["source_scan_id"], "saved");
     }
 
