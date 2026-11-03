@@ -153,32 +153,33 @@ fn rhinser_sources_are_accessible_from_the_analysis_web_view() {
             "missing Rhinser Web UI integration: {marker}"
         );
     }
-    #[test]
-    fn workspace_correlation_is_exposed_through_real_binary_without_io() {
-        let path = std::env::temp_dir().join(format!(
-            "huntsman-rhinser-overlap-{}.json",
-            std::process::id()
-        ));
-        let filename = path.to_str().unwrap();
-        let _ = std::fs::remove_file(&path);
-        assert!(run(&["osint", "workspace", filename, "init"]).status.success());
-        for (id, title) in [("first", "First case"), ("second", "Second case")] {
-            assert!(run(&["osint", "workspace", filename, "case", id, title]).status.success());
-            assert!(run(&[
-                "osint", "workspace", filename, "lead", id, "lead",
-                "https://example.org/public-record", "Unverified public link",
-            ]).status.success());
-        }
-        let result = run(&["osint", "workspace", filename, "overlaps"]);
-        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-        let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-        assert_eq!(value["cases_considered"], 2);
-        assert_eq!(value["source_leads_considered"], 2);
-        assert_eq!(value["shared_source_urls"][0]["url"], "https://example.org/public-record");
-        assert_eq!(value["shared_source_urls"][0]["case_ids"], serde_json::json!(["first", "second"]));
-        assert_eq!(value["evidence_status"], "reused_unverified_leads_not_independent_corroboration");
-        assert!(!run(&["osint", "workspace", filename, "overlaps", "extra"]).status.success());
-        std::fs::remove_file(path).unwrap();
-    }
-
 }
+
+#[test]
+fn workspace_correlation_is_exposed_through_real_binary_without_io() {
+    let path = std::env::temp_dir().join(format!(
+        "huntsman-rhinser-overlap-{}.json",
+        std::process::id()
+    ));
+    let filename = path.to_str().unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(run(&["osint", "workspace", filename, "init"]).status.success());
+    for (id, title) in [("first", "First case"), ("second", "Second case")] {
+        assert!(run(&["osint", "workspace", filename, "case", id, title]).status.success());
+        assert!(run(&[
+            "osint", "workspace", filename, "lead", id, "lead",
+            "https://example.org/public-record", "Unverified public link",
+        ]).status.success());
+    }
+    let result = run(&["osint", "workspace", filename, "overlaps"]);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["cases_considered"], 2);
+    assert_eq!(value["source_leads_considered"], 2);
+    assert_eq!(value["shared_source_urls"][0]["url"], "https://example.org/public-record");
+    assert_eq!(value["shared_source_urls"][0]["case_ids"], serde_json::json!(["first", "second"]));
+    assert_eq!(value["evidence_status"], "reused_unverified_leads_not_independent_corroboration");
+    assert!(!run(&["osint", "workspace", filename, "overlaps", "extra"]).status.success());
+    std::fs::remove_file(path).unwrap();
+}
+
