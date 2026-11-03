@@ -136,10 +136,11 @@ pub fn discover<T: Transport + ?Sized>(
         let query = format!("\"{name}\" site:{host}");
         // Owns the network requests and classification: no second search
         // parser, scraping workaround, or provider-availability guess.
-        let response = web_query::search(transport, &query, now_unix)?;
+        let (response, index_sightings) =
+            web_query::search_with_provenance(transport, &query, now_unix)?;
         let mut discarded = 0;
-        let index_hits = response.hits.len();
-        for hit in response.hits {
+        let index_hits = index_sightings.len();
+        for hit in index_sightings {
             if !is_accepted_host(&hit.url, host) {
                 discarded += 1;
                 continue;
@@ -225,12 +226,12 @@ mod tests {
     #[test]
     fn four_existing_index_fanouts_are_scoped_and_never_attributed() {
         let fixture = Fixture { seen: RefCell::new(Vec::new()), denied: false };
-        let report = discover(&fixture, "Jane Example", Region::Au, 1).unwrap();
+        let report = discover(&fixture, "Clara Ashwell", Region::Au, 100).unwrap();
         assert!(fixture.seen.borrow().len() >= 12);
         assert_eq!(report.facets.len(), 4);
         assert_eq!(report.candidates.len(), 4);
         assert!(report.candidates.iter().all(|c| c.status == "unverified_search_index_lead"));
-        assert!(report.candidates.iter().all(|c| c.reported_by.len() == 1));
+        assert!(report.candidates.iter().all(|c| c.reported_by.len() == 3));
         assert!(report.facets.iter().all(|f| f.index_hits >= 4 && f.discarded_out_of_scope > 0));
         assert!(!report.candidates.iter().any(|c| c.url.contains("evil.example")));
         assert_eq!(report.attribution, "none_established; indexed_page_is_not_proof_of_person_or_account");
