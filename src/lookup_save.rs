@@ -63,6 +63,8 @@ fn username_provenance(source: &str) -> (&str, &'static str) {
         crate::crates_io::SRC => "src/crates_io.rs",
         crate::hacker_news::SRC => "src/hacker_news.rs",
         crate::lobsters::SRC => "src/lobsters.rs",
+        crate::chess_com::SRC => "src/chess_com.rs",
+        crate::lichess::SRC => "src/lichess.rs",
         crate::docker_hub_user::SRC => "src/docker_hub_user.rs",
         _ => "src/username_cli.rs",
     };
@@ -877,6 +879,8 @@ mod tests {
             (crate::crates_io::SRC, "src/crates_io.rs"),
             (crate::hacker_news::SRC, "src/hacker_news.rs"),
             (crate::lobsters::SRC, "src/lobsters.rs"),
+            (crate::chess_com::SRC, "src/chess_com.rs"),
+            (crate::lichess::SRC, "src/lichess.rs"),
             (crate::docker_hub_user::SRC, "src/docker_hub_user.rs"),
             (
                 crate::seeknow_collector::COLLECTOR_ID,

@@ -1,7 +1,7 @@
 //! End-to-end front-end for `huntsman-recon username`.
 //!
 //! Derives deterministic handle variants and queries the keyless public GitHub, GitLab, Bluesky, Keybase
-//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
+//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, Chess.com and Lichess accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
 //! profile source answered, the lookup ends from its rows through
 //! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
 //! 77), otherwise no usable response (exit 69). The handle's own derived variants are not a
@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use crate::bluesky_user;
 use crate::canonical::canonical_handle;
+use crate::chess_com;
 use crate::concurrent::{self, Job};
 use crate::crates_io;
 use crate::docker_hub_user;
@@ -23,6 +24,7 @@ use crate::hacker_news;
 use crate::http::Transport;
 use crate::keybase;
 use crate::keys::Keys;
+use crate::lichess;
 use crate::lobsters;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
@@ -37,7 +39,7 @@ use crate::wikipedia;
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive handle variants and query public GitHub profiles and repositories, GitLab, Bluesky, Keybase, Mastodon, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
+Derive handle variants and query public GitHub profiles and repositories, GitLab, Bluesky, Keybase, Mastodon, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, Chess.com and Lichess accounts, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
 
 /// One source's answer: what it found and its outcome, or the refusal that stopped it.
 type Found = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
@@ -76,6 +78,8 @@ pub type UsernameRun = SourceRun<Report>;
 
 /// Public-source fan-out is independent of report assembly. The tuple order is
 /// stable across CLI scans and Web UI investigations, regardless of completion order.
+// One entry per source, in the order the report lists them: a table, not logic.
+#[allow(clippy::too_many_lines)]
 fn public_sources<'a, T: Transport + Sync + ?Sized>(
     transport: &'a T,
     keys: &'a Keys,
@@ -83,7 +87,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     original: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 13] {
+) -> [(&'static str, Job<'a, Found>); 15] {
     [
         (
             github_user::SRC,
@@ -170,6 +174,20 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
             lobsters::SRC,
             Box::new(move || {
                 lobsters::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            chess_com::SRC,
+            Box::new(move || {
+                chess_com::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            lichess::SRC,
+            Box::new(move || {
+                lichess::lookup(transport, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -350,6 +368,8 @@ mod tests {
     const CRATES_IO: &str = "crates.io";
     const HACKER_NEWS: &str = "hacker-news.firebaseio.com";
     const LOBSTERS: &str = "lobste.rs";
+    const CHESS_COM: &str = "api.chess.com";
+    const LICHESS: &str = "lichess.org";
     const DOCKER: &str = "hub.docker.com";
 
     /// Answers each source by its host, as the sources run at once and in no fixed order; a host
@@ -598,6 +618,11 @@ mod tests {
                 response(200, r#"{"id":"max","created":1160418092,"karma":42}"#),
             ),
             (LOBSTERS, response(200, r#"{"username":"max","karma":3}"#)),
+            (
+                CHESS_COM,
+                response(404, r#"{"code":0,"message":"User \"max\" not found."}"#),
+            ),
+            (LICHESS, response(404, r#"{"error":"Not found"}"#)),
         ]);
         for _ in 0..8 {
             let UsernameRun::Printed { report, .. } = run(&fake, &Keys::default(), "max", 1) else {
@@ -619,6 +644,8 @@ mod tests {
                     crates_io::SRC,
                     hacker_news::SRC,
                     lobsters::SRC,
+                    chess_com::SRC,
+                    lichess::SRC,
                     docker_hub_user::SRC
                 ]
             );
@@ -676,6 +703,14 @@ mod tests {
                 response(200, r#"{"username":"maxslow","karma":1}"#),
             ),
             (
+                CHESS_COM,
+                response(200, r#"{"username":"maxslow","player_id":9}"#),
+            ),
+            (
+                LICHESS,
+                response(200, r#"{"id":"maxslow","username":"MaxSlow"}"#),
+            ),
+            (
                 DOCKER,
                 response(
                     200,
@@ -686,7 +721,7 @@ mod tests {
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
-        assert_eq!(report.outcomes.len(), 13);
+        assert_eq!(report.outcomes.len(), 15);
         let peak = slow.2.load(Ordering::SeqCst);
         assert!(
             peak >= 4,
