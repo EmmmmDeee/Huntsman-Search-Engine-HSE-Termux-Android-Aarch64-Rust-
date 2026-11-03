@@ -94,7 +94,7 @@ pub struct PathHit {
 pub struct PathReport {
     pub origin: String,
     pub candidate_paths: usize,
-    pub requests_sent: usize,
+    pub request_attempts: usize,
     pub probes_failed: usize,
     pub baseline_status: Option<u16>,
     pub hits: Vec<PathHit>,
@@ -214,7 +214,7 @@ pub fn discover_paths(
     let mut report = PathReport {
         origin: origin.clone(),
         candidate_paths: paths.len(),
-        requests_sent: 1,
+        request_attempts: 1,
         probes_failed: usize::from(baseline.is_none()),
         baseline_status: baseline.as_ref().map(|item| item.status),
         hits: Vec::new(),
@@ -224,7 +224,7 @@ pub fn discover_paths(
         if !pause.is_zero() {
             thread::sleep(pause);
         }
-        report.requests_sent += 1;
+        report.request_attempts += 1;
         let response = match fetch_once(transport, &format!("{origin}/{path}")) {
             Ok(response) => response,
             Err(_) => {
@@ -317,7 +317,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.candidate_paths, 2);
-        assert_eq!(result.requests_sent, 3);
+        assert_eq!(result.request_attempts, 3);
         assert_eq!(transport.requests.borrow().len(), 3);
         assert!(
             result
