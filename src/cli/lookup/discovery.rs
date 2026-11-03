@@ -237,6 +237,65 @@ pub(in crate::cli) fn search_cmd(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Source-scoped professional/research/register candidate discovery over the shared
+/// guarded Rust web-query engines. The output is *not* an identity attribution.
+pub(in crate::cli) fn people_discover_cmd(args: &[String]) -> ExitCode {
+    use huntsman_recon::people_discovery::{self, Region};
+
+    let mut region = Region::Au;
+    let mut region_seen = false;
+    let mut name_parts = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--region" if !region_seen => {
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, people_discovery::PEOPLE_DISCOVER_USAGE);
+                };
+                let Some(parsed) = Region::parse(value) else {
+                    return fail(EX_USAGE, "people-discover --region must be au or us");
+                };
+                region = parsed;
+                region_seen = true;
+                index += 2;
+            }
+            "--region" => return fail(EX_USAGE, "people-discover accepts --region once"),
+            flag if flag.starts_with('-') => {
+                return fail(EX_USAGE, &format!("unknown people-discover option {flag}"));
+            }
+            name => {
+                name_parts.push(name);
+                index += 1;
+            }
+        }
+    }
+    if name_parts.is_empty() {
+        return fail(EX_USAGE, people_discovery::PEOPLE_DISCOVER_USAGE);
+    }
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match people_discovery::discover(
+        &transport,
+        &name_parts.join(" "),
+        region,
+        clock::unix_now(),
+    ) {
+        Ok(report) => {
+            match terminal_json_pretty(&report) {
+                Ok(body) => println!("{body}"),
+                Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+            }
+            if report.candidates.is_empty() {
+                ExitCode::from(EX_UNAVAILABLE)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(Error::Invalid(message)) => fail(EX_USAGE, &message),
+        Err(Error::Network(message)) => fail(EX_NOPERM, &message),
+        Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+}
+
 /// The rest of the line is the query, so `sources Ada Lovelace` reads as it does quoted.
 pub(in crate::cli) fn sources_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
