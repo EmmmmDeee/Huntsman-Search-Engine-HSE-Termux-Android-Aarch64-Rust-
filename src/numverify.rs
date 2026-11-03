@@ -109,10 +109,18 @@ pub fn verify<T: Transport + ?Sized>(
 pub fn decode(body: &[u8], e164: &str) -> Result<Verification, LegError> {
     let whole: serde_json::Value = api_leg::decode(body)?;
     let body: Body = api_leg::decode(body)?;
-    if let Some(number) = body.number.as_deref().map(str::trim) {
-        if !number.is_empty() && Some(number) != digits(e164) {
-            return Err(LegError::Decode("answer is about another number".into()));
-        }
+    // Provider metadata must be bound to the exact requested number before it
+    // can become evidence. Missing/blank identifiers cannot prove that binding.
+    let requested = digits(e164)
+        .ok_or_else(|| LegError::Decode("requested number is not E.164".into()))?;
+    let number = body
+        .number
+        .as_deref()
+        .map(str::trim)
+        .filter(|number| !number.is_empty())
+        .ok_or_else(|| LegError::Decode("answer has no number identifier".into()))?;
+    if number != requested {
+        return Err(LegError::Decode("answer is about another number".into()));
     }
     Ok(Verification {
         valid: body.valid,
@@ -153,6 +161,20 @@ mod tests {
     #[test]
     fn an_answer_about_another_number_is_refused() {
         assert!(decode(DOCUMENTED.as_bytes(), "+61412345678").is_err());
+    }
+
+    #[test]
+    fn a_response_without_an_exact_number_is_never_attributed() {
+        for body in [
+            r#"{"valid":true,"carrier":"Example Mobile"}"#,
+            r#"{"valid":true,"number":"","carrier":"Example Mobile"}"#,
+            r#"{"valid":false,"number":"  "}"#,
+        ] {
+            assert!(
+                decode(body.as_bytes(), "+61401981051").is_err(),
+                "unbound provider reply was accepted: {body}"
+            );
+        }
     }
 
     #[test]
