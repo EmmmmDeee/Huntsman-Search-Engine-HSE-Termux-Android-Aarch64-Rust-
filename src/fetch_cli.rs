@@ -110,7 +110,7 @@ impl FetchArgs {
                 "--raw-body and --body are mutually exclusive".into(),
             ));
         }
-        if out.raw_body && (out.allow_private || out.auth.is_some()) {
+        if out.raw_body && (out.allow_private || out.auth.is_some() || out.keys_file.is_some()) {
             return Err(Error::Invalid(
                 "--raw-body only accepts anonymous public-only fetches".into(),
             ));
