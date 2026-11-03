@@ -9,7 +9,8 @@ mod profiles;
 mod scan;
 
 pub(super) use discovery::{
-    investigate_cmd, investigate_entities, query_cmd, search_cmd, sf_cmd, sources_cmd,
+    investigate_cmd, investigate_entities, people_discover_cmd, query_cmd, search_cmd, sf_cmd,
+    sources_cmd,
 };
 pub(super) use plan::plan_cmd;
 pub(super) use profiles::{
