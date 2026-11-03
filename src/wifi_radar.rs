@@ -279,8 +279,7 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
             .get("timestamp")
             .and_then(serde_json::Value::as_u64)
             .filter(|ts| *ts > 0);
-        let (age_secs, freshness, freshness_reason) =
-            classify_freshness(uptime_secs, timestamp);
+        let (age_secs, freshness, freshness_reason) = classify_freshness(uptime_secs, timestamp);
         let frequency_mhz = row
             .get("frequency_mhz")
             .and_then(serde_json::Value::as_i64)
@@ -372,14 +371,34 @@ mod tests {
         assert_eq!(rows[2].freshness_reason, "timestamp_missing");
         assert_eq!(rows[3].freshness_reason, "timestamp_after_boot_clock");
         assert_eq!(rows[4].freshness_reason, "timestamp_out_of_range");
-        assert_eq!(current.mitm_assessment.as_ref().unwrap().evaluated_access_points, 1);
+        assert_eq!(
+            current
+                .mitm_assessment
+                .as_ref()
+                .unwrap()
+                .evaluated_access_points,
+            1
+        );
         let clockless = parse_scan(raw, None).unwrap();
         assert_eq!(clockless.boot_clock_status, "boot_clock_unavailable");
-        assert_eq!(clockless.observations[0].freshness_reason, "boot_clock_unavailable");
-        assert_eq!(clockless.mitm_assessment.as_ref().unwrap().evaluated_access_points, 0);
+        assert_eq!(
+            clockless.observations[0].freshness_reason,
+            "boot_clock_unavailable"
+        );
+        assert_eq!(
+            clockless
+                .mitm_assessment
+                .as_ref()
+                .unwrap()
+                .evaluated_access_points,
+            0
+        );
         let replay = parse_replay(raw).unwrap();
         assert_eq!(replay.boot_clock_status, "not_evaluated_replay");
-        assert_eq!(replay.observations[0].freshness_reason, "replay_clock_unverified");
+        assert_eq!(
+            replay.observations[0].freshness_reason,
+            "replay_clock_unverified"
+        );
         assert_eq!(replay.observations[2].freshness_reason, "timestamp_missing");
         assert!(!replay.has_current_observations());
     }
