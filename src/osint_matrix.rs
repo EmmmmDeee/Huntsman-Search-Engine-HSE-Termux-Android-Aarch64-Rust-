@@ -26,6 +26,8 @@ pub struct FileRow {
 
 /// Curated capability groups. The separate /api/modules lists reachable provider modules.
 /// A group can contain multiple source files; it is not a count of live collectors.
+// Compact hand-audited catalogue; each row is intentionally one machine-diffable line.
+#[rustfmt::skip]
 pub const FILE_ROWS: &[FileRow] = &[
     FileRow { id: "geo_coordinates", discipline: "GEOINT", priority: 1, owner: "geoint", files: &["src/geoint.rs", "src/geohash.rs", "src/postcode_au.rs"], inputs: "coordinates,addresses", outputs: "coordinates,distance,region", mode: "offline", implementation: "code_present", synergies: &["geo_places", "network_location"], limitation: "A coordinate does not locate a person." },
     FileRow { id: "geo_places", discipline: "GEOINT", priority: 1, owner: "nominatim", files: &["src/nominatim.rs", "src/nominatim_cli.rs"], inputs: "place,coordinates", outputs: "place_geometry,geocoded_reference", mode: "keyless_network", implementation: "code_present", synergies: &["geo_coordinates", "geo_area_events"], limitation: "Place resolution is not an eyewitness observation." },
@@ -106,14 +108,24 @@ mod tests {
             assert!(ids.insert(row.id), "duplicate matrix id {}", row.id);
             assert!(!row.files.is_empty(), "{} has no files", row.id);
             assert!((1..=3).contains(&row.priority));
-            assert!(row.files.iter().any(|file| file.ends_with(&format!("/{}.rs", row.owner))), "owner file missing: {}", row.id);
+            assert!(
+                row.files
+                    .iter()
+                    .any(|file| file.ends_with(&format!("/{}.rs", row.owner))),
+                "owner file missing: {}",
+                row.id
+            );
             for file in row.files {
                 assert!(manifest.join(file).is_file(), "missing source file: {file}");
             }
         }
         for row in FILE_ROWS {
             for synergy in row.synergies {
-                assert!(ids.contains(synergy), "unknown synergy {synergy} in {}", row.id);
+                assert!(
+                    ids.contains(synergy),
+                    "unknown synergy {synergy} in {}",
+                    row.id
+                );
                 assert_ne!(row.id, *synergy, "self synergy in {}", row.id);
             }
         }
@@ -121,11 +133,25 @@ mod tests {
 
     #[test]
     fn rhinser_and_geo_human_net_are_first_class_disciplines() {
-        for id in ["rhinser_native", "rhinser_catalog", "rhinser_cases", "rhinser_tlv",
-                    "geo_coordinates", "human_casework", "net_dns", "identity_gate"] {
+        for id in [
+            "rhinser_native",
+            "rhinser_catalog",
+            "rhinser_cases",
+            "rhinser_tlv",
+            "geo_coordinates",
+            "human_casework",
+            "net_dns",
+            "identity_gate",
+        ] {
             assert!(FILE_ROWS.iter().any(|row| row.id == id), "missing {id}");
         }
-        assert_eq!(report()["rows_count"].as_u64(), Some(FILE_ROWS.len() as u64));
-        assert_eq!(report()["rhinser_incorporation"], "native_rust_partial_compatibility");
+        assert_eq!(
+            report()["rows_count"].as_u64(),
+            Some(FILE_ROWS.len() as u64)
+        );
+        assert_eq!(
+            report()["rhinser_incorporation"],
+            "native_rust_partial_compatibility"
+        );
     }
 }
