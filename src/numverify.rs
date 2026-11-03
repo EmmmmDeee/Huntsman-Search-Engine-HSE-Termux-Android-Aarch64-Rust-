@@ -111,8 +111,8 @@ pub fn decode(body: &[u8], e164: &str) -> Result<Verification, LegError> {
     let body: Body = api_leg::decode(body)?;
     // Provider metadata must be bound to the exact requested number before it
     // can become evidence. Missing/blank identifiers cannot prove that binding.
-    let requested = digits(e164)
-        .ok_or_else(|| LegError::Decode("requested number is not E.164".into()))?;
+    let requested =
+        digits(e164).ok_or_else(|| LegError::Decode("requested number is not E.164".into()))?;
     let number = body
         .number
         .as_deref()
