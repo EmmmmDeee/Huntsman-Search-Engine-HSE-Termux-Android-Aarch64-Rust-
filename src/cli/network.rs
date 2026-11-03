@@ -3,6 +3,7 @@
 use std::env;
 use std::fmt::Write as _;
 use std::path::Path;
+use std::io::Write as _;
 use std::process::ExitCode;
 
 use super::{RECON_USAGE, fail, usage_error};
@@ -25,7 +26,7 @@ use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_report::entity_row;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::seeknow_cli::{SEEKNOW_USAGE, SeekNowCliRun};
-use huntsman_recon::source_outcome::recommended_action;
+use huntsman_recon::source_outcome::{SourceOutcomeKind, recommended_action};
 use huntsman_recon::stolen_tax::{self, StolenTaxError, StolenTaxReport};
 use huntsman_recon::textnorm::escape_controls;
 
@@ -281,6 +282,16 @@ pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
         Err(e) => return fail(EX_NOPERM, &e.to_string()),
     };
     let kind = fetched.outcome.kind;
+    if parsed.raw_body {
+        let Some(response) = fetched.response.as_ref() else {
+            return fail(EX_UNAVAILABLE, "raw body unavailable: provider sent no response");
+        };
+        let mut stdout = std::io::stdout().lock();
+        return match write_complete_public_body(response, kind, &mut stdout) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(reason) => fail(EX_UNAVAILABLE, &reason),
+        };
+    }
     println!(
         "status={} outcome={} action={} redirects={} url={}",
         fetched
@@ -307,6 +318,31 @@ pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
         }
         None => ExitCode::from(EX_UNAVAILABLE),
     }
+}
+
+/// Stream exact body bytes from the transport without lossy decoding or status text.
+fn write_complete_public_body<W: Write>(
+    response: &huntsman_recon::http::Response,
+    kind: SourceOutcomeKind,
+    sink: &mut W,
+) -> Result<(), String> {
+    if response.truncated {
+        return Err("raw response truncated at transport byte limit".into());
+    }
+    if !(200..300).contains(&response.status)
+        || !matches!(
+            kind,
+            SourceOutcomeKind::Inconclusive | SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero
+        )
+    {
+        return Err(format!(
+            "raw response was not a usable HTTP 2xx (HTTP {}, outcome {})",
+            response.status,
+            kind.as_str()
+        ));
+    }
+    sink.write_all(&response.body)
+        .map_err(|error| format!("raw response write failed: {error}"))
 }
 
 fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
@@ -336,10 +372,41 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::stolen_tax_summary;
+    use super::{stolen_tax_summary, write_complete_public_body};
+    use huntsman_recon::http::Response;
     use huntsman_recon::entity::{Entity, EntityKind};
     use huntsman_recon::source_outcome::SourceOutcomeKind;
     use huntsman_recon::stolen_tax::{PathFailure, StolenTaxReport};
+
+    #[test]
+    fn raw_fetch_preserves_non_utf8_bytes_and_rejects_incomplete_responses() {
+        let source = Response {
+            status: 200,
+            headers: Vec::new(),
+            body: vec![0, 0xff, 0x0a, 0, b'a'],
+            truncated: false,
+        };
+        let mut output = Vec::new();
+        write_complete_public_body(&source, SourceOutcomeKind::Inconclusive, &mut output)
+            .unwrap();
+        assert_eq!(output, source.body);
+        for (status, truncated, outcome) in [
+            (200, true, SourceOutcomeKind::Inconclusive),
+            (403, false, SourceOutcomeKind::Upstream4xx),
+            (200, false, SourceOutcomeKind::BotWaf),
+            (429, false, SourceOutcomeKind::RateLimited),
+        ] {
+            let mut invalid = source.clone();
+            invalid.status = status;
+            invalid.truncated = truncated;
+            let mut output = Vec::new();
+            assert!(
+                write_complete_public_body(&invalid, outcome, &mut output).is_err(),
+                "{status} {truncated} {outcome:?}"
+            );
+            assert!(output.is_empty(), "invalid raw body was released");
+        }
+    }
 
     #[test]
     fn a_stolen_tax_row_that_names_no_breach_is_counted_before_the_totals() {
