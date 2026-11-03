@@ -599,3 +599,33 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 ### Domain lifecycle analysis
 
 `domain-lifecycle analyze INPUT.json --as-of UNIX_SECONDS [--output REPORT.json]` compares imported domain observations entirely offline. It preserves source/upstream boundaries, rejects conflicting duplicate identifiers, records failed/truncated observations as coverage gaps, and emits only conservative observed changes. Ownership, causality, and registration availability remain explicitly unknown unless established elsewhere. See [docs/DOMAIN_LIFECYCLE.md](DOMAIN_LIFECYCLE.md).
+
+### Public bibliographic authorship leads (keyless, live Open Library)
+
+The source-scoped people-discovery command combines public search-index candidates
+with one independent, guarded query to Open Library's documented Authors API:
+https://openlibrary.org/search/authors.json
+
+To search the author catalogue alone, without the twelve search-engine requests:
+
+~~~sh
+huntsman-recon people-discover --bibliography-only "Ada Lovelace"
+~~~
+
+The JSON fields leads, outcome, total_reported, total_exact and truncated
+retain source-scoped catalogue identifiers and exact URLs. Every item is an
+UNVERIFIED bibliographic name-search lead, not proof of identity, account
+ownership or authorship by the named person. Matching names and multiple
+catalogue IDs must not be merged into an identity. Missing count fields,
+malformed author rows and uncertain zero counts are never treated as absence.
+The direct collector is capped at five candidates and uses one keyless HTTPS GET.
+
+For the combined web-index and independent catalogue view:
+
+~~~sh
+huntsman-recon people-discover --region au "Ada Lovelace"
+~~~
+
+An unavailable catalogue retains separately observed search-index outcomes and
+reports its own inconclusive status; no raw private data is collected. Physical
+rootless Android Termux execution remains a separate acceptance gate.
