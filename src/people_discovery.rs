@@ -15,7 +15,7 @@ use crate::people_cli;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::web_query;
 
-pub const MAX_NAME_BYTES: usize = 120;
+pub const MAX_PEOPLE_DISCOVERY_NAME_BYTES: usize = 120;
 pub const MAX_CANDIDATES: usize = 80;
 pub const PEOPLE_DISCOVER_USAGE: &str =
     "usage: huntsman-recon people-discover [--region au|us] FULL NAME...";
@@ -85,7 +85,7 @@ fn checked_name(raw: &str) -> Result<String, Error> {
     // Check the *original bytes* before canonical_name collapses whitespace.
     // Otherwise a newline, tab or NUL can disappear and be accepted as a
     // legitimate name, despite the command's safety and input contract.
-    if raw.len() > MAX_NAME_BYTES
+    if raw.len() > MAX_PEOPLE_DISCOVERY_NAME_BYTES
         || raw
             .chars()
             .any(|c| c.is_control() || matches!(c, '"' | '\\' | '<' | '>'))
