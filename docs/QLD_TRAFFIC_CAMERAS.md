@@ -149,13 +149,15 @@ Rust `collect` and `collect_gis` functions as the CLI. The endpoint has:
 - a single bounded worker, a 40-second response deadline, no URL parameters,
   and no network request until the operator presses the button;
 - source outcomes exposed individually rather than a fabricated empty list;
-- concise disagreement tables and client-side JSON export of the complete
+- a compact on-demand reconciliation report and client-side JSON export of the complete
   retrieved metadata (no privileged device APIs or image downloads).
 
 The response may contain sensitive investigation *context* if subsequently
 combined with separate data; do not infer person/vehicle identity or
 camera-operational status from metadata alone. The page only displays text
 using DOM `textContent` and has no external JS, CSS or image dependencies.
+The mobile page remains under its enforced 142 KiB budget; detailed typed
+conflicts remain inspectable as JSON rather than adding a large table UI.
 
 **Delivered scope:** One-shot read-only Rust library, CLI, guarded API, manual
 phone Web UI, exact ID/location/direction differences and structured JSON
