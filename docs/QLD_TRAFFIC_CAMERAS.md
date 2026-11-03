@@ -77,6 +77,43 @@ coordinates only as spatial context, not as identity.
 * The Brisbane Council CCTV *location* dataset must never be interpreted as
   public permission to retrieve CCTV footage.
 
+## Source-synergy and orthogonal reconciliation
+
+Run `huntsman-recon traffic-cameras --reconcile` to compare two independent
+*catalogue snapshots*, but not independently published facts: both come from
+Queensland Transport and Main Roads.
+
+- Dynamic public webcam GeoJSON (152 records observed on 2026-11-03).
+- Static GIS state-road camera assets, MapServer layer 4 (158 observed).
+  The fixed query requests `camera_id,description,locality`, `outSR=4326`
+  and `f=geojson`. GIS defaults to Web Mercator (metres), so the explicit
+  WGS84 projection request is necessary for correct distance calculations.
+
+This opt-in second request uses the same bounded, guarded transport and
+typed outcome classification. Both complete inventories are reconciled
+**before** locality or result-limit filtering. Result fields include exact
+shared camera IDs, each source's unique IDs, shared-ID position conflicts
+over 100 metres, and possible nearby *different-ID* camera candidates.
+Different-ID candidates are never merged: proximity is not identity.
+The candidate cross-product is capped at 256 by 256 records, and at most
+64 candidate links are displayed with an explicit truncation flag.
+
+The 2026-11-03 observations showed **123** shared IDs, **29** webcam-only
+IDs, and **35** GIS-only IDs. The difference between 152 and 158 totals
+alone would mask 64 differing records. No camera presence, image freshness,
+operational state, vehicle or person identity is inferred from catalogue
+membership. Both sources belong to the same publisher family, and
+`publisher_families=1` forbids falsely claiming independent corroboration.
+OpenDataSoft is a republication, not an additional independent witness.
+If either source is unavailable or incomplete, `reconciliation` is null
+rather than a false zero.
+
+```sh
+cargo run --locked -- traffic-cameras --reconcile --limit 10
+cargo run --locked -- traffic-cameras --reconcile --district 'North Coast' --limit 25
+cargo test --locked qld_traffic_cameras
+```
+
 ## Test and release gates
 
 Offline module tests cover valid and empty FeatureCollections, coordinate
