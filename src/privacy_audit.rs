@@ -62,6 +62,7 @@ pub struct Report {
     pub remediation_verified: bool,
 }
 
+#[expect(clippy::too_many_arguments, reason = "Provenance-scoped finding constructor, called with explicit evidence")]
 fn add(
     findings: &mut Vec<Finding>,
     category: &'static str,
@@ -90,8 +91,9 @@ fn add(
 ///
 /// # Errors
 /// Refuses oversized, malformed, dangling, duplicate or unsourced input.
+#[expect(clippy::too_many_lines, reason = "Single-pass offline graph validation and classification")]
 pub fn assess_public_graph(input: &[u8]) -> Result<Report, String> {
-    if input.len() > MAX_GRAPH_BYTES as usize {
+    if input.len() > usize::try_from(MAX_GRAPH_BYTES).unwrap_or(usize::MAX) {
         return Err("public graph exceeds 1 MiB".into());
     }
     let graph: Graph =
