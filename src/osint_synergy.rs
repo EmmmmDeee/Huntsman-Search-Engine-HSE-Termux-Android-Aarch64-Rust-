@@ -119,7 +119,11 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
             let family = evidence.provenance.corroboration_key();
             for &(attribute, ref target_kind, relation) in attributes(&entity.kind) {
                 // Never silently omit a collector's additional multi-valued attributes.
-                if evidence.attr_values(attribute).nth(MAX_VALUES_PER_ATTRIBUTE).is_some() {
+                if evidence
+                    .attr_values(attribute)
+                    .nth(MAX_VALUES_PER_ATTRIBUTE)
+                    .is_some()
+                {
                     truncated = true;
                 }
                 for value in evidence
