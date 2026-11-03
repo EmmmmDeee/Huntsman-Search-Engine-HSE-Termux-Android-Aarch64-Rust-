@@ -1148,9 +1148,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     for line in lines.take_while(|line| !line.is_empty()) {
         // Every header line must contain the field-name/value delimiter.
         // Ignoring a malformed line could disagree with another HTTP parser.
-        let Some((name, value)) = line.split_once(':') else {
-            return None;
-        };
+        let (name, value) = line.split_once(':')?;
         // RFC 9112 §5.1 requires HTTP servers to reject whitespace in
         // field names (especially before ':') with 400 Bad Request.
         // Silently ignoring "Content-Length : 1" creates parser ambiguity.
