@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::textnorm::is_bounded_text;
+
 pub const MAX_WORKSPACE_BYTES: u64 = 256 * 1024;
 const MAX_CASES: usize = 128;
 const MAX_ENTRIES: usize = 512;
@@ -62,10 +64,6 @@ impl Default for Workspace {
     }
 }
 
-fn valid(value: &str, max_len: usize) -> bool {
-    !value.trim().is_empty() && value.len() <= max_len && !value.chars().any(char::is_control)
-}
-
 impl Workspace {
     /// Reject malformed persisted data before any mutation.
     ///
@@ -95,8 +93,8 @@ impl Workspace {
         }
         let mut ids = std::collections::BTreeSet::new();
         for case in &self.cases {
-            if !valid(&case.id, 100)
-                || !valid(&case.title, 256)
+            if !is_bounded_text(&case.id, 100)
+                || !is_bounded_text(&case.title, 256)
                 || !ids.insert(&case.id)
                 || case.notes.len() > MAX_ENTRIES
                 || case.source_leads.len() > MAX_ENTRIES
@@ -105,8 +103,8 @@ impl Workspace {
             }
             let mut leads = std::collections::BTreeSet::new();
             for lead in &case.source_leads {
-                if !valid(&lead.id, 100)
-                    || !valid(&lead.summary, 1024)
+                if !is_bounded_text(&lead.id, 100)
+                    || !is_bounded_text(&lead.summary, 1024)
                     || !leads.insert(&lead.id)
                     || lead.evidence_status != "lead_only_unverified"
                     || crate::osint_casework::validate_public_source_url(&lead.url).is_err()
@@ -114,7 +112,11 @@ impl Workspace {
                     return Err("invalid source lead".to_owned());
                 }
             }
-            if case.notes.iter().any(|note| !valid(&note.text, 4096)) {
+            if case
+                .notes
+                .iter()
+                .any(|note| !is_bounded_text(&note.text, 4096))
+            {
                 return Err("invalid case note".to_owned());
             }
         }
@@ -124,13 +126,18 @@ impl Workspace {
             .chain(&self.favourites)
             .chain(&self.recent_tools)
         {
-            if !valid(id, 100) {
+            if !is_bounded_text(id, 100) {
                 return Err("invalid tool identifier".to_owned());
             }
         }
-        if self.search_history.iter().any(|text| !valid(text, 1024))
+        if self
+            .search_history
+            .iter()
+            .any(|text| !is_bounded_text(text, 1024))
             || self.settings.iter().any(|(key, value)| {
-                !valid(key, 100) || value.len() > 4096 || value.chars().any(char::is_control)
+                !is_bounded_text(key, 100)
+                    || value.len() > 4096
+                    || value.chars().any(char::is_control)
             })
         {
             return Err("invalid history or setting".to_owned());
@@ -141,7 +148,7 @@ impl Workspace {
     /// # Errors
     /// Empty, duplicate or excessive case identifiers.
     pub fn create_case(&mut self, id: &str, title: &str) -> Result<(), String> {
-        if !valid(id, 100) || !valid(title, 256) {
+        if !is_bounded_text(id, 100) || !is_bounded_text(title, 256) {
             return Err("case id or title invalid".to_owned());
         }
         if self.cases.len() >= MAX_CASES || self.cases.iter().any(|case| case.id == id) {
@@ -159,7 +166,7 @@ impl Workspace {
     /// # Errors
     /// Unknown case, invalid text, or exceeded capacity.
     pub fn add_note(&mut self, id: &str, text: &str, now: u64) -> Result<(), String> {
-        if !valid(text, 4096) {
+        if !is_bounded_text(text, 4096) {
             return Err("invalid note".to_owned());
         }
         let case = self
@@ -187,7 +194,7 @@ impl Workspace {
         summary: &str,
         now: u64,
     ) -> Result<(), String> {
-        if !valid(lead_id, 100) || !valid(summary, 1024) {
+        if !is_bounded_text(lead_id, 100) || !is_bounded_text(summary, 1024) {
             return Err("invalid source lead".to_owned());
         }
         crate::osint_casework::validate_public_source_url(url)
@@ -243,7 +250,7 @@ impl Workspace {
     /// # Errors
     /// Invalid or overly long search history.
     pub fn remember_search(&mut self, query: &str) -> Result<(), String> {
-        if !valid(query, 1024) {
+        if !is_bounded_text(query, 1024) {
             return Err("invalid search query".to_owned());
         }
         self.search_history.retain(|saved| saved != query);
