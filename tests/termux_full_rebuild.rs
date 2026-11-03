@@ -36,7 +36,10 @@ fn rebuild_preserves_native_canonical_acceptance_and_rollback_gates() {
         "mv -f -- \"$stage\" \"$destination\"",
         "previous executable restored",
     ] {
-        assert!(SCRIPT.contains(required), "missing native rebuild contract: {required}");
+        assert!(
+            SCRIPT.contains(required),
+            "missing native rebuild contract: {required}"
+        );
     }
     assert!(!SCRIPT.contains("HSE_ACCEPTANCE_HOST=1"));
     assert!(!SCRIPT.contains("install_prebuilt"));
