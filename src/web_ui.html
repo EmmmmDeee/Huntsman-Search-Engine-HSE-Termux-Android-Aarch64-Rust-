@@ -964,7 +964,7 @@ $('newscan').onsubmit=async ev=>{
     p.set(ntab,on.join(','));
   }
   const b=$('runscan');b.disabled=true;$('nerror').hidden=true;
-  try{const r=await api('/api/scans?'+p,{method:'POST'});location.hash='#/scan/'+enc(r.id)+'/summary'}
+  try{const r=await api('/api/scans',{method:'POST',body:p});location.hash='#/scan/'+enc(r.id)+'/summary'}
   catch(e){fail('nerror',e.message)}finally{b.disabled=false}
 };
 const TABS=['summary','correlations','browse','graph','analysis','settings','log'];
