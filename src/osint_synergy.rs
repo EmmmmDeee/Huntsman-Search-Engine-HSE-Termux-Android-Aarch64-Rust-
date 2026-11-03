@@ -226,10 +226,7 @@ mod tests {
         let address = observed(EntityKind::IpAddress, "192.0.2.5", "rdap", "scan-b");
         let result = discover(&[domain, address]);
         assert_eq!(result.links.len(), 1);
-        assert_eq!(
-            result.links[0].status,
-            JoinStatus::SeparatelyObservedTarget
-        );
+        assert_eq!(result.links[0].status, JoinStatus::SeparatelyObservedTarget);
         assert_eq!(result.links[0].source_scan_id.as_deref(), Some("scan-a"));
         assert_eq!(result.links[0].target_scan_id.as_deref(), Some("scan-b"));
         assert!(!result.truncated);
@@ -291,14 +288,20 @@ mod tests {
     fn mirrored_collectors_cannot_claim_proven_independence() {
         let mut domain = observed(EntityKind::Domain, "example.org", "feed-a", "one");
         domain.add_evidence(
-            Evidence::new(EvidenceProvenance::for_scan("feed-a", "one"), "upstream record")
-                .with_attr("ip", "192.0.2.7")
-                .with_attr("dataset", "same upstream"),
+            Evidence::new(
+                EvidenceProvenance::for_scan("feed-a", "one"),
+                "upstream record",
+            )
+            .with_attr("ip", "192.0.2.7")
+            .with_attr("dataset", "same upstream"),
         );
         let mut target = observed(EntityKind::IpAddress, "192.0.2.7", "feed-b", "two");
         target.add_evidence(
-            Evidence::new(EvidenceProvenance::for_scan("feed-b", "two"), "mirror record")
-                .with_attr("dataset", "same upstream"),
+            Evidence::new(
+                EvidenceProvenance::for_scan("feed-b", "two"),
+                "mirror record",
+            )
+            .with_attr("dataset", "same upstream"),
         );
         let report = discover(&[domain, target]);
         assert_eq!(report.links.len(), 1);
