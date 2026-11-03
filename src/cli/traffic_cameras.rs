@@ -8,12 +8,11 @@ use super::{fail, terminal_json_pretty};
 use huntsman_recon::clock;
 use huntsman_recon::exit::{EX_DATAERR, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::qld_traffic_cameras::{self, MAX_CAMERAS, MAX_CATALOGUE_BYTES};
 use huntsman_recon::qld_traffic_cameras::reconcile;
+use huntsman_recon::qld_traffic_cameras::{self, MAX_CAMERAS, MAX_CATALOGUE_BYTES};
 use serde_json::json;
 
-const USAGE: &str =
-    "usage: huntsman-recon traffic-cameras [--district NAME] [--locality NAME] [--limit 1..2000] [--reconcile]";
+const USAGE: &str = "usage: huntsman-recon traffic-cameras [--district NAME] [--locality NAME] [--limit 1..2000] [--reconcile]";
 
 pub(super) fn run(args: &[String]) -> ExitCode {
     let mut district: Option<&str> = None;
@@ -77,10 +76,18 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     } else {
         None
     };
-    let reconciliation = gis.as_ref().and_then(|second| reconcile::reconcile(&report, second));
+    let reconciliation = gis
+        .as_ref()
+        .and_then(|second| reconcile::reconcile(&report, second));
     let accepted = report.outcome.kind.is_accepted()
-        && gis.as_ref().is_none_or(|second| second.outcome.kind.is_accepted());
-    let provider_total = report.outcome.kind.is_accepted().then_some(report.cameras.len());
+        && gis
+            .as_ref()
+            .is_none_or(|second| second.outcome.kind.is_accepted());
+    let provider_total = report
+        .outcome
+        .kind
+        .is_accepted()
+        .then_some(report.cameras.len());
     if let Some(filter) = district {
         report
             .cameras
