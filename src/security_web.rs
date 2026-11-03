@@ -278,7 +278,10 @@ mod tests {
             response: Response {
                 status,
                 headers: vec![
-                    ("content-security-policy".into(), "default-src 'self'".into()),
+                    (
+                        "content-security-policy".into(),
+                        "default-src 'self'".into(),
+                    ),
                     ("set-cookie".into(), "session=test; HttpOnly; Secure".into()),
                     ("set-cookie".into(), "legacy=test; HttpOnly".into()),
                 ],
@@ -292,7 +295,11 @@ mod tests {
     fn no_authority_means_zero_http_requests() {
         let transport = fake(200);
         let result = discover_paths(
-            &transport, "https://example.com", b"admin\n", false, Duration::ZERO,
+            &transport,
+            "https://example.com",
+            b"admin\n",
+            false,
+            Duration::ZERO,
         );
         assert!(result.is_err());
         assert!(transport.requests.borrow().is_empty());
@@ -302,21 +309,32 @@ mod tests {
     fn path_discovery_is_bounded_and_wildcards_are_not_confirmed() {
         let transport = fake(200);
         let result = discover_paths(
-            &transport, "https://example.com", b"login\n/login\nimages\n", true,
+            &transport,
+            "https://example.com",
+            b"login\n/login\nimages\n",
+            true,
             Duration::ZERO,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.candidate_paths, 2);
         assert_eq!(result.requests_sent, 3);
         assert_eq!(transport.requests.borrow().len(), 3);
-        assert!(result.hits.iter().all(|hit| hit.classification == "wildcard_or_soft404_candidate"));
+        assert!(
+            result
+                .hits
+                .iter()
+                .all(|hit| hit.classification == "wildcard_or_soft404_candidate")
+        );
     }
 
     #[test]
     fn unsafe_targets_and_paths_are_rejected_before_network() {
         let transport = fake(200);
         for target in [
-            "http://example.com", "https://user@example.com",
-            "https://example.com/private", "https://example.com?q=1",
+            "http://example.com",
+            "https://user@example.com",
+            "https://example.com/private",
+            "https://example.com?q=1",
         ] {
             assert!(inspect_headers(&transport, target).is_err());
         }
