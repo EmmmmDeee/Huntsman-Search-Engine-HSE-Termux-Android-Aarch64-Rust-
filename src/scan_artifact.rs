@@ -201,6 +201,23 @@ pub struct ArtifactHistory {
 }
 
 impl ArtifactHistory {
+    /// Borrow a saved scan without cloning its complete evidence inventory.
+    #[must_use]
+    pub(crate) fn entities_for_scan_ref(&self, scan_id: &str) -> &[Entity] {
+        self.by_scan.get(scan_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Borrow matching history identifiers to avoid copying the entire index.
+    pub(crate) fn scan_ids_for_entity_ref(
+        &self,
+        uid: &str,
+    ) -> impl Iterator<Item = &str> {
+        self.by_uid
+            .get(uid)
+            .into_iter()
+            .flat_map(|ids| ids.iter().map(String::as_str))
+    }
+
     /// Load and index every artifact in `dir`.
     ///
     /// # Errors
