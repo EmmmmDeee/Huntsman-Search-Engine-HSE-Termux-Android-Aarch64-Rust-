@@ -119,6 +119,8 @@ const INSPECT_PATH: &str = "/api/inspect";
 const BLUEPRINT_PATH: &str = "/api/blueprint";
 /// Offline, unverified Rhinser source directory exposed to authenticated local clients.
 const RHINSER_CATALOG_PATH: &str = "/api/rhinser/catalog";
+/// Canonical, read-only compatibility map for nine security tool families.
+const SECURITY_TOOLS_PATH: &str = "/api/security-tools";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
 /// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
@@ -1403,6 +1405,7 @@ fn protected_path(path: &str) -> bool {
             | INSPECT_PATH
             | BLUEPRINT_PATH
             | RHINSER_CATALOG_PATH
+            | SECURITY_TOOLS_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
@@ -1469,6 +1472,10 @@ fn route(
             json_ok(&body, head)
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
+        SECURITY_TOOLS_PATH => match serde_json::to_string_pretty(&crate::security_toolkit::catalog()) {
+            Ok(body) => json_ok(&body, head),
+            Err(_) => json_error(500, "security tools catalogue serialization failed"),
+        },
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
