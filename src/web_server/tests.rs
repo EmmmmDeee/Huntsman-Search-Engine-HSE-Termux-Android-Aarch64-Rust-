@@ -3715,7 +3715,6 @@ fn favicon_ico_is_an_empty_no_content_icon() {
     assert!(icon.ends_with("\r\n\r\n"), "204 carries no body: {icon:?}");
 }
 
-
 /// The file/discipline matrix is the same in Rust, CLI and the guarded web API.
 #[test]
 fn osint_matrix_endpoint_returns_real_source_ownership_without_live_claims() {
@@ -3733,8 +3732,20 @@ fn osint_matrix_endpoint_returns_real_source_ownership_without_live_claims() {
     let doc: serde_json::Value = serde_json::from_str(body).unwrap();
     assert_eq!(doc["status"], "source_inventory_not_live_verification");
     assert_eq!(doc["rows_count"], crate::osint_matrix::FILE_ROWS.len());
-    assert!(doc["rows"].as_array().unwrap().iter().any(|row| row["id"] == "rhinser_native"));
-    assert!(doc["rows"].as_array().unwrap().iter().any(|row| row["id"] == "identity_gate"));
+    assert!(
+        doc["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "rhinser_native")
+    );
+    assert!(
+        doc["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "identity_gate")
+    );
     let protected = response_for_request(
         "GET /api/osint/matrix HTTP/1.1\r\n\r\n",
         Some("secret"),
@@ -3769,9 +3780,15 @@ fn rhinser_native_web_import_is_bounded_guarded_and_unverified() {
     assert_eq!(doc["device_attested"], false);
     assert_eq!(doc["radio_access"], false);
     assert_eq!(doc["observations"].as_array().unwrap().len(), 1);
-    let no_consent = body.replace("\"operator_consented\":true", "\"operator_consented\":false");
+    let no_consent = body.replace(
+        "\"operator_consented\":true",
+        "\"operator_consented\":false",
+    );
     assert!(ask("X-Huntsman-Lookup: 1\r\n", &no_consent).starts_with("HTTP/1.1 400"));
     assert!(ask("X-Huntsman-Lookup: 1\r\n", "{}").starts_with("HTTP/1.1 400"));
-    let cross_site = ask("X-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n", body);
+    let cross_site = ask(
+        "X-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n",
+        body,
+    );
     assert!(cross_site.starts_with("HTTP/1.1 403"), "{cross_site}");
 }
