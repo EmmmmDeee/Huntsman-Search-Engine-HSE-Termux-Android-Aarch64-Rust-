@@ -148,21 +148,13 @@ fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
         "\"operator_consented\":false",
     );
     let invalid = response_for_request(
-        &loopback_request(
-            "POST",
-            "X-Huntsman-Lookup: 1\r\n",
-            &unconsented,
-        ),
+        &loopback_request("POST", "X-Huntsman-Lookup: 1\r\n", &unconsented),
         None,
         loopback_bind(),
     );
     assert!(invalid.starts_with("HTTP/1.1 400"), "{invalid}");
     let malformed = response_for_request(
-        &loopback_request(
-            "POST",
-            "X-Huntsman-Lookup: 1\r\n",
-            "not-json",
-        ),
+        &loopback_request("POST", "X-Huntsman-Lookup: 1\r\n", "not-json"),
         None,
         loopback_bind(),
     );
