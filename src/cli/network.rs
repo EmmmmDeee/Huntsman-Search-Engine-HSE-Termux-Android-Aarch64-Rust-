@@ -2,8 +2,8 @@
 
 use std::env;
 use std::fmt::Write as _;
+use std::io::Write;
 use std::path::Path;
-use std::io::Write as _;
 use std::process::ExitCode;
 
 use super::{RECON_USAGE, fail, usage_error};
@@ -284,7 +284,10 @@ pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
     let kind = fetched.outcome.kind;
     if parsed.raw_body {
         let Some(response) = fetched.response.as_ref() else {
-            return fail(EX_UNAVAILABLE, "raw body unavailable: provider sent no response");
+            return fail(
+                EX_UNAVAILABLE,
+                "raw body unavailable: provider sent no response",
+            );
         };
         let mut stdout = std::io::stdout().lock();
         return match write_complete_public_body(response, kind, &mut stdout) {
@@ -332,7 +335,9 @@ fn write_complete_public_body<W: Write>(
     if !(200..300).contains(&response.status)
         || !matches!(
             kind,
-            SourceOutcomeKind::Inconclusive | SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero
+            SourceOutcomeKind::Inconclusive
+                | SourceOutcomeKind::Success
+                | SourceOutcomeKind::ValidZero
         )
     {
         return Err(format!(
@@ -373,8 +378,8 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
 #[cfg(test)]
 mod tests {
     use super::{stolen_tax_summary, write_complete_public_body};
-    use huntsman_recon::http::Response;
     use huntsman_recon::entity::{Entity, EntityKind};
+    use huntsman_recon::http::Response;
     use huntsman_recon::source_outcome::SourceOutcomeKind;
     use huntsman_recon::stolen_tax::{PathFailure, StolenTaxReport};
 
@@ -387,8 +392,7 @@ mod tests {
             truncated: false,
         };
         let mut output = Vec::new();
-        write_complete_public_body(&source, SourceOutcomeKind::Inconclusive, &mut output)
-            .unwrap();
+        write_complete_public_body(&source, SourceOutcomeKind::Inconclusive, &mut output).unwrap();
         assert_eq!(output, source.body);
         for (status, truncated, outcome) in [
             (200, true, SourceOutcomeKind::Inconclusive),
