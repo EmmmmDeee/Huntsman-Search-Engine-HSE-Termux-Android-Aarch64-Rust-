@@ -43,3 +43,36 @@ P3: improve mobile Web UI case graphs, map layers, source-health panels, job con
 ## Acceptance record for each merge
 
 Record: canonical main SHA; PR head SHA; changed files; exact CI run IDs; Rust toolchain; host/cross/QEMU/physical handset environment; provider canary timestamps; tests passed/failed; binary hash; rollback point; known gaps. Never report 100% coverage without an exhaustive, timestamped, reproducible inventory.
+
+## Cross-INT synergy contract (implementation guidance)
+
+| Starting observation | Complementary discipline | Candidate pivot | Explicit non-inference |
+| --- | --- | --- | --- |
+| Public geotagged event (GEOINT) | Public dated announcement (HUMINT) | Event ID + timestamp + source URL | Presence of a named person at that place |
+| Public venue coordinates (GEOINT) | Authoritative domain and RDAP (NETINT) | Venue's explicitly published website | Ownership of domain by an individual |
+| Public organisation registration (HUMINT) | DNS / certificate records (NETINT) | Exact legal identifier and organisation-controlled domain | Shared IP means shared operator |
+| Public domain reference (NETINT) | Archived pages and document metadata (WEBINT) | Canonical URL + capture timestamp | Historical content is currently accurate |
+| Operator-authorised Wi-Fi observation (wireless) | Device inventory (NETINT) | Locally confirmed BSSID/device label | RSSI gives exact location or identifies a person |
+| Public place geometry (GEOINT) | Traffic / environmental open data | Source feature ID and spatial intersection | A map overlay establishes a person's movements |
+| Public handle (HUMINT) | Public code / forum profile (SOCMINT) | Explicit reciprocal profile link | Matching usernames prove one identity |
+
+### Required typed edge semantics
+
+- Each edge carries `subject_id`, `predicate`, `object_id`, `source_id`, `observed_at`, `valid_at` (when known), `evidence_hash`, `method`, and `status`. A claim without these is a lead, not corroboration.
+- Deduplicate by canonical upstream origin and evidence ancestry, **not** by URL alone; mirrors of one dataset are not independent witnesses.
+- Promote evidence only through existing lineage/ancestry authorities. A modality mismatch is not a confidence multiplier.
+- Keep graph queries bounded by depth, fan-out, time and result count. Reject automatic expansion into private-person location histories.
+- Reuse the existing `src/orthogonal_osint.rs` proposal engine and `src/evidence_ancestry.rs` independence logic rather than adding a parallel confidence engine.
+- Surface separate panels for **observed facts**, **hypotheses**, **contradictions**, and **unverified leads** in the existing Web UI.
+- Autonomy may schedule authorised public-source checks, cache refreshes and failure recovery, but cannot silently bypass source access restrictions.
+
+### Cross-INT acceptance fixtures
+
+1. Two independent primary records referring to one exact registered organisation yield a sourced candidate edge; the same page mirrored twice yields one ancestry family.
+2. A domain and public venue linked by the venue's official page yield a domain-to-venue lead, not person attribution.
+3. Coordinates on opposite sides of the antimeridian remain valid and use the GEOINT module's canonical geodesic functions.
+4. An expired public geotag is marked stale and cannot become a live location assertion.
+5. A failed, blocked or unconfigured provider cannot supply positive corroboration.
+6. A username collision across platforms cannot auto-merge people.
+7. Wireless observations lacking Android permissions remain unsupported rather than being silently replaced by simulated measurements.
+8. CLI, API and Web UI expose the same edge IDs, provenance, status and timestamps.
