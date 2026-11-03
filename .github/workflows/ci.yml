@@ -95,6 +95,29 @@ jobs:
           printf 'raw_bytes=%s\n' "$(wc -c < "$out")"
           printf 'raw_sha256=%s\n' "$(sha256sum "$out" | cut -d' ' -f1)"
           printf 'source_schema=PASS verified_claims=NOT_TESTED\n'
+      - name: Verify live Open Library author leads with real Rust binary
+        run: |
+          set -euo pipefail
+          umask 077
+          out="$RUNNER_TEMP/openlibrary-public-authors.json"
+          timeout 90 target/debug/huntsman-recon people-discover --bibliography-only "Ada Lovelace" > "$out"
+          test -s "$out"
+          jq -e '
+            (.outcome.kind == "success") and
+            (.outcome.found == (.leads | length)) and
+            ((.leads | length) >= 1) and
+            ((.leads | length) <= 5) and
+            all(.leads[];
+                (.status == "unverified_bibliographic_name_search_lead") and
+                (.url | startswith("https://openlibrary.org/authors/OL")) and
+                (.id | test("^OL[0-9]+A$"))
+            )
+          ' "$out" > /dev/null
+          printf 'real_source=OPEN_LIBRARY_AUTHORS\n'
+          printf 'result_count=%s\n' "$(jq -r '.leads | length' "$out")"
+          printf 'truncated=%s\n' "$(jq -r '.truncated' "$out")"
+          printf 'result_sha256=%s\n' "$(sha256sum "$out" | cut -d' ' -f1)"
+          printf 'source_schema=PASS identity_attribution=NONE\n'
 
   web-ui:
     name: Web UI in a phone browser
