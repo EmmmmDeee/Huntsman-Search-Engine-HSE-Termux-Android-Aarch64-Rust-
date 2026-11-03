@@ -22,6 +22,7 @@ use crate::pipeline::{
     SeedNormalization, SeedRejection, normalize_observations, normalize_seeds,
 };
 use crate::pivot::PivotScore;
+use crate::osint_synergy::SynergyReport;
 use crate::planner::{DispatchAction, DispatchPlan, PlannerPolicy, build_dispatch_plan};
 use crate::scan_artifact::ArtifactHistory;
 use crate::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
@@ -286,6 +287,8 @@ pub struct AnalysisView<'a> {
     pub relations: &'a [EntityRelation],
     pub pivots: &'a [PivotScore],
     pub correlations: &'a [Correlation],
+    /// Candidate infrastructure joins from concrete collected attributes.
+    pub synergy: &'a SynergyReport,
     /// Bridges to the saved scans of a history. `null` when no history was given.
     pub cross_scan: Option<&'a CrossScanCategory>,
     pub gaps: &'a GapReport,
@@ -339,6 +342,7 @@ impl PipelineOutcome {
             relations: &self.snapshot.relations,
             pivots: &self.report.pivots,
             correlations: &self.report.correlations,
+            synergy: &self.report.synergy,
             cross_scan: self.report.cross_scan.as_ref(),
             gaps: &self.report.gaps,
             planned: self
