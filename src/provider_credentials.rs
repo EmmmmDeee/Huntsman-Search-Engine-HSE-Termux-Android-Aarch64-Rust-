@@ -110,15 +110,17 @@ fn wigle_probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> ProbeState 
     // A successful HTTP status is not evidence of authentication on its own. Error pages
     // sometimes return 200 and valid JSON can omit the success field entirely.
     match response.status {
-        200 if !response.truncated => match serde_json::from_slice::<serde_json::Value>(&response.body) {
-            Ok(serde_json::Value::Object(fields))
-                if fields.get("success") == Some(&serde_json::Value::Bool(true))
-                    && !fields.contains_key("error") =>
-            {
-                ProbeState::Valid
+        200 if !response.truncated => {
+            match serde_json::from_slice::<serde_json::Value>(&response.body) {
+                Ok(serde_json::Value::Object(fields))
+                    if fields.get("success") == Some(&serde_json::Value::Bool(true))
+                        && !fields.contains_key("error") =>
+                {
+                    ProbeState::Valid
+                }
+                _ => ProbeState::Indeterminate,
             }
-            _ => ProbeState::Indeterminate,
-        },
+        }
         200 => ProbeState::Indeterminate,
         401 | 403 => ProbeState::Rejected,
         429 => ProbeState::RateLimited,
@@ -710,7 +712,11 @@ mod tests {
             (200, r#"{"userid":"Ada"}"#, ProbeState::Indeterminate),
             (200, r#"{"success":"true"}"#, ProbeState::Indeterminate),
             (200, r#"{"success":1}"#, ProbeState::Indeterminate),
-            (200, r#"{"success":true,"error":"unauthorized"}"#, ProbeState::Indeterminate),
+            (
+                200,
+                r#"{"success":true,"error":"unauthorized"}"#,
+                ProbeState::Indeterminate,
+            ),
             (200, "[]", ProbeState::Indeterminate),
             (200, "<html>", ProbeState::Indeterminate),
             (401, "Not Authorized (WiGLE.net)", ProbeState::Rejected),
