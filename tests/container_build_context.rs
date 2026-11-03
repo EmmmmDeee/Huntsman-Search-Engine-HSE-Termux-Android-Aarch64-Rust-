@@ -57,7 +57,8 @@ fn embedded_osint_catalog_is_available_to_container_builder() {
     let ignore = fs::read_to_string(".dockerignore").expect(".dockerignore");
     let catalog = "docs/OSINT_DISCIPLINE_MATRIX.json";
     assert!(
-        dockerfile.contains("COPY docs/OSINT_DISCIPLINE_MATRIX.json ./docs/OSINT_DISCIPLINE_MATRIX.json"),
+        dockerfile
+            .contains("COPY docs/OSINT_DISCIPLINE_MATRIX.json ./docs/OSINT_DISCIPLINE_MATRIX.json"),
         "the container must copy the canonical JSON alongside embedded Rust source"
     );
     assert!(
@@ -68,5 +69,9 @@ fn embedded_osint_catalog_is_available_to_container_builder() {
         ignore.lines().any(|line| line == format!("!{catalog}")),
         "the embedded JSON must be allowed through .dockerignore"
     );
-    assert!(fs::metadata(catalog).expect("embedded OSINT catalogue").is_file());
+    assert!(
+        fs::metadata(catalog)
+            .expect("embedded OSINT catalogue")
+            .is_file()
+    );
 }
