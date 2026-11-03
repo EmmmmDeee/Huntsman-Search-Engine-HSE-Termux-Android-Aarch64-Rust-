@@ -213,7 +213,7 @@ fn numverify_evidence(entity: &mut Entity, v: &numverify::Verification) {
     .with_attr("valid", v.valid.to_string())
     .with_attr(
         "provider_scope",
-        "number-validation metadata only; not subscriber identity, live service status or real-time geolocation",
+        "number-validation metadata only, not subscriber identity, live service status or real-time geolocation",
     )
     .with_optional_attrs([
         ("carrier", v.carrier.as_deref()),
@@ -430,7 +430,7 @@ mod tests {
                     .expect("Numverify evidence");
                 assert!(
                     provider.attr_values("provider_scope").eq([
-                        "number-validation metadata only; not subscriber identity, live service status or real-time geolocation"
+                        "number-validation metadata only, not subscriber identity, live service status or real-time geolocation"
                     ])
                 );
                 assert!(text.contains("numverify\tsuccess\tfound=1"), "{text}");
