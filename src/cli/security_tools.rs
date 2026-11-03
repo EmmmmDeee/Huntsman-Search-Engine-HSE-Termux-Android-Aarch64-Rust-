@@ -6,9 +6,9 @@ use std::process::ExitCode;
 use super::{fail, terminal_json_pretty};
 use huntsman_recon::exit::{EX_DATAERR, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::security_toolkit;
 use huntsman_recon::security_web;
-use huntsman_recon::http::{TransportConfig, UreqTransport};
 use std::time::Duration;
 
 pub(super) const HELP: &str = "security-tools catalog | security-tools sha256-audit HEX_SHA256 WORDLIST | security-tools headers HTTPS_ORIGIN | security-tools paths HTTPS_ORIGIN WORDLIST --authorized\\n\\
