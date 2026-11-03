@@ -161,13 +161,14 @@ impl Joined {
     /// not; else inconclusive. **Pure.**
     #[must_use]
     pub fn of(answers: &[EndpointAnswer]) -> Self {
-        let found: usize = answers
-            .iter()
-            .map(|answer| match answer {
+        // Provider counts are untrusted: preserve the maximum representable total
+        // rather than overflowing or panicking when aggregating large responses.
+        let found = answers.iter().fold(0usize, |total, answer| {
+            total.saturating_add(match answer {
                 EndpointAnswer::Found(count) => *count,
                 _ => 0,
             })
-            .sum();
+        });
         if found > 0 {
             return Self::Found(found);
         }
@@ -178,20 +179,24 @@ impl Joined {
         {
             return Self::Absent;
         }
-        let failures: Vec<(usize, SourceOutcomeKind)> = answers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, answer)| match answer {
-                EndpointAnswer::Failed(kind) => Some((index, *kind)),
-                _ => None,
-            })
-            .collect();
-        let why = failures
-            .iter()
-            .find(|(_, kind)| *kind != SourceOutcomeKind::RefusedBeforeSending)
-            .or_else(|| failures.first());
-        match why {
-            Some(&(index, kind)) if failures.len() == answers.len() => {
+        // A single pass avoids allocating a failure vector for every source.
+        // Preserve the first non-refusal failure, otherwise the first failure.
+        let mut first_failure = None;
+        let mut first_non_refusal = None;
+        let mut failure_count = 0usize;
+        for (index, answer) in answers.iter().enumerate() {
+            if let EndpointAnswer::Failed(kind) = answer {
+                failure_count += 1;
+                if first_failure.is_none() {
+                    first_failure = Some((index, *kind));
+                }
+                if *kind != SourceOutcomeKind::RefusedBeforeSending && first_non_refusal.is_none() {
+                    first_non_refusal = Some((index, *kind));
+                }
+            }
+        }
+        match first_non_refusal.or(first_failure) {
+            Some((index, kind)) if failure_count == answers.len() => {
                 Self::Unanswered { index, kind }
             }
             _ => Self::Inconclusive,
@@ -474,12 +479,12 @@ impl SourceReach {
     }
 }
 
-/// A lookup where no row's kind was accepted fails (exit 69, [`SourceRun::Failed`]) led by
+/// A lookup where no row's validated outcome was accepted fails (exit 69, [`SourceRun::Failed`]) led by
 /// `lead` and, when a row exists, the first configured row's reason (else the first row's), so
 /// the operator reads why; `None` when some row was accepted.
 #[must_use]
 pub fn none_accepted<R>(outcomes: &[SourceExecutionOutcome], lead: &str) -> Option<SourceRun<R>> {
-    if outcomes.iter().any(|o| o.kind.is_accepted()) {
+    if outcomes.iter().any(SourceExecutionOutcome::is_accepted) {
         return None;
     }
     let why = outcomes
@@ -620,6 +625,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn joined_count_saturates_for_untrusted_provider_totals() {
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Found(usize::MAX), EndpointAnswer::Found(1)]),
+            Joined::Found(usize::MAX)
+        );
+    }
+
+    #[test]
+    fn joined_positive_counts_are_order_invariant() {
+        let a = EndpointAnswer::Found(7);
+        let b = EndpointAnswer::Found(11);
+        let failed = EndpointAnswer::Failed(SourceOutcomeKind::RateLimited);
+        assert_eq!(Joined::of(&[a, b, failed]), Joined::Found(18));
+        assert_eq!(Joined::of(&[failed, b, a]), Joined::Found(18));
+    }
+
+    #[test]
+    fn unverified_or_partial_answers_cannot_prove_absence() {
+        assert_eq!(Joined::of(&[]), Joined::Inconclusive);
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Found(0)]),
+            Joined::Inconclusive
+        );
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Unvouched]),
+            Joined::Inconclusive
+        );
+        assert_eq!(
+            Joined::of(&[
+                EndpointAnswer::Absent,
+                EndpointAnswer::Failed(SourceOutcomeKind::BotWaf)
+            ]),
+            Joined::Inconclusive
+        );
+    }
+
+    #[test]
+    fn all_absent_is_the_only_proven_absence() {
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Absent]),
+            Joined::Absent
+        );
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Found(0)]),
+            Joined::Inconclusive
+        );
+    }
+
+    #[test]
+    fn all_failed_prefers_first_non_refusal_without_reordering() {
+        let refused = EndpointAnswer::Failed(SourceOutcomeKind::RefusedBeforeSending);
+        let limited = EndpointAnswer::Failed(SourceOutcomeKind::RateLimited);
+        let blocked = EndpointAnswer::Failed(SourceOutcomeKind::BotWaf);
+        assert_eq!(
+            Joined::of(&[refused, limited, blocked]),
+            Joined::Unanswered {
+                index: 1,
+                kind: SourceOutcomeKind::RateLimited
+            }
+        );
+        assert_eq!(
+            Joined::of(&[refused, refused]),
+            Joined::Unanswered {
+                index: 0,
+                kind: SourceOutcomeKind::RefusedBeforeSending
+            }
+        );
+        assert_eq!(
+            Joined::of(&[refused, limited, EndpointAnswer::Unvouched]),
+            Joined::Inconclusive
+        );
+    }
+
+    #[test]
     fn none_accepted_names_why_and_always_exits_unavailable() {
         let down = SourceExecutionOutcome::failed(
             "blockchain",
@@ -647,6 +726,37 @@ mod tests {
         ));
         let ok = SourceExecutionOutcome::valid_zero("blockchain", 1);
         assert!(none_accepted::<()>(&[down, ok], "lead").is_none());
+    }
+
+    #[test]
+    fn none_accepted_rejects_contradictory_saved_verdict_counts() {
+        let false_success = SourceExecutionOutcome::observed(
+            "provider",
+            1,
+            SourceOutcomeKind::Success,
+            Some(200),
+            Some(0),
+            "zero parsed rows",
+        );
+        let false_zero = SourceExecutionOutcome::observed(
+            "provider",
+            1,
+            SourceOutcomeKind::ValidZero,
+            Some(200),
+            Some(9),
+            "nine parsed rows",
+        );
+        for row in [false_success, false_zero] {
+            assert!(!row.is_accepted());
+            assert!(matches!(
+                SourceReach::of(std::slice::from_ref(&row)),
+                SourceReach::Failed(Some(_))
+            ));
+            assert!(matches!(
+                none_accepted::<()>(std::slice::from_ref(&row), "no verified result"),
+                Some(SourceRun::Failed(_))
+            ));
+        }
     }
 
     #[test]
