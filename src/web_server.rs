@@ -1403,6 +1403,7 @@ fn protected_path(path: &str) -> bool {
             | INSPECT_PATH
             | BLUEPRINT_PATH
             | RHINSER_CATALOG_PATH
+            | "/api/osint/matrix"
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
@@ -1469,6 +1470,7 @@ fn route(
             json_ok(&body, head)
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
+        "/api/osint/matrix" => json_ok(crate::osint_file_matrix::json_catalog().trim_end(), head),
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
