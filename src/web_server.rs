@@ -1475,12 +1475,10 @@ fn route(
             json_ok(&body, head)
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
-        OSINT_MATRIX_PATH => {
-            match serde_json::to_string_pretty(&crate::osint_matrix::report()) {
-                Ok(body) => json_ok(&body, head),
-                Err(_) => json_error(500, "OSINT source matrix unavailable"),
-            }
-        }
+        OSINT_MATRIX_PATH => match serde_json::to_string_pretty(&crate::osint_matrix::report()) {
+            Ok(body) => json_ok(&body, head),
+            Err(_) => json_error(500, "OSINT source matrix unavailable"),
+        },
         RHINSER_NATIVE_PATH => rhinser_native_response(parsed),
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
@@ -1577,7 +1575,10 @@ mod lookup;
 mod page;
 mod response;
 mod settings;
-use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response, rhinser_native_response};
+use analysis::{
+    analyze_response, inspect_response, investigate_response, osint_offline_response,
+    rhinser_native_response,
+};
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use page::{FAVICON_SVG, PAGE, PAGE_ID};
