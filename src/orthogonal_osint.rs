@@ -29,37 +29,89 @@ struct Probe {
 /// This is an acquisition *hypothesis* catalogue, not a source capability
 /// assertion. Existing correlator taxonomy is the sole modality classifier.
 const DOMAIN: &[Probe] = &[
-    Probe { modality: "infra", check: "Cross-check DNS, certificate transparency and RDAP primary records." },
-    Probe { modality: "code", check: "Check public code and package metadata for independently sourced domain references." },
-    Probe { modality: "search", check: "Check indexed and archived public pages, retaining original capture URLs and dates." },
+    Probe {
+        modality: "infra",
+        check: "Cross-check DNS, certificate transparency and RDAP primary records.",
+    },
+    Probe {
+        modality: "code",
+        check: "Check public code and package metadata for independently sourced domain references.",
+    },
+    Probe {
+        modality: "search",
+        check: "Check indexed and archived public pages, retaining original capture URLs and dates.",
+    },
 ];
 const EMAIL: &[Probe] = &[
-    Probe { modality: "breach", check: "Check authorised breach notifications; keep mirrors of one corpus in one upstream family." },
-    Probe { modality: "email_intel", check: "Check published mail records and public-key metadata, not address-owner inference." },
-    Probe { modality: "code", check: "Check public code metadata for exact-address references, not username similarity." },
+    Probe {
+        modality: "breach",
+        check: "Check authorised breach notifications; keep mirrors of one corpus in one upstream family.",
+    },
+    Probe {
+        modality: "email_intel",
+        check: "Check published mail records and public-key metadata, not address-owner inference.",
+    },
+    Probe {
+        modality: "code",
+        check: "Check public code metadata for exact-address references, not username similarity.",
+    },
 ];
 const USERNAME: &[Probe] = &[
-    Probe { modality: "code", check: "Check public code accounts; equal handles alone do not prove shared ownership." },
-    Probe { modality: "forum", check: "Check publicly accessible forum profiles for explicit cross-links." },
-    Probe { modality: "social", check: "Check public social profiles for independently verifiable links." },
-    Probe { modality: "presence", check: "Check platform existence without turning existence into an identity match." },
+    Probe {
+        modality: "code",
+        check: "Check public code accounts; equal handles alone do not prove shared ownership.",
+    },
+    Probe {
+        modality: "forum",
+        check: "Check publicly accessible forum profiles for explicit cross-links.",
+    },
+    Probe {
+        modality: "social",
+        check: "Check public social profiles for independently verifiable links.",
+    },
+    Probe {
+        modality: "presence",
+        check: "Check platform existence without turning existence into an identity match.",
+    },
 ];
 const ORG: &[Probe] = &[
-    Probe { modality: "identity_registry", check: "Check relevant authoritative business or organisation register identifiers." },
-    Probe { modality: "search", check: "Check dated public announcements and archives for the same legal identifier." },
-    Probe { modality: "code", check: "Check public package or repository publisher metadata, not name alone." },
+    Probe {
+        modality: "identity_registry",
+        check: "Check relevant authoritative business or organisation register identifiers.",
+    },
+    Probe {
+        modality: "search",
+        check: "Check dated public announcements and archives for the same legal identifier.",
+    },
+    Probe {
+        modality: "code",
+        check: "Check public package or repository publisher metadata, not name alone.",
+    },
 ];
 const IP: &[Probe] = &[
-    Probe { modality: "infra", check: "Cross-check live authorised RDAP, BGP and passive DNS, recording each observation date." },
-    Probe { modality: "search", check: "Check public historical indexes; old IP attribution is not current ownership." },
+    Probe {
+        modality: "infra",
+        check: "Cross-check live authorised RDAP, BGP and passive DNS, recording each observation date.",
+    },
+    Probe {
+        modality: "search",
+        check: "Check public historical indexes; old IP attribution is not current ownership.",
+    },
 ];
 const PERSON: &[Probe] = &[
-    Probe { modality: "identity_registry", check: "Check publicly available authoritative records with exact identifiers." },
-    Probe { modality: "search", check: "Check dated public records without treating namesakes as the same person." },
+    Probe {
+        modality: "identity_registry",
+        check: "Check publicly available authoritative records with exact identifiers.",
+    },
+    Probe {
+        modality: "search",
+        check: "Check dated public records without treating namesakes as the same person.",
+    },
 ];
-const RF: &[Probe] = &[
-    Probe { modality: "rf", check: "Compare consented radio observations with their acquisition and freshness evidence; never infer location from a cache." },
-];
+const RF: &[Probe] = &[Probe {
+    modality: "rf",
+    check: "Compare consented radio observations with their acquisition and freshness evidence; never infer location from a cache.",
+}];
 
 fn probes(kind: &EntityKind) -> &'static [Probe] {
     match kind {
@@ -144,13 +196,15 @@ pub fn discover(entities: &[Entity], ancestry: &EvidenceAncestryGraph) -> Orthog
         if probes(&entity.kind).is_empty() {
             continue;
         }
-        let entry = grouped.entry(entity.uid.clone()).or_insert_with(|| EvidenceSummary {
-            kind: entity.kind.clone(),
-            modalities: BTreeSet::new(),
-            collectors: BTreeSet::new(),
-            upstream: BTreeSet::new(),
-            ancestry_ids: BTreeSet::new(),
-        });
+        let entry = grouped
+            .entry(entity.uid.clone())
+            .or_insert_with(|| EvidenceSummary {
+                kind: entity.kind.clone(),
+                modalities: BTreeSet::new(),
+                collectors: BTreeSet::new(),
+                upstream: BTreeSet::new(),
+                ancestry_ids: BTreeSet::new(),
+            });
         for evidence in &entity.evidence {
             if evidence.is_inferred {
                 continue;
@@ -161,8 +215,13 @@ pub fn discover(entities: &[Entity], ancestry: &EvidenceAncestryGraph) -> Orthog
             // The ABR collector is admitted only through the existing verified
             // registry lineage gate, never through a user-written family label.
             let family = if classified == "other"
-                && matches!(lineage, Lineage::Upstream { kind: crate::lineage::UpstreamKind::Registry, .. })
-            {
+                && matches!(
+                    lineage,
+                    Lineage::Upstream {
+                        kind: crate::lineage::UpstreamKind::Registry,
+                        ..
+                    }
+                ) {
                 "identity_registry"
             } else {
                 classified
