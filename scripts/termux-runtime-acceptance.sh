@@ -291,6 +291,27 @@ verify_api() {
   grep -q '"count"' "$modules" || return 1
   grep -q '"invariant"' "$command" || return 1
   grep -q '"roles"' "$command" || return 1
+  # On-device acceptance for the canonical source-file matrix and offline Rhinser bridge.
+  # Both endpoints are local-only tests; neither invokes any live remote source.
+  curl --fail --silent --show-error --max-time 5 \
+    "$base/api/osint/matrix" -o "$WORK_DIR/osint-matrix.json" || return 1
+  jq -e '.status == "source_inventory_not_live_verification"
+    and .target == "android-aarch64-termux-rootless"
+    and .runtime_llm == false
+    and (.rows_count >= 20)
+    and (.rows | any(.id == "geo_coordinates"))
+    and (.rows | any(.id == "human_casework"))
+    and (.rows | any(.id == "net_dns"))
+    and (.rows | any(.id == "rhinser_native"))' \
+    "$WORK_DIR/osint-matrix.json" >/dev/null || return 1
+  curl --fail --silent --show-error --max-time 5 \
+    -H 'X-Huntsman-Lookup: 1' -H 'Content-Type: application/json' \
+    --data-binary @"$RHINSER_FIXTURE" \
+    "$base/api/osint/native" -o "$WORK_DIR/rhinser-api.json" || return 1
+  jq -e '.evidence_role == "operator_submitted_unverified"
+    and .device_attested == false and .radio_access == false
+    and (.observations | length == 3)' "$WORK_DIR/rhinser-api.json" >/dev/null || return 1
+  pass 'GEOINT/HUMINT/NETINT OSINT matrix and offline Rhinser Web API verified on this runtime'
   # The Web UI lookup path, offline: a phone lookup makes no request, so this proves the
   # handler, its worker thread and the JSON report on the handset without network or keys.
   local lookup="$WORK_DIR/lookup.json"
