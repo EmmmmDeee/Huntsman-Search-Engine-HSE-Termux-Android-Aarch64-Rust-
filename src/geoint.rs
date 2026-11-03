@@ -97,5 +97,4 @@ mod tests {
         assert!(!valid_coordinate(0.0, f64::INFINITY));
         assert!(valid_coordinate(-90.0, 180.0));
     }
-
 }
