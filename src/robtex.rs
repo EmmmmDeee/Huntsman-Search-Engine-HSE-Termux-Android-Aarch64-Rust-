@@ -280,11 +280,11 @@ pub fn decode_forward(body: &[u8], domain: &str) -> Result<Option<Finding>, LegE
 
 /// Distinct cleaned names, every one, without a trailing dot. **Pure.**
 fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    values
-        .filter_map(|value| api_leg::clean(Some(value.trim_end_matches('.'))))
-        .filter(|value| seen.insert(value.to_ascii_lowercase()))
-        .collect()
+    let mut out = api_leg::Distinct::default();
+    for value in values.filter_map(|value| api_leg::clean(Some(value.trim_end_matches('.')))) {
+        out.push_ignoring_ascii_case(&value);
+    }
+    out.into_values()
 }
 
 #[cfg(test)]

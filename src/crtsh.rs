@@ -15,12 +15,13 @@
 //! the same fixed pause. Challenge pages, DNS/TLS failures, 404/500, truncated or
 //! malformed 2xx bodies still fail once, typed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::api_leg::Distinct;
 use crate::deadline::{Clock, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::fetch::{FetchOptions, fetch};
@@ -328,23 +329,6 @@ fn cert_evidence(entry: &CrtEntry, summary: &str, scan_id: &str) -> Evidence {
     ev
 }
 
-/// Values in the order first given, each once. **Pure.**
-#[derive(Default)]
-struct Distinct {
-    values: Vec<String>,
-    seen: HashSet<String>,
-}
-
-impl Distinct {
-    fn push(&mut self, value: Option<String>) {
-        if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
-            if self.seen.insert(value.clone()) {
-                self.values.push(value);
-            }
-        }
-    }
-}
-
 /// The earliest and latest of some times crt.sh writes in one ISO 8601 form, so the text
 /// orders as the time. **Pure.**
 fn span<'a>(times: impl Iterator<Item = Option<&'a str>>) -> (Option<&'a str>, Option<&'a str>) {
@@ -369,20 +353,20 @@ fn certificates_evidence(certs: &[&CrtEntry], summary: &str, scan_id: &str) -> E
         Distinct::default(),
     );
     for cert in certs {
-        ids.push(cert.id.map(|id| id.to_string()));
-        serials.push(cert.serial_number.clone());
-        issuers.push(cert.issuer_name.clone());
-        ca_ids.push(
+        ids.push_nonblank(cert.id.map(|id| id.to_string()));
+        serials.push_nonblank(cert.serial_number.clone());
+        issuers.push_nonblank(cert.issuer_name.clone());
+        ca_ids.push_nonblank(
             cert.issuer_ca_id
                 .filter(|id| *id >= 0)
                 .map(|id| id.to_string()),
         );
-        common.push(cert.common_name.as_deref().map(str::to_lowercase));
+        common.push_nonblank(cert.common_name.as_deref().map(str::to_lowercase));
     }
-    let count = if ids.values.is_empty() {
+    let count = if ids.is_empty() {
         certs.len()
     } else {
-        ids.values.len()
+        ids.len()
     };
     let (first_start, _) = span(certs.iter().map(|c| c.not_before.as_deref()));
     let (_, last_end) = span(certs.iter().map(|c| c.not_after.as_deref()));
@@ -390,11 +374,11 @@ fn certificates_evidence(certs: &[&CrtEntry], summary: &str, scan_id: &str) -> E
     let mut ev =
         cert_evidence(first, summary, scan_id).with_attr("certificates", count.to_string());
     for (key, values, separator) in [
-        ("cert_ids", &ids.values, ","),
-        ("cert_serials", &serials.values, ","),
-        ("issuers", &issuers.values, "; "),
-        ("issuer_ca_ids", &ca_ids.values, ","),
-        ("common_names", &common.values, ","),
+        ("cert_ids", ids.values(), ","),
+        ("cert_serials", serials.values(), ","),
+        ("issuers", issuers.values(), "; "),
+        ("issuer_ca_ids", ca_ids.values(), ","),
+        ("common_names", common.values(), ","),
     ] {
         if !values.is_empty() {
             ev = ev.with_attr(key, values.join(separator));
@@ -616,7 +600,7 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
         let mut signed_names = Distinct::default();
         for cert in &certs {
             for name in names_of(cert) {
-                signed_names.push(Some(name.trim().to_lowercase()));
+                signed_names.push_nonblank(Some(name.trim().to_lowercase()));
             }
         }
         let mut ev = certificates_evidence(
@@ -626,8 +610,8 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
         )
         .with_attr("issuer_dn", dn)
         .with_attr("signed_domain", domain_base);
-        if !signed_names.values.is_empty() {
-            ev = ev.with_attr("signed_names", signed_names.values.join(","));
+        if !signed_names.is_empty() {
+            ev = ev.with_attr("signed_names", signed_names.values().join(","));
         }
         o.add_evidence(ev);
         out.push(o);

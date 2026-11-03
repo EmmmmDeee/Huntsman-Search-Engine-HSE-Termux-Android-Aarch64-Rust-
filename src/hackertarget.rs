@@ -15,10 +15,9 @@
 //! with no such line (an HTML or JSON page, or nothing at all) is drift, and so is a 404, which
 //! the service gives only for a path it does not have (checked 2026-10-15), never "not found".
 
-use std::collections::HashSet;
 use std::net::IpAddr;
 
-use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, Distinct, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_domain;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
@@ -123,12 +122,12 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         let host = api_leg::clean(Some(host));
         let address = api_leg::clean(Some(address));
         if let Some(host) = host.as_deref().filter(|h| !h.eq_ignore_ascii_case(own)) {
-            hosts.push(host);
+            hosts.push_ignoring_ascii_case(host);
         }
         if let Some(address) = address.as_deref() {
-            addresses.push(address);
+            addresses.push_ignoring_ascii_case(address);
             if let Some(host) = host.as_deref() {
-                pairs.push(&format!("{host} {address}"));
+                pairs.push_ignoring_ascii_case(&format!("{host} {address}"));
             }
         }
     }
@@ -137,10 +136,10 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
             "HackerTarget: the answer is not a host list".into(),
         ));
     }
-    if hosts.values.is_empty() && addresses.values.is_empty() {
+    if hosts.is_empty() && addresses.is_empty() {
         return Ok(None);
     }
-    let total = hosts.values.len();
+    let total = hosts.len();
     let (what, why) = match indicator {
         Indicator::Ip(_) => ("domain", "Domain HackerTarget finds hosted on the address"),
         _ => ("host", "Host HackerTarget finds under the domain"),
@@ -150,11 +149,11 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         if total == 1 { "" } else { "s" }
     ))
     .attr("hosts", total.to_string())
-    .list_attr("names", &hosts.values)
-    .list_attr("addresses", &addresses.values)
-    .list_attr("host_addresses", &pairs.values)
+    .list_attr("names", hosts.values())
+    .list_attr("addresses", addresses.values())
+    .list_attr("host_addresses", pairs.values())
     .attr("raw_answer", serde_json::Value::from(lines).to_string());
-    let (hosts, addresses) = (hosts.values, addresses.values);
+    let (hosts, addresses) = (hosts.into_values(), addresses.into_values());
     for host in &hosts {
         finding = finding.pivot(PivotKind::Domain, host, why);
     }
@@ -166,21 +165,6 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         );
     }
     Ok(Some(finding))
-}
-
-/// Values in the order first given, each once (hosts compared without case). **Pure.**
-#[derive(Default)]
-struct Distinct {
-    values: Vec<String>,
-    seen: HashSet<String>,
-}
-
-impl Distinct {
-    fn push(&mut self, value: &str) {
-        if self.seen.insert(value.to_ascii_lowercase()) {
-            self.values.push(value.to_owned());
-        }
-    }
 }
 
 /// One line of the list as `(host, address)`, or `None` when it is not one: for a domain a

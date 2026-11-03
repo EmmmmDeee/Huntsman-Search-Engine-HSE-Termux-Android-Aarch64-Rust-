@@ -17,12 +17,10 @@
 //! centre (`37.751,-97.822` for every unplaced US address), which would tie unrelated addresses
 //! together. It is kept as `coordinates` either way.
 
-use std::collections::HashSet;
-
 use serde::Deserialize;
 use serde_json::{Number, Value};
 
-use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, Distinct, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_coordinates;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
@@ -164,29 +162,6 @@ pub fn lookup(
     decode(&body, indicator)
 }
 
-/// Cleaned values in the order first seen, each once. **Pure.**
-#[derive(Default)]
-struct Distinct {
-    values: Vec<String>,
-    seen: HashSet<String>,
-}
-
-impl Distinct {
-    fn extend<'a>(&mut self, values: impl IntoIterator<Item = &'a str>) {
-        for value in values {
-            if let Some(value) = api_leg::clean(Some(value)) {
-                if self.seen.insert(value.clone()) {
-                    self.values.push(value);
-                }
-            }
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-}
-
 /// An item of an OTX list: a name, or an object with a `display_name`, `name` or `id`. **Pure.**
 fn name_of(value: &Value) -> Option<&str> {
     match value {
@@ -235,18 +210,20 @@ impl Pulses {
     fn read(pulses: &[Value], info: &PulseInfo) -> Self {
         let mut out = Self::default();
         for pulse in pulses {
-            out.names.extend(text(pulse, "name"));
-            out.ids.extend(text(pulse, "id"));
+            out.names.extend_cleaned(text(pulse, "name"));
+            out.ids.extend_cleaned(text(pulse, "id"));
             out.authors
-                .extend(pulse.pointer("/author/username").and_then(Value::as_str));
-            out.tlp.extend(text(pulse, "TLP"));
-            out.tags.extend(names(pulse, "tags"));
-            out.references.extend(names(pulse, "references"));
-            out.countries.extend(names(pulse, "targeted_countries"));
-            out.attack_ids.extend(names(pulse, "attack_ids"));
-            out.families.extend(names(pulse, "malware_families"));
-            out.adversaries.extend(text(pulse, "adversary"));
-            out.industries.extend(names(pulse, "industries"));
+                .extend_cleaned(pulse.pointer("/author/username").and_then(Value::as_str));
+            out.tlp.extend_cleaned(text(pulse, "TLP"));
+            out.tags.extend_cleaned(names(pulse, "tags"));
+            out.references.extend_cleaned(names(pulse, "references"));
+            out.countries
+                .extend_cleaned(names(pulse, "targeted_countries"));
+            out.attack_ids.extend_cleaned(names(pulse, "attack_ids"));
+            out.families
+                .extend_cleaned(names(pulse, "malware_families"));
+            out.adversaries.extend_cleaned(text(pulse, "adversary"));
+            out.industries.extend_cleaned(names(pulse, "industries"));
             if let Some(created) = text(pulse, "created") {
                 if out.first.as_deref().is_none_or(|first| created < first) {
                     out.first = Some(created.to_owned());
@@ -259,7 +236,7 @@ impl Pulses {
             }
         }
         out.references
-            .extend(info.references.iter().flatten().filter_map(name_of));
+            .extend_cleaned(info.references.iter().flatten().filter_map(name_of));
         let related = info.related.as_ref();
         for group in related
             .into_iter()
@@ -267,11 +244,11 @@ impl Pulses {
             .flatten()
         {
             out.families
-                .extend(group.malware_families.iter().map(String::as_str));
+                .extend_cleaned(group.malware_families.iter().map(String::as_str));
             out.adversaries
-                .extend(group.adversary.iter().map(String::as_str));
+                .extend_cleaned(group.adversary.iter().map(String::as_str));
             out.industries
-                .extend(group.industries.iter().map(String::as_str));
+                .extend_cleaned(group.industries.iter().map(String::as_str));
         }
         out
     }
@@ -279,17 +256,17 @@ impl Pulses {
     fn into_finding(self, finding: Finding) -> Finding {
         let malicious = !self.families.is_empty() || !self.adversaries.is_empty();
         finding
-            .list_attr("pulses", &self.names.values)
-            .list_attr("pulse_ids", &self.ids.values)
-            .list_attr("pulse_authors", &self.authors.values)
-            .list_attr("pulse_tlp", &self.tlp.values)
-            .list_attr("pulse_tags", &self.tags.values)
-            .list_attr("references", &self.references.values)
-            .list_attr("targeted_countries", &self.countries.values)
-            .list_attr("targeted_industries", &self.industries.values)
-            .list_attr("attack_ids", &self.attack_ids.values)
-            .list_attr("malware_families", &self.families.values)
-            .list_attr("adversaries", &self.adversaries.values)
+            .list_attr("pulses", self.names.values())
+            .list_attr("pulse_ids", self.ids.values())
+            .list_attr("pulse_authors", self.authors.values())
+            .list_attr("pulse_tlp", self.tlp.values())
+            .list_attr("pulse_tags", self.tags.values())
+            .list_attr("references", self.references.values())
+            .list_attr("targeted_countries", self.countries.values())
+            .list_attr("targeted_industries", self.industries.values())
+            .list_attr("attack_ids", self.attack_ids.values())
+            .list_attr("malware_families", self.families.values())
+            .list_attr("adversaries", self.adversaries.values())
             .opt_attr("first_pulse", self.first)
             .opt_attr("last_pulse", self.last)
             .tag_if(malicious, tags::MALICIOUS)
@@ -331,13 +308,13 @@ impl Body {
     /// OTX's validations and false-positive assessments. **Pure.**
     fn assessments(&self, finding: Finding) -> Finding {
         let mut validations = Distinct::default();
-        validations.extend(
+        validations.extend_cleaned(
             self.validation
                 .iter()
                 .filter_map(|v| v.name.as_deref().or(v.source.as_deref())),
         );
         let mut messages = Distinct::default();
-        messages.extend(self.validation.iter().filter_map(|v| v.message.as_deref()));
+        messages.extend_cleaned(self.validation.iter().filter_map(|v| v.message.as_deref()));
         let false_positive: Vec<String> = self
             .false_positive
             .iter()
@@ -358,8 +335,8 @@ impl Body {
                 .is_some_and(|n| n.to_ascii_lowercase().contains("whitelist"))
         });
         finding
-            .list_attr("validations", &validations.values)
-            .list_attr("validation_messages", &messages.values)
+            .list_attr("validations", validations.values())
+            .list_attr("validation_messages", messages.values())
             .list_attr("false_positive", &false_positive)
             .tag_if(allowlisted, "allowlisted")
     }

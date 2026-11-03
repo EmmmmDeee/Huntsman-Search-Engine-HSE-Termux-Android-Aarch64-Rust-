@@ -178,15 +178,6 @@ pub fn lookup(
 }
 
 /// Cleaned values in the order first seen, each once. **Pure.**
-fn distinct<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    values
-        .into_iter()
-        .filter_map(|v| api_leg::clean(Some(v)))
-        .filter(|v| seen.insert(v.clone()))
-        .collect()
-}
-
 /// The text at `pointer` in `value`, its lines and runs of spaces joined by one space (the raw
 /// answer keeps the layout). A number or boolean is written as text. **Pure.**
 fn text(value: &Value, pointer: &str) -> Option<String> {
@@ -238,7 +229,10 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
     .opt_attr("organization", text(&raw, "/organization"))
     .opt_attr("geo_prefix", text(&raw, "/geo/ip"))
     .opt_attr("registered_country", text(&raw, "/geo/registered_country"))
-    .list_attr("dns_txt", &distinct(dns.txt.iter().map(String::as_str)))
+    .list_attr(
+        "dns_txt",
+        &api_leg::distinct(dns.txt.iter().map(String::as_str)),
+    )
     .opt_attr("domains_seen", body.domains_count.map(|c| c.to_string()))
     .opt_attr(
         "subdomains_seen",
@@ -261,7 +255,7 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
 
 /// The ports' services and the software Netlas fingerprinted. **Pure.**
 fn services(finding: Finding, body: &Body) -> Finding {
-    let protocols = distinct(body.ports.iter().filter_map(|p| p.protocol.as_deref()));
+    let protocols = api_leg::distinct(body.ports.iter().filter_map(|p| p.protocol.as_deref()));
     let port_services: Vec<String> = body
         .ports
         .iter()
@@ -275,18 +269,19 @@ fn services(finding: Finding, body: &Body) -> Finding {
         })
         .collect();
     let tags = || body.software.iter().flat_map(|s| &s.tag);
-    let software = distinct(tags().filter_map(|t| t.fullname.as_deref().or(t.name.as_deref())));
-    let categories = distinct(
+    let software =
+        api_leg::distinct(tags().filter_map(|t| t.fullname.as_deref().or(t.name.as_deref())));
+    let categories = api_leg::distinct(
         tags()
             .flat_map(|t| t.category.iter().flatten())
             .map(String::as_str),
     );
-    let uris = distinct(body.software.iter().filter_map(|s| s.uri.as_deref()));
+    let uris = api_leg::distinct(body.software.iter().filter_map(|s| s.uri.as_deref()));
     finding
         .list_attr("protocols", &protocols)
         .list_attr(
             "port_services",
-            &distinct(port_services.iter().map(String::as_str)),
+            &api_leg::distinct(port_services.iter().map(String::as_str)),
         )
         .list_attr("software", &software)
         .list_attr("software_categories", &categories)
@@ -295,10 +290,10 @@ fn services(finding: Finding, body: &Body) -> Finding {
 
 /// Everything the IOC listings say, across them all. **Pure.**
 fn listings(finding: Finding, ioc: &[Ioc]) -> Finding {
-    let threats = distinct(ioc.iter().flat_map(|i| &i.threat).map(String::as_str));
-    let tags = distinct(ioc.iter().flat_map(|i| &i.tags).map(String::as_str));
-    let urls = distinct(ioc.iter().filter_map(|i| i.url.as_deref()));
-    let notes = distinct(
+    let threats = api_leg::distinct(ioc.iter().flat_map(|i| &i.threat).map(String::as_str));
+    let tags = api_leg::distinct(ioc.iter().flat_map(|i| &i.tags).map(String::as_str));
+    let urls = api_leg::distinct(ioc.iter().filter_map(|i| i.url.as_deref()));
+    let notes = api_leg::distinct(
         ioc.iter()
             .filter_map(|i| i.fp.as_ref().and_then(|n| n.descr.as_deref())),
     );
@@ -329,19 +324,19 @@ fn network_whois(mut finding: Finding, whois: &Value) -> Finding {
         .opt_attr("net_handle", text(whois, "/net/handle"))
         .opt_attr("net_description", text(whois, "/net/description"))
         .opt_attr("net_address", text(whois, "/net/address"))
-        .list_attr("net_cidr", &distinct(texts(whois, "/net/cidr")))
+        .list_attr("net_cidr", &api_leg::distinct(texts(whois, "/net/cidr")))
         .list_attr(
             "net_emails",
-            &distinct(texts(whois, "/net/contacts/emails")),
+            &api_leg::distinct(texts(whois, "/net/contacts/emails")),
         )
         .list_attr(
             "net_phones",
-            &distinct(texts(whois, "/net/contacts/phones")),
+            &api_leg::distinct(texts(whois, "/net/contacts/phones")),
         )
         .opt_attr("net_updated", text(whois, "/net/updated"))
         .opt_attr("as_registry", text(whois, "/asn/registry"))
         .opt_attr("as_country", text(whois, "/asn/country"))
-        .list_attr("as_cidr", &distinct(texts(whois, "/asn/cidr")));
+        .list_attr("as_cidr", &api_leg::distinct(texts(whois, "/asn/cidr")));
     for number in texts(whois, "/asn/number") {
         finding = finding.pivot(
             PivotKind::Asn,
@@ -368,10 +363,10 @@ fn domain_whois(finding: Finding, whois: &Value) -> Finding {
         .opt_attr("created", text(whois, "/created_date"))
         .opt_attr("updated", text(whois, "/updated_date"))
         .opt_attr("expires", text(whois, "/expiration_date"))
-        .list_attr("domain_status", &distinct(texts(whois, "/status")))
+        .list_attr("domain_status", &api_leg::distinct(texts(whois, "/status")))
         .list_attr(
             "whois_name_servers",
-            &distinct(texts(whois, "/name_servers")),
+            &api_leg::distinct(texts(whois, "/name_servers")),
         )
         .opt_attr(
             "registrant_organization",

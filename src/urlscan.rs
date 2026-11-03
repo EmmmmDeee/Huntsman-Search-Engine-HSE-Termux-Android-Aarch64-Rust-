@@ -13,12 +13,10 @@
 //! and screenshot link, and urlscan's verdicts and highest score. Each page's domain, address,
 //! AS and AS holder, and each submitted domain, are pivots.
 
-use std::collections::HashSet;
-
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, Distinct, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -159,29 +157,6 @@ pub fn lookup(
     decode(&body, indicator)
 }
 
-/// Cleaned values in the order first seen, each once. **Pure.**
-#[derive(Default)]
-struct Distinct {
-    values: Vec<String>,
-    seen: HashSet<String>,
-}
-
-impl Distinct {
-    fn push(&mut self, value: Option<&str>) {
-        if let Some(value) = api_leg::clean(value) {
-            if self.seen.insert(value.clone()) {
-                self.values.push(value);
-            }
-        }
-    }
-
-    /// A value urlscan.io gives, read as [`api_leg::scalar`] reads it: a string cleaned, a
-    /// number or flag as written, anything else skipped.
-    fn push_scalar(&mut self, value: Option<&Value>) {
-        self.push(value.and_then(api_leg::scalar).as_deref());
-    }
-}
-
 /// What the listed scans say, across them all. **Pure.**
 #[derive(Default)]
 struct Scans {
@@ -223,22 +198,22 @@ impl Scans {
                         out.newest = Some(time.to_owned());
                     }
                 }
-                out.urls.push(task.url.as_deref());
-                out.scan_ids.push(task.uuid.as_deref());
+                out.urls.push_cleaned(task.url.as_deref());
+                out.scan_ids.push_cleaned(task.uuid.as_deref());
             }
             if let Some(page) = &scan.page {
-                out.page_urls.push(page.url.as_deref());
-                out.titles.push(page.title.as_deref());
+                out.page_urls.push_cleaned(page.url.as_deref());
+                out.titles.push_cleaned(page.title.as_deref());
                 out.statuses.push_scalar(page.status.as_ref());
-                out.mime_types.push(page.mime_type.as_deref());
-                out.servers.push(page.server.as_deref());
-                out.tls_issuers.push(page.tls_issuer.as_deref());
-                out.countries.push(page.country.as_deref());
+                out.mime_types.push_cleaned(page.mime_type.as_deref());
+                out.servers.push_cleaned(page.server.as_deref());
+                out.tls_issuers.push_cleaned(page.tls_issuer.as_deref());
+                out.countries.push_cleaned(page.country.as_deref());
                 out.redirects.push_scalar(page.redirected.as_ref());
-                out.apex_domains.push(page.apex_domain.as_deref());
+                out.apex_domains.push_cleaned(page.apex_domain.as_deref());
             }
-            out.results.push(scan.result.as_deref());
-            out.screenshots.push(scan.screenshot.as_deref());
+            out.results.push_cleaned(scan.result.as_deref());
+            out.screenshots.push_cleaned(scan.screenshot.as_deref());
         }
         out
     }
@@ -249,19 +224,19 @@ impl Scans {
             .opt_attr("max_verdict_score", self.best_score.map(|s| s.to_string()))
             .opt_attr("oldest_scan", self.oldest)
             .opt_attr("newest_scan", self.newest)
-            .list_attr("urls", &self.urls.values)
-            .list_attr("page_urls", &self.page_urls.values)
-            .list_attr("page_titles", &self.titles.values)
-            .list_attr("page_statuses", &self.statuses.values)
-            .list_attr("mime_types", &self.mime_types.values)
-            .list_attr("servers", &self.servers.values)
-            .list_attr("tls_issuers", &self.tls_issuers.values)
-            .list_attr("page_countries", &self.countries.values)
-            .list_attr("redirects", &self.redirects.values)
-            .list_attr("apex_domains", &self.apex_domains.values)
-            .list_attr("scan_ids", &self.scan_ids.values)
-            .list_attr("result_links", &self.results.values)
-            .list_attr("screenshots", &self.screenshots.values)
+            .list_attr("urls", self.urls.values())
+            .list_attr("page_urls", self.page_urls.values())
+            .list_attr("page_titles", self.titles.values())
+            .list_attr("page_statuses", self.statuses.values())
+            .list_attr("mime_types", self.mime_types.values())
+            .list_attr("servers", self.servers.values())
+            .list_attr("tls_issuers", self.tls_issuers.values())
+            .list_attr("page_countries", self.countries.values())
+            .list_attr("redirects", self.redirects.values())
+            .list_attr("apex_domains", self.apex_domains.values())
+            .list_attr("scan_ids", self.scan_ids.values())
+            .list_attr("result_links", self.results.values())
+            .list_attr("screenshots", self.screenshots.values())
             .tag_if(self.malicious > 0, tags::MALICIOUS)
     }
 }
