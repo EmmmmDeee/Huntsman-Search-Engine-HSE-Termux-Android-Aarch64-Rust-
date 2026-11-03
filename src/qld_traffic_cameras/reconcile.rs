@@ -254,7 +254,13 @@ fn coordinates(camera: &Camera) -> (f64, f64) {
 /// false zero coverage. Different IDs within 100m are review candidates only.
 #[must_use]
 pub fn reconcile(webcam: &Catalogue, gis: &GisCatalogue) -> Option<Reconciliation> {
-    if !webcam.outcome.kind.is_accepted() || !gis.outcome.kind.is_accepted() {
+    if !webcam.outcome.kind.is_accepted()
+        || !gis.outcome.kind.is_accepted()
+        || webcam.rejected_features != 0
+        || gis.rejected_features != 0
+    {
+        // A partly rejected catalogue has unknown membership: do not invent
+        // source-only IDs or completeness percentages from lossy parsing.
         return None;
     }
     let primary: BTreeMap<u64, &Camera> = webcam.cameras.iter().map(|c| (c.id, c)).collect();
@@ -437,6 +443,16 @@ mod tests {
         );
         assert!(reconcile(&webcam(&[1]), &g).is_none());
         assert!(parse_gis(&json!({"error":{"code":403}}), 10, 200).is_err());
+    }
+
+    #[test]
+    fn partially_rejected_catalogues_cannot_claim_exact_source_differences() {
+        let mut w = webcam(&[1, 2]);
+        w.rejected_features = 1;
+        assert!(reconcile(&w, &gis(&[2])).is_none());
+        let mut g = gis(&[1]);
+        g.rejected_features = 1;
+        assert!(reconcile(&webcam(&[1]), &g).is_none());
     }
 
     #[test]
