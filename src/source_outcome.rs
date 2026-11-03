@@ -479,12 +479,12 @@ impl SourceReach {
     }
 }
 
-/// A lookup where no row's kind was accepted fails (exit 69, [`SourceRun::Failed`]) led by
+/// A lookup where no row's validated outcome was accepted fails (exit 69, [`SourceRun::Failed`]) led by
 /// `lead` and, when a row exists, the first configured row's reason (else the first row's), so
 /// the operator reads why; `None` when some row was accepted.
 #[must_use]
 pub fn none_accepted<R>(outcomes: &[SourceExecutionOutcome], lead: &str) -> Option<SourceRun<R>> {
-    if outcomes.iter().any(|o| o.kind.is_accepted()) {
+    if outcomes.iter().any(SourceExecutionOutcome::is_accepted) {
         return None;
     }
     let why = outcomes
@@ -644,7 +644,10 @@ mod tests {
     #[test]
     fn unverified_or_partial_answers_cannot_prove_absence() {
         assert_eq!(Joined::of(&[]), Joined::Inconclusive);
-        assert_eq!(Joined::of(&[EndpointAnswer::Found(0)]), Joined::Inconclusive);
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Found(0)]),
+            Joined::Inconclusive
+        );
         assert_eq!(
             Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Unvouched]),
             Joined::Inconclusive
@@ -723,6 +726,37 @@ mod tests {
         ));
         let ok = SourceExecutionOutcome::valid_zero("blockchain", 1);
         assert!(none_accepted::<()>(&[down, ok], "lead").is_none());
+    }
+
+    #[test]
+    fn none_accepted_rejects_contradictory_saved_verdict_counts() {
+        let false_success = SourceExecutionOutcome::observed(
+            "provider",
+            1,
+            SourceOutcomeKind::Success,
+            Some(200),
+            Some(0),
+            "zero parsed rows",
+        );
+        let false_zero = SourceExecutionOutcome::observed(
+            "provider",
+            1,
+            SourceOutcomeKind::ValidZero,
+            Some(200),
+            Some(9),
+            "nine parsed rows",
+        );
+        for row in [false_success, false_zero] {
+            assert!(!row.is_accepted());
+            assert!(matches!(
+                SourceReach::of(std::slice::from_ref(&row)),
+                SourceReach::Failed(Some(_))
+            ));
+            assert!(matches!(
+                none_accepted::<()>(std::slice::from_ref(&row), "no verified result"),
+                Some(SourceRun::Failed(_))
+            ));
+        }
     }
 
     #[test]
