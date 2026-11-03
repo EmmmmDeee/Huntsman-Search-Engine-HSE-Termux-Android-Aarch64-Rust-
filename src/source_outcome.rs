@@ -474,12 +474,12 @@ impl SourceReach {
     }
 }
 
-/// A lookup where no row's kind was accepted fails (exit 69, [`SourceRun::Failed`]) led by
+/// A lookup where no full source outcome was accepted fails (exit 69, [`SourceRun::Failed`]) led by
 /// `lead` and, when a row exists, the first configured row's reason (else the first row's), so
 /// the operator reads why; `None` when some row was accepted.
 #[must_use]
 pub fn none_accepted<R>(outcomes: &[SourceExecutionOutcome], lead: &str) -> Option<SourceRun<R>> {
-    if outcomes.iter().any(|o| o.kind.is_accepted()) {
+    if outcomes.iter().any(SourceExecutionOutcome::is_accepted) {
         return None;
     }
     let why = outcomes
@@ -1050,6 +1050,37 @@ mod tests {
             assert_eq!(reach.unanswered::<()>("L"), None);
             assert_eq!(reach.stopped::<()>("L"), None);
         }
+    }
+
+    #[test]
+    fn generic_none_accepted_agrees_with_canonical_source_reach() {
+        for (kind, found) in [
+            (SourceOutcomeKind::Success, Some(0)),
+            (SourceOutcomeKind::ValidZero, Some(2)),
+        ] {
+            let contradictory = SourceExecutionOutcome::observed(
+                "untrusted",
+                7,
+                kind,
+                Some(200),
+                found,
+                "recorded count contradicts the label",
+            );
+            assert!(!contradictory.is_accepted());
+            assert!(matches!(
+                none_accepted::<()>(&[contradictory.clone()], "lookup"),
+                Some(SourceRun::Failed(_))
+            ));
+            assert!(matches!(
+                SourceReach::of(&[contradictory]),
+                SourceReach::Failed(_)
+            ));
+        }
+        assert!(none_accepted::<()>(
+            &[SourceExecutionOutcome::valid_zero("verified", 7)],
+            "lookup"
+        )
+        .is_none());
     }
 
     #[test]
