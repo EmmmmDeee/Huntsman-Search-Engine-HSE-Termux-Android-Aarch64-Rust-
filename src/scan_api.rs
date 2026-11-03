@@ -2767,6 +2767,172 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// The records of an RFC 4180 document: quoted fields may hold commas, doubled quotes and
+    /// line breaks.
+    fn csv_records(text: &str) -> Vec<Vec<String>> {
+        let (mut records, mut record, mut field) = (Vec::new(), Vec::new(), String::new());
+        let (mut quoted, mut chars) = (false, text.chars().peekable());
+        while let Some(c) = chars.next() {
+            match (quoted, c) {
+                (true, '"') if chars.peek() == Some(&'"') => {
+                    chars.next();
+                    field.push('"');
+                }
+                (true, '"') => quoted = false,
+                (false, '"') => quoted = true,
+                (false, ',') => record.push(std::mem::take(&mut field)),
+                (false, '\r') => {}
+                (false, '\n') => {
+                    record.push(std::mem::take(&mut field));
+                    records.push(std::mem::take(&mut record));
+                }
+                (_, c) => field.push(c),
+            }
+        }
+        if !field.is_empty() || !record.is_empty() {
+            record.push(field);
+            records.push(record);
+        }
+        records
+    }
+
+    /// The per-type summary counts each type's elements and distinct values.
+    fn assert_summary_counts(elements: &[Value], summary: &Value) {
+        let mut by_type: std::collections::BTreeMap<&str, (u64, std::collections::BTreeSet<&str>)> =
+            std::collections::BTreeMap::new();
+        for element in elements {
+            let entry = by_type
+                .entry(element["type"].as_str().unwrap())
+                .or_default();
+            entry.0 += 1;
+            entry.1.insert(element["data"].as_str().unwrap());
+        }
+        let summary = summary.as_array().unwrap();
+        assert_eq!(summary.len(), by_type.len());
+        for row in summary {
+            let (total, unique) = &by_type[row["type"].as_str().unwrap()];
+            assert_eq!(row["total"].as_u64(), Some(*total), "{row}");
+            assert_eq!(row["unique"].as_u64(), Some(unique.len() as u64), "{row}");
+        }
+    }
+
+    /// The graph holds a node per element (same data, type and module) plus the root, an edge
+    /// from each element's saved source, and no edge to a node it lacks.
+    fn assert_graph_holds(elements: &[Value], graph: &Value) {
+        let nodes = graph["nodes"].as_array().unwrap();
+        let edges = graph["edges"].as_array().unwrap();
+        assert_eq!(
+            nodes.len(),
+            elements.len() + 1,
+            "every element plus the root"
+        );
+        let node = |id: &Value| nodes.iter().find(|node| node["id"] == *id);
+        for element in elements {
+            let found = node(&element["id"]).unwrap_or_else(|| panic!("no node for {element}"));
+            for field in ["data", "type", "module"] {
+                assert_eq!(
+                    found[field], element[field],
+                    "{field} of node {}",
+                    element["id"]
+                );
+            }
+            if element["source"].is_string() && node(&element["source"]).is_some() {
+                assert!(
+                    edges.iter().any(|edge| edge["source"] == element["source"]
+                        && edge["target"] == element["id"]),
+                    "no edge into {}",
+                    element["id"]
+                );
+            }
+        }
+        for edge in edges {
+            assert!(
+                node(&edge["source"]).is_some() && node(&edge["target"]).is_some(),
+                "{edge}"
+            );
+        }
+    }
+
+    /// Every view the web page reads of one saved scan says the same thing, field by field: the
+    /// detail's count, `/elements`, the JSON and CSV exports, the per-type summary, the graph (a
+    /// node per element plus the root, an edge from each element's source) and the correlations
+    /// in JSON and CSV. A view that drifts from the others shows the operator a different scan.
+    #[test]
+    fn every_view_of_a_saved_scan_agrees_field_by_field() {
+        let (api, dir) = api("views");
+        let id = finished(&api);
+        let get = |route: &str, query: &str| {
+            let response = api.handle("GET", &format!("/api/scans/{id}{route}"), query);
+            assert_eq!(response.status, 200, "{route}?{query}: {}", response.text());
+            response
+        };
+        let detail = body(&get("", ""));
+        let elements = body(&get("/elements", ""));
+        let elements = elements.as_array().unwrap();
+        let count = usize::try_from(detail["elements"].as_u64().unwrap()).unwrap();
+        assert!(count > 1, "the fixture scan holds more than its seed");
+        assert_eq!(elements.len(), count);
+
+        let exported = body(&get("/export", "format=json"));
+        let exported = exported.as_array().unwrap();
+        assert_eq!(exported.len(), count);
+        for (element, row) in elements.iter().zip(exported) {
+            for (field, export_field) in [
+                ("id", "id"),
+                ("type", "event_type"),
+                ("data", "data"),
+                ("module", "module"),
+                ("source", "source"),
+                ("source_data", "source_data"),
+                ("confidence", "confidence"),
+            ] {
+                assert_eq!(
+                    element[field], row[export_field],
+                    "{field} of {}",
+                    element["id"]
+                );
+            }
+            assert_eq!(
+                element["fp"].as_bool().unwrap_or(false),
+                row["false_positive"].as_bool().unwrap_or(false)
+            );
+        }
+
+        let csv_response = get("/export", "format=csv");
+        let csv = csv_response.text();
+        let mut lines = csv.lines();
+        assert_eq!(lines.next(), Some("Updated,Type,Module,Source,F/P,Data"));
+        let rows: Vec<&str> = lines.collect();
+        assert_eq!(rows.len(), count);
+        for (element, line) in elements.iter().zip(&rows) {
+            let fields: Vec<&str> = line.splitn(6, ',').collect();
+            assert_eq!(fields[1], element["type"].as_str().unwrap(), "{line}");
+            assert_eq!(fields[2], element["module"].as_str().unwrap(), "{line}");
+            assert_eq!(
+                fields[3],
+                element["source_data"].as_str().unwrap(),
+                "{line}"
+            );
+            assert_eq!(fields[4], if element["fp"] == true { "1" } else { "0" });
+            assert_eq!(
+                fields[5].trim_matches('"'),
+                element["data"].as_str().unwrap(),
+                "{line}"
+            );
+        }
+
+        assert_summary_counts(elements, &body(&get("/summary", "")));
+        assert_graph_holds(elements, &body(&get("/graph", "")));
+        let correlations = body(&get("/correlations", ""));
+        let correlations_csv_response = get("/correlations", "format=csv");
+        let correlations_csv = correlations_csv_response.text();
+        assert_eq!(
+            correlations.as_array().unwrap().len(),
+            csv_records(&correlations_csv).len() - 1
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn summary_elements_graph_and_log_read_the_saved_scan() {
         let (api, dir) = api("read");
