@@ -2636,6 +2636,10 @@ mod tests {
             "retained_in_saved_results"
         );
         assert!(value["report"].is_object());
+        assert!(
+            value["report"]["synergy"]["links"].is_array(),
+            "saved scans must expose the same source-join contract as live lookups"
+        );
         assert_eq!(api.service().store().results(&id).unwrap(), Some(original));
         assert_eq!(std::fs::read(&saved_path).unwrap(), original_bytes);
         assert_eq!(api.handle("POST", &path, "").status, 405);
