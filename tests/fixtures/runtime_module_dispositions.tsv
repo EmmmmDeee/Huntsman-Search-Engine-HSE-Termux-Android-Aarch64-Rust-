@@ -164,6 +164,7 @@ oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 pattern	leaf	linear-time regular expressions the Spiderfoot correlation rules run
 people_cli	diagnostic	ASIC people command front-end
+people_discovery	adapter	bounded source-scoped keyless people discovery through the existing web_query engines
 phishstats	adapter	PhishStats leg reached through indicator_legs from ip, scan and /api/lookup
 phone_cli	diagnostic	offline phone enrichment command front-end
 phone_intl	leaf	international phone canonicalization and country-prefix lookup
