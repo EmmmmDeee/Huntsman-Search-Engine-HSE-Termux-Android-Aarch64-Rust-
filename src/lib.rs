@@ -168,6 +168,7 @@ pub mod nominatim_cli;
 pub mod npm_author;
 pub mod numverify;
 pub mod oathnet;
+pub mod openlibrary_author;
 pub mod openpgp_keys;
 pub mod opensky;
 pub mod osint_area_risk;
