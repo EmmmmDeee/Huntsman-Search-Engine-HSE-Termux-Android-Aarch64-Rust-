@@ -135,7 +135,7 @@ mod tests {
         assert_eq!(head_body, "");
         assert_eq!(get_body, format!("{body}\n"));
         assert!(get_headers.contains(&format!("Content-Length: {}", body.len() + 1)));
-        assert_eq!(get_body.as_bytes().len(), body.len() + 1);
+        assert_eq!(get_body.len(), body.len() + 1);
     }
 
     #[test]
