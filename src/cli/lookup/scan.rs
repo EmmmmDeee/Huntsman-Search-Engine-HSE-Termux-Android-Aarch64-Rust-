@@ -607,6 +607,27 @@ fn print_recursion(seed_count: usize, report: &RecursionReport, analysis: &Inves
 /// relation summary `SpiderFoot` leads a scan with, the capability gaps (which seeds nothing linked
 /// to), and the graph-pivot ranking (which discovered entity is the linkage linchpin). Every value
 /// in full — no uid masking, no counts in place of values, nothing summarised away.
+/// Render one bounded, evidence-only cross-modality acquisition worklist.
+fn print_orthogonal_opportunities(
+    analysis: &InvestigationReport,
+    label: &impl Fn(&str) -> String,
+) {
+    println!(
+        "orthogonal opportunities={} omitted={} independent_routes_require_proof=true",
+        analysis.orthogonal.opportunities.len(),
+        analysis.orthogonal.omitted_opportunities
+    );
+    for opportunity in &analysis.orthogonal.opportunities {
+        println!(
+            "orthogonal\t{}\tmissing={}\tproof={}\t{}",
+            label(&opportunity.entity_uid),
+            opportunity.missing_modality,
+            opportunity.independence_status,
+            opportunity.suggested_check
+        );
+    }
+}
+
 fn print_recursion_analysis(
     entities: &[huntsman_recon::entity::Entity],
     analysis: &InvestigationReport,
@@ -670,20 +691,7 @@ fn print_recursion_analysis(
             orphan.action
         );
     }
-    println!(
-        "orthogonal opportunities={} omitted={} independent_routes_require_proof=true",
-        analysis.orthogonal.opportunities.len(),
-        analysis.orthogonal.omitted_opportunities
-    );
-    for opportunity in &analysis.orthogonal.opportunities {
-        println!(
-            "orthogonal\t{}\tmissing={}\tproof={}\t{}",
-            label(&opportunity.entity_uid),
-            opportunity.missing_modality,
-            opportunity.independence_status,
-            opportunity.suggested_check
-        );
-    }
+    print_orthogonal_opportunities(analysis, &label);
     println!("pivots={}", analysis.pivots.len());
     for pivot in &analysis.pivots {
         println!(
