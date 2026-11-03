@@ -12,6 +12,8 @@ ENV HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}
 
 COPY Cargo.toml Cargo.lock capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
 COPY src ./src
+# The Rust OSINT matrix embeds a canonical JSON file from docs at compile time.
+COPY docs/OSINT_DISCIPLINE_MATRIX.json ./docs/OSINT_DISCIPLINE_MATRIX.json
 # The root manifest declares xtask as a workspace member, so cargo reads its manifest and
 # source while loading the workspace. This build does not compile xtask.
 COPY xtask/Cargo.toml ./xtask/Cargo.toml
