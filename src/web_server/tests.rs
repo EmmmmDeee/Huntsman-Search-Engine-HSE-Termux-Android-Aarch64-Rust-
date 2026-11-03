@@ -79,7 +79,8 @@ fn whitespace_in_header_field_names_is_rejected_as_bad_request() {
         assert!(answer.starts_with("HTTP/1.1 400"), "{header:?}: {answer}");
     }
     // OWS belongs after the colon, never in the field name.
-    let allowed = "GET /api/health HTTP/1.1\r\nHost:\t localhost \t\r\nContent-Length: \t0\t\r\n\r\n";
+    let allowed =
+        "GET /api/health HTTP/1.1\r\nHost:\t localhost \t\r\nContent-Length: \t0\t\r\n\r\n";
     let answer = response_for_request(allowed, None, loopback_bind());
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
 }
