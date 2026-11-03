@@ -391,6 +391,9 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Counts</div><dl class="kv" id="acounts"></dl></div>
 <div class="panel"><div class="panel-heading">Limitations</div><dl class="kv" id="alimits"></dl></div>
 </div>
+<div class="panel"><div class="panel-heading">Live-scan OSINT joins <span class="badge" id="ssynergy-n"></span></div>
+<p class="help pad">Passive joins over sources the scan actually recorded. A separately observed target is not independent verification of the relationship itself. Scans with flagged false positives are refused by the analysis API.</p>
+<div class="table-wrap"><table><thead><tr><th>From</th><th>Reported relationship</th><th>To</th><th>Observation status</th><th>Sources / scans</th></tr></thead><tbody id="ssynergy"></tbody></table></div><p class="note" id="ssynergy-note" role="status"></p></div>
 <div class="panel"><div class="panel-heading">Analysis report</div><p class="help pad">Offline, over the saved entities only: the relations, pivots and coverage derived from what the scan kept, as the server returns them. Refused while the scan runs or once an element is flagged a false positive.</p><div id="areport"></div></div>
 </div>
 <div id="pane-settings" hidden>
@@ -1497,6 +1500,20 @@ async function analysis(){
   $('anote').textContent='Source: '+show(r.source)+' · scan '+show(r.scan&&r.scan.status);
   kv('acounts',Object.entries(r.counts||{}));
   kv('alimits',Object.entries(r.limitations||{}).map(([k,v])=>[k,String(v)]));
+  const syn=r.report&&r.report.synergy;
+  const links=syn&&Array.isArray(syn.links)?syn.links:[];
+  fill('ssynergy',links,x=>[
+    (x.from_kind||'entity')+': '+(x.from_value||x.from_uid),
+    show(x.relation),
+    (x.to_kind||'entity')+': '+(x.to_value||x.to_uid),
+    show(x.status),
+    (x.source||'unknown')+(x.target_source?' / '+x.target_source:'')+
+      (x.source_scan_id?' · scan '+x.source_scan_id:'')
+  ]);
+  $('ssynergy-note').textContent=!syn?'Synergy data unavailable in this analysis.':
+    syn.truncated?'TRUNCATED: these cross-source leads are incomplete.':
+    links.length?'Leads only; a relationship requires independent evidence before verification.':
+    'No supported cross-source joins found in the saved observations.';
   $('areport').replaceChildren(value(r.report));
 }
 function scanSettings(){
