@@ -264,8 +264,8 @@ fn web_cells() -> Result<huntsman_recon::cell_radar::CellScan, LookupError> {
 /// with `traffic-cameras --reconcile`. Neither feed proves current JPEG access.
 fn web_traffic_cameras() -> Result<serde_json::Value, LookupError> {
     use huntsman_recon::http::{TransportConfig, UreqTransport};
-    use huntsman_recon::qld_traffic_cameras::{self, MAX_CATALOGUE_BYTES};
     use huntsman_recon::qld_traffic_cameras::reconcile;
+    use huntsman_recon::qld_traffic_cameras::{self, MAX_CATALOGUE_BYTES};
 
     let http = UreqTransport::new(&TransportConfig {
         timeout: std::time::Duration::from_secs(15),
