@@ -676,11 +676,17 @@ mod tests {
         let blocked = EndpointAnswer::Failed(SourceOutcomeKind::BotWaf);
         assert_eq!(
             Joined::of(&[refused, limited, blocked]),
-            Joined::Unanswered { index: 1, kind: SourceOutcomeKind::RateLimited }
+            Joined::Unanswered {
+                index: 1,
+                kind: SourceOutcomeKind::RateLimited
+            }
         );
         assert_eq!(
             Joined::of(&[refused, refused]),
-            Joined::Unanswered { index: 0, kind: SourceOutcomeKind::RefusedBeforeSending }
+            Joined::Unanswered {
+                index: 0,
+                kind: SourceOutcomeKind::RefusedBeforeSending
+            }
         );
         assert_eq!(
             Joined::of(&[refused, limited, EndpointAnswer::Unvouched]),
