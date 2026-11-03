@@ -121,6 +121,22 @@ mod tests {
     }
 
     #[test]
+    fn requires_configured_key_and_preserves_legacy_fallback() {
+        let empty = Keys::parse("").expect("empty key file");
+        assert!(!API.wanted(&empty));
+        let configured = Keys::parse("HUNTSMAN_IPINFO_KEY=test_token_123")
+            .expect("valid key file");
+        assert!(API.wanted(&configured));
+        assert!(!crate::ipinfo::API.key.expect("legacy key").required);
+    }
+
+    #[test]
+    fn ipv6_equivalent_spellings_match() {
+        let response = br#"{"ip":"2001:4860:4860::8888","asn":"AS15169"}"#;
+        assert!(decode(response, "2001:4860:4860:0:0:0:0:8888").is_ok());
+    }
+
+    #[test]
     fn url_never_contains_token() {
         assert_eq!(url("8.8.8.8"), "https://api.ipinfo.io/lite/8.8.8.8");
     }
