@@ -232,6 +232,28 @@ mod tests {
     }
 
     #[test]
+    fn native_ndef_report_does_not_echo_untrusted_type_identifiers() {
+        // TYPE metadata is not proof that an identifier is safe to display.
+        // A crafted external-type record can contain personally identifying text.
+        let hidden = b"user@example.invalid";
+        let mut record = vec![0xd4, u8::try_from(hidden.len()).unwrap(), 1];
+        record.extend_from_slice(hidden);
+        record.push(b'X');
+        let hex: String = record.iter().map(|byte| format!("{byte:02X}")).collect();
+        let fixture = serde_json::json!({
+            "schema_version": 1,
+            "captured_unix_ms": 1730000000000_u64,
+            "operator_consented": true,
+            "events": [{"kind": "ndef", "hex": hex}]
+        });
+        let input = serde_json::to_vec(&fixture).unwrap();
+        let report = inspect_capture_json(&input).unwrap();
+        let output = serde_json::to_string(&report).unwrap();
+        assert!(output.contains("redacted_type"), "{output}");
+        assert!(!output.contains("user@example.invalid"), "{output}");
+    }
+
+    #[test]
     fn refuse_untrusted_or_unbounded_envelopes() {
         for data in [
             br"{}".as_slice(),
