@@ -149,12 +149,14 @@ pub fn discover<T: Transport + ?Sized>(
                 truncated = true;
                 continue;
             }
-            let candidate = candidates.entry(hit.url.clone()).or_insert_with(|| Candidate {
-                url: hit.url,
-                facets: Vec::new(),
-                reported_by: Vec::new(),
-                status: "unverified_search_index_lead",
-            });
+            let candidate = candidates
+                .entry(hit.url.clone())
+                .or_insert_with(|| Candidate {
+                    url: hit.url,
+                    facets: Vec::new(),
+                    reported_by: Vec::new(),
+                    status: "unverified_search_index_lead",
+                });
             if !candidate.facets.contains(&facet) {
                 candidate.facets.push(facet);
             }
@@ -225,53 +227,114 @@ mod tests {
 
     #[test]
     fn four_existing_index_fanouts_are_scoped_and_never_attributed() {
-        let fixture = Fixture { seen: RefCell::new(Vec::new()), denied: false };
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
         let report = discover(&fixture, "Clara Ashwell", Region::Au, 100).unwrap();
         assert!(fixture.seen.borrow().len() >= 12);
         assert_eq!(report.facets.len(), 4);
         assert_eq!(report.candidates.len(), 4);
-        assert!(report.candidates.iter().all(|c| c.status == "unverified_search_index_lead"));
+        assert!(
+            report
+                .candidates
+                .iter()
+                .all(|c| c.status == "unverified_search_index_lead")
+        );
         assert!(report.candidates.iter().all(|c| c.reported_by.len() == 3));
-        assert!(report.facets.iter().all(|f| f.index_hits >= 4 && f.discarded_out_of_scope > 0));
-        assert!(!report.candidates.iter().any(|c| c.url.contains("evil.example")));
-        assert_eq!(report.attribution, "none_established; indexed_page_is_not_proof_of_person_or_account");
+        assert!(
+            report
+                .facets
+                .iter()
+                .all(|f| f.index_hits >= 4 && f.discarded_out_of_scope > 0)
+        );
+        assert!(
+            !report
+                .candidates
+                .iter()
+                .any(|c| c.url.contains("evil.example"))
+        );
+        assert_eq!(
+            report.attribution,
+            "none_established; indexed_page_is_not_proof_of_person_or_account"
+        );
         assert!(!report.truncated);
     }
 
     #[test]
     fn regional_official_source_selection_reuses_all_other_facets() {
-        let au = Fixture { seen: RefCell::new(Vec::new()), denied: false };
-        let us = Fixture { seen: RefCell::new(Vec::new()), denied: false };
+        let au = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        let us = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
         let au_report = discover(&au, "Jane Example", Region::Au, 1).unwrap();
         let us_report = discover(&us, "Alyssa Example", Region::Us, 3600).unwrap();
         assert_eq!(au_report.facets[3].accepted_host, "asic.gov.au");
         assert_eq!(us_report.facets[3].accepted_host, "sec.gov");
         assert_eq!(us_report.candidates.len(), 4);
-        assert!(!us_report.candidates.iter().any(|c| c.url.contains("asic.gov.au")));
-        assert_eq!(au_report.facets[..3].iter().map(|f| f.accepted_host).collect::<Vec<_>>(),
-                   us_report.facets[..3].iter().map(|f| f.accepted_host).collect::<Vec<_>>());
+        assert!(
+            !us_report
+                .candidates
+                .iter()
+                .any(|c| c.url.contains("asic.gov.au"))
+        );
+        assert_eq!(
+            au_report.facets[..3]
+                .iter()
+                .map(|f| f.accepted_host)
+                .collect::<Vec<_>>(),
+            us_report.facets[..3]
+                .iter()
+                .map(|f| f.accepted_host)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn rejects_unsafe_or_single_token_names_before_any_request() {
-        let fixture = Fixture { seen: RefCell::new(Vec::new()), denied: false };
-        for bad in ["A", "Ada", "A Example", "Jane \"Example\"", "Jane\nExample",
-                    "Jane <Example>", &"X".repeat(130)] {
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        for bad in [
+            "A",
+            "Ada",
+            "A Example",
+            "Jane \"Example\"",
+            "Jane\nExample",
+            "Jane <Example>",
+            &"X".repeat(130),
+        ] {
             assert!(discover(&fixture, bad, Region::Au, 1).is_err(), "{bad:?}");
         }
         assert!(fixture.seen.borrow().is_empty());
-        assert!(!is_accepted_host("https://github.com.evil.example/x", "github.com"));
+        assert!(!is_accepted_host(
+            "https://github.com.evil.example/x",
+            "github.com"
+        ));
         assert!(!is_accepted_host("http://github.com/x", "github.com"));
     }
 
     #[test]
     fn unavailable_sources_do_not_claim_zero_results_are_confirmed() {
-        let fixture = Fixture { seen: RefCell::new(Vec::new()), denied: true };
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: true,
+        };
         let report = discover(&fixture, "Daphne Example", Region::Au, 7200).unwrap();
         assert!(report.candidates.is_empty());
         assert_eq!(report.facets.len(), 4);
-        assert!(report.facets.iter().flat_map(|f| &f.outcomes)
-            .all(|o| !o.kind.is_accepted()));
+        assert!(
+            report
+                .facets
+                .iter()
+                .flat_map(|f| &f.outcomes)
+                .all(|o| !o.kind.is_accepted())
+        );
         assert!(fixture.seen.borrow().len() >= 12);
     }
 }
