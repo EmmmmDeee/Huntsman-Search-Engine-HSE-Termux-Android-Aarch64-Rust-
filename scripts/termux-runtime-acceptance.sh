@@ -231,7 +231,7 @@ verify_saved_scan_surfaces() {
   local base="$1" scan="$2" root="$base/api/scans/$scan"
   local endpoint file
 
-  for endpoint in summary elements correlations graph log; do
+  for endpoint in summary elements correlations graph log analyze; do
     file="$WORK_DIR/saved-$endpoint.json"
     curl --fail --silent --show-error --max-time 10 -H 'X-Huntsman-Lookup: 1' \
       "$root/$endpoint" -o "$file" || return 1
@@ -243,6 +243,12 @@ verify_saved_scan_surfaces() {
   done
   jq -e '(.nodes | type == "array") and (.edges | type == "array")' \
     "$WORK_DIR/saved-graph.json" >/dev/null || return 1
+  # The scan analysis derives leads solely from persisted observations, never
+  # from the operator seed alone; no source corroboration is invented.
+  jq -e '(.report.synergy.links | type == "array") and
+    (.report.synergy.truncated | type == "boolean") and
+    (.report.synergy.evidence_policy | type == "string")' \
+    "$WORK_DIR/saved-analyze.json" >/dev/null || return 1
 
   # A pagination/serialization regression must not pass merely because each
   # independently truncated array remains syntactically valid JSON.
@@ -298,6 +304,10 @@ verify_api() {
     "$base/api/lookup?kind=phone&q=%2B61412345678" -o "$lookup" || return 1
   grep -q '"route":"phone"' "$lookup" || return 1
   grep -q '"value":"+61412345678"' "$lookup" || return 1
+  # Both saved and unsaved /api/lookup use the same Rust synergy serializer.
+  jq -e '(.synergy.links | type == "array") and
+    (.synergy.truncated | type == "boolean") and
+    (.synergy.evidence_policy | type == "string")' "$lookup" >/dev/null || return 1
   # It was kept as a saved scan that the scan API reads back, finished.
   local scan
   scan="$(sed -n 's/.*"scan":"\([0-9a-f]*\)".*/\1/p' "$lookup")"
