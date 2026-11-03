@@ -1472,10 +1472,12 @@ fn route(
             json_ok(&body, head)
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
-        SECURITY_TOOLS_PATH => match serde_json::to_string_pretty(&crate::security_toolkit::catalog()) {
-            Ok(body) => json_ok(&body, head),
-            Err(_) => json_error(500, "security tools catalogue serialization failed"),
-        },
+        SECURITY_TOOLS_PATH => {
+            match serde_json::to_string_pretty(&crate::security_toolkit::catalog()) {
+                Ok(body) => json_ok(&body, head),
+                Err(_) => json_error(500, "security tools catalogue serialization failed"),
+            }
+        }
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
