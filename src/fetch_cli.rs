@@ -116,6 +116,11 @@ impl FetchArgs {
             ));
         }
         out.url = url.ok_or_else(|| Error::Invalid("missing URL".into()))?;
+        if out.raw_body && !out.url.starts_with("https://") {
+            return Err(Error::Invalid(
+                "--raw-body requires an HTTPS public URL".into(),
+            ));
+        }
         Ok(out)
     }
 }
@@ -177,6 +182,8 @@ mod tests {
             "https://example.org/ --raw-body --allow-private",
             "https://example.org/ --raw-body --bearer API_KEY",
             "https://example.org/ --raw-body --header X-Key=API_KEY",
+            "https://example.org/ --raw-body --keys secret.env",
+            "http://example.org/ --raw-body",
         ] {
             assert!(parse(cmd).is_err(), "unsafe raw mode: {cmd}");
         }
