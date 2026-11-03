@@ -433,12 +433,13 @@ fn traffic_camera_api_is_explicitly_triggered_guarded_and_preserves_source_outco
 fn traffic_camera_radar_ui_only_fetches_on_button_press() {
     for needle in [
         r#"id="qtread""#,
-        r#"id="qtrows""#,
-        r#"id="qtconflicts""#,
-        r#"id="qtjson""#,
+        r#"id="qtstatus""#,
+        r#"id="qtout""#,
         "$('qtread').onclick=async",
         "api('/api/traffic/cameras')",
-        "nearby different-ID candidates",
+        "Export JSON",
+        "r.position_conflicts",
+        "r.direction_conflicts",
     ] {
         assert!(
             INDEX_HTML.contains(needle),
