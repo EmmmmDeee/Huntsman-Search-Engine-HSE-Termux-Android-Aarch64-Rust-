@@ -8,6 +8,9 @@ on:
     paths:
       - '.github/workflows/verify-public-live-canaries.yml'
       - 'src/orthogonal_osint.rs'
+      - 'src/osint_synergy.rs'
+      - 'src/analysis.rs'
+      - 'src/web_server/lookup.rs'
       - 'src/web_ui.html'
       - 'tests/orthogonal_osint.rs'
   workflow_dispatch:
@@ -71,6 +74,10 @@ jobs:
           verdict username_dtolnay crates_io
           collect peeringdb_13335 asn 13335
           verdict peeringdb_13335 peeringdb
+          # DNS/domain canary exercises the same public infrastructure source
+          # family that the provenance-aware join engine can correlate.
+          collect domain_example domain example.com
+          verdict domain_example dns
           # Additional read-only functional breadth: actual search engines and people-source legs.
           # These are diagnostic probes, not fabricated PASSes when an upstream site blocks us.
           collect query_huntsman query huntsman spider
