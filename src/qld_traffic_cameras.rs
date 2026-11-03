@@ -1,7 +1,7 @@
 //! Read-only, evidence-scoped Queensland public traffic-camera catalogue.
 //!
 //! The Department of Transport and Main Roads' published public key is globally
-//! shared (100 requests/minute). One explicit request reads the entire GeoJSON
+//! shared (100 requests/minute). One explicit request reads the entire `GeoJSON`
 //! feed; this module never polls, downloads images or claims an image is live.
 //! `image_url` is merely a publisher assertion until separately fetched.
 
@@ -18,7 +18,7 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE: &str = "qld_traffic_cameras";
 pub const ENDPOINT: &str = "https://api.qldtraffic.qld.gov.au/v1/webcams";
-/// The public developer key printed in QLDTraffic API specification v1.10, §2.1.1.1.
+/// The public developer key printed in `QLDTraffic` API specification v1.10, §2.1.1.1.
 /// It is *not* a user credential. Do not substitute an operator key in this URL.
 pub const PUBLIC_KEY: &str = "3e83add325cbb69ac4d8e5bf433d770b";
 pub const MAX_CAMERAS: usize = 2_000;
@@ -33,7 +33,7 @@ pub struct Camera {
     pub district: String,
     pub locality: String,
     pub postcode: String,
-    /// Decimal degrees; never silently swap the GeoJSON [longitude, latitude] pair.
+    /// Decimal degrees; never silently swap the `GeoJSON` [longitude, latitude] pair.
     pub latitude: f64,
     pub longitude: f64,
     pub metadata_url: String,
@@ -169,8 +169,8 @@ fn camera(feature: &Value) -> Option<Camera> {
     })
 }
 
-/// Parse a publisher GeoJSON document, preserving observed/rejected cardinalities.
-/// A genuine empty FeatureCollection is `valid_zero`; nonempty data in which every
+/// Parse a publisher `GeoJSON` document, preserving observed/rejected cardinalities.
+/// A genuine empty `FeatureCollection` is `valid_zero`; nonempty data in which every
 /// feature is malformed is `schema_drift`, never `valid_zero`.
 ///
 /// # Errors
@@ -185,7 +185,7 @@ pub fn parse(
             now_unix,
             SourceOutcomeKind::SchemaDrift,
             http_status,
-            "expected GeoJSON FeatureCollection",
+            "expected `GeoJSON` FeatureCollection",
         ));
     }
     let Some(features) = document.get("features").and_then(Value::as_array) else {
@@ -256,7 +256,7 @@ mod tests {
             "type":"FeatureCollection",
             "features":[{
                 "type":"Feature",
-                "geometry":{"type":"Point","coordinates":[153.0086975,-27.5551796]},
+                "geometry":{"type":"Point","coordinates":[153.008_697_5,-27.555_179_6]},
                 "properties":{
                     "id":1,
                     "url":"https://api.qldtraffic.qld.gov.au/v1/webcams/1",
@@ -276,8 +276,8 @@ mod tests {
     fn canonical_geojson_keeps_longitude_latitude_and_optional_fields() {
         let report = parse(&sample(), 100, 200).expect("valid");
         assert_eq!(report.cameras.len(), 1);
-        assert_eq!(report.cameras[0].longitude, 153.0086975);
-        assert_eq!(report.cameras[0].latitude, -27.5551796);
+        assert_eq!(report.cameras[0].longitude, 153.008_697_5);
+        assert_eq!(report.cameras[0].latitude, -27.555_179_6);
         assert_eq!(report.cameras[0].metadata_url, format!("{ENDPOINT}/1"));
         assert_eq!(report.cameras[0].is_custom, Some(false));
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
