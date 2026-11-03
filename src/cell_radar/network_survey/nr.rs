@@ -3,7 +3,6 @@
 //! Device serials, mission IDs, SIM slots and provider labels are never emitted.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 use serde::Serialize;
 use serde_json::json;
@@ -11,7 +10,6 @@ use serde_json::json;
 use super::{MAX_SURVEY_CSV_BYTES, cell_number, column, csv_rows};
 use crate::cell_radar::{CellObservation, parse_cells};
 use crate::error::Error;
-use crate::textnorm::escape_controls;
 use crate::timefmt::parse_timestamp;
 
 pub const NR_CSV_VERSION: &str = "0.4.0";
@@ -292,28 +290,22 @@ pub fn parse_nr(bytes: &[u8]) -> Result<NrCsvReport, Error> {
 
 #[must_use]
 pub fn render(report: &NrCsvReport) -> String {
-    let mut out = format!(
-        "source={}\tversion={}\tstatus={}\tobserved={}\trejected={}\n",
-        report.source, report.csv_version, report.status, report.observed, report.rejected
-    );
-    for record in &report.observations {
-        let cell = &record.observation;
-        let _ = writeln!(
-            out,
-            "nr\tid={}\ttime={}\tregistered={}\tgroup={}\tlocation_age_ms={}",
-            escape_controls(&cell.sighting.network_id),
-            escape_controls(cell.sighting.observed_at.as_deref().unwrap_or("unknown")),
-            cell.registered
-                .map_or("unknown", |v| if v { "yes" } else { "no" }),
-            record
-                .group_number
-                .map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
-            record
-                .location_age_ms
-                .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
-        );
-    }
-    out
+    super::render_survey(
+        [
+            report.source,
+            report.csv_version,
+            report.status,
+            &report.observed.to_string(),
+            &report.rejected.to_string(),
+        ],
+        report.observations.iter().map(|record| {
+            (
+                &record.observation,
+                record.group_number,
+                record.location_age_ms,
+            )
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -418,5 +410,24 @@ mod tests {
         assert_eq!(record.observation.registered, None);
         assert_eq!(record.observation.sighting.signal_dbm, None);
         assert_eq!(record.narfcn, None);
+    }
+
+    #[test]
+    fn the_text_report_leads_each_cell_with_nr_and_shares_the_lte_layout() {
+        let report = parse_nr(format!("{PREFIX}{}\n", row()).as_bytes()).unwrap();
+        let text = render(&report);
+        let mut lines = text.lines();
+        assert!(lines.next().unwrap().starts_with("source="));
+        let cell = lines.next().unwrap();
+        assert!(
+            cell.starts_with("nr\tid=nr:310-01-16777215-68719476735\ttime="),
+            "{cell}"
+        );
+        assert!(
+            cell.contains("\tregistered=yes\tgroup=2\tlocation_age_ms=4916"),
+            "{cell}"
+        );
+        assert_eq!(lines.next(), None);
+        assert!(!text.contains("PRIVATE-SERIAL") && !text.contains("PRIVATE-MISSION"));
     }
 }
