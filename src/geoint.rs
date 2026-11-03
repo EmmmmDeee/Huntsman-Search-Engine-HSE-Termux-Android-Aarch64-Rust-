@@ -19,12 +19,18 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 
 /// Initial great-circle bearing in degrees clockwise from true north.
 ///
-/// Returns `None` for invalid coordinates or coincident/antipodal points,
-/// where a unique direction cannot be established. This is a spherical
+/// Returns `None` for invalid coordinates, a starting point exactly at a
+/// geographic pole, or coincident/antipodal points where a unique direction
+/// cannot be established. This is a spherical
 /// bearing, not a magnetic heading or a road-routing direction.
 #[must_use]
 pub fn initial_bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option<f64> {
     if !valid_coordinate(lat1, lon1) || !valid_coordinate(lat2, lon2) {
+        return None;
+    }
+    // True north is undefined exactly at a geographic pole: changing the
+    // arbitrary longitude label must not change a supposedly unique bearing.
+    if lat1.abs() >= 90.0 {
         return None;
     }
     let phi1 = lat1.to_radians();
@@ -96,6 +102,15 @@ mod tests {
         assert_eq!(initial_bearing_deg(91.0, 0.0, 1.0, 1.0), None);
         assert!(!valid_coordinate(0.0, f64::INFINITY));
         assert!(valid_coordinate(-90.0, 180.0));
+    }
+
+    #[test]
+    fn north_and_south_poles_have_no_unique_initial_compass_bearing() {
+        assert_eq!(initial_bearing_deg(90.0, 0.0, 80.0, 90.0), None);
+        assert_eq!(initial_bearing_deg(90.0, 120.0, 80.0, 90.0), None);
+        assert_eq!(initial_bearing_deg(-90.0, 0.0, -80.0, 90.0), None);
+        assert!(initial_bearing_deg(89.999, 0.0, 80.0, 90.0).is_some());
+        assert!(initial_bearing_deg(0.0, 0.0, 90.0, 0.0).is_some());
     }
 
     #[test]
