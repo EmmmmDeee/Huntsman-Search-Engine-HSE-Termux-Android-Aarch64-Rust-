@@ -74,6 +74,7 @@ pub const TOOL_FAMILIES: [ToolFamily; 9] = [
     },
 ];
 
+#[must_use]
 pub fn find(name: &str) -> Option<&'static ToolFamily> {
     TOOL_FAMILIES
         .iter()
