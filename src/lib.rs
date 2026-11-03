@@ -267,6 +267,7 @@ pub mod threatfox;
 pub mod tiktok_public_contact;
 pub mod timefmt;
 pub mod timeline;
+pub mod temporal_consistency;
 pub mod tlsrpt;
 pub mod trafficking_intel;
 pub mod union_find;
