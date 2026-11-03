@@ -848,6 +848,45 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         rhinserLink.href.startsWith('https://') && rhinserLink.target === '_blank' &&
         rhinserLink.rel === 'noopener noreferrer' && rhinserLink.referrerPolicy === 'no-referrer', rhinserLink);
       await page.fill('#rhinser-source-search', '');
+      // Exercise the actual Android UI event path without contacting people-index providers.
+      // This fake response is an integration fixture, not live identity evidence.
+      if (scheme === 'dark') {
+        const peopleCalls = [];
+        await page.route('**/api/people/discover', async route => {
+          const req = route.request();
+          peopleCalls.push({
+            method: req.method(),
+            pathname: new URL(req.url()).pathname,
+            search: new URL(req.url()).search,
+            body: req.postDataJSON(),
+            header: req.headers()['x-huntsman-lookup'],
+          });
+          await route.fulfill({ status: 200, json: {
+            subject: 'Ada Lovelace', region: 'au', truncated: false,
+            attribution: 'none_established',
+            candidates: [{ url: 'https://orcid.org/0000-0000-0000-0000', facets: ['research_identifier'], reported_by: ['bing','brave'], status: 'unverified_search_index_lead' }],
+            facets: [{ id: 'research_identifier', outcomes: [{ module: 'bing', kind: 'success', http_status: 200, found: 1 },{ module: 'brave', kind: 'bot_waf', http_status: 403, found: 0 }] }],
+          } });
+        });
+        check('people discovery starts with no live requests', peopleCalls.length === 0, peopleCalls);
+        await page.fill('#people-discover-name', 'Ada Lovelace');
+        await page.selectOption('#people-discover-region', 'au');
+        await page.click('#people-discover-run');
+        await page.waitForSelector('#people-discover-results:not([hidden])', { timeout: 10000 });
+        const lead = await page.locator('#people-discover-hits a').first().evaluate(a => ({
+          href:a.href, rel:a.rel, target:a.target, policy:a.referrerPolicy,
+        }));
+        check('people discovery sends sensitive search subject only in bounded POST body',
+          peopleCalls.length === 1 && peopleCalls[0].method === 'POST' &&
+          peopleCalls[0].search === '' && peopleCalls[0].header === '1' &&
+          peopleCalls[0].body?.name === 'Ada Lovelace' && peopleCalls[0].body?.region === 'au', peopleCalls);
+        check('people discovery shows unverified candidate and typed provider outcomes',
+          (await page.textContent('#people-discover-hits')).includes('unverified_search_index_lead') &&
+          (await page.textContent('#people-discover-outcomes')).includes('bot_waf') &&
+          lead.href.startsWith('https://orcid.org/') && lead.target === '_blank' &&
+          lead.rel === 'noopener noreferrer' && lead.policy === 'no-referrer', lead);
+        await page.unroute('**/api/people/discover');
+      }
       await page.fill('#seeds', SEEDS);
       const t = Date.now();
       await page.click('#arun');
