@@ -280,7 +280,9 @@ pub fn assess_public_graph(input: &[u8]) -> Result<Report, String> {
         source_definitions: graph.source_definitions.len(),
         advertised_links,
         findings,
-        not_assessed: vec!["SIGINT", "MASINT", "CYBINT", "TECHINT", "AUTHSEC", "EMAIL", "SNAPCHAT"],
+        not_assessed: vec![
+            "SIGINT", "MASINT", "CYBINT", "TECHINT", "AUTHSEC", "EMAIL", "SNAPCHAT",
+        ],
         identity_verified: false,
         remediation_verified: false,
     })
@@ -304,7 +306,8 @@ mod tests {
                 {"from":"hub","to":"pay","predicate":"publicly_links_to","sources":["S1"]},
                 {"from":"hub","to":"geo","predicate":"self_reports_location","sources":["S1"]}
             ]
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     #[test]
