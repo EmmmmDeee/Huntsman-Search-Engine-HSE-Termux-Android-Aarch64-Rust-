@@ -27,7 +27,7 @@ use crate::source_outcome::SourceExecutionOutcome;
 pub const PHONE_USAGE: &str = "usage: huntsman-recon phone NUMBER [--save FILE]";
 pub const PHONE_HELP: &str = "\
 phone NUMBER [--save FILE]
-Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region. A +1 number is held to the North American Numbering Plan: one the plan cannot hold (an area code or exchange beginning 0 or 1, an N11 code, a reserved area code) is refused with the rule it breaks; otherwise it gets its local (NPA) NXX-XXXX and international +1 NPA NXX XXXX forms, whether it is geographic, toll-free, premium or another service code, the country or territory its area code belongs to (Canada, the Caribbean countries and US territories by list, the United States otherwise), and a flag for the 555-0100 to 555-0199 numbers set aside for fiction. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region; an Australian mobile also carries its ACMA numbering-register block — the range's original allocatee and date and its latest holder and transfer date, or that the block is spare — read offline from an embedded copy of the regulator's register (the holder is the range's registered holder, never the carrier serving the number today nor the subscriber). A +1 number is held to the North American Numbering Plan: one the plan cannot hold (an area code or exchange beginning 0 or 1, an N11 code, a reserved area code) is refused with the rule it breaks; otherwise it gets its local (NPA) NXX-XXXX and international +1 NPA NXX XXXX forms, whether it is geographic, toll-free, premium or another service code, the country or territory its area code belongs to (Canada, the Caribbean countries and US territories by list, the United States otherwise), and a flag for the 555-0100 to 555-0199 numbers set aside for fiction. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
 
 const PHONE_CONFIDENCE: f64 = 0.90;
 
@@ -250,6 +250,38 @@ fn enrich_au(canonical: &str, scan_id: &str, entity: &mut Entity) {
                 "note",
                 "mobile is non-geographic; current carrier is not inferred offline",
             );
+            if let Some(block) = address_au::au_mobile_block(canonical) {
+                evidence = evidence
+                    .with_attr("acma_block", block.range())
+                    .with_attr(
+                        "acma_block_status",
+                        if block.spare { "spare" } else { "allocated" },
+                    )
+                    .with_attr(
+                        "acma_register_retrieved",
+                        address_au::AU_MOBILE_REGISTER_RETRIEVED,
+                    )
+                    .with_attr("acma_register_url", address_au::AU_MOBILE_REGISTER_URL);
+                if block.spare {
+                    entity.tag("au-mobile-block:spare");
+                    evidence = evidence.with_attr(
+                        "acma_note",
+                        "the register lists this block as spare: no carrier holds it, so the number is unlikely to be in service",
+                    );
+                } else {
+                    evidence = evidence
+                        .with_attr("acma_allocatee", block.allocatee)
+                        .with_attr("acma_allocated", block.allocated)
+                        .with_attr("acma_holder", block.holder)
+                        .with_attr(
+                            "acma_note",
+                            "block holder is the range's registered holder, not the carrier serving the number today (number portability) and not the subscriber",
+                        );
+                    if !block.transferred.is_empty() {
+                        evidence = evidence.with_attr("acma_transferred", block.transferred);
+                    }
+                }
+            }
         }
         AuLineType::GeographicFixed => {
             entity.tag("geographic");
@@ -347,6 +379,54 @@ mod tests {
     #[test]
     fn parse_rejects_ambiguous_foreign_national_number() {
         assert!(PhoneArgs::parse(&["415-555-2671".into()]).is_err());
+    }
+
+    #[test]
+    fn an_au_mobile_carries_its_acma_register_block_from_the_offline_copy() {
+        let PhoneRun::Printed { report, .. } = run("0405 491 450", 1) else {
+            panic!("an Australian mobile prints");
+        };
+        let au = report
+            .entities
+            .iter()
+            .find(|e| {
+                e.evidence
+                    .iter()
+                    .any(|ev| ev.provenance.source == AU_SOURCE)
+            })
+            .expect("the numbering-plan reading");
+        let plan = au
+            .evidence
+            .iter()
+            .find(|ev| ev.provenance.source == AU_SOURCE)
+            .unwrap();
+        let attr = |k: &str| plan.attributes.get(k).map(String::as_str);
+        assert_eq!(attr("acma_block"), Some("0405000000-0405999999"));
+        assert_eq!(attr("acma_block_status"), Some("allocated"));
+        assert_eq!(attr("acma_allocatee"), Some("VODAFONE NETWORK PTY LIMITED"));
+        assert_eq!(attr("acma_allocated"), Some("1999-11-09"));
+        assert_eq!(attr("acma_holder"), Some("VODAFONE AUSTRALIA PTY LIMITED"));
+        assert_eq!(attr("acma_transferred"), Some("2007-02-07"));
+        assert!(attr("acma_note").is_some_and(|n| n.contains("number portability")));
+        assert!(!au.has_tag("au-mobile-block:spare"));
+        // The register stays enrichment: it corroborates nothing and names no one.
+        assert!(au.corroborating_sources().is_empty());
+
+        let PhoneRun::Printed { report, .. } = run("0444 000 000", 1) else {
+            panic!("a spare-block mobile still prints");
+        };
+        let spare = &report.entities[0];
+        assert!(spare.has_tag("au-mobile-block:spare"));
+        let plan = spare
+            .evidence
+            .iter()
+            .find(|ev| ev.provenance.source == AU_SOURCE)
+            .unwrap();
+        assert_eq!(
+            plan.attributes.get("acma_block_status").map(String::as_str),
+            Some("spare")
+        );
+        assert!(!plan.attributes.contains_key("acma_holder"));
     }
 
     #[test]
