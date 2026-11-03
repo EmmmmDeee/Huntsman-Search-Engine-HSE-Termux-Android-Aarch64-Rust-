@@ -331,7 +331,10 @@ mod tests {
         let routes = routes_for(&EntityKind::Phone, "+61405409302");
         assert_eq!(routes.len(), 2);
         assert_eq!(
-            routes.iter().map(|route| route.source_id).collect::<Vec<_>>(),
+            routes
+                .iter()
+                .map(|route| route.source_id)
+                .collect::<Vec<_>>(),
             ["google_phone_exact", "bing_phone_exact"]
         );
         assert!(routes.iter().all(|route| {
