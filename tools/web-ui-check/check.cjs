@@ -904,6 +904,11 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.waitForFunction(() => document.getElementById('rhinser-native-output').textContent.includes('HTTP 400'), null, { timeout: 10000 });
       check(`${scheme}: unconsented capture is refused without export`,
         await page.locator('#rhinser-native-export').isDisabled(), await page.textContent('#rhinser-native-output'));
+      // Only the deliberately rejected capture may produce this expected HTTP 400.
+      const expectedCaptureRefusal = 'Failed to load resource: the server responded with a status of 400 (Bad Request)';
+      const captureRefusalIndex = errors.indexOf(expectedCaptureRefusal);
+      check(`${scheme}: refused capture produces expected HTTP 400`, captureRefusalIndex !== -1, errors);
+      if (captureRefusalIndex !== -1) errors.splice(captureRefusalIndex, 1);
 
       await page.fill('#seeds', SEEDS);
       const t = Date.now();
