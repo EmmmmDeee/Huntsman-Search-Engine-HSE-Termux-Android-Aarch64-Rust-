@@ -230,6 +230,7 @@ pub mod scan_uncertainty;
 pub mod search;
 pub mod sec_edgar;
 pub mod security_toolkit;
+pub mod security_web;
 pub mod securitytrails;
 pub mod seeknow;
 pub mod seeknow_cli;
