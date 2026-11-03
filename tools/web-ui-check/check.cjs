@@ -111,9 +111,34 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
     await page.selectOption('#skind', 'auto');
     await page.fill('#sname', name);
     await page.fill('#sdepth', String(depth));
+    // Verify the genuine browser request, not just the form's JavaScript source:
+    // private scan selectors never appear in the request URL.
+    const posted = [];
+    const observe = request => {
+      if (new URL(request.url()).pathname !== '/api/scans' || request.method() !== 'POST') return;
+      const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
+      posted.push({
+        search: url.search,
+        type: request.headers()['content-type'] || '',
+        guarded: request.headers()['x-huntsman-lookup'] === '1',
+        target: body.get('target'),
+        name: body.get('name'),
+        depth: body.get('depth'),
+      });
+    };
+    page.on('request', observe);
     const t = Date.now();
-    await page.click('#runscan');
-    await page.waitForFunction(() => /^#\/scan\/[^/]+/.test(location.hash) && !document.getElementById('view-scan').hidden, null, { timeout: 10000 });
+    try {
+      await page.click('#runscan');
+      await page.waitForFunction(() => /^#\/scan\/[^/]+/.test(location.hash) && !document.getElementById('view-scan').hidden, null, { timeout: 10000 });
+    } finally {
+      page.off('request', observe);
+    }
+    check('New Scan posts the complete form without leaking the selector into the URL',
+      posted.length === 1 && posted[0].search === '' &&
+      posted[0].type.startsWith('application/x-www-form-urlencoded') &&
+      posted[0].guarded && posted[0].target === TARGET &&
+      posted[0].name === name && posted[0].depth === String(depth), posted);
     const id = decodeURIComponent((await page.evaluate(() => location.hash)).split('/')[2]);
     await page.waitForFunction(() => ['FINISHED', 'ABORTED', 'ERROR-FAILED'].includes(document.getElementById('scstatus').textContent), null, { timeout: 90000 }).catch(() => {});
     return { id, ms: Date.now() - t, status: await page.textContent('#scstatus') };
