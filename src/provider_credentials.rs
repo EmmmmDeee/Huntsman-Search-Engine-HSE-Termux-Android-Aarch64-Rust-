@@ -83,9 +83,11 @@ pub fn wigle_credential(
     })
 }
 
-/// Check the `WiGLE` credentials against the profile endpoint, which spends no search query.
-/// A 200 JSON answer that does not say `success: false` is valid; 401 is rejected; 429 is rate
-/// limited. Nothing from the profile is kept: it names the account holder.
+/// Check the `WiGLE` credentials against the profile endpoint without spending a search query.
+/// Only an explicit, complete JSON `{"success": true}` response establishes authentication;
+/// 200 with an absent, ambiguous, or contradictory success field is indeterminate. HTTP 401/403
+/// rejects the credentials and 429 is rate limited. Profile details identify the account holder
+/// and are therefore never retained in the probe output.
 fn wigle_probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> ProbeState {
     let now = clock::unix_now();
     let Ok(wigle) = wigle_credential(keys, now) else {
@@ -105,11 +107,15 @@ fn wigle_probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> ProbeState 
     let Some(response) = fetched.response else {
         return ProbeState::Unavailable;
     };
+    // A successful HTTP status is not evidence of authentication on its own. Error pages
+    // sometimes return 200 and valid JSON can omit the success field entirely.
     match response.status {
-        200 => {
-            let answer: Option<serde_json::Value> = serde_json::from_slice(&response.body).ok();
-            match answer {
-                Some(value) if value.get("success") != Some(&serde_json::Value::Bool(false)) => {
+        200 if !response.truncated => {
+            match serde_json::from_slice::<serde_json::Value>(&response.body) {
+                Ok(serde_json::Value::Object(fields))
+                    if fields.get("success") == Some(&serde_json::Value::Bool(true))
+                        && !fields.contains_key("error") =>
+                {
                     ProbeState::Valid
                 }
                 _ => ProbeState::Indeterminate,
@@ -701,6 +707,16 @@ mod tests {
         for (status, body, expected) in [
             (200, r#"{"success":true,"userid":"Ada"}"#, ProbeState::Valid),
             (200, r#"{"success":false}"#, ProbeState::Indeterminate),
+            (200, r"{}", ProbeState::Indeterminate),
+            (200, r#"{"userid":"Ada"}"#, ProbeState::Indeterminate),
+            (200, r#"{"success":"true"}"#, ProbeState::Indeterminate),
+            (200, r#"{"success":1}"#, ProbeState::Indeterminate),
+            (
+                200,
+                r#"{"success":true,"error":"unauthorized"}"#,
+                ProbeState::Indeterminate,
+            ),
+            (200, "[]", ProbeState::Indeterminate),
             (200, "<html>", ProbeState::Indeterminate),
             (401, "Not Authorized (WiGLE.net)", ProbeState::Rejected),
             (429, "{}", ProbeState::RateLimited),
@@ -732,6 +748,26 @@ mod tests {
                 Some("Basic QUlEcHJvYmUwMTIzNDU2Nzg5OnByb2JlLXRva2VuLTAxMjM0NTY3ODlhYmNkZWY=")
             );
         }
+        let truncated = FakeTransport {
+            response: Response {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"success":true}"#.to_vec(),
+                truncated: true,
+            },
+            seen: RefCell::new(Vec::new()),
+        };
+        let truncated_status = probe(&keys, &truncated)
+            .into_iter()
+            .find(|p| p.provider.name == "WiGLE")
+            .expect("WiGLE");
+        assert_eq!(
+            truncated_status.probe,
+            ProbeState::Indeterminate,
+            "a truncated profile body is never proof of valid credentials"
+        );
+        assert!(truncated_status.evidence.is_empty());
+
         let half = Keys::parse("HUNTSMAN_WIGLE_USER=AIDprobe0123456789\n").expect("keys");
         let transport = FakeTransport {
             response: Response {
