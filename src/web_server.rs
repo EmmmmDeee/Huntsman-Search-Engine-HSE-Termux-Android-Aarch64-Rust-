@@ -1498,7 +1498,9 @@ fn route(
         INSPECT_PATH => inspect_response(parsed, upload, routes),
         OSINT_CASE_PATH => osint_offline_response(parsed, OfflineOsintMode::Case),
         OSINT_RISK_PATH => osint_offline_response(parsed, OfflineOsintMode::Risk),
-        RHINSER_OVERLAPS_PATH => osint_offline_response(parsed, OfflineOsintMode::WorkspaceOverlaps),
+        RHINSER_OVERLAPS_PATH => {
+            osint_offline_response(parsed, OfflineOsintMode::WorkspaceOverlaps)
+        }
         INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
@@ -1568,7 +1570,10 @@ mod lookup;
 mod page;
 mod response;
 mod settings;
-use analysis::{OfflineOsintMode, analyze_response, inspect_response, investigate_response, osint_offline_response};
+use analysis::{
+    OfflineOsintMode, analyze_response, inspect_response, investigate_response,
+    osint_offline_response,
+};
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use page::{FAVICON_SVG, PAGE, PAGE_ID};
