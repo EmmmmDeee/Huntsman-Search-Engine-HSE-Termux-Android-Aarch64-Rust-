@@ -173,6 +173,7 @@ pub mod opensky;
 pub mod osint_area_risk;
 pub mod osint_blueprint;
 pub mod osint_casework;
+pub mod osint_synergy;
 pub mod otx;
 pub mod oui;
 pub mod oui_ieee;
