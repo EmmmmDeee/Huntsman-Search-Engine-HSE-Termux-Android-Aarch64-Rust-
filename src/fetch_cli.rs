@@ -8,13 +8,16 @@ use crate::error::Error;
 use crate::fetch::{AuthStyle, DEFAULT_MAX_REDIRECTS, valid_param_name};
 use crate::keys::valid_slot;
 
-pub const FETCH_USAGE: &str = "usage: huntsman-recon fetch URL [--body] [--allow-private] [--keys FILE] \
+pub const FETCH_USAGE: &str = "usage: huntsman-recon fetch URL [--body|--raw-body] [--allow-private] [--keys FILE] \
 [--bearer SLOT | --header NAME=SLOT] [--max-redirects N] [--timeout SECS]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchArgs {
     pub url: String,
     pub print_body: bool,
+    /// Exact response body bytes on stdout, with no diagnostic prefix or lossy UTF-8 decoding.
+    /// Complete 2xx responses only; caller is responsible for private file storage.
+    pub raw_body: bool,
     pub allow_private: bool,
     pub keys_file: Option<PathBuf>,
     /// Credential slot and how to send it. `None` means anonymous.
@@ -31,6 +34,7 @@ impl FetchArgs {
         let mut out = Self {
             url: String::new(),
             print_body: false,
+            raw_body: false,
             allow_private: false,
             keys_file: None,
             auth: None,
@@ -46,6 +50,7 @@ impl FetchArgs {
             };
             match arg.as_str() {
                 "--body" => out.print_body = true,
+                "--raw-body" => out.raw_body = true,
                 "--allow-private" => out.allow_private = true,
                 "--keys" => {
                     let path = value("--keys")?;
@@ -100,6 +105,16 @@ impl FetchArgs {
                 }
             }
         }
+        if out.raw_body && out.print_body {
+            return Err(Error::Invalid(
+                "--raw-body and --body are mutually exclusive".into(),
+            ));
+        }
+        if out.raw_body && (out.allow_private || out.auth.is_some()) {
+            return Err(Error::Invalid(
+                "--raw-body only accepts anonymous public-only fetches".into(),
+            ));
+        }
         out.url = url.ok_or_else(|| Error::Invalid("missing URL".into()))?;
         Ok(out)
     }
@@ -134,7 +149,7 @@ mod tests {
     fn defaults_are_anonymous_public_only_and_quiet() {
         let a = parse("https://a.example/").expect("parse");
         assert_eq!(a.url, "https://a.example/");
-        assert!(!a.print_body && !a.allow_private && a.auth.is_none() && a.keys_file.is_none());
+        assert!(!a.print_body && !a.raw_body && !a.allow_private && a.auth.is_none() && a.keys_file.is_none());
         assert_eq!(a.max_redirects, DEFAULT_MAX_REDIRECTS);
     }
 
@@ -151,6 +166,20 @@ mod tests {
             h.auth,
             Some(("PROVIDER_KEY".into(), AuthStyle::Header("X-Api-Key".into())))
         );
+    }
+
+    #[test]
+    fn raw_mode_is_explicit_and_denies_private_or_credentials() {
+        let raw = parse("https://example.org/data.json --raw-body").unwrap();
+        assert!(raw.raw_body && !raw.print_body);
+        for cmd in [
+            "https://example.org/ --body --raw-body",
+            "https://example.org/ --raw-body --allow-private",
+            "https://example.org/ --raw-body --bearer API_KEY",
+            "https://example.org/ --raw-body --header X-Key=API_KEY",
+        ] {
+            assert!(parse(cmd).is_err(), "unsafe raw mode: {cmd}");
+        }
     }
 
     #[test]
