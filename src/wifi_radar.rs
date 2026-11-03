@@ -26,6 +26,8 @@ pub struct WifiObservation {
     /// Age inferred from /proc/uptime, or None when no reliable clock exists.
     pub age_secs: Option<f64>,
     pub freshness: &'static str,
+    /// Explains why this row was or was not eligible for live analysis.
+    pub freshness_reason: &'static str,
     pub frequency_mhz: Option<i64>,
     pub band: Option<&'static str>,
     pub channel_bandwidth_mhz: Option<String>,
@@ -39,6 +41,8 @@ pub struct WifiScan {
     pub source: &'static str,
     pub acquisition: &'static str,
     pub status: &'static str,
+    /// Provenance of the boot clock used for freshness. Never a UTC capture time.
+    pub boot_clock_status: &'static str,
     pub observed: usize,
     pub rejected: usize,
     pub observations: Vec<WifiObservation>,
@@ -192,6 +196,28 @@ fn age_from_boot(uptime_secs: Option<f64>, timestamp_us: Option<u64>) -> Option<
     (age >= 0.0 && age.is_finite()).then_some(age)
 }
 
+/// Keep freshness classification and its evidence reason in one place. In
+/// particular, a missing/future clock never promotes cached data to live.
+fn classify_freshness(
+    uptime_secs: Option<f64>,
+    timestamp_us: Option<u64>,
+) -> (Option<f64>, &'static str, &'static str) {
+    let Some(timestamp) = timestamp_us else {
+        return (None, "unknown", "timestamp_missing");
+    };
+    let Some(uptime) = uptime_secs.filter(|n| n.is_finite() && *n >= 0.0) else {
+        return (None, "unknown", "boot_clock_unavailable");
+    };
+    if timestamp / 1_000_000 > u64::from(u32::MAX) {
+        return (None, "unknown", "timestamp_out_of_range");
+    }
+    match age_from_boot(Some(uptime), Some(timestamp)) {
+        Some(age) if age > STALE_AFTER_SECS => (Some(age), "stale", "stale_os_cache"),
+        Some(age) => (Some(age), "os_cached", "within_cache_window"),
+        None => (None, "unknown", "timestamp_after_boot_clock"),
+    }
+}
+
 /// Read a capture file with no trustworthy device boot-clock provenance.
 /// Android `ScanResult` timestamps are relative to the *original device boot*.
 /// Comparing them to this machine's `/proc/uptime` can fabricate a fresh reading.
@@ -200,6 +226,12 @@ pub fn parse_replay(bytes: &[u8]) -> Result<WifiScan, Error> {
     let mut replay = parse_scan(bytes, None)?;
     replay.source = "unverified_json_file";
     replay.acquisition = "offline_replay_no_boot_provenance";
+    replay.boot_clock_status = "not_evaluated_replay";
+    for row in &mut replay.observations {
+        if row.os_timestamp_us.is_some() {
+            row.freshness_reason = "replay_clock_unverified";
+        }
+    }
     let historical_assessment = crate::mitm_guard::from_wifi_replay(&replay, None);
     replay.mitm_assessment = Some(historical_assessment);
     Ok(replay)
@@ -247,12 +279,8 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
             .get("timestamp")
             .and_then(serde_json::Value::as_u64)
             .filter(|ts| *ts > 0);
-        let age_secs = age_from_boot(uptime_secs, timestamp);
-        let freshness = match age_secs {
-            Some(age) if age > STALE_AFTER_SECS => "stale",
-            Some(_) => "os_cached",
-            None => "unknown",
-        };
+        let (age_secs, freshness, freshness_reason) =
+            classify_freshness(uptime_secs, timestamp);
         let frequency_mhz = row
             .get("frequency_mhz")
             .and_then(serde_json::Value::as_i64)
@@ -268,6 +296,7 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
             os_timestamp_us: timestamp,
             age_secs,
             freshness,
+            freshness_reason,
             frequency_mhz,
             band: band(frequency_mhz),
             channel_bandwidth_mhz: optional_string(row.get("channel_bandwidth_mhz")),
@@ -288,6 +317,11 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
         source: "termux-wifi-scaninfo",
         acquisition: "android_cached_scan_results_not_active_scan",
         status,
+        boot_clock_status: if uptime_secs.is_some_and(|n| n.is_finite() && n >= 0.0) {
+            "uptime_valid"
+        } else {
+            "boot_clock_unavailable"
+        },
         observed: observations.len(),
         rejected,
         observations,
@@ -324,6 +358,31 @@ pub fn render(scan: &WifiScan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freshness_reasons_identify_missing_clock_future_and_expired_timestamps() {
+        let raw = br#"[{"bssid":"3c:5a:b4:11:22:31","ssid":"Lab","rssi":-51,"timestamp":980000000},{"bssid":"3c:5a:b4:11:22:32","ssid":"Lab","rssi":-51,"timestamp":100000000},{"bssid":"3c:5a:b4:11:22:33","ssid":"Lab","rssi":-51},{"bssid":"3c:5a:b4:11:22:34","ssid":"Lab","rssi":-51,"timestamp":1001000000},{"bssid":"3c:5a:b4:11:22:35","ssid":"Lab","rssi":-51,"timestamp":4294967296000000}]"#;
+        let current = parse_scan(raw, Some(1000.0)).unwrap();
+        let rows = &current.observations;
+        assert_eq!(current.boot_clock_status, "uptime_valid");
+        assert_eq!(rows[0].freshness_reason, "within_cache_window");
+        assert_eq!(rows[0].age_secs, Some(20.0));
+        assert_eq!(rows[1].freshness_reason, "stale_os_cache");
+        assert_eq!(rows[1].freshness, "stale");
+        assert_eq!(rows[2].freshness_reason, "timestamp_missing");
+        assert_eq!(rows[3].freshness_reason, "timestamp_after_boot_clock");
+        assert_eq!(rows[4].freshness_reason, "timestamp_out_of_range");
+        assert_eq!(current.mitm_assessment.as_ref().unwrap().evaluated_access_points, 1);
+        let clockless = parse_scan(raw, None).unwrap();
+        assert_eq!(clockless.boot_clock_status, "boot_clock_unavailable");
+        assert_eq!(clockless.observations[0].freshness_reason, "boot_clock_unavailable");
+        assert_eq!(clockless.mitm_assessment.as_ref().unwrap().evaluated_access_points, 0);
+        let replay = parse_replay(raw).unwrap();
+        assert_eq!(replay.boot_clock_status, "not_evaluated_replay");
+        assert_eq!(replay.observations[0].freshness_reason, "replay_clock_unverified");
+        assert_eq!(replay.observations[2].freshness_reason, "timestamp_missing");
+        assert!(!replay.has_current_observations());
+    }
 
     #[test]
     fn valid_cached_wifi_is_a_sighting_not_a_location() {
