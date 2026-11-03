@@ -38,6 +38,32 @@ fn sources_routes_a_domain_through_multiple_source_classes() {
 }
 
 #[test]
+fn sources_routes_au_phone_in_canonical_e164_as_discovery_only() {
+    for raw in ["+61 405 409 302", "0405 409 302"] {
+        let out = bin().args(["sources", raw]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{raw}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            stdout.starts_with("kind=phone confidence=0.800 routes=2\n"),
+            "{raw}: {stdout}"
+        );
+        for source in ["google_phone_exact", "bing_phone_exact"] {
+            assert!(
+                stdout.contains(&format!(
+                    "source={source} execution=search_url access=public"
+                )),
+                "{raw}: {stdout}"
+            );
+        }
+        assert!(stdout.matches("%22%2B61405409302%22").count() == 2, "{stdout}");
+    }
+}
+
+#[test]
 fn sources_percent_encodes_human_queries() {
     let out = bin().args(["sources", "Ada Lovelace"]).output().unwrap();
     assert!(out.status.success());
