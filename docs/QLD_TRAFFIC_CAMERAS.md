@@ -93,13 +93,20 @@ This opt-in second request uses the same bounded, guarded transport and
 typed outcome classification. Both complete inventories are reconciled
 **before** locality or result-limit filtering. Result fields include exact
 shared camera IDs, each source's unique IDs, shared-ID position conflicts
-over 100 metres, and possible nearby *different-ID* camera candidates.
+over 100 metres, same-ID compass-direction conflicts, and possible nearby *different-ID* camera candidates.
 Different-ID candidates are never merged: proximity is not identity.
 The candidate cross-product is capped at 256 by 256 records, and at most
 64 candidate links are displayed with an explicit truncation flag.
 
 The 2026-11-03 observations showed **123** shared IDs, **29** webcam-only
-IDs, and **35** GIS-only IDs. The difference between 152 and 158 totals
+IDs, and **35** GIS-only IDs.
+An independent same-day comparison also found **three** shared-ID location
+conflicts over 100 metres: camera 136 (approximately 1886 metres), 39
+(122 metres) and 135 (119 metres). Camera 136's orientation was **South**
+in the webcam API but **North** in GIS, while camera 39 was **North**
+in the API and **NorthWest** in GIS. These contradicting metadata assertions
+are retained explicitly for review, not resolved automatically.
+ The difference between 152 and 158 totals
 alone would mask 64 differing records. No camera presence, image freshness,
 operational state, vehicle or person identity is inferred from catalogue
 membership. Both sources belong to the same publisher family, and
