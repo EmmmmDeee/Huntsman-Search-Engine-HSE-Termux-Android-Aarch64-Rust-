@@ -340,7 +340,9 @@ pub(super) fn people_discover_response(
     if name.len() > crate::people_discovery::MAX_NAME_BYTES || name.is_empty() {
         return json_error(400, "people discovery name must be 1..120 bytes");
     }
-    let Some(slot) = Slot::take_of(&discovery.live, MAX_LOOKUPS) else {
+    // Four sequential source facets can perform twelve guarded engine calls.
+    // Keep at most one such fan-out on a low-RAM Termux handset at a time.
+    let Some(slot) = Slot::take_of(&discovery.live, 1) else {
         return json_error(503, "people discovery capacity in use; retry shortly");
     };
     let handler = Arc::clone(&discovery.handler);
