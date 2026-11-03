@@ -452,6 +452,17 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="alert" id="rhinser-source-error" role="alert" hidden></p>
 <div class="table-wrap"><table><thead><tr><th>Category</th><th>Source</th><th>Link</th><th>Evidence status</th></tr></thead><tbody id="rhinser-source-list"></tbody></table></div>
 </div></div>
+<div class="panel" id="rhinser-overlap-panel">
+<div class="panel-heading">Rhinser cross-case source overlap</div>
+<div class="panel-body">
+<p class="help">Paste a local Rhinser workspace JSON export to identify exact URLs reused across distinct cases. Analysis runs in the existing Rust engine without contacting any source. Repeated references are not independent evidence.</p>
+<form id="rhinser-overlap-form" class="row">
+<label for="rhinser-overlap-input">Workspace JSON</label>
+<textarea id="rhinser-overlap-input" rows="4" maxlength="20000" spellcheck="false" autocomplete="off" placeholder='{"schema_version":1,"cases":[],"bookmarks":[],"favourites":[],"recent_tools":[],"search_history":[],"settings":{}}' required></textarea>
+<button class="btn" type="submit" id="rhinser-overlap-run">Correlate source URLs</button>
+</form>
+<pre class="mono osint-report" id="rhinser-overlap-output" role="status" aria-live="polite"></pre>
+</div></div>
 <div class="panel" id="osint-methods-panel"><div class="panel-heading">Source-backed OSINT methods</div>
 <div class="panel-body">
 <form id="osint-case-form" class="row">
@@ -1793,6 +1804,10 @@ async function osintOffline(method, source, output, button) {
     $(output).textContent='Review unavailable: '+e.message;
   }finally{submit.disabled=false}
 }
+$('rhinser-overlap-form').onsubmit=ev=>{
+  ev.preventDefault();
+  osintOffline('/api/rhinser/overlaps','rhinser-overlap-input','rhinser-overlap-output','rhinser-overlap-run');
+};
 $('osint-case-form').onsubmit=ev=>{
   ev.preventDefault();
   osintOffline('/api/osint/case','osint-case-input','osint-case-output','osint-case-run');
