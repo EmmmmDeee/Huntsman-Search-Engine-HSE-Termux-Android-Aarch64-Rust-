@@ -15,6 +15,7 @@ use crate::gap::{self, GapReport};
 use crate::graph::Graph;
 use crate::intelligence::{self, IntelligenceReport};
 use crate::metrics::{self, ScanMetrics};
+use crate::osint_synergy::{self, SynergyReport};
 use crate::pipeline::{AnalysisSnapshot, PipelineLimits};
 use crate::pivot::{self, PivotScore};
 use crate::termination::{
@@ -32,6 +33,8 @@ pub struct InvestigationReport {
     pub correlations: Vec<Correlation>,
     pub cross_scan: Option<CrossScanCategory>,
     pub cross_scan_history: Vec<CrossScanRecord>,
+    /// Evidence-linked, cross-family investigation leads, never promoted to proof.
+    pub synergy: SynergyReport,
     pub coverage: CoverageVerdict,
     pub termination: TerminationReason,
     pub truncated: bool,
@@ -70,6 +73,7 @@ fn base_report(snapshot: &AnalysisSnapshot, expand_floor: f64) -> InvestigationR
         correlations: evaluate_rules(&snapshot.entities, &[], scan_id),
         cross_scan: None,
         cross_scan_history: build_cross_scan_history(&snapshot.entities),
+        synergy: osint_synergy::discover(&snapshot.entities),
         coverage: coverage_verdict(&snapshot.coverage),
         termination: termination_for(snapshot),
         truncated: snapshot.truncated,
