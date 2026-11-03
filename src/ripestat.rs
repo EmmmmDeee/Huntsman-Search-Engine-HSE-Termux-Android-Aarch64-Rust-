@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::api_leg::{self, Answer, Api, LegError};
+use crate::api_leg::{self, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::keys::Keys;
 
@@ -239,10 +239,9 @@ pub fn lookup<T: Transport + ?Sized>(
     ip: &str,
     now_unix: u64,
 ) -> Result<Routing, LegError> {
-    match api_leg::get(transport, &API, &Keys::default(), &url(ip), now_unix)? {
-        Answer::Body(body) => decode(&body),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::get(transport, &API, &Keys::default(), &url(ip), now_unix)?
+        .body_or_unexpected()?;
+    decode(&body)
 }
 
 /// One answer body as routing context. **Pure.**
@@ -329,16 +328,15 @@ fn as_call<T: Transport + ?Sized>(
     asn: u32,
     now_unix: u64,
 ) -> Result<Vec<u8>, LegError> {
-    match api_leg::get(
+    let body = api_leg::get(
         transport,
         &API,
         &Keys::default(),
         &as_url(call, asn),
         now_unix,
-    )? {
-        Answer::Body(body) => Ok(body),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    )?
+    .body_or_unexpected()?;
+    Ok(body)
 }
 
 /// An AS number's holder and the registry block it was assigned from.
@@ -626,16 +624,15 @@ pub fn geolocation<T: Transport + ?Sized>(
     resource: &str,
     now_unix: u64,
 ) -> Result<Geolocation, LegError> {
-    match api_leg::get(
+    let body = api_leg::get(
         transport,
         &API,
         &Keys::default(),
         &geolocation_url(resource),
         now_unix,
-    )? {
-        Answer::Body(body) => decode_geolocation(&body),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    )?
+    .body_or_unexpected()?;
+    decode_geolocation(&body)
 }
 
 /// One `geoloc` body, every location kept in published order. A resource with no location is a
@@ -846,16 +843,15 @@ pub fn rpki_validation<T: Transport + ?Sized>(
     prefix: &str,
     now_unix: u64,
 ) -> Result<Rpki, LegError> {
-    match api_leg::get(
+    let body = api_leg::get(
         transport,
         &API,
         &Keys::default(),
         &rpki_url(asn, prefix),
         now_unix,
-    )? {
-        Answer::Body(body) => decode_rpki(&body, prefix),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    )?
+    .body_or_unexpected()?;
+    decode_rpki(&body, prefix)
 }
 
 /// One `rpki-validation` body for the announcement of `prefix`. A state other than the four the
@@ -977,16 +973,15 @@ pub fn routing_history<T: Transport + ?Sized>(
     covers: impl Fn(&str) -> bool,
     now_unix: u64,
 ) -> Result<RoutingHistory, LegError> {
-    match api_leg::get(
+    let body = api_leg::get(
         transport,
         &API,
         &Keys::default(),
         &routing_history_url(prefix),
         now_unix,
-    )? {
-        Answer::Body(body) => decode_routing_history(&body, covers),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    )?
+    .body_or_unexpected()?;
+    decode_routing_history(&body, covers)
 }
 
 /// A `RIPEstat` time (`2016-02-05T00:00:00`, UTC with no zone) as RFC 3339, or `None` when it

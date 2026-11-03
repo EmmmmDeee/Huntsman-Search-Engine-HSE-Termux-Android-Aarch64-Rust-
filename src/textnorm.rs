@@ -2,6 +2,32 @@
 
 use std::fmt::Write as _;
 
+/// `raw` as HTML text or a double-quoted attribute value: `&`, `<`, `>`, `"` and `'` become
+/// their character references; everything else is kept. **Pure.**
+#[must_use]
+pub fn escape_html(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether `value` is operator or record text an input gate accepts: not blank, at most `max`
+/// bytes, and free of control characters, so a field can neither be empty, oversize nor carry a
+/// terminal or line control into a report. **Pure.**
+#[must_use]
+pub fn is_bounded_text(value: &str, max: usize) -> bool {
+    !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+}
+
 /// Whether [`escape_controls`] writes `c` escaped: a control character, a line or paragraph
 /// separator, or a bidirectional embedding, override or isolate control. The separators start a new
 /// line for readers that split on them, and the others reorder the text around them, so a name can
@@ -684,6 +710,26 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_text_is_nonblank_within_the_byte_limit_and_free_of_controls() {
+        assert!(super::is_bounded_text("abc", 3));
+        assert!(super::is_bounded_text(" a ", 3));
+        assert!(!super::is_bounded_text("abcd", 3));
+        assert!(!super::is_bounded_text("   ", 3));
+        assert!(!super::is_bounded_text("", 3));
+        assert!(!super::is_bounded_text("a\tb", 3));
+        assert!(!super::is_bounded_text("a\u{85}", 8));
+    }
+
+    #[test]
+    fn escape_html_neutralises_the_five_markup_characters_and_keeps_the_rest() {
+        assert_eq!(
+            super::escape_html(r#"<a href="x">Tom & Jerry's</a> é"#),
+            "&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/a&gt; é"
+        );
+        assert_eq!(super::escape_html(""), "");
+    }
+
     #[test]
     fn nonblank_trims_and_drops_blank_or_absent_values() {
         assert_eq!(super::nonblank(None), None);

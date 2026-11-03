@@ -20,6 +20,7 @@
 //! A keyed leg runs only when its key is configured (see [`Api::wanted`]): a lookup without the
 //! key makes no request to that provider, and `credential-status` names the slot.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::credential_origin::AuthenticationAuthority;
@@ -109,6 +110,21 @@ pub enum Answer {
     Body(Vec<u8>),
     /// A 404 body. The provider module decides whether this is "nothing known".
     NotFound(Vec<u8>),
+}
+
+impl Answer {
+    /// The 2xx body of a provider that never answers 404 for a legitimate miss: its 404 means a
+    /// missing or misconfigured endpoint, so it is [`LegError::Unexpected`]`(404)`, never
+    /// "nothing known". Providers whose 404 *is* a miss match [`Answer::NotFound`] themselves.
+    ///
+    /// # Errors
+    /// [`LegError::Unexpected`]`(404)` for [`Answer::NotFound`].
+    pub fn body_or_unexpected(self) -> Result<Vec<u8>, LegError> {
+        match self {
+            Self::Body(body) => Ok(body),
+            Self::NotFound(_) => Err(LegError::Unexpected(404)),
+        }
+    }
 }
 
 /// Why a leg gave no answer. No variant carries the key or a response body.
@@ -438,6 +454,101 @@ pub fn decode_value<D: serde::de::DeserializeOwned>(
         .map_err(|_| LegError::Decode("unexpected response shape: data error".into()))
 }
 
+/// Provider values in the order first seen, each once: the list a finding's attribute holds.
+/// Which spellings count as the same value is the caller's choice per push — exact text,
+/// text ignoring ASCII case, or [`clean`]ed text. The first spelling seen is the one kept.
+/// **Pure.**
+#[derive(Debug, Clone, Default)]
+pub struct Distinct {
+    values: Vec<String>,
+    seen: HashSet<String>,
+}
+
+impl Distinct {
+    /// Keeps `value` as given when its exact text is new; whether it was kept.
+    pub fn push(&mut self, value: String) -> bool {
+        if self.seen.insert(value.clone()) {
+            self.values.push(value);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Keeps `value` as given unless it is blank or its exact text is seen; whether it was kept.
+    pub fn push_nonblank(&mut self, value: Option<String>) -> bool {
+        match value.filter(|v| !v.trim().is_empty()) {
+            Some(value) => self.push(value),
+            None => false,
+        }
+    }
+
+    /// Keeps `value` as given when no earlier value equals it ignoring ASCII case (hosts,
+    /// names); whether it was kept.
+    pub fn push_ignoring_ascii_case(&mut self, value: &str) -> bool {
+        if self.seen.insert(value.to_ascii_lowercase()) {
+            self.values.push(value.to_owned());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// [`clean`]s `value` and keeps the result when it is not blank and is new; whether kept.
+    pub fn push_cleaned(&mut self, value: Option<&str>) -> bool {
+        match clean(value) {
+            Some(value) => self.push(value),
+            None => false,
+        }
+    }
+
+    /// A JSON value read as [`scalar`] reads it — a string cleaned, a number or flag as
+    /// written, anything else skipped — then [`Self::push_cleaned`]; whether it was kept.
+    pub fn push_scalar(&mut self, value: Option<&serde_json::Value>) -> bool {
+        self.push_cleaned(value.and_then(scalar).as_deref())
+    }
+
+    /// [`Self::push_cleaned`] for each of `values`.
+    pub fn extend_cleaned<'a>(&mut self, values: impl IntoIterator<Item = &'a str>) {
+        for value in values {
+            self.push_cleaned(Some(value));
+        }
+    }
+
+    /// Whether nothing was kept.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// How many values were kept.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// The kept values in the order first seen.
+    #[must_use]
+    pub fn values(&self) -> &[String] {
+        &self.values
+    }
+
+    /// The kept values in the order first seen.
+    #[must_use]
+    pub fn into_values(self) -> Vec<String> {
+        self.values
+    }
+}
+
+/// `values` [`clean`]ed, in the order first seen, each once: the list attribute most provider
+/// decoders build from a repeated field. **Pure.**
+#[must_use]
+pub fn distinct<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out = Distinct::default();
+    out.extend_cleaned(values);
+    out.into_values()
+}
+
 /// Provider text as a finding keeps it: trimmed, control characters replaced, `None` when
 /// blank. Never shortened: an attribute, a summary or a pivot holds all the provider said.
 /// **Pure.**
@@ -484,6 +595,44 @@ mod tests {
     use super::*;
     use crate::http::{Method, TransportFailure};
     use std::sync::Mutex;
+
+    #[test]
+    fn distinct_keeps_the_first_spelling_once_by_the_rule_each_push_names() {
+        assert_eq!(
+            distinct([" a ", "b\u{7}", "a", "", "  ", "b\u{fffd}"]),
+            vec!["a".to_owned(), "b\u{fffd}".to_owned()]
+        );
+        let mut hosts = Distinct::default();
+        assert!(hosts.push_ignoring_ascii_case("Example.COM"));
+        assert!(!hosts.push_ignoring_ascii_case("example.com"));
+        assert_eq!(hosts.values(), ["Example.COM"]);
+        let mut exact = Distinct::default();
+        assert!(exact.push("A".into()));
+        assert!(exact.push("a".into()));
+        assert!(!exact.push_nonblank(Some("  ".into())));
+        assert!(!exact.push_nonblank(Some("a".into())));
+        assert!(exact.push_nonblank(Some(" a".into())));
+        assert_eq!(exact.len(), 3);
+        let mut scalars = Distinct::default();
+        assert!(scalars.push_scalar(Some(&serde_json::json!(200))));
+        assert!(!scalars.push_scalar(Some(&serde_json::json!(" 200 "))));
+        assert!(!scalars.push_scalar(Some(&serde_json::json!({"k": 1}))));
+        assert!(!scalars.push_scalar(None));
+        assert_eq!(scalars.into_values(), vec!["200".to_owned()]);
+        assert!(Distinct::default().is_empty());
+    }
+
+    #[test]
+    fn a_404_is_never_a_miss_for_a_provider_that_takes_the_body_or_unexpected() {
+        assert_eq!(
+            Answer::Body(b"{}".to_vec()).body_or_unexpected(),
+            Ok(b"{}".to_vec())
+        );
+        assert_eq!(
+            Answer::NotFound(b"gone".to_vec()).body_or_unexpected(),
+            Err(LegError::Unexpected(404))
+        );
+    }
 
     const KEY: &str = "leg-test-key-0123456789abcdef";
     const SLOT: &str = crate::environment::ABUSEIPDB_KEY_ENV;

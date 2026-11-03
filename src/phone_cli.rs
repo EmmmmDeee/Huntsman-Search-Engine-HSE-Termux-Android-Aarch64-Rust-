@@ -94,7 +94,7 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     entity.tag(format!("country:{iso}"));
     entity.add_evidence(
         Evidence::new(
-            EvidenceProvenance::for_scan("phone_intl", &scan_id),
+            EvidenceProvenance::for_scan(phone_intl::SOURCE, &scan_id),
             format!("Phone {canonical} → {country_name}"),
         )
         .with_attr("country_code", prefix)
@@ -109,7 +109,11 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
         ),
     );
 
-    let mut outcomes = vec![SourceExecutionOutcome::success("phone_intl", now_unix, 1)];
+    let mut outcomes = vec![SourceExecutionOutcome::success(
+        phone_intl::SOURCE,
+        now_unix,
+        1,
+    )];
 
     // Every plan is consulted for every number and answers for its own, so a phone scan's Sources
     // table names all three plans, and a plan that does not hold the number says so in its row

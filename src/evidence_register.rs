@@ -31,12 +31,19 @@ struct Row {
     false_positive: bool,
 }
 
-fn stable_id(kind: &str, identifier: &str) -> String {
-    let mut key = Vec::with_capacity(kind.len() + identifier.len() + 1);
+/// A register row's id: `prefix`, then the first twenty hex digits of SHA-256 over `kind`, a NUL
+/// and `value`, so the same evidence gets the same id in every rendering and a different kind
+/// never collides with a value that happens to spell the same. **Pure.**
+pub(crate) fn stable_record_id(prefix: &str, kind: &str, value: &str) -> String {
+    let mut key = Vec::with_capacity(kind.len() + value.len() + 1);
     key.extend_from_slice(kind.as_bytes());
     key.push(0);
-    key.extend_from_slice(identifier.as_bytes());
-    format!("HSE-{}", &hex32(&sha256(&key))[..20])
+    key.extend_from_slice(value.as_bytes());
+    format!("{prefix}{}", &hex32(&sha256(&key))[..20])
+}
+
+fn stable_id(kind: &str, identifier: &str) -> String {
+    stable_record_id("HSE-", kind, identifier)
 }
 
 impl Row {
@@ -399,6 +406,23 @@ pub fn raw_text(report: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_record_id_is_its_prefix_and_twenty_hex_digits_of_the_kind_nul_value_digest() {
+        let mut key = b"element".to_vec();
+        key.push(0);
+        key.extend_from_slice(b"x");
+        let digest = &hex32(&sha256(&key))[..20];
+        assert_eq!(stable_id("element", "x"), format!("HSE-{digest}"));
+        assert_eq!(
+            stable_record_id("HSE-MX-", "element", "x"),
+            format!("HSE-MX-{digest}")
+        );
+        assert_ne!(
+            stable_record_id("HSE-", "elementx", ""),
+            stable_record_id("HSE-", "element", "x")
+        );
+    }
 
     #[test]
     fn stable_record_ids_and_duplicate_refusal() {

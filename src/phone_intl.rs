@@ -3,6 +3,9 @@
 //! The country table is ported from the legacy Huntsman `phone_intl` module.
 //! This module performs no network I/O.
 
+/// Source label for offline E.164 and international dialling-prefix evidence and outcomes.
+pub const SOURCE: &str = "phone_intl";
+
 /// The label the Australian numbering-plan reading records its evidence and outcome under.
 pub const AU_SOURCE: &str = "phone_au";
 

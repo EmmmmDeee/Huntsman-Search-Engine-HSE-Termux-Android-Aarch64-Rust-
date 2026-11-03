@@ -3,6 +3,7 @@
 
 use crate::error::Error;
 use crate::sha256::{hex32, sha256};
+use crate::textnorm::is_bounded_text;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -77,9 +78,6 @@ pub struct CaseReview {
     pub evidence_status: &'static str,
 }
 
-fn field(value: &str, max: usize) -> bool {
-    !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
-}
 fn normal(value: &str) -> String {
     value
         .split_whitespace()
@@ -91,7 +89,7 @@ fn normal(value: &str) -> String {
 /// # Errors
 /// Invalid or credential-bearing URLs.
 pub(crate) fn validate_public_source_url(value: &str) -> Result<(), Error> {
-    if !field(value, 2048) || !value.starts_with("https://") {
+    if !is_bounded_text(value, 2048) || !value.starts_with("https://") {
         return Err(Error::invalid("source URL must use HTTPS"));
     }
     let uri =
@@ -154,7 +152,7 @@ fn receipt_hash(row: &Observation) -> String {
 /// # Errors
 /// Invalid imported records.
 pub fn review(input: &CaseInput) -> Result<CaseReview, Error> {
-    if !field(&input.case_id, 128) || input.observations.len() > MAX_ROWS {
+    if !is_bounded_text(&input.case_id, 128) || input.observations.len() > MAX_ROWS {
         return Err(Error::invalid("invalid case name or too many records"));
     }
     let mut ids = BTreeSet::new();
@@ -162,11 +160,11 @@ pub fn review(input: &CaseInput) -> Result<CaseReview, Error> {
     let mut receipts = Vec::new();
     let mut timeline = Vec::new();
     for row in &input.observations {
-        if !field(&row.id, 128)
-            || !field(&row.subject, 512)
-            || !field(&row.predicate, 128)
-            || !field(&row.value, 4096)
-            || !field(&row.source_root, 256)
+        if !is_bounded_text(&row.id, 128)
+            || !is_bounded_text(&row.subject, 512)
+            || !is_bounded_text(&row.predicate, 128)
+            || !is_bounded_text(&row.value, 4096)
+            || !is_bounded_text(&row.source_root, 256)
             || !ids.insert(row.id.as_str())
         {
             return Err(Error::invalid(

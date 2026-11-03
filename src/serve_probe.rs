@@ -311,24 +311,51 @@ fn get(
     )?;
     let mut raw = Vec::new();
     stream.take(MAX_RESPONSE_BYTES).read_to_end(&mut raw)?;
-    parse_response(&raw)
-        .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "not an HTTP/1.1 response"))
+    // A capped read cannot prove that it saw the end of the response. Never
+    // certify a potentially truncated web UI or health response as healthy.
+    if raw.len() as u64 == MAX_RESPONSE_BYTES {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "server response exceeded the doctor probe byte limit",
+        ));
+    }
+    parse_response(&raw).ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            "incomplete or invalid HTTP/1.1 response",
+        )
+    })
 }
 
 fn parse_response(raw: &[u8]) -> Option<Response> {
-    let text = String::from_utf8_lossy(raw);
-    let (head, body) = text.split_once("\r\n\r\n")?;
+    let header_end = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&raw[..header_end]).ok()?;
+    let body = std::str::from_utf8(&raw[header_end + 4..]).ok()?;
     let mut lines = head.split("\r\n");
     let status_line = lines.next()?;
     let mut parts = status_line.split_whitespace();
-    if !parts.next()?.starts_with("HTTP/1.") {
+    if !matches!(parts.next()?, "HTTP/1.0" | "HTTP/1.1") {
         return None;
     }
     let status = parts.next()?.parse().ok()?;
-    let headers = lines
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
-        .collect();
+    let mut headers = Vec::new();
+    let mut content_length = None;
+    for line in lines {
+        let (name, value) = line.split_once(':')?;
+        let (name, value) = (name.trim(), value.trim());
+        if name.eq_ignore_ascii_case("content-length") {
+            // The Huntsman server always supplies one Content-Length. Reject
+            // malformed or ambiguous framing instead of trusting partial data.
+            let declared = value.parse::<usize>().ok()?;
+            if content_length.replace(declared).is_some() {
+                return None;
+            }
+        }
+        headers.push((name.to_owned(), value.to_owned()));
+    }
+    if content_length.is_some_and(|declared| declared != body.len()) {
+        return None;
+    }
     Some(Response {
         status,
         headers,
@@ -466,6 +493,74 @@ mod tests {
     }
 
     #[test]
+    fn truncated_or_ambiguous_http_responses_are_not_accepted_as_healthy() {
+        let valid = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        assert_eq!(parse_response(valid).unwrap().body, "hello");
+        for raw in [
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhell"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nhello"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: xyz\r\n\r\nhello"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\ncontent-length: 5\r\n\r\nhello"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nBadHeader\r\n\r\nhello"[..],
+            &b"HTTP/1.2 200 OK\r\nContent-Length: 5\r\n\r\nhello"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n\xff"[..],
+        ] {
+            assert!(
+                parse_response(raw).is_none(),
+                "accepted malformed HTTP response: {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_length_counts_utf8_bytes_not_characters() {
+        let good = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\né";
+        assert_eq!(parse_response(good.as_bytes()).unwrap().body, "é");
+        let wrong = "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\né";
+        assert!(parse_response(wrong.as_bytes()).is_none());
+    }
+
+    // Read the complete request before closing: unread request bytes can cause
+    // TCP reset, hiding the response-parser verdict behind a transport error.
+    fn reply_once(reply: &'static [u8]) -> (SocketAddr, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("request deadline");
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(request.len() < 16 * 1024, "request headers too large");
+                let mut byte = [0_u8; 1];
+                stream.read_exact(&mut byte).expect("complete request head");
+                request.push(byte[0]);
+            }
+            stream.write_all(reply).expect("write reply");
+        });
+        (addr, server)
+    }
+
+    #[test]
+    fn doctor_transport_rejects_a_truncated_http_body_on_a_real_socket() {
+        let (addr, server) = reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
+        let result = get(addr, "/api/health", None, Duration::from_secs(2));
+        server.join().expect("server");
+        assert!(result.is_err_and(|error| error.kind() == ErrorKind::InvalidData));
+    }
+
+    #[test]
+    fn doctor_transport_accepts_a_complete_http_body_on_a_real_socket() {
+        let (addr, server) = reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+        let result = get(addr, "/api/health", None, Duration::from_secs(2));
+        server.join().expect("server");
+        let response = result.expect("complete HTTP response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, "hello");
+    }
+
+    #[test]
     fn a_closed_port_is_not_running() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
@@ -476,14 +571,7 @@ mod tests {
 
     #[test]
     fn another_program_on_the_port_is_foreign() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut buf = [0_u8; 1024];
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
-        });
+        let (addr, server) = reply_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
         let found = probe(addr, None, Duration::from_secs(2), AddrSource::Flag);
         server.join().expect("server");
         assert_eq!(found.state, ServeState::Foreign);

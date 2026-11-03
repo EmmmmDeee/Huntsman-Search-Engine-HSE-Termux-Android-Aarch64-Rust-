@@ -46,15 +46,6 @@ const URL_CONF: f64 = 0.58;
 /// The host of the account's website, as a pivot.
 const DOMAIN_CONF: f64 = 0.56;
 
-/// Code forges whose bare host is noise as a `Domain` pivot: the link is already a `Url`.
-const CODE_FORGES: &[&str] = &[
-    "github.com",
-    "gitlab.com",
-    "bitbucket.org",
-    "codeberg.org",
-    "sr.ht",
-];
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
     pub entities: Vec<Entity>,
@@ -373,7 +364,7 @@ fn build_entities(
             &["docker-hub"],
         );
         if let Some((kind, host)) = crate::entity::link_host(website) {
-            if !CODE_FORGES.contains(&host.as_str()) {
+            if !crate::domains::is_code_forge_host(&host) {
                 push_entity(
                     &mut entities,
                     kind,

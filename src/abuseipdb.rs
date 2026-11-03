@@ -11,7 +11,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::keys::Keys;
 
@@ -227,10 +227,8 @@ fn check<T: Transport + ?Sized>(
     ip: &str,
     now_unix: u64,
 ) -> Result<Check, LegError> {
-    match api_leg::get(transport, &API, keys, url, now_unix)? {
-        Answer::Body(body) => decode(&body, ip),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::get(transport, &API, keys, url, now_unix)?.body_or_unexpected()?;
+    decode(&body, ip)
 }
 
 /// One answer body as the check on `ip`. **Pure.**

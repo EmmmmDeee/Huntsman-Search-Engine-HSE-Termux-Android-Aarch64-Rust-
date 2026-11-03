@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, LegError};
+use crate::api_leg::{self, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
@@ -57,10 +57,8 @@ pub fn lookup(
     }) else {
         return Ok(None);
     };
-    match api_leg::get(transport, &API, keys, &url, now_unix)? {
-        Answer::Body(body) => decode(&body),
-        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
-    }
+    let body = api_leg::get(transport, &API, keys, &url, now_unix)?.body_or_unexpected()?;
+    decode(&body)
 }
 
 /// One answer body. **Pure.**

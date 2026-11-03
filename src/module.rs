@@ -652,7 +652,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "author, creator tool, edit history, timestamps, document IDs, values a PDF edit superseded and embedded GPS read from a local file's XMP packets and PDF /Info dictionary, keyless and offline",
     },
     ReachableModule {
-        name: "phone_intl",
+        name: crate::phone_intl::SOURCE,
         command: "phone NUMBER",
         access: "offline",
         network: false,
@@ -661,7 +661,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "E.164 and international dialling-prefix classification",
     },
     ReachableModule {
-        name: "phone_au",
+        name: crate::phone_intl::AU_SOURCE,
         command: "phone NUMBER",
         access: "offline",
         network: false,
@@ -670,7 +670,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Australian numbering-plan classification",
     },
     ReachableModule {
-        name: "phone_nanp",
+        name: crate::phone_intl::NANP_SOURCE,
         command: "phone NUMBER",
         access: "offline",
         network: false,
@@ -1684,6 +1684,8 @@ mod tests {
             crate::virustotal::SOURCE,
             crate::hunter::SOURCE,
             crate::numverify::SOURCE,
+            crate::phone_intl::SOURCE,
+            crate::phone_intl::AU_SOURCE,
             crate::phone_intl::NANP_SOURCE,
             crate::gravatar::SRC,
             crate::duolingo::SRC,

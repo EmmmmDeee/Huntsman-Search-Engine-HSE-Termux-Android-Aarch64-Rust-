@@ -14,6 +14,7 @@ use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_report::{entity_row, evidence_rows};
+use huntsman_recon::phone_intl;
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_registry::routes_for;
@@ -247,14 +248,27 @@ pub(in crate::cli) fn sources_cmd(args: &[String]) -> ExitCode {
     // A handle is routed as written: the classified value drops `.`, `_` and `-`,
     // which would point `@octo-cat` at the account `octocat`.
     let value = if classified.kind == entity::EntityKind::Username {
-        input.as_str()
+        input.clone()
+    } else if classified.kind == entity::EntityKind::Phone {
+        // The generic classifier drops dialling punctuation. Route the same
+        // canonical +E.164 value that the actual phone lookup accepts, rather
+        // than a digit string whose country prefix could be ambiguous.
+        match phone_intl::canonicalize(&input) {
+            Some(canonical) => canonical,
+            None => {
+                return fail(
+                    EX_DATAERR,
+                    "phone must be explicit international form or a recognised Australian number",
+                );
+            }
+        }
     } else {
-        classified.value.as_str()
+        classified.value.clone()
     };
     // Residual and unsupported kinds have no descriptors, so the empty-route check
     // is the gate. A confidence floor here would drop low-confidence but routable
     // kinds such as `@handle` usernames.
-    let routes = routes_for(&classified.kind, value);
+    let routes = routes_for(&classified.kind, &value);
     if routes.is_empty() {
         return fail(EX_DATAERR, "no actionable source routes");
     }

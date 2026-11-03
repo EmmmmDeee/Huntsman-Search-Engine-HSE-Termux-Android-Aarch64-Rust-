@@ -546,7 +546,10 @@ fn operator_endpoint_is_https_only_and_has_no_userinfo_or_path() {
         "https://geo.example.org:8443",
         "https://xn--bcher-kva.example",
     ] {
-        assert!(valid_base(accepted), "accepted origin: {accepted}");
+        assert!(
+            crate::canonical::is_https_origin(accepted),
+            "accepted origin: {accepted}"
+        );
     }
     for invalid in [
         "",
@@ -568,7 +571,10 @@ fn operator_endpoint_is_https_only_and_has_no_userinfo_or_path() {
         "https://geo.example.org%2Fsecret",
         " https://geo.example.org",
     ] {
-        assert!(!valid_base(invalid), "invalid origin: {invalid}");
+        assert!(
+            !crate::canonical::is_https_origin(invalid),
+            "invalid origin: {invalid}"
+        );
     }
 }
 

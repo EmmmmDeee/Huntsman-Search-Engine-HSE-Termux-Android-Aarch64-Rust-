@@ -133,16 +133,6 @@ pub fn lookup(
     )
 }
 
-fn distinct(values: impl Iterator<Item = String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for value in values {
-        if !out.contains(&value) {
-            out.push(value);
-        }
-    }
-    out
-}
-
 /// One answer for `indicator`. **Pure.**
 ///
 /// # Errors
@@ -159,20 +149,26 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
         return Ok(None);
     }
     let all = || services.iter().chain(&leaks);
-    let ports = distinct(all().filter_map(|e| api_leg::clean(e.port.as_deref())));
-    let plugins = distinct(all().filter_map(|e| api_leg::clean(e.plugin.as_deref())));
-    let software = distinct(services.iter().filter_map(|e| {
-        let software = e.service.as_ref()?.software.as_ref()?;
-        let name = api_leg::clean(software.name.as_deref())?;
-        Some(match api_leg::clean(software.version.as_deref()) {
+    let ports = api_leg::distinct(all().filter_map(|e| e.port.as_deref()));
+    let plugins = api_leg::distinct(all().filter_map(|e| e.plugin.as_deref()));
+    let mut software = api_leg::Distinct::default();
+    for e in &services {
+        let Some(found) = e.service.as_ref().and_then(|s| s.software.as_ref()) else {
+            continue;
+        };
+        let Some(name) = api_leg::clean(found.name.as_deref()) else {
+            continue;
+        };
+        software.push(match api_leg::clean(found.version.as_deref()) {
             Some(version) => format!("{name} {version}"),
             None => name,
-        })
-    }));
-    let protocols = distinct(all().filter_map(|e| api_leg::clean(e.protocol.as_deref())));
+        });
+    }
+    let software = software.into_values();
+    let protocols = api_leg::distinct(all().filter_map(|e| e.protocol.as_deref()));
     let leak_info = || leaks.iter().filter_map(|e| e.leak.as_ref());
-    let severities = distinct(leak_info().filter_map(|l| api_leg::clean(l.severity.as_deref())));
-    let leak_types = distinct(leak_info().filter_map(|l| api_leg::clean(l.kind.as_deref())));
+    let severities = api_leg::distinct(leak_info().filter_map(|l| l.severity.as_deref()));
+    let leak_types = api_leg::distinct(leak_info().filter_map(|l| l.kind.as_deref()));
     let rows: i64 = leak_info()
         .filter_map(|l| l.dataset.as_ref())
         .map(|d| d.rows.max(0))

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::canonical::canonical_domain;
 use crate::error::Error;
 use crate::http::parse_http_uri;
+use crate::textnorm::is_bounded_text;
 
 pub const MAX_INPUT_BYTES: u64 = 2_097_152;
 pub const MAX_OBSERVATIONS: usize = 4096;
@@ -105,10 +106,6 @@ pub struct Report {
     pub coverage_gaps: Vec<Gap>,
 }
 
-fn bounded_text(value: &str, max: usize) -> bool {
-    !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
-}
-
 fn exact_domain(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.starts_with('.') || raw.ends_with("..") || raw.chars().any(char::is_whitespace) {
@@ -154,10 +151,10 @@ fn validate(o: &mut Observation, domain: &str, as_of: u64) -> Result<(), Error> 
             "observation host differs from the exact input domain",
         ));
     }
-    if !bounded_text(&o.id, 256)
-        || !bounded_text(&o.provider, 256)
-        || !bounded_text(&o.upstream, 256)
-        || !bounded_text(&o.scope, 2048)
+    if !is_bounded_text(&o.id, 256)
+        || !is_bounded_text(&o.provider, 256)
+        || !is_bounded_text(&o.upstream, 256)
+        || !is_bounded_text(&o.scope, 2048)
         || o.value.len() > 16_384
         || o.value.chars().any(|c| c.is_control() && c != '\n')
         || o.source_url.len() > 4096

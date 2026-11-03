@@ -72,6 +72,10 @@ const USERNAME: &[Probe] = &[
         check: "Check public social profiles for independently verifiable links.",
     },
     Probe {
+        modality: "human_public",
+        check: "Review attributable published interviews and public statements for explicit account cross-links; no impersonation or elicitation.",
+    },
+    Probe {
         modality: "presence",
         check: "Check platform existence without turning existence into an identity match.",
     },
@@ -117,6 +121,32 @@ const PERSON: &[Probe] = &[
         modality: "search",
         check: "Check dated public records without treating namesakes as the same person.",
     },
+    Probe {
+        modality: "human_public",
+        check: "Review dated, published statements or consensually supplied interviews; names alone cannot establish identity.",
+    },
+];
+const COORDINATES: &[Probe] = &[
+    Probe {
+        modality: "geoint",
+        check: "Compare geocoding and satellite-scene metadata with footprint, capture time and uncertainty; scenes do not identify people.",
+    },
+    Probe {
+        modality: "transport",
+        check: "Review dated public transport or aircraft observations as environmental context; proximity is not participation.",
+    },
+    Probe {
+        modality: "netint",
+        check: "Assess public network coverage and infrastructure geography coarsely; never infer subscriber or device location.",
+    },
+    Probe {
+        modality: "rf",
+        check: "Compare consented Wi-Fi and cellular observations with measurement time and accuracy; no passive person tracking.",
+    },
+    Probe {
+        modality: "search",
+        check: "Cross-check public local records and archives with dates and area bounds; location coincidence is not identity proof.",
+    },
 ];
 const RF: &[Probe] = &[Probe {
     modality: "rf",
@@ -137,6 +167,10 @@ fn acquisition_modality(source: &str) -> &'static str {
         // Wikidata is community-curated: never mislabel it as an official
         // identity registry or an independent identity proof.
         "wikidata" => "knowledge_graph",
+        // GEOINT and transport source categories are acquisition hints, never
+        // evidence of identity, co-presence or an operator's location.
+        "nominatim" | "stac" => "geoint",
+        "opensky" => "transport",
         "peeringdb" | "rdap" | "rdap_legs" | "dns" | "crtsh" | "certspotter" | "bgpview"
         | "dnsbl" => "infra",
         "wayback_cdx" | "common_crawl" | "archived_page" | "web_query" | "public_osint"
@@ -159,6 +193,7 @@ fn probes(kind: &EntityKind) -> &'static [Probe] {
         EntityKind::Organisation | EntityKind::AbnAcn => ORG,
         EntityKind::IpAddress | EntityKind::Asn | EntityKind::Netblock => IP,
         EntityKind::Person => PERSON,
+        EntityKind::Coordinates => COORDINATES,
         EntityKind::MacAddress | EntityKind::Ssid => RF,
         _ => &[],
     }
