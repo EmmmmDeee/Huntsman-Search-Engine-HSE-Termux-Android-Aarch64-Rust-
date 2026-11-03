@@ -159,6 +159,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("sources") => lookup::sources_cmd(&remaining.collect::<Vec<_>>()),
         Some("domain-lifecycle") => meta::domain_lifecycle_cmd(&remaining.collect::<Vec<_>>()),
         Some("people") => lookup::people_cmd(&remaining.collect::<Vec<_>>()),
+        Some("people-discover") => lookup::people_discover_cmd(&remaining.collect::<Vec<_>>()),
         Some("email") => lookup::email_cmd(&remaining.collect::<Vec<_>>()),
         Some("exposure") => lookup::exposure_cmd(&remaining.collect::<Vec<_>>()),
         Some("username") => lookup::username_cmd(&remaining.collect::<Vec<_>>()),
