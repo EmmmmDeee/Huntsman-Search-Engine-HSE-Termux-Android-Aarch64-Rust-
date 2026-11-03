@@ -191,6 +191,7 @@ pub mod profiles;
 pub mod proof;
 pub mod provider_credentials;
 pub mod public_osint;
+pub mod qld_traffic_cameras;
 pub mod pulsedive;
 pub mod radar;
 pub mod rdap;
