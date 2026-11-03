@@ -56,6 +56,15 @@ POST bodies. Select **Inspect local capture** to submit it to the local
 server binds** even with a valid bearer token. Larger capture files must use
 `huntsman-recon osint native CAPTURE.json` in Termux.
 
+The browser refuses non-loopback origins **before sending the request**; the
+server independently rejects non-loopback capture inspection even when supplied
+a valid token. Choosing a new file invalidates the previous report and clears
+its previous input; overly large or failed replacements cannot silently
+re-submit the old capture. Asynchronous file imports and HTTP responses use
+a generation check so earlier activity cannot overwrite/export a newer input.
+The real phone-sized browser acceptance now exercises import, HTTP validation,
+redacted export and malformed/oversized input refusals.
+
 The HTTP handler calls the **same Rust parser** as the CLI and never persists
 the raw APDU/NDEF capture. On successful validation, the page can export
 **only the redacted Rust report** as a JSON file; export remains disabled
