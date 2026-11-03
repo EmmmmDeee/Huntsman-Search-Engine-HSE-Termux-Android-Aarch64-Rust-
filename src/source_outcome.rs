@@ -658,6 +658,37 @@ mod tests {
     }
 
     #[test]
+    fn all_absent_is_the_only_proven_absence() {
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Absent]),
+            Joined::Absent
+        );
+        assert_eq!(
+            Joined::of(&[EndpointAnswer::Absent, EndpointAnswer::Found(0)]),
+            Joined::Inconclusive
+        );
+    }
+
+    #[test]
+    fn all_failed_prefers_first_non_refusal_without_reordering() {
+        let refused = EndpointAnswer::Failed(SourceOutcomeKind::RefusedBeforeSending);
+        let limited = EndpointAnswer::Failed(SourceOutcomeKind::RateLimited);
+        let blocked = EndpointAnswer::Failed(SourceOutcomeKind::BotWaf);
+        assert_eq!(
+            Joined::of(&[refused, limited, blocked]),
+            Joined::Unanswered { index: 1, kind: SourceOutcomeKind::RateLimited }
+        );
+        assert_eq!(
+            Joined::of(&[refused, refused]),
+            Joined::Unanswered { index: 0, kind: SourceOutcomeKind::RefusedBeforeSending }
+        );
+        assert_eq!(
+            Joined::of(&[refused, limited, EndpointAnswer::Unvouched]),
+            Joined::Inconclusive
+        );
+    }
+
+    #[test]
     fn none_accepted_names_why_and_always_exits_unavailable() {
         let down = SourceExecutionOutcome::failed(
             "blockchain",
