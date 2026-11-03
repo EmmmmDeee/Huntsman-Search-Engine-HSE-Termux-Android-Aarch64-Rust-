@@ -3714,3 +3714,64 @@ fn favicon_ico_is_an_empty_no_content_icon() {
     assert_eq!(header(&icon, "Content-Type"), Some("image/x-icon"));
     assert!(icon.ends_with("\r\n\r\n"), "204 carries no body: {icon:?}");
 }
+
+
+/// The file/discipline matrix is the same in Rust, CLI and the guarded web API.
+#[test]
+fn osint_matrix_endpoint_returns_real_source_ownership_without_live_claims() {
+    let ask = |path: &str| {
+        respond(
+            &format!("GET {path} HTTP/1.1\r\n\r\n"),
+            &test_config(loopback_bind(), None),
+            &Routes::default(),
+        )
+    };
+    let bytes = ask("/api/osint/matrix");
+    let answer = String::from_utf8(bytes).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let body = answer.split("\r\n\r\n").nth(1).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(doc["status"], "source_inventory_not_live_verification");
+    assert_eq!(doc["rows_count"], crate::osint_matrix::FILE_ROWS.len());
+    assert!(doc["rows"].as_array().unwrap().iter().any(|row| row["id"] == "rhinser_native"));
+    assert!(doc["rows"].as_array().unwrap().iter().any(|row| row["id"] == "identity_gate"));
+    let protected = response_for_request(
+        "GET /api/osint/matrix HTTP/1.1\r\n\r\n",
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(protected.starts_with("HTTP/1.1 401"), "{protected}");
+}
+
+/// A Rhinser JSON bridge never bypasses the existing lookup-header and same-site gates.
+#[test]
+fn rhinser_native_web_import_is_bounded_guarded_and_unverified() {
+    let body = r#"{"schema_version":1,"captured_unix_ms":1793000000000,"operator_consented":true,"events":[{"kind":"bluetooth","transport":"ble","rssi_dbm":-65,"bonded":false,"randomized_address":true}]}"#;
+    let ask = |extra: &str, payload: &str| {
+        let req = format!(
+            "POST /api/osint/native HTTP/1.1\r\nContent-Length: {}\r\n{extra}\r\n{payload}",
+            payload.len()
+        );
+        String::from_utf8(respond(
+            &req,
+            &test_config(loopback_bind(), None),
+            &Routes::default(),
+        ))
+        .unwrap()
+    };
+    assert!(ask("", body).starts_with("HTTP/1.1 403"));
+    let allowed = ask("X-Huntsman-Lookup: 1\r\n", body);
+    assert!(allowed.starts_with("HTTP/1.1 200"), "{allowed}");
+    let doc: serde_json::Value =
+        serde_json::from_str(allowed.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(doc["evidence_role"], "operator_submitted_unverified");
+    assert_eq!(doc["transport_verified"], false);
+    assert_eq!(doc["device_attested"], false);
+    assert_eq!(doc["radio_access"], false);
+    assert_eq!(doc["observations"].as_array().unwrap().len(), 1);
+    let no_consent = body.replace("\"operator_consented\":true", "\"operator_consented\":false");
+    assert!(ask("X-Huntsman-Lookup: 1\r\n", &no_consent).starts_with("HTTP/1.1 400"));
+    assert!(ask("X-Huntsman-Lookup: 1\r\n", "{}").starts_with("HTTP/1.1 400"));
+    let cross_site = ask("X-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n", body);
+    assert!(cross_site.starts_with("HTTP/1.1 403"), "{cross_site}");
+}
