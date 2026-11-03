@@ -14,7 +14,7 @@
 //! director records". ASIC's own register pages confirm the limit (checked 2026-11-03,
 //! <https://www.asic.gov.au/online-services/search-asic-registers/company-and-organisation-registers>):
 //! the free search returns organisation basics only, and officeholder details are sold as paid
-//! company extracts ($10–$23); the RegistryConnect APIs are for approved brokers and
+//! company extracts ($10–$23); the `RegistryConnect` APIs are for approved brokers and
 //! digital service providers, with new applications closed until 2027. So a keyless
 //! director-by-name search has no official channel today. `people` calls it and `people_cli`
 //! records the outcome without aborting other sources; the request is kept as the live probe

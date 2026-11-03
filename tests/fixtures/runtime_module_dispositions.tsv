@@ -110,6 +110,7 @@ intelligence	runtime	aggregated intelligence report
 internetdb	adapter	Shodan InternetDB leg reached through ip_cli from ip, scan -k ip and /api/lookup
 ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
 ipinfo	adapter	IPinfo leg reached through indicator_legs from ip, scan and /api/lookup
+ipinfo_lite	adapter	IPinfo Lite country/ASN leg reached through indicator_legs from ip, scan and /api/lookup when HUNTSMAN_IPINFO_KEY is set
 ipqs	adapter	IPQualityScore IP leg reached through indicator_legs from ip, scan -k ip and /api/lookup when its key is set
 itunes	adapter	Apple iTunes Search source client reached through itunes_cli from the itunes command
 itunes_cli	adapter	itunes keyword front-end reached from the itunes command

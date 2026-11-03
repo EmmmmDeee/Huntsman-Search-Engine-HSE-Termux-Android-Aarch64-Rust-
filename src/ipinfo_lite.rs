@@ -1,5 +1,5 @@
-//! IPinfo Lite country and ASN enrichment. Requires the existing IPinfo key slot.
-//! Kept separate from the legacy IPinfo endpoint to preserve its keyless behavior.
+//! `IPinfo` Lite country and ASN enrichment. Requires the existing `IPinfo` key slot.
+//! Kept separate from the legacy `IPinfo` endpoint to preserve its keyless behavior.
 use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
@@ -137,7 +137,7 @@ mod tests {
             finding
                 .attrs
                 .iter()
-                .any(|(k, v)| k == "country_code" && v == "US")
+                .any(|(k, v)| *k == "country_code" && v == "US")
         );
         assert!(
             finding
