@@ -56,7 +56,9 @@ POST bodies. Select **Inspect local capture** to submit it to the local
 server binds** even with a valid bearer token. Larger capture files must use
 `huntsman-recon osint native CAPTURE.json` in Termux.
 
-The browser refuses non-loopback origins **before sending the request**; the
+The browser refuses to read a selected capture file or submit a pasted capture
+on non-loopback origins; both checks run before the respective file read or
+HTTP request. The
 server independently rejects non-loopback capture inspection even when supplied
 a valid token. Choosing a new file invalidates the previous report and clears
 its previous input; overly large or failed replacements cannot silently
