@@ -180,6 +180,14 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_but_exactly_bound_number_remains_a_valid_provider_response() {
+        let response = br#"{"valid":false,"number":"61401981051"}"#;
+        let verification = decode(response, "+61401981051").expect("matching number must decode");
+        assert!(!verification.valid);
+        assert!(verification.raw_answer.contains("61401981051"));
+    }
+
+    #[test]
     fn a_message_body_is_not_a_verification() {
         assert!(decode(br#"{"message":"Invalid authentication credentials"}"#, "+1").is_err());
     }
