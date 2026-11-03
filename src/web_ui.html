@@ -322,20 +322,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel-heading">Heard in two or more sweeps <span class="badge" id="rrrows-n"></span></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>Vendor</th><th>Sweeps</th><th>First</th><th>Last</th></tr></thead><tbody id="rrrows"></tbody></table></div>
 </div>
-<div class="panel" id="qtpanel">
-<div class="panel-heading">Queensland traffic-camera GEOINT · public metadata</div>
-<p class="help pad">Two public TMR catalogues: current webcam metadata and the state-road GIS inventory. Their disagreements reveal catalogue drift, not operational camera status. Images are not requested; publisher records are not independent witnesses.</p>
-<div class="toolbar"><button class="btn btn-primary" id="qtread" type="button">Compare live camera catalogues</button><button class="btn" id="qtjson" type="button" disabled>Export full JSON</button></div>
-<p class="alert" id="qterror" role="alert" hidden></p>
-<p class="note" id="qtstatus" role="status">No external camera catalogue requested.</p>
-<div id="qtresult" hidden>
-<p class="note" id="qtsummary"></p>
-<div class="panel-heading">Shared-ID discrepancies <span class="badge" id="qtconflicts-n"></span></div>
-<div class="table-wrap"><table><thead><tr><th>Camera ID</th><th>Conflict</th><th>API assertion</th><th>GIS assertion</th><th>Separation (m)</th></tr></thead><tbody id="qtconflicts"></tbody></table></div>
-<div class="panel-heading">Camera metadata (first 200, sorted by ID) <span class="badge" id="qtrows-n"></span></div>
-<div class="table-wrap"><table><thead><tr><th>ID</th><th>Description</th><th>Locality</th><th>Direction</th><th>Lat</th><th>Lon</th></tr></thead><tbody id="qtrows"></tbody></table></div>
-</div>
-</div>
+<div class="panel"><div class="panel-body"><button class="btn" id="qtread" type="button">Compare QLD feeds</button><span id="qtstatus" role="status"></span><div id="qtout"></div></div></div>
 </section>
 <section id="view-inspect" hidden>
 <h1>File metadata</h1>
@@ -774,37 +761,7 @@ $('rtrack').onclick=async()=>{
   }
   finally{b.disabled=false}
 };
-let trafficLast=null;
-$('qtread').onclick=async()=>{
-  const b=$('qtread');b.disabled=true;$('qterror').hidden=true;
-  $('qtstatus').textContent='Fetching the public TMR webcam and GIS catalogues once each…';
-  try{
-    const r=await api('/api/traffic/cameras');
-    trafficLast=r;$('qtjson').disabled=false;$('qtresult').hidden=false;
-    const webcam=r.webcam||{},gis=r.gis||{},compare=r.reconciliation;
-    const state=o=>o.outcome?.kind||'unavailable';
-    const webcamRows=Array.isArray(webcam.cameras)?webcam.cameras:[];
-    fill('qtrows',webcamRows.slice(0,200),x=>[x.id,x.description,x.locality,x.direction,x.latitude,x.longitude]);
-    const conflicts=[];
-    if(compare){
-      for(const c of compare.position_conflicts||[])conflicts.push([c.id,'Location',c.webcam_description+' ('+c.webcam_latitude+','+c.webcam_longitude+')',c.gis_description+' ('+c.gis_latitude+','+c.gis_longitude+')',Math.round(c.separation_metres)]);
-      for(const c of compare.direction_conflicts||[])conflicts.push([c.id,'Direction',c.webcam_direction,c.gis_direction,'']);
-    }
-    fill('qtconflicts',conflicts,x=>x);
-    $('qtsummary').textContent='Webcam: '+state(webcam)+' · '+webcamRows.length+' accepted records; GIS: '+state(gis)+' · '+(gis.cameras||[]).length+
-      ' accepted records; '+(compare?'IDs in both: '+compare.shared_ids+' · only webcam: '+compare.webcam_only_ids.length+
-      ' · only GIS: '+compare.gis_only_ids.length+' · coordinate conflicts: '+compare.position_conflicts.length+
-      ' · direction conflicts: '+compare.direction_conflicts.length+' · nearby different-ID candidates: '+compare.spatial_candidates.length+
-      (compare.candidate_search_truncated?' · candidate search truncated':''):
-      'reconciliation unavailable: inspect the full source-outcome JSON')+
-      '. Same TMR publisher family; no independent corroboration or evidence of image freshness.';
-    $('qtstatus').textContent=compare?'Live catalogue metadata compared. Images not downloaded.':'At least one provider could not supply an accepted catalogue; earlier observations do not establish a current camera count.';
-  }catch(e){
-    $('qtstatus').textContent=trafficLast?'Request failed; tables show the PREVIOUS successful retrieval.':'No current camera catalogue available.';
-    fail('qterror',e.message);
-  }finally{b.disabled=false}
-};
-$('qtjson').onclick=()=>{if(trafficLast)save(trafficLast,'huntsman-qld-traffic-camera-catalogues')};
+$('qtread').onclick=async()=>{const b=$('qtread');b.disabled=true;$('qtstatus').textContent='Reading TMR feeds...';try{const x=await api('/api/traffic/cameras'),r=x.reconciliation;$('qtstatus').textContent=r?'Shared '+r.shared_ids+'; API-only '+r.webcam_only_ids.length+'; GIS-only '+r.gis_only_ids.length:'Source unavailable';$('qtout').replaceChildren(el('pre','osint-report',JSON.stringify(r||{webcam:x.webcam.outcome,gis:x.gis.outcome},null,2)),button('Export JSON',()=>save(x,'huntsman-traffic-cameras')))}catch(e){fail('rerror',e.message)}finally{b.disabled=false}};
 let inspectLast=null;
 const inspectFailed=why=>{$('istatus').textContent=inspectLast?'Failed; the tables show the PREVIOUS file.':'No file inspected.';fail('ierror',why)};
 $('inspect').onsubmit=async ev=>{
