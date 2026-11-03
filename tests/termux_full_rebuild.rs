@@ -48,3 +48,23 @@ fn rebuild_preserves_native_canonical_acceptance_and_rollback_gates() {
     assert!(!SCRIPT.contains("install_prebuilt"));
     assert!(!SCRIPT.contains("cargo install --git"));
 }
+
+#[test]
+fn handset_verdict_requires_an_exact_success_record() {
+    let guard = "grep -Eq '^PASS[[:space:]]+TERMUX_RUNTIME_ACCEPTANCE[[:space:]]*$'";
+    assert!(SCRIPT.contains(guard), "installer must require an exact handset PASS");
+
+    for (report, expected) in [
+        ("PASS  TERMUX_RUNTIME_ACCEPTANCE\n", true),
+        ("PASS  HOST_RUNTIME_ACCEPTANCE (not a handset pass)\n", false),
+        ("INFO  TERMUX_RUNTIME_ACCEPTANCE\n", false),
+        ("FAIL  TERMUX_RUNTIME_ACCEPTANCE\n", false),
+        ("PASS  TERMUX_RUNTIME_ACCEPTANCE_MOCK\n", false),
+    ] {
+        let output = Command::new("bash")
+            .args(["-c", "printf '%s' \"$1\" | grep -Eq '^PASS[[:space:]]+TERMUX_RUNTIME_ACCEPTANCE[[:space:]]*$'", "--", report])
+            .status()
+            .expect("CI provides bash and grep");
+        assert_eq!(output.success(), expected, "unexpected verdict for {report:?}");
+    }
+}
