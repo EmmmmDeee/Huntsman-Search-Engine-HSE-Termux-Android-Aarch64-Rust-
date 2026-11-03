@@ -21,6 +21,42 @@ use super::{
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
 /// seeds, one per line. It is refused cross-site like a lookup, but needs no lookup header: it
 /// makes no network request and spends no key.
+/// `POST /api/osint/native`: parse a consent-labelled, operator-provided Rhinser
+/// capture offline using the identical bounded Rust parser as `osint native FILE`.
+/// The response is unverified and contains no raw card payload or MAC address.
+pub(super) fn rhinser_native_response(parsed: &ParsedRequest<'_>) -> String {
+    if parsed.method != Method::Post {
+        return json_error(405, "Rhinser import requires POST");
+    }
+    if let Some(refusal) = page_refusal(parsed, "Rhinser import", true) {
+        return refusal;
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "Rhinser import takes no query parameters");
+    }
+    let Some(length) = parsed.content_length else {
+        return json_error(400, "Rhinser import needs content length");
+    };
+    if length == 0
+        || u64::try_from(length).unwrap_or(u64::MAX) > crate::rhinser_native::MAX_CAPTURE_BYTES
+    {
+        return json_error(413, "Rhinser capture must contain 1-65536 bytes");
+    }
+    let Some(body) = parsed.body else {
+        return json_error(400, "Rhinser import body missing");
+    };
+    if body.len() != length {
+        return json_error(400, "Rhinser import body incomplete or invalid UTF-8");
+    }
+    match crate::rhinser_native::inspect_capture_json(body.as_bytes()) {
+        Ok(report) => serde_json::to_string(&report).map_or_else(
+            |_| json_error(500, "Rhinser report serialization failed"),
+            |json| json_ok(&json, false),
+        ),
+        Err(_) => json_error(400, "Rhinser capture schema invalid or unsupported"),
+    }
+}
+
 /// Reuse Huntsman's existing authorization and same-site gates for both
 /// bounded, offline JSON OSINT methods. No remote provider request is made.
 pub(super) fn osint_offline_response(parsed: &ParsedRequest<'_>, risk: bool) -> String {
