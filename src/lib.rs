@@ -179,6 +179,7 @@ pub mod oui_ieee;
 pub mod pattern;
 pub mod peeringdb;
 pub mod people_cli;
+pub mod people_discovery;
 pub mod phishstats;
 pub mod phone_cli;
 pub mod phone_intl;
