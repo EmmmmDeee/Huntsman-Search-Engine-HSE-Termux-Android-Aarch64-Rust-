@@ -22,6 +22,7 @@ use super::{
 /// seeds, one per line. It is refused cross-site like a lookup, but needs no lookup header: it
 /// makes no network request and spends no key.
 /// All offline analyses use the same bounded, authorized JSON POST contract.
+#[derive(Clone, Copy)]
 pub(super) enum OfflineOsintMode {
     Case,
     Risk,
