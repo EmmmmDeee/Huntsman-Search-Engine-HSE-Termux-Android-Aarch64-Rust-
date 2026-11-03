@@ -1,0 +1,1 @@
+Extended canonical bounded orthogonal OSINT acquisition planning for coordinate GEOINT/transport/NETINT/RF and public human-source checks. Existing shared analysis JSON and phone Web UI render the resulting proposals; no network fetch, new credentials, runtime dependency or identity inference is introduced.
