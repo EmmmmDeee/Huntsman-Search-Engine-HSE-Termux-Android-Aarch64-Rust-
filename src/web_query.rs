@@ -775,11 +775,19 @@ mod tests {
         assert_eq!(deduped.hits.len(), 1);
         assert_eq!(sightings.len(), 3);
         assert_eq!(
-            sightings.iter().map(|row| row.engine.as_str()).collect::<Vec<_>>(),
+            sightings
+                .iter()
+                .map(|row| row.engine.as_str())
+                .collect::<Vec<_>>(),
             ["bing", "brave", "mojeek"]
         );
         assert_eq!(deduped.outcomes.len(), 3);
-        assert!(deduped.outcomes.iter().all(|row| row.kind == SourceOutcomeKind::Success));
+        assert!(
+            deduped
+                .outcomes
+                .iter()
+                .all(|row| row.kind == SourceOutcomeKind::Success)
+        );
     }
 
     struct Fake {
