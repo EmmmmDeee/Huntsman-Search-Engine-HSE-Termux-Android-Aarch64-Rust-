@@ -1084,7 +1084,6 @@ $('rawdownload').onclick=async()=>{
   }
 };
 
-// Raw provider outcomes remain visible, but inconsistent counts cannot look verified.
 const sourceOutcomeState=o=>o.outcome_count_conflict?
   ['bad',o.outcome+' · count conflict']:[tone[o.outcome]||'bad',o.outcome];
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
@@ -1356,10 +1355,8 @@ function arrange(layout){
 }
 const push=(a,b,rep)=>{let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy;if(d2<.01){dx=Math.random()-.5;dy=Math.random()-.5;d2=.5}if(d2>90000)return;const f=rep/d2;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f};
 function repelAll(alpha){const ns=G.nodes,n=ns.length,rep=alpha*1200;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)push(ns[i],ns[j],rep)}
-// Past a few hundred elements, only neighbours within a cell or two repel each other.
 const cellKey=(x,y)=>x+','+y;
 function cells(ns){const cell=new Map();for(const p of ns){const k=cellKey(Math.floor(p.x/150),Math.floor(p.y/150));if(!cell.has(k))cell.set(k,[]);cell.get(k).push(p)}return cell}
-// Repel the elements from index `from` on until the frame's slice is spent; the index to go on from.
 function repelFrom(cell,alpha,from,t0){
   const ns=G.nodes,rep=alpha*1200;
   for(let i=from;i<ns.length;i++){
@@ -1369,7 +1366,6 @@ function repelFrom(cell,alpha,from,t0){
   }
   return ns.length;
 }
-// Links pull, the middle draws everything in a little, then every element moves.
 function settle(alpha){
   for(const [a,b] of G.edges){const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1,f=alpha*.15*(d-40)/d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}
   for(const p of G.nodes){if(p.fixed){p.vx=p.vy=0;continue}p.vx=(p.vx-p.x*alpha*.005)*.6;p.vy=(p.vy-p.y*alpha*.005)*.6;p.x+=Math.max(-25,Math.min(25,p.vx));p.y+=Math.max(-25,Math.min(25,p.vy))}
@@ -1389,7 +1385,6 @@ function ring(){
   const n=G.sel,[r,c]=G.ring,d=n?dot(n):'';
   r.setAttribute('class',n&&n.root?'gring groot':'gring');c.setAttribute('class',n?'gpick '+n.cls:'gpick');r.setAttribute('d',d);c.setAttribute('d',d);
 }
-// The element drawn under a point of the screen, the nearest if dots overlap there.
 function nodeAt(cx,cy){
   const r=svg.getBoundingClientRect(),x=(cx-r.left-G.tx)/G.k,y=(cy-r.top-G.ty)/G.k;
   let best=null,near=Infinity;
@@ -1436,12 +1431,10 @@ $('gsave').onclick=()=>{
   const copy=svg.cloneNode(true),r=svg.getBoundingClientRect(),bg=document.createElementNS(NS,'rect'),fills=new Map();
   copy.setAttribute('xmlns',NS);copy.setAttribute('width',Math.round(r.width));copy.setAttribute('height',Math.round(r.height));copy.removeAttribute('role');
   bg.setAttribute('width','100%');bg.setAttribute('height','100%');bg.setAttribute('fill',getComputedStyle(svg.parentNode).backgroundColor);copy.insertBefore(bg,copy.firstChild);
-  // The page's styles do not travel with the file, so each path carries how it is drawn.
   const was=[...svg.querySelectorAll('path')],drawn=['fill','stroke','stroke-width','stroke-linecap','vector-effect'];
   [...copy.querySelectorAll('path')].forEach((c,i)=>{const k=was[i].getAttribute('class')||'';if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,drawn.map(p=>s.getPropertyValue(p)))}fills.get(k).forEach((v,j)=>c.setAttribute(drawn[j],v));c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
-// Compare per-element additions, removals and correlations between scans.
 let cmp=[];
 const compareScans=(a,b)=>{location.hash='#/compare/'+enc(a)+'/'+enc(b)};
 async function openCompare(ids){
@@ -1466,14 +1459,12 @@ async function openCompare(ids){
   }catch(e){if(g===gen){fail('cmperror',e.message);$('cmpmeta').textContent=''}}
 }
 $('cmpswap').onclick=()=>compareScans(cmp[1],cmp[0]);
-// The alert history is read only when asked for, so a cold load stays at its four requests.
 $('alertsload').onclick=()=>api('/api/scans/alerts').then(h=>{$('alertswrap').hidden=false;fill('alerts',h.slice(-20).reverse(),x=>[when(x.at),x.raised?'yes':'no',x.earlier,x.later,x.reasons.map(r=>r.rule||r.count+' new values').join('; ')])},e=>fail('serror',e.message));
 $('cmpexport').addEventListener('click',async e=>{
   const b=e.target.closest('button[data-xformat]');if(!b)return;
   $('cmpexport').open=false;
   try{await fetchFile('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(','),format:b.dataset.xformat}),'huntsman-compare.'+b.dataset.xformat)}catch(err){fail('cmperror',err.message)}
 });
-// Why a scan stopped following what it found: the crawl's own reason, and what it means.
 const STOP={fixed_point:'nothing new was left to look up',resource_limit:'the lookup or entity budget ran out with findings left to follow',cancelled:'stop requested; the lookups still queued did not run',time_limit:'the time limit ran out',request_budget:'the request budget ran out',provider_budget:'a provider\'s request budget ran out',marginal_gain_limit:'new lookups had stopped finding anything new',fatal_error:'a lookup failed and the crawl could not go on'};
 function stopped(s){
   const t=s.termination,d=(s.options||{}).depth||0;
@@ -1501,12 +1492,8 @@ async function prefill(f){
   $('nerror').hidden=true;location.hash='#/newscan';
 }
 const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
-// Launch a follow-up scan of an element with the lookup the server names for it (the row's
 // scan_kind), preserving depth/use case.
 const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.scan_kind,usecase:o.usecase,depth:o.depth})};
-// Spiderfoot has no offline analysis of a saved scan; this is Huntsman's /analyze over the saved
-// entities, shown whole: every count, every stated limitation, and the report as returned. Not
-// cached: a false-positive flag set since must turn it into the server's refusal.
 async function analysis(){
   const r=await api(base()+'/analyze');
   $('anote').textContent='Source: '+show(r.source)+' · scan '+show(r.scan&&r.scan.status);
@@ -1545,7 +1532,6 @@ function showLog(){
 $('llevel').onchange=showLog;$('lfilter').oninput=showLog;
 const csv=v=>{const s=v==null?'':String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 $('ldownload').onclick=()=>download(new Blob([['Date','Component','Type','Event'].join(',')+'\r\n'+logs.map(x=>[when(x.time),x.component,x.level,x.message].map(csv).join(',')).join('\r\n')],{type:'text/csv'}),'huntsman-'+sid+'-log.csv');
-// Exports come from the server, which writes every element whole; the page only saves them.
 async function exportFile(format){
   const p=new URLSearchParams({format}),type=tab==='browse'?btype:'';if(type)p.set('type',type);
   await fetchFile(base()+'/export?'+p,'huntsman-'+sid+(type?'-'+type:'')+'.'+format);
@@ -1563,7 +1549,6 @@ $('scexport').addEventListener('click',async e=>{
   $('scexport').open=false;
   try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
 });
-// Saved-scan evidence, matrix and delta exports share the offline API.
 $('scevidence').addEventListener('click',async e=>{
   const button=e.target.closest('button[data-eformat]');if(!button)return;
   $('scevidence').open=false;
@@ -1595,17 +1580,13 @@ document.addEventListener('toggle',e=>{
 },true);
 document.addEventListener('click',e=>{for(const m of document.querySelectorAll('details.menu[open]'))if(!m.contains(e.target))m.open=false});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const m of document.querySelectorAll('details.menu[open]'))m.open=false});
-// Settings: every module, what it needs, and what this server knows of itself. Keys stay in the
-// environment and ~/.huntsman.env on the device; the page never sees one.
 const ACCESS={operator_key:['API key','warn'],keyless:['keyless','ok'],offline:['offline','info'],local:['local','info'],mixed:['mixed','info']};
 let settings=null,keyslots=null,keynote=null;
 async function loadSettings(){
   await started;
   const base=[['Server address',location.host],['Version',$('sversion').textContent],['Sign-in',$('sauth').textContent]];
   kv('gopts',base);$('gerror').hidden=true;
-  // The server's settings carry each module's key status; without saved scans, the module list.
   try{settings=await api('/api/settings')}catch(_){try{settings={modules:await moduleList(),global:[]}}catch(e){fail('gerror',e.message);return}}
-  // Which keys the page may save, and whether each is set; a server without a keys file answers none.
   try{keyslots=await api('/api/settings/keys')}catch(_){keyslots=null}
   kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)]),keyslots?[['Keys file',keyslots.file]]:[]));
   $('kimp').hidden=!keyslots;keyWarning();showMods();
@@ -1615,7 +1596,6 @@ function showRules(rules){
   const tb=$('rules');tb.replaceChildren();$('rules-p').hidden=false;$('rules-n').textContent=rules.filter(r=>!r.error).length;
   for(const r of rules){
     const tr=el('tr');
-    // A rule file that did not load runs over no scan: it is named here, with the reason, where its results would have been.
     if(r.error){put(tr,'',el('div','alert','Not loaded: '+(r.id||'')+' · '+r.error)).classList.add('wide');put(tr,'Risk','');put(tr,'Origin',r.origin||'not loaded');tb.append(tr);continue}
     const d=el('details','corr');
     d.append(el('summary','',r.name||r.id));
@@ -1640,7 +1620,6 @@ function showMods(){
     tr.cells[3].replaceChildren(k);
   });
 }
-// Keys are write-only in settings; only slot status returns to the UI.
 function keyEditor(m){
   const rows=keyslots?(m.key_env||[]).map(s=>keyslots.slots.find(k=>k.slot===s)).filter(Boolean):[];
   if(!rows.length)return null;
@@ -1708,11 +1687,9 @@ function showAnalysis(saved){
   const who=uid=>names.get(uid)||uid;
   $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
   $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
-  // The server says when a bound cut the analysis short (a snapshot, report or export limit while bridging the saved scans); the summary must not read as complete then.
   $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination)+' · '+new Date(saved.at).toLocaleTimeString()+(body.truncated?' · TRUNCATED: a bound cut this analysis short, so these results are incomplete':'');
   $('astatus').classList.toggle('alert',!!body.truncated);
   fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
-  // Each link with how sure the spine is of it and what it rests on, so a weak inference never reads like a strong one.
   fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind)+(x.label?' · '+x.label:''),who(x.to_uid),Number(x.confidence).toFixed(2),(x.evidence||[]).map(e=>((e.provenance&&e.provenance.source)||'')+(e.summary?': '+e.summary:'')).join(' · ')||'none: derived from the seeds alone']);
   fill('ageo',body.geo_distances||[],p=>[p.left,p.right,Number(p.meters).toFixed(1)]);
   $('ageonote').textContent=body.geo_truncated?'Distances limited to the first 16 distinct coordinate seeds.':'';
@@ -1739,8 +1716,6 @@ $('analyze').onsubmit=async ev=>{
     showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
   }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
 };
-// Read-only Rhinser source directory: all filtering stays in the browser; external
-// sites are opened only on an explicit user click, never fetched or verified here.
 let rhinserCatalog=null,rhinserPending=null;
 function renderRhinserCatalog(){
   if(!rhinserCatalog)return;
@@ -1809,7 +1784,6 @@ async function loadRhinserCatalog(force=false){
 $('rhinser-source-category').onchange=renderRhinserCatalog;
 $('rhinser-source-search').oninput=renderRhinserCatalog;
 $('rhinser-source-reload').onclick=()=>loadRhinserCatalog(true);
-// Independent OSINT methods use the same guarded Rust library code as the CLI.
 async function osintOffline(method, source, output, button) {
   const submit=$(button); submit.disabled=true;
   $(output).textContent='Analyzing imported evidence…';
@@ -1822,7 +1796,6 @@ async function osintOffline(method, source, output, button) {
     $(output).textContent='Review unavailable: '+e.message;
   }finally{submit.disabled=false}
 }
-// Metadata-only matrix: no remote provider calls are issued by this endpoint.
 let osintMatrixReport=null;
 function filterOsintMatrix(){
   const rows=osintMatrixReport?.rows||[];
@@ -1864,8 +1837,6 @@ $('osint-risk-form').onsubmit=ev=>{
   osintOffline('/api/osint/area-risk','osint-risk-input','osint-risk-output','osint-risk-run');
 };
 $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
-// Extract seeds from pasted text: the investigate command over the text, offline; what it finds
-// joins the seeds above, deduplicated, and is listed with the signal that found each.
 $('investigate').onsubmit=async ev=>{
   ev.preventDefault();$('txerror').hidden=true;
   const text=$('txtext').value;if(!text.trim())return;
@@ -1888,9 +1859,6 @@ $('investigate').onsubmit=async ev=>{
 }
 $('refresh').onclick=()=>{health();details()};
 $('blueprint').onclick=()=>fetchFile('/api/blueprint?format=docx','OSINT_APK_BLUEPRINT.docx').then(()=>{$('berror').hidden=true},e=>fail('berror',e.message));
-// Live updates: the server pushes scan state and raised alerts over Server-Sent Events, so the
-// open view refreshes the instant something changes instead of only on the poll timer. The stream
-// is a nudge; the REST calls stay the source of truth and polling stays as the fallback.
 let stream=null,nudgeTimer=0;
 function nudge(){clearTimeout(nudgeTimer);nudgeTimer=setTimeout(()=>{if(document.hidden)return;if(view==='scans')loadScans();else if(view==='scan')loadScan(false)},250)}
 function liveStream(){
@@ -1899,7 +1867,6 @@ function liveStream(){
   stream.onmessage=nudge;stream.addEventListener('resync',nudge);
   stream.onerror=()=>{};// the browser reconnects on its own after the bounded stream closes
 }
-// Settings and About show the version and sign-in the first health answer carries.
 const started=health();route();liveStream();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
 </script>
