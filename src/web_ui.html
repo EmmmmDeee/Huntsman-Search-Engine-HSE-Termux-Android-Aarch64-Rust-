@@ -437,6 +437,26 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="alert" id="txerror" role="alert" hidden></p>
 <div class="table-wrap" id="txresult" hidden><table><thead><tr><th>kind</th><th>value</th><th>confidence</th><th>signal</th></tr></thead><tbody id="txentities"></tbody></table></div>
 </div></div>
+<div class="panel" id="people-discovery-panel">
+<div class="panel-heading">Live public people discovery <span class="badge" id="people-discover-hits-n">0</span></div>
+<div class="panel-body">
+<p class="help">Run bounded real web-index queries across professional, software, research and official public-record sites. Exact URLs are unverified discovery leads. A name match or multiple search engines reporting the same URL does not establish identity, account control, employment or affiliation. No breach lookups, location tracing or automatic follow-up.</p>
+<form class="row" id="people-discover-form">
+<label for="people-discover-name">Public-record name</label>
+<input id="people-discover-name" type="text" maxlength="120" autocomplete="off" autocapitalize="words" spellcheck="false" placeholder="Full name (two or more words)" required>
+<label for="people-discover-region">Registry jurisdiction</label>
+<select id="people-discover-region"><option value="au">Australia (ASIC)</option><option value="us">United States (SEC)</option></select>
+<button class="btn btn-primary" id="people-discover-run" type="submit">Discover public leads</button>
+</form>
+<p class="note" id="people-discover-status" role="status">No external search requested.</p>
+<p class="alert" id="people-discover-error" role="alert" hidden></p>
+<div id="people-discover-results" hidden>
+<div class="table-wrap"><table><thead><tr><th>Source context</th><th>Indexed URL</th><th>Search indexes</th><th>Evidence</th></tr></thead><tbody id="people-discover-hits"></tbody></table></div>
+<div class="panel-heading">Live provider outcomes</div>
+<div class="table-wrap"><table><thead><tr><th>Context</th><th>Engine</th><th>Outcome</th><th>HTTP</th><th>Found</th></tr></thead><tbody id="people-discover-outcomes"></tbody></table></div>
+<p class="note">This interface never verifies personal identity from a name-only search. Follow a public link only after independently deciding it is relevant.</p>
+</div>
+</div></div>
 <div class="panel" id="rhinser-sources-panel">
 <div class="panel-heading">Rhinser public-source directory <span class="badge" id="rhinser-source-list-n">0</span></div>
 <div class="panel-body">
@@ -1707,6 +1727,49 @@ $('analyze').onsubmit=async ev=>{
     const saved={seeds,at:Date.now(),body};
     showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
   }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
+};
+// Live public people discovery uses only the server's Rust provider adapters.
+// Send the name in a POST body, not the URL, and never persist it in localStorage.
+$('people-discover-form').onsubmit=async ev=>{
+  ev.preventDefault();
+  const name=$('people-discover-name').value.trim();
+  const region=$('people-discover-region').value;
+  if(!name)return;
+  $('people-discover-run').disabled=true;
+  $('people-discover-error').hidden=true;
+  $('people-discover-results').hidden=true;
+  $('people-discover-status').textContent='Querying public search indexes…';
+  try{
+    const report=await api('/api/people/discover',{
+      method:'POST',body:JSON.stringify({name,region})
+    });
+    if(!report||!Array.isArray(report.candidates)||!Array.isArray(report.facets))throw new Error('Invalid discovery report');
+    if(report.candidates.length>80||report.facets.length>4)throw new Error('Discovery limits exceeded');
+    fill('people-discover-hits',report.candidates,item=>{
+      let link;
+      try{
+        const target=new URL(item.url);
+        if(target.protocol!=='https:'||target.username||target.password)throw new Error('invalid');
+        link=el('a','link',target.href);
+        link.href=target.href;link.target='_blank';link.rel='noopener noreferrer';link.referrerPolicy='no-referrer';
+      }catch(_){link=el('span',null,'Rejected unsafe link')}
+      return [(item.facets||[]).join(', '),link,(item.reported_by||[]).join(', '),item.status||'unverified'];
+    });
+    const outcomes=report.facets.flatMap(f=>(f.outcomes||[]).map(o=>({facet:f.id,...o})));
+    fill('people-discover-outcomes',outcomes,o=>[
+      o.facet,o.module,o.kind,o.http_status??'—',o.found??'—'
+    ]);
+    $('people-discover-results').hidden=false;
+    $('people-discover-status').textContent=
+      report.candidates.length+' unverified public leads · '+outcomes.length+
+      ' provider outcomes'+(report.truncated?' · TRUNCATED: result budget exceeded':'')+
+      '. Repeated engine sightings are not corroboration.';
+  }catch(e){
+    fail('people-discover-error',e instanceof Error?e.message:String(e));
+    $('people-discover-status').textContent='Discovery did not complete; no absence inferred.';
+  }finally{
+    $('people-discover-run').disabled=false;
+  }
 };
 // Read-only Rhinser source directory: all filtering stays in the browser; external
 // sites are opened only on an explicit user click, never fetched or verified here.
