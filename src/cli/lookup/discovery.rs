@@ -255,7 +255,12 @@ pub(in crate::cli) fn sources_cmd(args: &[String]) -> ExitCode {
         // than a digit string whose country prefix could be ambiguous.
         match phone_intl::canonicalize(&input) {
             Some(canonical) => canonical,
-            None => return fail(EX_DATAERR, "phone must be explicit international form or a recognised Australian number"),
+            None => {
+                return fail(
+                    EX_DATAERR,
+                    "phone must be explicit international form or a recognised Australian number",
+                );
+            }
         }
     } else {
         classified.value.clone()
