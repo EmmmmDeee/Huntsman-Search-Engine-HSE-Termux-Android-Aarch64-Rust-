@@ -3,8 +3,8 @@
 //! A matching target observed by another source is not confirmation of the
 //! relationship itself. This distinction is part of the serialized contract.
 
-use std::collections::BTreeMap;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 use crate::canonical::{canonical_asn, canonical_domain, canonical_ip_literal};
 use crate::entity::{Entity, EntityKind, Evidence, is_non_corroborating_source};
@@ -51,17 +51,13 @@ fn eligible(evidence: &Evidence) -> bool {
         && !is_non_corroborating_source(&evidence.provenance.corroboration_key())
 }
 
-fn target_observation<'a>(
-    target: &'a Entity,
-    source_family: &str,
-) -> Option<&'a Evidence> {
+fn target_observation<'a>(target: &'a Entity, source_family: &str) -> Option<&'a Evidence> {
     target
         .evidence
         .iter()
         .take(MAX_EVIDENCE_PER_ENTITY)
         .find(|evidence| {
-            eligible(evidence)
-                && evidence.provenance.corroboration_key() != source_family
+            eligible(evidence) && evidence.provenance.corroboration_key() != source_family
         })
 }
 
@@ -104,7 +100,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
     let mut index: BTreeMap<(EntityKind, String), Vec<&Entity>> = BTreeMap::new();
     for entity in inspected {
         if let Some(value) = normalize(&entity.kind, &entity.value) {
-            index.entry((entity.kind.clone(), value)).or_default().push(entity);
+            index
+                .entry((entity.kind.clone(), value))
+                .or_default()
+                .push(entity);
         }
     }
     let mut links: BTreeMap<(String, String, &'static str), SynergyLink> = BTreeMap::new();
@@ -118,7 +117,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
             }
             let family = evidence.provenance.corroboration_key();
             for &(attribute, ref target_kind, relation) in attributes(&entity.kind) {
-                for value in evidence.attr_values(attribute).take(MAX_VALUES_PER_ATTRIBUTE) {
+                for value in evidence
+                    .attr_values(attribute)
+                    .take(MAX_VALUES_PER_ATTRIBUTE)
+                {
                     let Some(normalized) = normalize(target_kind, value) else {
                         continue;
                     };
@@ -139,7 +141,8 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
                             source: evidence.provenance.source.clone(),
                             target_source: independent.map(|item| item.provenance.source.clone()),
                             source_scan_id: evidence.provenance.scan_id.clone(),
-                            target_scan_id: independent.and_then(|item| item.provenance.scan_id.clone()),
+                            target_scan_id: independent
+                                .and_then(|item| item.provenance.scan_id.clone()),
                             status: if independent.is_some() {
                                 JoinStatus::IndependentlyObservedTarget
                             } else {
@@ -179,7 +182,7 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{EvidenceProvenance, Entity};
+    use crate::entity::{Entity, EvidenceProvenance};
 
     fn observed(kind: EntityKind, value: &str, source: &str, scan: &str) -> Entity {
         let mut entity = Entity::new(kind, value, 0.8, scan);
@@ -200,7 +203,10 @@ mod tests {
         let address = observed(EntityKind::IpAddress, "192.0.2.5", "rdap", "scan-b");
         let result = discover(&[domain, address]);
         assert_eq!(result.links.len(), 1);
-        assert_eq!(result.links[0].status, JoinStatus::IndependentlyObservedTarget);
+        assert_eq!(
+            result.links[0].status,
+            JoinStatus::IndependentlyObservedTarget
+        );
         assert_eq!(result.links[0].source_scan_id.as_deref(), Some("scan-a"));
         assert_eq!(result.links[0].target_scan_id.as_deref(), Some("scan-b"));
         assert!(!result.truncated);
@@ -209,12 +215,18 @@ mod tests {
     #[test]
     fn seeds_inference_and_invalid_attributes_do_not_create_false_links() {
         let mut domain = observed(EntityKind::Domain, "example.org", "dns", "a");
-        domain.add_evidence(Evidence::new(EvidenceProvenance::new("seed"), "operator")
-            .with_attr("ip", "192.0.2.5"));
-        domain.add_evidence(Evidence::new(EvidenceProvenance::new("dns"), "parse")
-            .inferred().with_attr("ip", "192.0.2.5"));
-        domain.add_evidence(Evidence::new(EvidenceProvenance::new("dns"), "invalid")
-            .with_attr("ip", "not-an-address"));
+        domain.add_evidence(
+            Evidence::new(EvidenceProvenance::new("seed"), "operator").with_attr("ip", "192.0.2.5"),
+        );
+        domain.add_evidence(
+            Evidence::new(EvidenceProvenance::new("dns"), "parse")
+                .inferred()
+                .with_attr("ip", "192.0.2.5"),
+        );
+        domain.add_evidence(
+            Evidence::new(EvidenceProvenance::new("dns"), "invalid")
+                .with_attr("ip", "not-an-address"),
+        );
         let target = observed(EntityKind::IpAddress, "192.0.2.5", "rdap", "b");
         assert!(discover(&[domain, target]).links.is_empty());
     }
@@ -222,8 +234,9 @@ mod tests {
     #[test]
     fn same_source_and_no_other_observation_cannot_claim_independence() {
         let mut domain = observed(EntityKind::Domain, "example.org", "dns", "a");
-        domain.add_evidence(Evidence::new(EvidenceProvenance::new("dns"), "A")
-            .with_attr("ip", "192.0.2.5"));
+        domain.add_evidence(
+            Evidence::new(EvidenceProvenance::new("dns"), "A").with_attr("ip", "192.0.2.5"),
+        );
         let target = observed(EntityKind::IpAddress, "192.0.2.5", "dns", "a");
         let result = discover(&[domain, target]);
         assert_eq!(result.links.len(), 1);
@@ -233,7 +246,14 @@ mod tests {
     #[test]
     fn deterministic_and_bounded_for_many_inputs() {
         let entities: Vec<_> = (0..600)
-            .map(|index| observed(EntityKind::Domain, &format!("n{index}.example.org"), "dns", "a"))
+            .map(|index| {
+                observed(
+                    EntityKind::Domain,
+                    &format!("n{index}.example.org"),
+                    "dns",
+                    "a",
+                )
+            })
             .collect();
         let first = discover(&entities);
         assert_eq!(first.examined_entities, 512);
