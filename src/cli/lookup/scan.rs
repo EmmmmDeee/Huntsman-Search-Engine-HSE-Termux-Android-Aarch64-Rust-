@@ -603,10 +603,7 @@ fn print_recursion(seed_count: usize, report: &RecursionReport, analysis: &Inves
 }
 
 /// Render one bounded, evidence-only cross-modality acquisition worklist.
-fn print_orthogonal_opportunities(
-    analysis: &InvestigationReport,
-    label: &impl Fn(&str) -> String,
-) {
+fn print_orthogonal_opportunities(analysis: &InvestigationReport, label: &impl Fn(&str) -> String) {
     println!(
         "orthogonal opportunities={} omitted={} independent_routes_require_proof=true",
         analysis.orthogonal.opportunities.len(),
