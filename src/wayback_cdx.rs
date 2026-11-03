@@ -617,20 +617,48 @@ mod tests {
                 blocked: false,
             }),
             Ok(response(index)),
-            Ok(page(200, "text/html", "<a href='mailto:team@example.org'>team</a>")),
+            Ok(page(
+                200,
+                "text/html",
+                "<a href='mailto:team@example.org'>team</a>",
+            )),
         ]);
         let report = lookup(&transport, "example.org", "scan", NOW).expect("bounded fallback");
         let requests = transport.seen.borrow();
         assert_eq!(requests.len(), 3);
         assert!(requests[0].url.contains("filter=statuscode%3A200"));
         assert!(!requests[1].url.contains("filter="));
-        assert!(requests.iter().all(|r| r.url.starts_with("https://web.archive.org/")));
-        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
-        assert!(report.entities.iter().any(|e| e.value == "https://example.org/contact"));
-        assert!(report.entities.iter().any(|e| e.value == "team@example.org"));
-        assert!(!report.entities.iter().any(|e| e.value.contains("/redirect")));
         assert!(
-            report.outcome.detail.as_deref().unwrap_or_default().contains("collapse may hide later successful"),
+            requests
+                .iter()
+                .all(|r| r.url.starts_with("https://web.archive.org/"))
+        );
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.value == "https://example.org/contact")
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.value == "team@example.org")
+        );
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|e| e.value.contains("/redirect"))
+        );
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("collapse may hide later successful"),
             "{:?}",
             report.outcome
         );
@@ -638,13 +666,11 @@ mod tests {
 
     #[test]
     fn other_transport_failures_never_trigger_unfiltered_retry() {
-        let transport = crate::test_support::ScriptedTransport::new(vec![
-            Err(TransportFailure {
-                kind: SourceOutcomeKind::DnsFailure,
-                detail: "DNS failed".into(),
-                blocked: false,
-            }),
-        ]);
+        let transport = crate::test_support::ScriptedTransport::new(vec![Err(TransportFailure {
+            kind: SourceOutcomeKind::DnsFailure,
+            detail: "DNS failed".into(),
+            blocked: false,
+        })]);
         let report = lookup(&transport, "example.org", "scan", NOW).expect("typed source outcome");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::DnsFailure);
         assert_eq!(transport.seen.borrow().len(), 1);
