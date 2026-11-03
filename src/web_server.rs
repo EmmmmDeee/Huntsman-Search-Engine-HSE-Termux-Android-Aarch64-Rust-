@@ -1507,11 +1507,12 @@ fn route(
             sensor_response(parsed, routes.cells.as_ref(), "cell radar", Method::Get)
         }
         TRACK_PATH => sensor_response(parsed, routes.track.as_ref(), "radar track", Method::Post),
-        TRAFFIC_CAMERAS_PATH => sensor_response(
+        TRAFFIC_CAMERAS_PATH => lookup::sensor_response_with_wait(
             parsed,
             routes.traffic_cameras.as_ref(),
             "traffic camera catalogue",
             Method::Get,
+            Duration::from_secs(40),
         ),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
         "/evidence" => dossier_page_response(parsed, config),
