@@ -88,16 +88,10 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         .kind
         .is_accepted()
         .then_some(report.cameras.len());
-    if let Some(filter) = district {
-        report
-            .cameras
-            .retain(|entry| entry.district.eq_ignore_ascii_case(filter));
-    }
-    if let Some(filter) = locality {
-        report
-            .cameras
-            .retain(|entry| entry.locality.eq_ignore_ascii_case(filter));
-    }
+    report.cameras.retain(|entry| {
+        district.is_none_or(|d| entry.district.eq_ignore_ascii_case(d))
+            && locality.is_none_or(|l| entry.locality.eq_ignore_ascii_case(l))
+    });
     let matching = report.cameras.len();
     report.cameras.truncate(limit);
     let rendered = terminal_json_pretty(&json!({
