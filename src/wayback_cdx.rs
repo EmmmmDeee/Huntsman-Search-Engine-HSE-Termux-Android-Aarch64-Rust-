@@ -26,6 +26,9 @@ pub const SOURCE: &str = "wayback_cdx";
 const API: &str = "https://web.archive.org/cdx/search/cdx";
 const ARCHIVE: &str = "https://web.archive.org/web";
 const MAX_CAPTURES: usize = 32;
+/// How long the CDX index query may take: its first byte arrived after 13 to 28 s on
+/// 2026-11-03, past [`crate::http::DEFAULT_TIMEOUT`].
+const CDX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 const MAX_JSON_BYTES: usize = 128 * 1024;
 const FIELDS: [&str; 5] = ["timestamp", "original", "statuscode", "digest", "mimetype"];
 pub use crate::archived_page::Report;
@@ -54,12 +57,12 @@ pub fn lookup<T: Transport + ?Sized>(
     url = append_query_param(&url, "output", "json");
     url = append_query_param(&url, "fl", &FIELDS.join(","));
     url = append_query_param(&url, "filter", "statuscode:200");
-    url = append_query_param(&url, "collapse", "urlkey");
     url = append_query_param(&url, "limit", &MAX_CAPTURES.to_string());
 
     let fetched = fetch(
         transport,
         Request::get(url)
+            .with_timeout(CDX_TIMEOUT)
             .header("accept", "application/json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         None,
@@ -526,6 +529,30 @@ mod tests {
     /// The contact page is read first, then the root, then the rest, each from the archive's raw
     /// replay; the contacts it published become historical leads naming the capture, and a page
     /// the archive refused or that is not a web page is named, never read as an absence.
+    /// The CDX query asks no server-side `collapse` (with `matchType=domain` it made the archive
+    /// time out, HTTP 504 after 61 s, measured 2026-11-03) and waits [`CDX_TIMEOUT`] for the
+    /// index, whose first byte took 13 to 28 s, past the 20 s default.
+    #[test]
+    fn the_cdx_query_asks_no_collapse_and_waits_for_the_slow_index() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![Ok(response(CDX_THREE))]);
+        let _ = lookup(&transport, "example.org", "scan", NOW);
+        let seen = transport.seen.borrow();
+        assert!(seen[0].url.starts_with(API));
+        assert!(!seen[0].url.contains("collapse="), "{}", seen[0].url);
+        assert!(
+            seen[0].url.contains("&filter=statuscode%3A200&"),
+            "{}",
+            seen[0].url
+        );
+        // The cap bounds the whole fetch, so the hop carries what remains of it.
+        let cap = seen[0].timeout.expect("a capped request");
+        assert!(
+            cap <= CDX_TIMEOUT && cap > crate::http::DEFAULT_TIMEOUT,
+            "{cap:?}"
+        );
+        assert!(CDX_TIMEOUT > crate::http::DEFAULT_TIMEOUT);
+    }
+
     #[test]
     fn archived_pages_yield_historical_contact_leads_naming_their_capture() {
         let contact = r#"<html><head><meta name="generator" content="WordPress 6.3; Joomla 4.2"><script>var spam="evil@attacker.test";</script><style>.a{}</style></head><body>
