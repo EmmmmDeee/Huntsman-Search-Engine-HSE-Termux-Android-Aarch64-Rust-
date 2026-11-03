@@ -14,7 +14,7 @@ case "$1" in
     echo 0075d6cb8c316a9befefe30edda4b378b07c3533
     ;;
   fetch)
-    [ "$2" = https://www.example.org/public ] && [ "$3" = --raw-body ] || exit 64
+    [ "$2" = https://www.example.org/public ] && [ "$3" = --raw-body ] && [ "$4" = --max-redirects ] && [ "$5" = 0 ] || exit 64
     case "$MOCK_MODE" in
       fetchfail) printf 'bad' >&2; exit 69 ;;
       *) printf '\000\377DATA\n' ;;
