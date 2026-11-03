@@ -13,9 +13,9 @@ rate limits and evidence provenance remain owned by their original modules.
 | --- | --- | --- | --- |
 | John the Ripper | `security_toolkit::audit_sha256` | bounded offline raw unsalted SHA-256 audit | formats, masks, rules, GPU |
 | Hashcat | shared SHA-256 audit, not a second engine | CPU-only candidate verification | kernels, GPU, rule/mode parity |
-| Burp Suite | `http`, `fetch`, `mitm_guard` | guarded HTTP and local posture analysis | proxy, interception, replay/scanner |
+| Burp Suite | `http`, `fetch`, `mitm_guard`, `security_web` | guarded HTTP, TLS posture and native security headers | proxy, interception, replay/scanner |
 | SQLmap | no owner | no SQLi tests | all SQLmap testing features |
-| DIRB | `domain_cli`, `wayback_cdx`, `common_crawl` | discovered/historical URL leads | wordlist active path probing |
+| DIRB | `security_web`, `domain_cli`, `wayback_cdx`, `common_crawl` | bounded, consent-gated HTTPS path probes plus historical leads | recursion, extensive signatures, extensions |
 | Aircrack-ng | `wifi_radar`, `mitm_guard` | OS-cached radio metadata | monitor mode, injection and cracking |
 | Subfinder | `submd`, `crtsh`, `certspotter` and DNS providers | passive discovery with source evidence | full provider/configuration parity |
 | ExifTool | `exif`, `docmeta` | bounded local metadata parsing | all writable/rare metadata |
@@ -31,6 +31,15 @@ rate limits and evidence provenance remain owned by their original modules.
   spaces are significant, CRLF is recognized. The report prints only counts,
   a Boolean, and the matching line number; it never prints a candidate.
   A negative match exits successfully because it is a valid audit outcome.
+- `huntsman-recon security-tools headers HTTPS_ORIGIN` — one read-only,
+  anonymous HTTPS request, reports HTTP status, security-header presence
+  and cookie attribute counts without exposing cookie contents.
+- `huntsman-recon security-tools paths HTTPS_ORIGIN WORDLIST --authorized` —
+  opt-in anonymous HTTPS GET enumeration. Maximum 16 unique relative
+  ASCII paths and 8 KiB input. Sequential at 150 ms intervals, 7-second
+  per-request timeout and 2 KiB per-response maximum. No cookies,
+  query strings, redirects or private egress. One missing-path baseline
+  reduces simple wildcard false positives; all hits remain *leads*.
 - `GET /api/security-tools` — guarded, read-only JSON catalogue. The
   embedded Web UI displays it at **Tools**, along with explicit gaps.
 - Existing `domain`, `exif`, `docmeta`, `radar`, `mitm`, `query` and
@@ -38,8 +47,8 @@ rate limits and evidence provenance remain owned by their original modules.
 
 ## Safety and resource invariants
 
-This integration has no new outbound network requests and requires no API
-keys or third-party executables. No Android root, packet injection, radio
+This integration introduces only explicit, single-origin HTTPS security checks and requires no API
+keys or third-party executables. All new network calls use the existing public-only egress guard; no Android root, packet injection, radio
 monitor mode, GPU access, interception CA, browser proxy, or runtime LLM is
 assumed. It doesn't claim a SHA-256 candidate check is equivalent to a
 salted, stretched password hash/KDF audit. Do not use weak unsalted SHA-256
