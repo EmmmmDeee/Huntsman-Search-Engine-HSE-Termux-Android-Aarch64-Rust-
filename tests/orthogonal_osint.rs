@@ -318,10 +318,19 @@ fn coordinates_propose_bounded_spatial_network_and_archive_checks() {
     let report = discover(&[point], &EvidenceAncestryGraph::default());
     assert_eq!(report.eligible_entities, 1);
     assert_eq!(
-        report.opportunities.iter().map(|o| o.missing_modality).collect::<Vec<_>>(),
+        report
+            .opportunities
+            .iter()
+            .map(|o| o.missing_modality)
+            .collect::<Vec<_>>(),
         ["geoint", "transport", "netint", "rf", "search"]
     );
-    assert!(report.opportunities.iter().all(|o| o.proven_independent_routes == 0));
+    assert!(
+        report
+            .opportunities
+            .iter()
+            .all(|o| o.proven_independent_routes == 0)
+    );
 }
 
 #[test]
@@ -339,12 +348,15 @@ fn spatial_source_observations_suppress_only_the_matching_hypotheses() {
     let report = discover(&[point.clone()], &EvidenceAncestryGraph::default());
     assert_eq!(point, unchanged);
     assert_eq!(
-        report.opportunities.iter().map(|o| o.missing_modality).collect::<Vec<_>>(),
+        report
+            .opportunities
+            .iter()
+            .map(|o| o.missing_modality)
+            .collect::<Vec<_>>(),
         ["netint", "rf", "search"]
     );
     assert!(report.opportunities.iter().all(|o| {
-        o.observed_modalities == ["geoint", "transport"]
-            && o.proven_independent_routes == 0
+        o.observed_modalities == ["geoint", "transport"] && o.proven_independent_routes == 0
     }));
 }
 
@@ -358,8 +370,18 @@ fn published_human_sources_are_proposals_not_identity_attribution() {
             &[Entity::new(kind, value, 0.2, "test")],
             &EvidenceAncestryGraph::default(),
         );
-        assert!(report.opportunities.iter().any(|o| o.missing_modality == "human_public"));
-        assert!(report.opportunities.iter().all(|o| o.proven_independent_routes == 0));
+        assert!(
+            report
+                .opportunities
+                .iter()
+                .any(|o| o.missing_modality == "human_public")
+        );
+        assert!(
+            report
+                .opportunities
+                .iter()
+                .all(|o| o.proven_independent_routes == 0)
+        );
     }
 }
 
@@ -367,7 +389,10 @@ fn published_human_sources_are_proposals_not_identity_attribution() {
 fn shared_analysis_exports_spatial_pivots_without_another_engine() {
     let snapshot = AnalysisSnapshot {
         entities: vec![Entity::new(
-            EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "test",
+            EntityKind::Coordinates,
+            "-27.4698,153.0251",
+            0.9,
+            "test",
         )],
         relations: Vec::new(),
         coverage: Vec::new(),
@@ -377,6 +402,12 @@ fn shared_analysis_exports_spatial_pivots_without_another_engine() {
     let report = analyze_snapshot(&snapshot);
     assert_eq!(report.orthogonal.opportunities.len(), 5);
     let json = serde_json::to_value(report).unwrap();
-    assert_eq!(json["orthogonal"]["opportunities"][0]["missing_modality"], "geoint");
-    assert_eq!(json["orthogonal"]["opportunities"][2]["missing_modality"], "netint");
+    assert_eq!(
+        json["orthogonal"]["opportunities"][0]["missing_modality"],
+        "geoint"
+    );
+    assert_eq!(
+        json["orthogonal"]["opportunities"][2]["missing_modality"],
+        "netint"
+    );
 }
