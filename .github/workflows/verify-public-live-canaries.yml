@@ -49,10 +49,17 @@ jobs:
           bin="./target/release/huntsman-recon"
           printf 'probe\tmodule\texit\tverdict\tobserved\n' > "$out/verdict.tsv"
           collect() {
-            local name="$1"
-            shift
-            timeout 150 "$bin" "$@" > "$out/$name.out" 2>&1
-            echo "$?" > "$out/$name.exit"
+            local name="$1" limit="$2" code=0
+            shift 2
+            # GitHub invokes this shell with -e. A timed-out or blocked
+            # provider must NOT abort the remaining independent canaries.
+            # Every attempt writes a machine-auditable exit code.
+            if timeout --signal=TERM --kill-after=3s "$limit" "$bin" "$@" > "$out/$name.out" 2>&1; then
+              code=0
+            else
+              code=$?
+            fi
+            printf '%s\n' "$code" > "$out/$name.exit"
           }
           verdict() {
             local name="$1" module="$2" code
@@ -67,21 +74,58 @@ jobs:
             printf '%s: %s exit=%s %s\n' "$module" "$status" "$code" "$line"
           }
           # One username request covers two providers; do not repeat identical live probes.
-          collect wikidata_q42 wikidata Q42
+          collect wikidata_q42 60 wikidata Q42
           verdict wikidata_q42 wikidata
-          collect username_dtolnay username dtolnay
+          collect username_dtolnay 60 username dtolnay
           verdict username_dtolnay github_user
           verdict username_dtolnay crates_io
-          collect peeringdb_13335 asn 13335
+          collect peeringdb_13335 60 asn 13335
           verdict peeringdb_13335 peeringdb
           # DNS/domain canary exercises the same public infrastructure source
           # family that the provenance-aware join engine can correlate.
-          collect domain_example domain example.com
-          verdict domain_example dns
+          collect domain_example 45 recon dns example.com
+          dns_code="$(cat "$out/domain_example.exit")"
+          dns_status=FAIL
+          if [ "$dns_code" = 0 ] && grep -qx 'domain=example.com' "$out/domain_example.out" \
+              && grep -Eq '^answers=[1-9][0-9]* failed=[0-9]+
           # Additional read-only functional breadth: actual search engines and people-source legs.
           # These are diagnostic probes, not fabricated PASSes when an upstream site blocks us.
-          collect query_huntsman query huntsman spider
-          collect people_douglas people Douglas Adams
+          collect query_huntsman 30 query huntsman spider
+          collect people_douglas 30 people Douglas Adams
+          printf 'search_engines exit=%s\n' "$(cat "$out/query_huntsman.exit")"
+          grep '^engine=' "$out/query_huntsman.out" | head -n 20 || true
+          printf 'people_sources exit=%s\n' "$(cat "$out/people_douglas.exit")"
+          grep -E '^(asic_persons|asic_director|wikidata|acnc|sec_edgar|seeknow)' "$out/people_douglas.out" | head -n 20 || true
+          echo "binary_commit=$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo '### Public live provider receipts (actual Rust binary)' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "$out/verdict.tsv" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' '```' >> "$GITHUB_STEP_SUMMARY"
+          for f in "$out"/*.out; do
+            echo "::group::$(basename "$f") (first 60 lines)"
+            head -n 60 "$f" | cut -c1-240
+            echo '::endgroup::'
+          done
+          # One unreachable host must not suppress successful independent
+          # providers, but zero accepted observations is a hard failure.
+          passed="$(awk -F '\t' 'NR>1 && $4=="PASS" {n++} END {print n+0}' "$out/verdict.tsv")"
+          failed="$(awk -F '\t' 'NR>1 && $4=="FAIL" {n++} END {print n+0}' "$out/verdict.tsv")"
+          timed_out="$(awk -F '\t' 'NR>1 && $3=="124" {n++} END {print n+0}' "$out/verdict.tsv")"
+          printf 'accepted_canaries=%s failed_canaries=%s timed_out_canaries=%s\n' "$passed" "$failed" "$timed_out" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$passed" -eq 0 ]; then
+            echo '::error::No provider returned an accepted public live outcome'
+            exit 1
+          fi
+ "$out/domain_example.out"; then
+            dns_status=PASS
+          fi
+          printf 'domain_example\tdns\t%s\t%s\t%s\n' "$dns_code" "$dns_status" \
+            "$(grep '^answers=' "$out/domain_example.out" | tail -n 1 || true)" >> "$out/verdict.tsv"
+          printf 'dns: %s exit=%s\n' "$dns_status" "$dns_code"
+          # Additional read-only functional breadth: actual search engines and people-source legs.
+          # These are diagnostic probes, not fabricated PASSes when an upstream site blocks us.
+          collect query_huntsman 30 query huntsman spider
+          collect people_douglas 30 people Douglas Adams
           printf 'search_engines exit=%s\n' "$(cat "$out/query_huntsman.exit")"
           grep '^engine=' "$out/query_huntsman.out" | head -n 20 || true
           printf 'people_sources exit=%s\n' "$(cat "$out/people_douglas.exit")"
