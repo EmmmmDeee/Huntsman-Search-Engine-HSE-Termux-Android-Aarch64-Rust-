@@ -31,6 +31,8 @@ const BREACH: [&str; 4] = [
 
 /// Every module `kind`'s lookup may ask, each once, in the order it asks them. **Pure.**
 #[must_use]
+// One list per scan kind, each in the order its lookup runs: a table, not logic.
+#[allow(clippy::too_many_lines)]
 pub fn modules(kind: ScanKind) -> Vec<&'static str> {
     let modules: Vec<&'static str> = match kind {
         ScanKind::Ip => {
@@ -94,6 +96,8 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             crate::crates_io::SRC,
             crate::hacker_news::SRC,
             crate::lobsters::SRC,
+            crate::chess_com::SRC,
+            crate::lichess::SRC,
             crate::docker_hub_user::SRC,
             seeknow_collector::COLLECTOR_ID,
             crate::stolen_tax::SOURCE,

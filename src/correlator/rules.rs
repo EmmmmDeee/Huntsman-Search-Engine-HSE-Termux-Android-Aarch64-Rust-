@@ -41,7 +41,7 @@ pub fn source_family(source: &str) -> &'static str {
         "github_user" | "npm_author" | "crates_io" => "code",
         "wigle" | "wigle_bluetooth" | "oui" => "rf",
         "reddit_user" | "hacker_news" | "lobsters" => "forum",
-        "social_probe" | "gravatar" | "duolingo" => "social",
+        "social_probe" | "gravatar" | "duolingo" | "chess_com" | "lichess" => "social",
         "username_search" | "epieos" => "presence",
         "search_engines" | "google" | "exa_search" => "search",
         "smtp_vrfy" | "emailrep" | "openpgp_keys" | "hunter" | "kickbox" => "email_intel",
