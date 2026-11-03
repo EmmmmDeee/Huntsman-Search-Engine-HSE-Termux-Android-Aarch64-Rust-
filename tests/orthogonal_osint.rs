@@ -151,16 +151,17 @@ fn real_network_collectors_satisfy_only_their_actual_acquisition_modality() {
     for (kind, value, collector, modalities) in cases {
         let mut entity = Entity::new(kind.clone(), *value, 0.6, "test");
         entity.add_evidence(Evidence::new(
-            EvidenceProvenance::new(collector),
+            EvidenceProvenance::new(*collector),
             "Recorded source observation",
         ));
         let report = discover(&[entity], &EvidenceAncestryGraph::default());
         assert!(!report.opportunities.is_empty(), "{collector}");
-        assert_eq!(
-            report.opportunities[0].observed_modalities,
-            *modalities,
-            "source={collector}"
-        );
+        let observed: Vec<&str> = report.opportunities[0]
+            .observed_modalities
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(observed.as_slice(), *modalities, "source={collector}");
         assert!(
             report.opportunities.iter().all(|o| o.missing_modality != modalities[0]),
             "source={collector} was incorrectly suggested as uncollected"
