@@ -1,10 +1,10 @@
 //! IPinfo Lite country and ASN enrichment. Requires the existing IPinfo key slot.
 //! Kept separate from the legacy IPinfo endpoint to preserve its keyless behavior.
-use serde::Deserialize;
 use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
+use serde::Deserialize;
 
 pub const SOURCE: &str = "ipinfo_lite";
 pub const API: Api = Api {
@@ -63,7 +63,8 @@ pub fn lookup(
         return Ok(None);
     };
     // Never interpolate a selector into a URL without validating it.
-    let parsed = ip.parse::<std::net::IpAddr>()
+    let parsed = ip
+        .parse::<std::net::IpAddr>()
         .map_err(|_| LegError::Decode("invalid IP selector".into()))?;
     let body = api_leg::get(transport, &API, keys, &url(&parsed.to_string()), now_unix)?
         .body_or_unexpected()?;
@@ -76,9 +77,12 @@ pub fn lookup(
 /// Rejects malformed JSON and responses naming a different address.
 pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
     let body: Body = api_leg::decode(body)?;
-    let expected = ip.parse::<std::net::IpAddr>()
+    let expected = ip
+        .parse::<std::net::IpAddr>()
         .map_err(|_| LegError::Decode("invalid IP selector".into()))?;
-    let actual = body.ip.parse::<std::net::IpAddr>()
+    let actual = body
+        .ip
+        .parse::<std::net::IpAddr>()
         .map_err(|_| LegError::Decode("invalid response IP".into()))?;
     if actual != expected {
         return Err(LegError::Decode("answer names another address".into()));
@@ -88,7 +92,10 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
     }
     let mut finding = Finding::new(format!(
         "IPinfo Lite: {}",
-        body.as_name.as_deref().or(body.asn.as_deref()).unwrap_or("network not given")
+        body.as_name
+            .as_deref()
+            .or(body.asn.as_deref())
+            .unwrap_or("network not given")
     ))
     .opt_attr("asn", body.asn.as_deref())
     .opt_attr("as_name", body.as_name.as_deref())
@@ -102,10 +109,18 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
         finding = finding.pivot(PivotKind::Asn, asn, "Origin ASN reported by IPinfo Lite");
     }
     if let Some(name) = body.as_name.as_deref() {
-        finding = finding.pivot(PivotKind::Organisation, name, "AS name reported by IPinfo Lite");
+        finding = finding.pivot(
+            PivotKind::Organisation,
+            name,
+            "AS name reported by IPinfo Lite",
+        );
     }
     if let Some(domain) = body.as_domain.as_deref() {
-        finding = finding.pivot(PivotKind::Domain, domain, "AS domain reported by IPinfo Lite");
+        finding = finding.pivot(
+            PivotKind::Domain,
+            domain,
+            "AS domain reported by IPinfo Lite",
+        );
     }
     Ok(Some(finding))
 }
@@ -118,8 +133,18 @@ mod tests {
     fn decodes_country_asn_and_pivots() {
         let body = br#"{"ip":"8.8.8.8","asn":"AS15169","as_name":"Google LLC","as_domain":"google.com","country_code":"US","country":"United States","continent_code":"NA","continent":"North America"}"#;
         let finding = decode(body, "8.8.8.8").unwrap().unwrap();
-        assert!(finding.attrs.iter().any(|(k, v)| k == "country_code" && v == "US"));
-        assert!(finding.pivots.iter().any(|p| p.kind == PivotKind::Asn && p.value == "AS15169"));
+        assert!(
+            finding
+                .attrs
+                .iter()
+                .any(|(k, v)| k == "country_code" && v == "US")
+        );
+        assert!(
+            finding
+                .pivots
+                .iter()
+                .any(|p| p.kind == PivotKind::Asn && p.value == "AS15169")
+        );
     }
 
     #[test]
@@ -132,8 +157,7 @@ mod tests {
     fn requires_configured_key_and_preserves_legacy_fallback() {
         let empty = Keys::parse("").expect("empty key file");
         assert!(!API.wanted(&empty));
-        let configured = Keys::parse("HUNTSMAN_IPINFO_KEY=test_token_123")
-            .expect("valid key file");
+        let configured = Keys::parse("HUNTSMAN_IPINFO_KEY=test_token_123").expect("valid key file");
         assert!(API.wanted(&configured));
         assert!(!crate::ipinfo::API.key.expect("legacy key").required);
     }
