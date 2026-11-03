@@ -516,6 +516,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="help">Huntsman is an OSINT engine in one Rust binary that runs on Android in Termux without root. Scans, their data elements and their logs stay on this device.</p>
 <p class="help"><a class="link" href="/evidence">Open local evidence dossier</a> · All indexed claims, sources, uncertainties, correlations and proposed verification actions.</p>
 <p class="help"><button class="btn" id="blueprint" type="button">OSINT app blueprint (.docx)</button> Each Android OSINT app, what Huntsman reproduces of it in Rust here, and what Android denies.</p><p class="alert" id="berror" role="alert" hidden></p>
+<div class="panel"><div class="panel-heading">OSINT discipline / source ownership matrix <button class="btn btn-ghost" id="load-osint-matrix" type="button">Load matrix</button></div><p class="help pad">Read-only module ownership, not a live-provider or identity verification result. GEOINT, HUMINT and NETINT are prioritised.</p><div class="filter"><input id="matrix-filter" type="search" placeholder="Filter discipline, source file or synergy" aria-label="Filter OSINT matrix" autocomplete="off"></div><p class="note" id="matrix-status" role="status">Load on demand. No third-party requests.</p><div class="table-wrap"><table><thead><tr><th>Discipline</th><th>Priority</th><th>Canonical owner</th><th>Cross-pivots</th><th>Status</th></tr></thead><tbody id="osint-matrix-rows"></tbody></table></div></div>
 <div class="stats">
 <div class="stat"><div class="lab">server</div><div class="val" id="sstate">…</div></div>
 <div class="stat"><div class="lab">version</div><div class="val" id="sversion">…</div></div>
@@ -1721,6 +1722,32 @@ $('analyze').onsubmit=async ev=>{
     const saved={seeds,at:Date.now(),body};
     showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
   }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
+};
+// Read-only, on-demand canonical OSINT ownership matrix. No user-provided HTML.
+let osintMatrix=null;
+function renderOsintMatrix(){
+  if(!osintMatrix)return;
+  const needle=$('matrix-filter').value.trim().toLowerCase();
+  const visible=osintMatrix.disciplines.filter(row=>
+    [row.id,row.owner,...row.files,...row.synergy,row.scope].join(' ').toLowerCase().includes(needle));
+  fill('osint-matrix-rows',visible,row=>[row.id,row.priority,row.owner,row.synergy.join(' / '),row.status]);
+  $('matrix-status').textContent=visible.length+' / '+osintMatrix.disciplines.length+
+    ' source disciplines · baseline '+osintMatrix.baseline_commit.slice(0,12)+
+    ' · static mapping, not runtime verification';
+}
+$('matrix-filter').oninput=renderOsintMatrix;
+$('load-osint-matrix').onclick=async()=>{
+  $('load-osint-matrix').disabled=true;
+  $('matrix-status').textContent='Reading embedded catalogue…';
+  try{
+    const data=await api('/api/osint/matrix');
+    if(!data||data.schema!=='huntsman.osint.disciplines'||!Array.isArray(data.disciplines)||
+      data.disciplines.length>64||typeof data.baseline_commit!=='string')
+      throw new Error('Invalid matrix response');
+    osintMatrix=data;
+    renderOsintMatrix();
+  }catch(e){$('matrix-status').textContent=e.message}
+  finally{$('load-osint-matrix').disabled=false}
 };
 // Read-only Rhinser source directory: all filtering stays in the browser; external
 // sites are opened only on an explicit user click, never fetched or verified here.
