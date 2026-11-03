@@ -694,7 +694,7 @@ mod track_storage_contract_tests {
 
     #[test]
     fn uptime_parser_reports_distinct_evidence_failures() {
-        assert_eq!(parse_uptime(b"787200.16 123.45"), Ok(787200.16));
+        assert_eq!(parse_uptime(b"787200.16 123.45"), Ok(787_200.16));
         assert_eq!(parse_uptime(b""), Err("uptime_missing"));
         assert_eq!(parse_uptime(b"bad 1.0"), Err("uptime_parse_failed"));
         assert_eq!(parse_uptime(b"-1 0"), Err("uptime_invalid_value"));
