@@ -194,7 +194,10 @@ pub fn front_end_row(module: &str, found: usize, outcomes: &[SourceExecutionOutc
                 }
             })
     };
-    let answered = outcomes.iter().filter(|outcome| outcome.is_accepted()).count();
+    let answered = outcomes
+        .iter()
+        .filter(|outcome| outcome.is_accepted())
+        .count();
     format!(
         "{}\t{kind}\tfound={found}\tdetail=sources answered {answered}/{}",
         escape_controls(module),
