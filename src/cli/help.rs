@@ -105,6 +105,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "phone" => PHONE_HELP,
         "network" => NETWORK_HELP,
         "osint" => super::osint::OSINT_HELP,
+        "security-tools" => super::security_tools::HELP,
         "crypto" => huntsman_recon::crypto_cli::CRYPTO_HELP,
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
         "wikidata" => huntsman_recon::wikidata_cli::WIKIDATA_HELP,
