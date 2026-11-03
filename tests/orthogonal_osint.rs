@@ -89,7 +89,10 @@ fn authenticated_registry_lineage_is_not_spoofable_by_serialized_labels() {
         fake_result.opportunities[0].missing_modality,
         "knowledge_graph"
     );
-    assert_eq!(fake_result.opportunities[1].missing_modality, "identity_registry");
+    assert_eq!(
+        fake_result.opportunities[1].missing_modality,
+        "identity_registry"
+    );
 }
 
 #[test]
@@ -133,20 +136,54 @@ fn ordering_duplicate_entities_and_overflow_are_deterministic() {
     assert_eq!(result.eligible_entities, 200);
 }
 
-
 #[test]
 fn real_network_collectors_satisfy_only_their_actual_acquisition_modality() {
     let cases: &[(EntityKind, &str, &str, &[&str])] = &[
         (EntityKind::Asn, "13335", "peeringdb", &["infra"]),
         (EntityKind::Domain, "example.org", "certspotter", &["infra"]),
         (EntityKind::Domain, "example.org", "crtsh", &["infra"]),
-        (EntityKind::Domain, "example.org", "wayback_cdx", &["search"]),
-        (EntityKind::Username, "public_handle", "gitlab_user", &["code"]),
-        (EntityKind::Username, "public_handle", "bluesky_user", &["social"]),
-        (EntityKind::Organisation, "Example Organisation", "gleif", &["identity_registry"]),
-        (EntityKind::Organisation, "Example Organisation", "wikidata", &["knowledge_graph"]),
-        (EntityKind::Person, "Public Example", "wikidata", &["knowledge_graph"]),
-        (EntityKind::Email, "public@example.org", "xposedornot", &["breach"]),
+        (
+            EntityKind::Domain,
+            "example.org",
+            "wayback_cdx",
+            &["search"],
+        ),
+        (
+            EntityKind::Username,
+            "public_handle",
+            "gitlab_user",
+            &["code"],
+        ),
+        (
+            EntityKind::Username,
+            "public_handle",
+            "bluesky_user",
+            &["social"],
+        ),
+        (
+            EntityKind::Organisation,
+            "Example Organisation",
+            "gleif",
+            &["identity_registry"],
+        ),
+        (
+            EntityKind::Organisation,
+            "Example Organisation",
+            "wikidata",
+            &["knowledge_graph"],
+        ),
+        (
+            EntityKind::Person,
+            "Public Example",
+            "wikidata",
+            &["knowledge_graph"],
+        ),
+        (
+            EntityKind::Email,
+            "public@example.org",
+            "xposedornot",
+            &["breach"],
+        ),
     ];
     for (kind, value, collector, modalities) in cases {
         let mut entity = Entity::new(kind.clone(), *value, 0.6, "test");
@@ -163,11 +200,17 @@ fn real_network_collectors_satisfy_only_their_actual_acquisition_modality() {
             .collect();
         assert_eq!(observed.as_slice(), *modalities, "source={collector}");
         assert!(
-            report.opportunities.iter().all(|o| o.missing_modality != modalities[0]),
+            report
+                .opportunities
+                .iter()
+                .all(|o| o.missing_modality != modalities[0]),
             "source={collector} was incorrectly suggested as uncollected"
         );
         assert!(
-            report.opportunities.iter().all(|o| o.proven_independent_routes == 0),
+            report
+                .opportunities
+                .iter()
+                .all(|o| o.proven_independent_routes == 0),
             "source={collector}: collector is not an independence proof"
         );
     }
@@ -187,12 +230,30 @@ fn wikipedia_like_community_sources_are_not_promoted_to_official_registry_proofs
     org.add_evidence(evidence);
     let report = discover(&[org], &EvidenceAncestryGraph::default());
     assert_eq!(report.opportunities.len(), 3);
-    assert!(report.opportunities.iter().all(|o| o.observed_modalities == ["knowledge_graph"]));
-    assert!(report.opportunities.iter().any(|o| o.missing_modality == "identity_registry"));
-    assert!(report.opportunities.iter().all(|o| o.independence_status == "not_recorded"));
+    assert!(
+        report
+            .opportunities
+            .iter()
+            .all(|o| o.observed_modalities == ["knowledge_graph"])
+    );
+    assert!(
+        report
+            .opportunities
+            .iter()
+            .any(|o| o.missing_modality == "identity_registry")
+    );
+    assert!(
+        report
+            .opportunities
+            .iter()
+            .all(|o| o.independence_status == "not_recorded")
+    );
     // This is a richer acquisition label only. Correlation/identity merging
     // keeps the pre-existing strict classifier unchanged.
-    assert_eq!(huntsman_recon::correlator::source_family("wikidata"), "other");
+    assert_eq!(
+        huntsman_recon::correlator::source_family("wikidata"),
+        "other"
+    );
 }
 
 #[test]
@@ -206,7 +267,12 @@ fn unknown_collectors_and_inferred_live_source_names_do_not_fill_coverage() {
     org.add_evidence(fake);
     let report = discover(&[org], &EvidenceAncestryGraph::default());
     assert_eq!(report.opportunities.len(), 4);
-    assert!(report.opportunities.iter().all(|o| o.observed_modalities.is_empty()));
+    assert!(
+        report
+            .opportunities
+            .iter()
+            .all(|o| o.observed_modalities.is_empty())
+    );
 
     let mut domain = Entity::new(EntityKind::Domain, "example.org", 0.5, "test");
     let mut invented = Evidence::new(EvidenceProvenance::new("certspotter"), "Guess");
@@ -214,7 +280,12 @@ fn unknown_collectors_and_inferred_live_source_names_do_not_fill_coverage() {
     domain.add_evidence(invented);
     let report = discover(&[domain], &EvidenceAncestryGraph::default());
     assert_eq!(report.opportunities.len(), 3);
-    assert!(report.opportunities.iter().all(|o| o.observed_modalities.is_empty()));
+    assert!(
+        report
+            .opportunities
+            .iter()
+            .all(|o| o.observed_modalities.is_empty())
+    );
 }
 
 #[test]
