@@ -99,6 +99,8 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             crate::chess_com::SRC,
             crate::lichess::SRC,
             crate::docker_hub_user::SRC,
+            crate::codeberg_user::SRC,
+            crate::devto_user::SRC,
             seeknow_collector::COLLECTOR_ID,
             crate::stolen_tax::SOURCE,
             oathnet::SOURCE,

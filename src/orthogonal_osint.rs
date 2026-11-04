@@ -175,7 +175,7 @@ fn acquisition_modality(source: &str) -> &'static str {
         | "dnsbl" => "infra",
         "wayback_cdx" | "common_crawl" | "archived_page" | "web_query" | "public_osint"
         | "bing" | "brave" | "mojeek" => "search",
-        "gitlab_user" | "github_repos" | "docker_hub_user" => "code",
+        "gitlab_user" | "github_repos" | "docker_hub_user" | "codeberg_user" => "code",
         "bluesky_user" | "mastodon_user" | "atproto" | "tiktok_public_contact" | "keybase" => {
             "social"
         }
