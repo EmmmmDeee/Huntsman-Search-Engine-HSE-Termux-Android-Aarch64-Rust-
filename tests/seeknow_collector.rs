@@ -668,6 +668,29 @@ fn quota_headers(remaining: u64) -> Vec<(String, String)> {
 }
 
 #[test]
+fn one_remaining_credit_is_insufficient_for_two_credit_deep_search() {
+    let transport = ScriptedTransport::new(vec![response_with(
+        200,
+        r#"{"success":true,"data":[]}"#,
+        quota_headers(1),
+        false,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "alice"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        33,
+    )
+    .unwrap();
+    assert_eq!(transport.request_count(), 1);
+    assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
+    assert_eq!(batch.receipts.len(), 1);
+    assert_eq!(batch.receipts[0].quota.as_ref().unwrap().remaining, Some(1));
+}
+
+#[test]
 fn an_exhausted_quota_on_the_fast_zero_never_sends_the_stealer_request() {
     let transport = ScriptedTransport::new(vec![response_with(
         200,
