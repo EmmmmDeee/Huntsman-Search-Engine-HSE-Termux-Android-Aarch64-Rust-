@@ -3,8 +3,10 @@
 //! stop signal a container runtime sends reaches the server. Unix only: the entrypoint is POSIX sh.
 #![cfg(unix)]
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -18,8 +20,7 @@ fn a_generated_token_is_stored_and_never_printed() {
 
     // A stub stands in for the binary, so the entrypoint's final exec runs nothing that serves.
     let stub = root.join("huntsman-recon");
-    fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    executable::write_executable(&stub, "#!/bin/sh\nexit 0\n", 0o755);
 
     let output = Command::new("sh")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/container-entrypoint.sh"))
@@ -90,22 +91,20 @@ fn stop_signal_round(round: u32) {
 
     // The stub records its pid and its parent's, then waits for SIGTERM and exits 3 on it.
     let stub = root.join("huntsman-recon");
-    fs::write(
+    executable::write_executable(
         &stub,
         "#!/bin/sh\n\
          trap 'echo stopped > \"$STUB_DIR/stopped\"; exit 3' TERM\n\
          echo \"$$ $PPID\" > \"$STUB_DIR/server.tmp\"\n\
          mv \"$STUB_DIR/server.tmp\" \"$STUB_DIR/server\"\n\
          while :; do sleep 1 & wait $!; done\n",
-    )
-    .unwrap();
-    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     // As root the entrypoint drops to the service user through gosu; a stand-in keeps the user.
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let gosu = bin.join("gosu");
-    fs::write(&gosu, "#!/bin/sh\nshift\nexec \"$@\"\n").unwrap();
-    fs::set_permissions(&gosu, fs::Permissions::from_mode(0o755)).unwrap();
+    executable::write_executable(&gosu, "#!/bin/sh\nshift\nexec \"$@\"\n", 0o755);
     let path = format!(
         "{}:{}",
         bin.display(),

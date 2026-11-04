@@ -5,6 +5,8 @@
 //! behaviour changes that go with them.
 
 mod common;
+#[path = "../../tests/support/executable.rs"]
+mod executable;
 
 use std::process::Output;
 
@@ -523,8 +525,7 @@ fn a_filter_in_info_attributes_and_a_fsmonitor_program_do_not_run_during_the_gua
     let fsmon_marker = scratch.path().join("fsmon-ran");
     let fsmon_script = scratch.path().join("fsmon.sh");
     let fsmon_text = format!("#!/bin/sh\ntouch {}\nexit 0\n", fsmon_marker.display());
-    std::fs::write(&fsmon_script, fsmon_text).expect("the program must be written");
-    set_executable(&fsmon_script);
+    executable::write_executable(&fsmon_script, fsmon_text, 0o755);
     let filter = format!("touch '{}'; echo REPLACED", info_marker.display());
     let fsmon = fsmon_script.display().to_string();
     let info_attributes = repo.root().join(".git/info/attributes");
@@ -560,16 +561,6 @@ fn a_filter_in_info_attributes_and_a_fsmonitor_program_do_not_run_during_the_gua
         !info_marker.exists() && !fsmon_marker.exists(),
         "a program in the agent's repository ran during the guard"
     );
-}
-
-#[cfg(unix)]
-fn set_executable(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = std::fs::metadata(path)
-        .expect("the program must exist")
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions).expect("the program must be made executable");
 }
 
 // Behaviour that the syntax tree decides, and that the shell guard decided with lines.

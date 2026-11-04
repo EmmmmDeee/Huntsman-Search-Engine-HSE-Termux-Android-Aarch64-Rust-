@@ -1,3 +1,6 @@
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 
 const CI: &str = ".github/workflows/ci.yml";
@@ -255,7 +258,6 @@ fn live_smoke_verdict_requires_actual_source_success() {
 /// rows as the module's FAIL, never report the module as having printed no status at all.
 #[test]
 fn live_smoke_sweep_reads_status_tokens_with_digits() {
-    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -267,7 +269,7 @@ fn live_smoke_sweep_reads_status_tokens_with_digits() {
     let out = dir.join("out");
     fs::create_dir_all(&out).expect("output directory");
     let fake = dir.join("fake-binary");
-    fs::write(
+    executable::write_executable(
         &fake,
         r#"#!/usr/bin/env bash
 case "$1" in
@@ -282,9 +284,8 @@ case "$1" in
 esac
 exit 0
 "#,
-    )
-    .expect("fake binary");
-    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("executable");
+        0o755,
+    );
 
     Command::new("bash")
         .arg(".github/scripts/live-collector-smoke.sh")

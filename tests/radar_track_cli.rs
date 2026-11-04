@@ -2,6 +2,9 @@
 //! the private sweep log, and the log read back for recurring devices and followers. These
 //! synthetic captures do not substitute for an on-device acceptance test.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -200,23 +203,19 @@ fn a_sweep_that_cannot_be_trusted_is_not_logged() {
 #[test]
 fn missing_scan_timestamps_do_not_create_a_live_track_log() {
     use std::ffi::OsString;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = scratch("missing-live-timestamps");
     let log = dir.join("sweeps.jsonl");
     let shim = dir.join("termux-wifi-scaninfo");
     // Android may provide BSSID and RSSI while withholding a usable
     // boot-relative timestamp. Those rows must never be recorded as live.
-    fs::write(
+    executable::write_executable(
         &shim,
         br#"#!/bin/sh
 printf '[{"bssid":"00:11:22:33:44:55","ssid":"unknown-age","rssi":-51}]'
 "#,
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&shim).unwrap().permissions();
-    perms.set_mode(0o700);
-    fs::set_permissions(&shim, perms).unwrap();
+        0o700,
+    );
     let mut search_path = OsString::from(dir.as_os_str());
     search_path.push(":");
     search_path.push(std::env::var_os("PATH").unwrap_or_default());
@@ -237,21 +236,15 @@ printf '[{"bssid":"00:11:22:33:44:55","ssid":"unknown-age","rssi":-51}]'
 #[test]
 fn live_randomized_only_cache_must_not_append_a_sweep() {
     use std::ffi::OsString;
-    use std::os::unix::fs::PermissionsExt;
 
     let dir = scratch("randomized-only-live");
     let log = dir.join("sweeps.jsonl");
     let shim = dir.join("termux-wifi-scaninfo");
-    fs::write(
+    executable::write_executable(
         &shim,
         br#"#!/bin/sh
 awk '{printf "[{\"bssid\":\"02:11:22:33:44:55\",\"ssid\":\"random\",\"rssi\":-51,\"timestamp\":%.0f}]\n", $1*1000000}' /proc/uptime
-"#,
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&shim).unwrap().permissions();
-    perms.set_mode(0o700);
-    fs::set_permissions(&shim, perms).unwrap();
+"#, 0o700);
     let mut search_path = OsString::from(dir.as_os_str());
     search_path.push(":");
     search_path.push(std::env::var_os("PATH").unwrap_or_default());

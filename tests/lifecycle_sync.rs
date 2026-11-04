@@ -4,6 +4,9 @@
 //! Unix only: the script is bash.
 #![cfg(unix)]
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -97,12 +100,10 @@ impl Sandbox {
     }
 
     fn run_with_mock_cargo_mutation(&self, mode: &str, test_exit: u8, mutation: &str) -> Output {
-        use std::os::unix::fs::PermissionsExt;
-
         let mock_bin = self.root.join("mock-bin");
         fs::create_dir_all(&mock_bin).unwrap();
         let mock_cargo = mock_bin.join("cargo");
-        fs::write(
+        executable::write_executable(
             &mock_cargo,
             format!(
                 r#"#!/bin/sh
@@ -124,11 +125,8 @@ test)
 esac
 "#
             ),
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&mock_cargo).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&mock_cargo, permissions).unwrap();
+            0o755,
+        );
 
         let mut path = std::ffi::OsString::from(mock_bin.as_os_str());
         path.push(":");
@@ -482,19 +480,14 @@ fn direct_sync_keeps_the_original_index_when_tests_fail() {
 
 #[test]
 fn direct_sync_refuses_a_commit_hook_that_modifies_staged_content() {
-    use std::os::unix::fs::PermissionsExt;
-
     let sandbox = Sandbox::new("hook-mutates-commit");
     sandbox.write("docs/pending.md", "original\n");
     let hook = sandbox.work.join(".git/hooks/pre-commit");
-    fs::write(
+    executable::write_executable(
         &hook,
         "#!/bin/sh\nprintf 'unexpected\n' >> docs/pending.md\ngit add -A\n",
-    )
-    .unwrap();
-    let mut permissions = fs::metadata(&hook).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&hook, permissions).unwrap();
+        0o755,
+    );
     let before = sandbox.head();
     let remote_before = sandbox.pushed();
     let output = sandbox.run_with_mock_cargo("sync", 0);
@@ -562,8 +555,6 @@ fn an_interrupted_test_run_never_commits_or_pushes_main() {
 
 #[test]
 fn each_checkout_runs_the_binary_built_from_it_even_when_another_built_last() {
-    use std::os::unix::fs::PermissionsExt;
-
     // Two checkouts on one device (two clones, or worktrees) share HOME, and so the lifecycle's
     // default build cache, or a CARGO_TARGET_DIR both export. Cargo would reuse one checkout's
     // build as fresh for the other, so each builds into a directory of its own, and `run` builds
@@ -573,7 +564,7 @@ fn each_checkout_runs_the_binary_built_from_it_even_when_another_built_last() {
     let mock_bin = first.root.join("mock-bin-cache");
     fs::create_dir_all(&mock_bin).unwrap();
     let mock_cargo = mock_bin.join("cargo");
-    fs::write(
+    executable::write_executable(
         &mock_cargo,
         r#"#!/bin/sh
 [ "$1" = build ] || exit 99
@@ -582,11 +573,8 @@ mkdir -p "$CARGO_TARGET_DIR/debug" || exit 99
 printf '#!/bin/sh\nprintf "built from %%s\\n" "%s"\n' "$PWD" > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
 chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon"
 "#,
-    )
-    .unwrap();
-    let mut permissions = fs::metadata(&mock_cargo).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&mock_cargo, permissions).unwrap();
+        0o755,
+    );
     let mut path = std::ffi::OsString::from(mock_bin.as_os_str());
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
@@ -654,8 +642,6 @@ chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon"
 /// A checkout at `dir` holding only the lifecycle script, and in `mock_bin` a `cargo` whose builds
 /// log the directory they were given.
 fn lone_checkout(dir: &Path, mock_bin: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
     fs::create_dir_all(dir.join("scripts")).unwrap();
     fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/lifecycle.sh"),
@@ -664,14 +650,11 @@ fn lone_checkout(dir: &Path, mock_bin: &Path) {
     .unwrap();
     fs::create_dir_all(mock_bin).unwrap();
     let cargo = mock_bin.join("cargo");
-    fs::write(
+    executable::write_executable(
         &cargo,
         "#!/bin/sh\n[ \"$1\" = build ] || exit 99\nprintf '%s\\n' \"$CARGO_TARGET_DIR\" >> \"$HOME/target-dirs\"\n",
-    )
-    .unwrap();
-    let mut permissions = fs::metadata(&cargo).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&cargo, permissions).unwrap();
+        0o755,
+    );
 }
 
 #[test]

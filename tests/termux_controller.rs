@@ -2,6 +2,9 @@
 //! against a fake `huntsman-recon` and a fake runit `sv`, so each behaviour is checked without a
 //! phone.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -89,8 +92,7 @@ impl Phone {
     }
 
     fn executable(&self, rel: &str, body: &str) {
-        fs::write(self.path(rel), body).unwrap();
-        fs::set_permissions(self.path(rel), fs::Permissions::from_mode(0o755)).unwrap();
+        executable::write_executable(&self.path(rel), body, 0o755);
     }
 
     fn mark(&self, addr: &str, state: &str) {

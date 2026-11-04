@@ -1,8 +1,10 @@
 //! Behaviour of `xtask issue-fix report`. A fake `gh` on the PATH records the arguments and the body
 //! it is given, so the test checks what the real command would be asked to post, without a network.
 
+#[path = "../../tests/support/executable.rs"]
+mod executable;
+
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,12 +47,11 @@ fn fake_gh(dir: &Path) -> PathBuf {
     let bin = dir.join("bin");
     fs::create_dir_all(&bin).expect("the fake bin directory can be made");
     let gh = bin.join("gh");
-    fs::write(
+    executable::write_executable(
         &gh,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$ARGS\"\ncat > \"$BODY\"\nexit \"${FAKE_GH_STATUS:-0}\"\n",
-    )
-    .expect("the fake gh can be written");
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("the fake gh is executable");
+        0o755,
+    );
     bin
 }
 

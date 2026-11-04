@@ -2,9 +2,11 @@
 //! for permanent build errors and exhausted attempts. No network or Docker needed.
 #![cfg(unix)]
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -18,7 +20,7 @@ fn check(scenario: &str, expected_code: i32, expected_attempts: usize) {
     let docker = root.join("docker");
     let sleep = root.join("sleep");
     let calls = root.join("calls");
-    fs::write(
+    executable::write_executable(
         &docker,
         r#"#!/bin/sh
 set -eu
@@ -51,14 +53,9 @@ case "$SCENARIO" in
 esac
 echo "build-ok $*"
 "#,
-    )
-    .expect("mock docker");
-    fs::write(&sleep, "#!/bin/sh\nexit 0\n").expect("mock sleep");
-    for path in [&docker, &sleep] {
-        let mut mode = fs::metadata(path).expect("mock metadata").permissions();
-        mode.set_mode(0o755);
-        fs::set_permissions(path, mode).expect("make mock executable");
-    }
+        0o755,
+    );
+    executable::write_executable(&sleep, "#!/bin/sh\nexit 0\n", 0o755);
 
     let mut path = OsString::from(root.as_os_str());
     path.push(":");
