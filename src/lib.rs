@@ -277,6 +277,7 @@ pub mod trafficking_intel;
 pub mod union_find;
 pub mod urlhaus;
 pub mod urlscan;
+pub mod username_catalog;
 pub mod username_cli;
 pub mod username_variants;
 pub mod validation;
