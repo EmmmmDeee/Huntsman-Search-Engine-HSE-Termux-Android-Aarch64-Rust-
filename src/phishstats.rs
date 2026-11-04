@@ -122,11 +122,9 @@ pub fn decode_page(
     // tie, and a report that names no address could be about any. Addresses are compared as
     // addresses, so another spelling of the same IPv6 address is the same address.
     for row in &rows {
-        match text(row.get("ip")) {
-            Some(ip) if crate::canonical::same_ip(&ip, indicator.value()) => {}
-            Some(_) => return Err(LegError::Decode("answer reports another address".into())),
-            None => return Err(LegError::Decode("a report names no address".into())),
-        }
+        api_leg::bound_to_query(text(row.get("ip")).as_deref(), "address", |ip| {
+            crate::canonical::same_ip(ip, indicator.value())
+        })?;
     }
     Ok(rows)
 }
