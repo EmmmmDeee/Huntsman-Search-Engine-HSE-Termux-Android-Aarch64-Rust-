@@ -295,17 +295,10 @@ pub fn verify(
 pub fn decode_verification(body: &[u8], email: &str) -> Result<Finding, LegError> {
     let whole: serde_json::Value = api_leg::decode(body)?;
     let data = api_leg::decode::<VerifyEnvelope>(body)?.data;
-    // The verdict is evidence about the address the answer names, so an answer that names none
-    // cannot be bound to the query and is refused, as one naming another address is.
-    let answered = data
-        .email
-        .as_deref()
-        .map(str::trim)
-        .filter(|e| !e.is_empty())
-        .ok_or_else(|| LegError::Decode("answer names no address".into()))?;
-    if !answered.eq_ignore_ascii_case(email) {
-        return Err(LegError::Decode("answer names another address".into()));
-    }
+    // The verdict is evidence about the address the answer names, so it must name the queried one.
+    api_leg::bound_to_query(data.email.as_deref(), "address", |answered| {
+        answered.eq_ignore_ascii_case(email)
+    })?;
     let status = api_leg::clean(data.status.as_deref()).unwrap_or_else(|| "unknown".into());
     let mut finding = Finding::new(format!("Hunter verifier: {status}"))
         .attr("verification", &status)

@@ -111,15 +111,9 @@ pub fn decode(body: &[u8], e164: &str) -> Result<Verification, LegError> {
     // can become evidence. Missing/blank identifiers cannot prove that binding.
     let requested =
         digits(e164).ok_or_else(|| LegError::Decode("requested number is not E.164".into()))?;
-    let number = body
-        .number
-        .as_deref()
-        .map(str::trim)
-        .filter(|number| !number.is_empty())
-        .ok_or_else(|| LegError::Decode("answer has no number identifier".into()))?;
-    if number != requested {
-        return Err(LegError::Decode("answer is about another number".into()));
-    }
+    api_leg::bound_to_query(body.number.as_deref(), "number", |number| {
+        number == requested
+    })?;
     Ok(Verification {
         valid: body.valid,
         local_format: api_leg::clean(body.local_format.as_deref()),

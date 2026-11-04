@@ -565,6 +565,32 @@ pub fn clean(text: Option<&str>) -> Option<String> {
     )
 }
 
+/// The identifier a provider answer names for itself, required before anything the answer says
+/// is credited to the query. `answered` (trimmed) must be present and non-blank, and `same`, the
+/// source's own comparison (an address, a number, an email), must accept it. An answer that
+/// names no identifier could be about anything, and one that names another is about another, so
+/// both are refused and neither becomes evidence. `what` names the identifier in the error
+/// ("address", "number"). Returns the trimmed identifier the answer named. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`]: "answer names no {what}" when `answered` is absent or blank, "answer
+/// names another {what}" when `same` refuses it.
+pub fn bound_to_query<'a>(
+    answered: Option<&'a str>,
+    what: &str,
+    same: impl FnOnce(&str) -> bool,
+) -> Result<&'a str, LegError> {
+    let answered = answered
+        .map(str::trim)
+        .filter(|answered| !answered.is_empty())
+        .ok_or_else(|| LegError::Decode(format!("answer names no {what}")))?;
+    if same(answered) {
+        Ok(answered)
+    } else {
+        Err(LegError::Decode(format!("answer names another {what}")))
+    }
+}
+
 /// A scalar as text: a string cleaned, a number or flag as written, `None` for null, an empty
 /// string or a structure. **Pure.**
 #[must_use]
@@ -595,6 +621,33 @@ mod tests {
     use super::*;
     use crate::http::{Method, TransportFailure};
     use std::sync::Mutex;
+
+    #[test]
+    fn an_answer_is_bound_only_by_an_identifier_it_names_that_the_source_accepts() {
+        let exact = |answered: &str| answered == "61401981051";
+        assert_eq!(
+            bound_to_query(Some(" 61401981051 "), "number", exact),
+            Ok("61401981051")
+        );
+        for missing in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                bound_to_query(missing, "number", exact),
+                Err(LegError::Decode("answer names no number".into())),
+                "{missing:?}"
+            );
+        }
+        assert_eq!(
+            bound_to_query(Some("61401981052"), "number", exact),
+            Err(LegError::Decode("answer names another number".into()))
+        );
+        // The comparison is the source's own: an absent identifier is refused before it runs.
+        let mut ran = false;
+        let _ = bound_to_query(None, "address", |_| {
+            ran = true;
+            true
+        });
+        assert!(!ran);
+    }
 
     #[test]
     fn distinct_keeps_the_first_spelling_once_by_the_rule_each_push_names() {
