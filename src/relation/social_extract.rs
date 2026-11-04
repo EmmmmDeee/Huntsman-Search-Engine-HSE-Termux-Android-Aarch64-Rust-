@@ -191,20 +191,20 @@ mod tests {
     fn instagram_profile_urls_preserve_exact_handle_and_do_not_bind_identity() {
         assert_eq!(
             extract_username_from_profile_url(
-                "https://www.instagram.com/RubyMae9777?dlrf=MWFmYnl5MjNqdjZxYg=="
+                "https://www.instagram.com/AliceTest9777?dlrf=not_a_real_token"
             ),
-            Some(ProfileHandle::Instagram("rubymae9777".into()))
+            Some(ProfileHandle::Instagram("alicetest9777".into()))
         );
         for not_a_profile in [
             "https://www.instagram.com/p/ABC123/",
             "https://instagram.com/reel/ABC123/",
-            "https://instagram.com/stories/rubymae9777/",
+            "https://instagram.com/stories/alicetest9777/",
             "https://instagram.com/explore/",
-            "https://instagram.com/rubymae9777/p/ABC/",
+            "https://instagram.com/alicetest9777/p/ABC/",
             "https://instagram.com/ruby..mae/",
             "https://instagram.com/ruby-mae/",
             "https://instagram.com/ruby%2Fmae/",
-            "https://notinstagram.com/rubymae9777/",
+            "https://notinstagram.com/alicetest9777/",
         ] {
             assert_eq!(
                 extract_username_from_profile_url(not_a_profile),
@@ -214,10 +214,10 @@ mod tests {
         }
 
         let scan = "scan";
-        let target = Entity::new(EntityKind::Username, "rubymae9777", 0.8, scan);
+        let target = Entity::new(EntityKind::Username, "alicetest9777", 0.8, scan);
         let url = Entity::new(
             EntityKind::Url,
-            "https://www.instagram.com/rubymae9777?dlrf=opaque",
+            "https://www.instagram.com/alicetest9777?dlrf=opaque",
             0.8,
             scan,
         );
@@ -229,7 +229,7 @@ mod tests {
         // Their canonical entity keys collide, but their Instagram account
         // names differ. Neither a separator change nor a near-name match
         // licenses the link.
-        for different in ["ruby_mae9777", "ruby.mae9777", "rubymae3223"] {
+        for different in ["alice_test9777", "alice.test9777", "alicetest3223"] {
             let other = Entity::new(EntityKind::Username, different, 0.8, scan);
             assert!(
                 derive_profile_links(&[other, url.clone()], scan).is_empty(),
