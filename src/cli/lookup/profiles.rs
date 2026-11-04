@@ -791,9 +791,11 @@ pub(in crate::cli) fn company_cmd(args: &[String]) -> ExitCode {
         Ok(p) => p,
         Err(e) => return usage_failure(&e, COMPANY_USAGE),
     };
-    let transport = transport(&TransportConfig::default(), &Selection::all());
+    let keys = crate::cli::credentials::lookup_keys();
+    let transport = transport(&api_leg::transport_config(), &Selection::all());
     match source_report(company_cli::run(
         &transport,
+        &keys,
         &parsed.query,
         clock::unix_now(),
     )) {

@@ -650,6 +650,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Wikidata item for a query, its full structured record, and website, coordinate and external-identifier pivots, from Wikidata's keyless search and REST APIs",
     },
     ReachableModule {
+        name: "abn_lookup",
+        command: "company ABN|ACN",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1591"],
+        description: "Australian Business Register record for an ABN or ACN: entity name and type, ABN status, GST registration, state and postcode and business names, from the ABR's JSON web service with the operator's free GUID",
+    },
+    ReachableModule {
         name: "asic_orgs",
         command: "company NAME|ACN|ABN",
         access: "keyless",
@@ -1790,6 +1799,7 @@ mod tests {
             crate::wigle::SOURCE,
             crate::wigle::BLUETOOTH_SOURCE,
             crate::asic_orgs::SRC,
+            crate::abn_lookup::SOURCE,
         ];
         let registry = crate::indicator_legs::SOURCES
             .iter()

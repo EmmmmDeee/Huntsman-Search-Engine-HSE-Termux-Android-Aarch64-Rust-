@@ -47,7 +47,7 @@ pub fn source_family(source: &str) -> &'static str {
         "search_engines" | "google" | "exa_search" => "search",
         "smtp_vrfy" | "emailrep" | "openpgp_keys" | "hunter" | "kickbox" => "email_intel",
         "proxycurl" | "name_intel" | "fullcontact" | "contact_enrich" | "gleif_lei"
-        | "asic_orgs" | "asic_director" | "au_electoral" | "au_people" | "ahpra"
+        | "asic_orgs" | "abn_lookup" | "asic_director" | "au_electoral" | "au_people" | "ahpra"
         | "acnc_charities" => "identity_registry",
         "shodan" | "dns_intel" | "ip_geo" | "geocode" | "ip_whois_geo" | "ip2location"
         | "mylnikov" | "abuseipdb" | "bgpview" | "criminal_ip" | "ipqs" | "netblock" | "netlas"

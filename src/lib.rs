@@ -8,6 +8,7 @@
 // that lack it.
 #![cfg_attr(test, allow(unknown_lints, clippy::assert_is_empty))]
 
+pub mod abn_lookup;
 pub mod abuseipdb;
 pub mod acnc;
 pub mod address_au;

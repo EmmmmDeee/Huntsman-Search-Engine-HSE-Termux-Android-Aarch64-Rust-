@@ -3,18 +3,20 @@
 //! business names, banned and disqualified organisations) and, for a name, on the GLEIF legal-entity
 //! register. Every record is a register entry to review, never a confirmed identity.
 
+use crate::abn_lookup;
 use crate::asic_orgs::{self, Query};
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::gleif;
 use crate::http::Transport;
+use crate::keys::Keys;
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const COMPANY_USAGE: &str = "usage: huntsman-recon company NAME|ACN|ABN";
 pub const COMPANY_HELP: &str = "\
 company NAME|ACN|ABN
-Look up one Australian organisation by NAME, a nine-digit ACN or an eleven-digit ABN (spaces allowed; the number must pass its checksum). Searches ASIC's Company Dataset (every registered company, its current and former names, ACN, ABN, type, class, status and registration dates), the Business Names register (each trading name with the ABN of the entity that holds it) and the Banned and Disqualified Organisations register, all keyless on data.gov.au; a NAME is also looked up on the GLEIF legal-entity register. A name matches only a record holding every word of the query, and a number matches only a record holding exactly that number. A register entry is a candidate to review, not a confirmed identity. Makes network requests.";
+Look up one Australian organisation by NAME, a nine-digit ACN or an eleven-digit ABN (spaces allowed; the number must pass its checksum). Searches ASIC's Company Dataset (every registered company, its current and former names, ACN, ABN, type, class, status and registration dates), the Business Names register (each trading name with the ABN of the entity that holds it) and the Banned and Disqualified Organisations register, all keyless on data.gov.au; a NAME is also looked up on the GLEIF legal-entity register. A name matches only a record holding every word of the query, and a number matches only a record holding exactly that number. An ABN or ACN is also looked up on the Australian Business Register (ABN Lookup) when HUNTSMAN_ABR_GUID holds the operator's free ABR web-services GUID: the registered entity name and type, ABN status, GST registration, state and postcode, and every business name. A register entry is a candidate to review, not a confirmed identity. Makes network requests.";
 
 /// The longest query taken, in bytes.
 const MAX_COMPANY_QUERY_BYTES: usize = 300;
@@ -57,9 +59,15 @@ pub struct Report {
 pub type CompanyRun = SourceRun<Report>;
 
 /// Look up `query`, each leg only when the transport's lookup asks its module
-/// ([`Transport::runs_module`]).
+/// ([`Transport::runs_module`]). ABN Lookup runs for an ABN or ACN when `HUNTSMAN_ABR_GUID` is set
+/// in `keys`; without it the leg is recorded as not configured and sends nothing.
 #[must_use]
-pub fn run<T: Transport + ?Sized>(transport: &T, query: &Query, now_unix: u64) -> CompanyRun {
+pub fn run<T: Transport + ?Sized>(
+    transport: &T,
+    keys: &Keys,
+    query: &Query,
+    now_unix: u64,
+) -> CompanyRun {
     let text = match query {
         Query::Acn(id) | Query::Abn(id) | Query::Name(id) => id.as_str(),
     };
@@ -79,6 +87,28 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &Query, now_unix: u64) -
                 error.to_string(),
             )),
         }
+    }
+    let abr_id = match query {
+        Query::Abn(abn) => Some(abn_lookup::Id::Abn(abn)),
+        Query::Acn(acn) => Some(abn_lookup::Id::Acn(acn)),
+        Query::Name(_) => None,
+    };
+    if let Some(id) = abr_id.filter(|_| transport.runs_module(abn_lookup::SOURCE)) {
+        let api = &abn_lookup::API;
+        let outcome = if api.wanted(keys) {
+            match abn_lookup::lookup(transport, keys, id, now_unix) {
+                Ok(record) => {
+                    report
+                        .entities
+                        .extend(abn_lookup::entities(&record, &scan_id));
+                    SourceExecutionOutcome::success(api.source, now_unix, 1).with_http_status(200)
+                }
+                Err(err) => err.outcome(api, now_unix),
+            }
+        } else {
+            SourceExecutionOutcome::not_configured(api.source, now_unix)
+        };
+        report.outcomes.push(outcome);
     }
     // GLEIF searches legal names; it cannot be asked an ACN or ABN.
     if matches!(query, Query::Name(_)) && transport.runs_module(gleif::SOURCE) {
