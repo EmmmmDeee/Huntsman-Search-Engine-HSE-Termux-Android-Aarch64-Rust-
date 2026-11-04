@@ -86,7 +86,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(miss))
+    Ok(interpret(&fetched, &actor, scan_id, now_unix).unwrap_or_else(miss))
 }
 
 /// A report that found nothing, carrying only its outcome. **Pure.**
@@ -101,6 +101,7 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
 /// no profile. **Pure.**
 fn interpret(
     fetched: &Fetched,
+    actor: &str,
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, SourceExecutionOutcome> {
@@ -123,6 +124,22 @@ fn interpret(
             SourceOutcomeKind::SchemaDrift,
             Some(response.status),
             "Bluesky profile has no handle",
+        ));
+    }
+    // The profile is evidence only for the actor that was asked for. A handle Bluesky could not
+    // verify comes back as `handle.invalid`, which is no proof the queried handle is this account.
+    if !profile
+        .handle
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case(actor.trim_end_matches('.'))
+    {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            Some(response.status),
+            "Bluesky answered with another handle than the queried actor",
         ));
     }
 
@@ -473,5 +490,25 @@ mod tests {
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
         let detail = got.outcome.detail.unwrap_or_default();
         assert!(!detail.contains("secret@example.com"), "{detail}");
+    }
+
+    /// A profile counts only for the actor that was asked for: another handle, or a handle
+    /// Bluesky could not verify (`handle.invalid`), is drift, never that profile under the query.
+    #[test]
+    fn a_profile_for_another_handle_is_drift_not_an_account() {
+        for handle in ["bob.bsky.social", "handle.invalid", "alice.example.org"] {
+            let body =
+                format!(r#"{{"handle":"{handle}","did":"did:plc:oky5czdrnfjpqslsw2a5iclo"}}"#);
+            let got = lookup(&OneResponse::json(200, &body), "alice", "scan", 1).unwrap();
+            assert_eq!(
+                got.outcome.kind,
+                SourceOutcomeKind::SemanticDrift,
+                "{handle}"
+            );
+            assert!(got.entities.is_empty(), "{handle}: {:?}", got.entities);
+        }
+        let body = r#"{"handle":"Alice.BSKY.social","did":"did:plc:oky5czdrnfjpqslsw2a5iclo"}"#;
+        let got = lookup(&OneResponse::json(200, body), "alice", "scan", 1).unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::Success);
     }
 }
