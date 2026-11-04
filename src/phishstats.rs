@@ -111,17 +111,22 @@ fn report(row: &Map<String, Value>) -> Option<String> {
 /// One page of reports for `indicator`. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for a body that is not a list of reports, or a report on another address.
+/// [`LegError::Decode`] for a body that is not a list of reports, or a report that names another
+/// address or none.
 pub fn decode_page(
     body: &[u8],
     indicator: Indicator<'_>,
 ) -> Result<Vec<Map<String, Value>>, LegError> {
     let rows: Vec<Map<String, Value>> = api_leg::decode(body)?;
-    if rows
-        .iter()
-        .any(|row| text(row.get("ip")).is_some_and(|ip| ip != indicator.value()))
-    {
-        return Err(LegError::Decode("answer reports another address".into()));
+    // Each report must name the queried address itself: the `_where` filter is the only other
+    // tie, and a report that names no address could be about any. Addresses are compared as
+    // addresses, so another spelling of the same IPv6 address is the same address.
+    for row in &rows {
+        match text(row.get("ip")) {
+            Some(ip) if crate::canonical::same_ip(&ip, indicator.value()) => {}
+            Some(_) => return Err(LegError::Decode("answer reports another address".into())),
+            None => return Err(LegError::Decode("a report names no address".into())),
+        }
     }
     Ok(rows)
 }

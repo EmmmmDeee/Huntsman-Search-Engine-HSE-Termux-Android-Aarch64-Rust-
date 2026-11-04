@@ -290,15 +290,20 @@ pub fn verify(
 /// One verifier answer for `email`. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for an error envelope, another shape, or another address.
+/// [`LegError::Decode`] for an error envelope, another shape, or an answer that names another
+/// address or none.
 pub fn decode_verification(body: &[u8], email: &str) -> Result<Finding, LegError> {
     let whole: serde_json::Value = api_leg::decode(body)?;
     let data = api_leg::decode::<VerifyEnvelope>(body)?.data;
-    if data
+    // The verdict is evidence about the address the answer names, so an answer that names none
+    // cannot be bound to the query and is refused, as one naming another address is.
+    let answered = data
         .email
         .as_deref()
-        .is_some_and(|e| !e.eq_ignore_ascii_case(email))
-    {
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .ok_or_else(|| LegError::Decode("answer names no address".into()))?;
+    if !answered.eq_ignore_ascii_case(email) {
         return Err(LegError::Decode("answer names another address".into()));
     }
     let status = api_leg::clean(data.status.as_deref()).unwrap_or_else(|| "unknown".into());
@@ -433,6 +438,38 @@ mod tests {
         );
         assert!(f.tags.is_empty());
         assert!(decode_verification(VERIFIED.as_bytes(), "ada@example.com").is_err());
+    }
+
+    /// A verdict counts only for the address the answer itself names. An answer that names no
+    /// address cannot show which address Hunter checked, so its verdict, SMTP checks and pages are
+    /// never credited to the one that was asked about.
+    #[test]
+    fn a_verdict_that_names_no_address_is_not_credited_to_the_query() {
+        let named = |email: &str| {
+            VERIFIED.replace(
+                r#""email":"patrick@stripe.com","#,
+                &format!(r#""email":{email},"#),
+            )
+        };
+        for body in [
+            VERIFIED.replace(r#""email":"patrick@stripe.com","#, ""),
+            named("null"),
+            named(r#""""#),
+            named(r#""   ""#),
+        ] {
+            assert!(
+                decode_verification(body.as_bytes(), "patrick@stripe.com").is_err(),
+                "an answer without its address was credited: {body}"
+            );
+        }
+        // The address Hunter names is matched as an address: case and surrounding space aside.
+        for email in [r#""Patrick@Stripe.com""#, r#"" patrick@stripe.com ""#] {
+            let body = named(email);
+            assert!(
+                decode_verification(body.as_bytes(), "patrick@stripe.com").is_ok(),
+                "{body}"
+            );
+        }
     }
 
     #[test]
