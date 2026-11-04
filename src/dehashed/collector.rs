@@ -158,6 +158,7 @@ fn receipt(
         outcome: execution,
         parsed_rows: found,
         truncated,
+        quota: None,
     }
 }
 
@@ -173,6 +174,7 @@ fn failure_receipt(error: &DehashedError, now_unix: u64) -> ObservationReceipt {
         outcome: error.outcome(COLLECTOR_ID, now_unix),
         parsed_rows: 0,
         truncated: false,
+        quota: None,
     }
 }
 
