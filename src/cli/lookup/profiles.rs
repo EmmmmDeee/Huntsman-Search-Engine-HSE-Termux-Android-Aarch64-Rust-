@@ -13,6 +13,7 @@ use crate::cli::{fail, usage_error};
 use huntsman_recon::api_leg;
 use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs};
 use huntsman_recon::clock;
+use huntsman_recon::company_cli::{self, COMPANY_USAGE, CompanyArgs};
 use huntsman_recon::concurrent;
 use huntsman_recon::crypto_cli::{self, CRYPTO_USAGE, CryptoArgs};
 use huntsman_recon::dehashed::{self, client::DehashedClient};
@@ -777,6 +778,25 @@ pub(in crate::cli) fn gleif_cmd(args: &[String]) -> ExitCode {
     };
     let transport = transport(&TransportConfig::default(), &Selection::all());
     match source_report(gleif_cli::run(&transport, &parsed.query, clock::unix_now())) {
+        Ok((text, _)) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+pub(in crate::cli) fn company_cmd(args: &[String]) -> ExitCode {
+    let parsed = match CompanyArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, COMPANY_USAGE),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match source_report(company_cli::run(
+        &transport,
+        &parsed.query,
+        clock::unix_now(),
+    )) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS
