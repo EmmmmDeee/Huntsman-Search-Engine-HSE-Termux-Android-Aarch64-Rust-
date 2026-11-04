@@ -5,6 +5,8 @@
 //! sees its own output as a change.
 
 mod common;
+#[path = "../../tests/support/executable.rs"]
+mod executable;
 
 use std::path::Path;
 use std::process::Command;
@@ -150,8 +152,7 @@ fn a_filter_in_info_attributes_and_a_fsmonitor_program_do_not_run_during_the_cap
     let fsmon_script = scratch.path().join("fsmon.sh");
     let out = scratch.path().join("change-info");
     let fsmon_text = format!("#!/bin/sh\ntouch {}\nexit 0\n", fsmon_marker.display());
-    std::fs::write(&fsmon_script, fsmon_text).expect("the program must be written");
-    set_executable(&fsmon_script);
+    executable::write_executable(&fsmon_script, fsmon_text, 0o755);
     let fsmon = fsmon_script.display().to_string();
     let filter = format!("touch '{}'; echo REPLACED", info_marker.display());
 
@@ -183,14 +184,4 @@ fn a_filter_in_info_attributes_and_a_fsmonitor_program_do_not_run_during_the_cap
         !patch.contains("REPLACED"),
         "the patch carries the output of a filter"
     );
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = std::fs::metadata(path)
-        .expect("the program must exist")
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions).expect("the program must be made executable");
 }

@@ -1,5 +1,7 @@
 //! Real Git fixtures protect immutable provenance, complete inventory and safe planning.
 mod common;
+#[path = "../../tests/support/executable.rs"]
+mod executable;
 
 use common::Repo;
 use serde_json::{Value, json};
@@ -285,17 +287,12 @@ fn replacement_objects_cannot_change_the_recorded_commit_contents() {
 
 #[test]
 fn a_git_fsmonitor_hook_is_not_executed_during_read_only_generation() {
-    use std::os::unix::fs::PermissionsExt;
     let mut repo = fixture(&[]);
-    repo.write(
-        "monitor.sh",
+    executable::write_executable(
+        &repo.root().join("monitor.sh"),
         "#!/bin/sh\nprintf executed > forbidden-monitor-effect\nprintf 'token\\0'\n",
+        0o700,
     );
-    std::fs::set_permissions(
-        repo.root().join("monitor.sh"),
-        std::fs::Permissions::from_mode(0o700),
-    )
-    .unwrap();
     repo.commit_all("monitor fixture");
     repo.git(&[
         "config",
@@ -333,7 +330,6 @@ fn module_context_survives_path_attributes_and_literal_code_inclusion() {
 
 #[test]
 fn a_partial_clone_is_refused_without_hydrating_remote_objects() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = fixture(&[]);
     repo.git(&["config", "uploadpack.allowFilter", "true"]);
     let client = repo.root().join("partial-client");
@@ -346,15 +342,14 @@ fn a_partial_clone_is_refused_without_hydrating_remote_objects() {
     assert!(clone.status.success(), "{clone:?}");
     let marker = repo.root().join("forbidden-fetch-effect");
     let hook = repo.root().join("upload-pack.sh");
-    std::fs::write(
+    executable::write_executable(
         &hook,
         format!(
             "#!/bin/sh\ntouch '{}'\nexec git-upload-pack \"$@\"\n",
             marker.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700)).unwrap();
+        0o700,
+    );
     let config = Command::new("git")
         .args(["config", "remote.origin.uploadpack"])
         .arg(&hook)

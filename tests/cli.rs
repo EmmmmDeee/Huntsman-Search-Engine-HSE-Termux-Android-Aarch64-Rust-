@@ -1,5 +1,8 @@
 //! Binary acceptance. `check` runs in a scratch directory so the repo is not touched.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -910,7 +913,6 @@ fn scans_alerts_keeps_a_history_of_every_decision() {
 #[cfg(unix)]
 #[test]
 fn scans_notify_posts_a_phone_notification_without_the_target() {
-    use std::os::unix::fs::PermissionsExt;
     let home = scratch("scans-notify");
     let rules = write_phone_rule(&home);
     let helpers = home.join("bin");
@@ -919,15 +921,14 @@ fn scans_notify_posts_a_phone_notification_without_the_target() {
     fs::create_dir_all(&nothing).unwrap();
     let notified = home.join("notified");
     let helper = helpers.join("termux-notification");
-    fs::write(
+    executable::write_executable(
         &helper,
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
             notified.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     let run = |path: &Path, args: &[&str]| {
         bin()
             .args(args)

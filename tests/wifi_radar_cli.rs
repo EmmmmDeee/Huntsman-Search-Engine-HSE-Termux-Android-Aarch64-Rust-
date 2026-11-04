@@ -1,6 +1,9 @@
 //! End-to-end CLI acceptance for offline/replayed Termux Wi-Fi cache data.
 //! Live radio hardware tests are not faked by these deterministic fixtures.
 
+#[path = "support/executable.rs"]
+mod executable;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -200,7 +203,7 @@ fn the_cli_refuses_bad_arguments_and_missing_capture_files() {
 #[test]
 fn a_descendant_holding_sensor_stdout_cannot_hang_the_radar_command() {
     use std::ffi::OsString;
-    use std::os::unix::fs::PermissionsExt;
+
     use std::time::{Duration, Instant};
 
     // Recreate the dangerous case: the direct sensor process returns, but a
@@ -218,10 +221,7 @@ fn a_descendant_holding_sensor_stdout_cannot_hang_the_radar_command() {
         ("termux-telephony-cellinfo", "cells"),
     ] {
         let shim = directory.join(sensor);
-        fs::write(&shim, b"#!/bin/sh\n(sleep 8) &\nprintf '[]\\n'\n").unwrap();
-        let mut permissions = fs::metadata(&shim).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&shim, permissions).unwrap();
+        executable::write_executable(&shim, b"#!/bin/sh\n(sleep 8) &\nprintf '[]\\n'\n", 0o700);
 
         let started = Instant::now();
         let result = bin()

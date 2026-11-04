@@ -7,8 +7,10 @@
 //! refusal ("check-protected: refused") test that call. The guard is the other work package's, so
 //! those cases are the first to fail while its port is missing.
 
+#[path = "../../tests/support/executable.rs"]
+mod executable;
+
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -202,12 +204,11 @@ fn fake_gh(dir: &Path) -> PathBuf {
     let bin = dir.join("gh-bin");
     fs::create_dir_all(&bin).expect("the fake bin directory");
     let gh = bin.join("gh");
-    fs::write(
+    executable::write_executable(
         &gh,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$ARGS\"\ncat >> \"$BODY\"\n",
-    )
-    .expect("the fake gh can be written");
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("the fake gh is executable");
+        0o755,
+    );
     bin
 }
 
