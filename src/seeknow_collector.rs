@@ -116,7 +116,7 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
             }
             let result =
                 search_deep(transport, credential, &search, now_unix).map_err(execution)?;
-            append_result(&mut batch, selector, &result, limits, now_unix);
+            append_result(&mut batch, selector, &search, &result, limits, now_unix);
             batch.outcome = outcome_from_single(&batch.receipts[0]);
         }
         SeekNowCollectionMode::FastOnly => {
@@ -127,7 +127,7 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                 )));
             }
             let fast = search_fast(transport, credential, &search, now_unix).map_err(execution)?;
-            append_result(&mut batch, selector, &fast, limits, now_unix);
+            append_result(&mut batch, selector, &search, &fast, limits, now_unix);
             batch.outcome = outcome_from_single(&batch.receipts[0]);
         }
         SeekNowCollectionMode::Adaptive => {
@@ -135,7 +135,7 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                 let fast =
                     search_fast(transport, credential, &search, now_unix).map_err(execution)?;
                 let fast_kind = fast.outcome.kind;
-                append_result(&mut batch, selector, &fast, limits, now_unix);
+                append_result(&mut batch, selector, &search, &fast, limits, now_unix);
 
                 // The fast search's own quota report gates the 2-credit stealer request: when
                 // the provider said nothing is left, escalating would only spend or be refused.
@@ -152,7 +152,7 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                     let deep =
                         search_deep(transport, credential, &search, now_unix).map_err(execution)?;
                     let deep_kind = deep.outcome.kind;
-                    append_result(&mut batch, selector, &deep, limits, now_unix);
+                    append_result(&mut batch, selector, &search, &deep, limits, now_unix);
                     batch.outcome = match deep_kind {
                         SourceOutcomeKind::Success => CollectionOutcome::Success,
                         SourceOutcomeKind::ValidZero => CollectionOutcome::ValidZero,
@@ -164,7 +164,7 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
             } else if search.query_type.supports_stealer() {
                 let deep =
                     search_deep(transport, credential, &search, now_unix).map_err(execution)?;
-                append_result(&mut batch, selector, &deep, limits, now_unix);
+                append_result(&mut batch, selector, &search, &deep, limits, now_unix);
                 batch.outcome = outcome_from_single(&batch.receipts[0]);
             } else {
                 return Err(CollectorError::UnsupportedSelector(selector.kind.clone()));
@@ -343,6 +343,7 @@ fn validate_selector(selector: &Entity) -> Result<(), CollectorError> {
 fn append_result(
     batch: &mut CollectionBatch,
     selector: &Entity,
+    search: &SeekNowSearch,
     result: &SeekNowSearchResult,
     limits: &CollectionLimits,
     now_unix: u64,
@@ -372,14 +373,21 @@ fn append_result(
         .enumerate()
         .map(|(index, entity)| (entity.uid.clone(), index))
         .collect::<HashMap<_, _>>();
+    let context = RowContext {
+        endpoint: &result.outcome.module,
+        query_type: search.query_type.api_value(),
+        query: &search.query,
+        response_sha256: result.meta.response_sha256.as_deref(),
+        observed_at_unix: now_unix,
+    };
     for (row_index, row) in result.rows.iter().enumerate() {
         append_row(
             batch,
             selector,
+            &context,
             row,
             row_index,
             limits,
-            now_unix,
             &mut positions,
         );
     }
@@ -388,10 +396,10 @@ fn append_result(
 fn append_row(
     batch: &mut CollectionBatch,
     selector: &Entity,
+    context: &RowContext<'_>,
     row: &SeekNowRow,
     row_index: usize,
     limits: &CollectionLimits,
-    now_unix: u64,
     positions: &mut HashMap<String, usize>,
 ) {
     for (kind, value) in row_entities(row) {
@@ -401,15 +409,16 @@ fn append_row(
             ENTITY_CONFIDENCE,
             &selector.scan_id,
         );
-        entity.observed_at_unix = now_unix;
+        entity.observed_at_unix = context.observed_at_unix;
         if entity.value.trim().is_empty() {
             continue;
         }
         entity.add_evidence(evidence_from_row(
+            context,
             row,
             row_index,
             &selector.scan_id,
-            now_unix,
+            context.observed_at_unix,
         ));
         if let Some(&index) = positions.get(&entity.uid) {
             batch.entities[index].absorb(entity);
@@ -477,14 +486,38 @@ fn strip_numeric_index(key: &str) -> &str {
     }
 }
 
-fn evidence_from_row(row: &SeekNowRow, row_index: usize, scan_id: &str, now_unix: u64) -> Evidence {
+/// Which request produced a row: the endpoint's module, the query type and text sent, and the
+/// digest of the response the row was parsed from. Every row carries it, so a row from the fast
+/// search and one from the stealer endpoint stay distinguishable and each traces to its response.
+struct RowContext<'a> {
+    endpoint: &'a str,
+    query_type: Option<&'a str>,
+    query: &'a str,
+    response_sha256: Option<&'a str>,
+    observed_at_unix: u64,
+}
+
+fn evidence_from_row(
+    context: &RowContext<'_>,
+    row: &SeekNowRow,
+    row_index: usize,
+    scan_id: &str,
+    now_unix: u64,
+) -> Evidence {
     let mut provenance = EvidenceProvenance::for_scan(COLLECTOR_ID, scan_id);
     provenance.recorded_at_unix = now_unix;
     let summary = row.upstream.record_id.as_deref().map_or_else(
         || format!("SeekNow response row {row_index}"),
         |id| format!("SeekNow record {id}"),
     );
-    let mut evidence = Evidence::new(provenance, summary);
+    let mut evidence = Evidence::new(provenance, summary)
+        .with_attr("endpoint", context.endpoint)
+        .with_attr("query", context.query)
+        .with_attr("row_index", row_index.to_string())
+        .with_optional_attrs([
+            ("query_type", context.query_type),
+            ("response_sha256", context.response_sha256),
+        ]);
 
     for field in [
         "dbname",

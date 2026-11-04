@@ -748,3 +748,41 @@ fn a_response_without_quota_headers_records_no_quota() {
     assert_eq!(transport.request_count(), 2);
     assert!(batch.receipts.iter().all(|r| r.quota.is_none()));
 }
+
+#[test]
+fn every_row_names_the_endpoint_query_and_response_it_came_from() {
+    let deep_body = r#"{"success":true,"data":[{"username":"alice","breach":"Breach B"}]}"#;
+    let transport = ScriptedTransport::new(vec![
+        response(200, r#"{"success":true,"data":[]}"#),
+        response(200, deep_body),
+    ]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "alice"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        33,
+    )
+    .unwrap();
+    let deep_digest = batch.receipts[1]
+        .response_sha256
+        .clone()
+        .expect("deep response digest");
+    let evidence: Vec<_> = batch
+        .entities
+        .iter()
+        .flat_map(|entity| entity.evidence.iter())
+        .filter(|ev| ev.provenance.source == "seeknow")
+        .collect();
+    assert!(!evidence.is_empty(), "{:#?}", batch.entities);
+    for ev in evidence {
+        let attr = |key: &str| ev.attributes.get(key).map(String::as_str);
+        // The row came from the stealer escalation, not the fast search that returned zero.
+        assert_eq!(attr("endpoint"), Some("seeknow_stealer"));
+        assert_eq!(attr("query_type"), Some("username"));
+        assert_eq!(attr("query"), Some("alice"));
+        assert_eq!(attr("row_index"), Some("0"));
+        assert_eq!(attr("response_sha256"), Some(deep_digest.as_str()));
+    }
+}

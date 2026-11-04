@@ -1,0 +1,1 @@
+- Every SeekNow evidence row now records the request that produced it: the endpoint (`seeknow_search` or `seeknow_stealer`), the query type and text sent, its row index, and the SHA-256 of the response it was parsed from. Before, an adaptive lookup that ran both endpoints saved rows that could not be told apart or traced to their response.
