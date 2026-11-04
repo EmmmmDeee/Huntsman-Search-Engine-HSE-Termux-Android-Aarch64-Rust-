@@ -516,7 +516,7 @@ mod tests {
     }
 
     use crate::acnc::CHARITY_RES;
-    use crate::asic_persons::{ADVISER_RES, BANNED_RES, CREDIT_RES};
+    use crate::asic_persons::{ADVISER_RES, BANNED_RES, REGISTERS};
     use crate::http::{Request, Response, TransportFailure};
     use crate::relation::{self, RelationKind};
     use crate::source_outcome::SourceOutcomeKind;
@@ -615,17 +615,18 @@ mod tests {
 
     /// All seven people-source outcomes persist even if SEC EDGAR is not configured.
     /// An absent SEC operator contact suppresses its HTTP request but not its ledger row.
-    const PEOPLE_SOURCE_OUTCOMES: usize = 7;
-    const PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT: usize = 6;
+    /// Every ASIC register, then ASIC Connect, Wikidata, ACNC and SEC EDGAR.
+    const PEOPLE_SOURCE_OUTCOMES: usize = REGISTERS.len() + 4;
+    const PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT: usize = PEOPLE_SOURCE_OUTCOMES - 1;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
-        HashMap::from([
-            (BANNED_RES.into(), Ok(empty.clone())),
-            (ADVISER_RES.into(), Ok(empty.clone())),
-            (CREDIT_RES.into(), Ok(empty.clone())),
-            (CHARITY_RES.into(), Ok(empty)),
-        ])
+        REGISTERS
+            .iter()
+            .map(|spec| spec.resource)
+            .chain([CHARITY_RES])
+            .map(|res| (res.to_string(), Ok(empty.clone())))
+            .collect()
     }
 
     #[test]
