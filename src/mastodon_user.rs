@@ -112,7 +112,7 @@ fn lookup_with_options<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(miss))
+    Ok(interpret(&fetched, name, scan_id, now_unix).unwrap_or_else(miss))
 }
 
 /// A report that found nothing, carrying only its outcome. **Pure.**
@@ -127,6 +127,7 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
 /// **Pure.**
 fn interpret(
     fetched: &Fetched,
+    name: &str,
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, SourceExecutionOutcome> {
@@ -146,6 +147,26 @@ fn interpret(
             SourceOutcomeKind::SchemaDrift,
             Some(response.status),
             "Mastodon account has no valid username",
+        ));
+    }
+    // The account is evidence only for the local handle that was asked for: another username,
+    // or a remote account (`acct` naming another server), is another account.
+    let local = |acct: &str| {
+        let acct = acct.trim();
+        acct.eq_ignore_ascii_case(name)
+            || acct.split_once('@').is_some_and(|(user, host)| {
+                user.eq_ignore_ascii_case(name) && host.eq_ignore_ascii_case(INSTANCE)
+            })
+    };
+    if !account.username.trim().eq_ignore_ascii_case(name)
+        || account.acct.as_deref().is_some_and(|acct| !local(acct))
+    {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            Some(response.status),
+            "Mastodon answered with another account than the queried handle",
         ));
     }
     let mut entities = build_entities(&account, scan_id);
@@ -420,5 +441,27 @@ mod tests {
                 .iter()
                 .any(|e| e.raw_value.contains("evil.example"))
         );
+    }
+
+    /// An account counts only for the handle that was asked for.
+    #[test]
+    fn an_account_for_another_handle_is_drift_not_an_account() {
+        let other = FOUND.replace(
+            r#""username":"Gargron","acct":"Gargron""#,
+            r#""username":"Someone","acct":"Someone""#,
+        );
+        let transport = ScriptedTransport::new(vec![Ok(reply(200, &other))]);
+        let report = lookup_fixture(&transport, "@Gargron", "scan", 1).unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SemanticDrift);
+        assert!(report.entities.is_empty(), "{:?}", report.entities);
+        // A remote account answered for a local handle is another account too.
+        let remote = FOUND.replace(r#""acct":"Gargron""#, r#""acct":"Gargron@other.example""#);
+        let transport = ScriptedTransport::new(vec![Ok(reply(200, &remote))]);
+        let report = lookup_fixture(&transport, "Gargron", "scan", 1).unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SemanticDrift);
+        // Case aside, the queried handle is the account.
+        let transport = ScriptedTransport::new(vec![Ok(reply(200, FOUND))]);
+        let report = lookup_fixture(&transport, "gargron", "scan", 1).unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
     }
 }

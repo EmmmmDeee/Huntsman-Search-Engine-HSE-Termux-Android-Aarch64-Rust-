@@ -148,7 +148,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(miss))
+    Ok(interpret(&fetched, &selector, scan_id, now_unix).unwrap_or_else(miss))
 }
 
 /// A report that found nothing, carrying only its outcome. **Pure.**
@@ -163,6 +163,7 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
 /// no account. **Pure.**
 fn interpret(
     fetched: &Fetched,
+    selector: &str,
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, SourceExecutionOutcome> {
@@ -192,6 +193,22 @@ fn interpret(
         );
     };
 
+    // The user is evidence only for the username that was asked for.
+    let answered = them.basics.as_ref().and_then(|basics| {
+        basics
+            .username
+            .as_deref()
+            .or(basics.username_cased.as_deref())
+    });
+    if answered.is_some_and(|name| !name.trim().eq_ignore_ascii_case(selector)) {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            Some(response.status),
+            "Keybase answered with another user than the queried username",
+        ));
+    }
     let mut entities = build_entities(&them, scan_id);
     if entities.is_empty() {
         return Err(SourceExecutionOutcome::failed(
@@ -492,7 +509,7 @@ mod tests {
             1,
         )
         .unwrap();
-        interpret(&fetched, "scan", 1).unwrap_or_else(miss)
+        interpret(&fetched, "max", "scan", 1).unwrap_or_else(miss)
     }
 
     #[test]
@@ -612,5 +629,17 @@ mod tests {
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
         let detail = got.outcome.detail.unwrap_or_default();
         assert!(!detail.contains("secret@example.com"), "{detail}");
+    }
+
+    /// A user counts only for the username that was asked for.
+    #[test]
+    fn a_user_for_another_username_is_drift_not_an_account() {
+        let other = MAX.replace(
+            r#""basics":{"username":"max","username_cased":"max"}"#,
+            r#""basics":{"username":"maxwell","username_cased":"Maxwell"}"#,
+        );
+        let got = lookup(&OneResponse::json(200, &other), "max", "scan", 1).unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::SemanticDrift);
+        assert!(got.entities.is_empty(), "{:?}", got.entities);
     }
 }
