@@ -5,7 +5,16 @@ use crate::entity::{Entity, EntityKind};
 
 use super::types::{Relation, RelationKind, endpoint_confidence};
 
-fn extract_username_from_profile_url(url: &str) -> Option<String> {
+/// A profile URL names a platform-specific account, not necessarily a person.
+#[derive(Debug, PartialEq, Eq)]
+enum ProfileHandle {
+    /// Preserve existing sources' canonical handle matching.
+    Existing(String),
+    /// Instagram separators distinguish different accounts; retain exact spelling.
+    Instagram(String),
+}
+
+fn extract_username_from_profile_url(url: &str) -> Option<ProfileHandle> {
     let canonical = canonical_url(url)?;
     let (_, rest) = canonical.split_once("://")?;
     let (authority, tail) = rest.split_once('/').unwrap_or((rest, ""));
@@ -15,6 +24,29 @@ fn extract_username_from_profile_url(url: &str) -> Option<String> {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
+    // Instagram's . and _ are significant account-name characters. A post or
+    // story URL must not become a person's profile, nor can a guessed spelling
+    // variant establish the account behind a URL.
+    if host == "instagram.com" {
+        if segments.len() != 1 {
+            return None;
+        }
+        let handle = segments[0];
+        let valid = (1..=30).contains(&handle.len())
+            && !handle.starts_with('.')
+            && !handle.ends_with('.')
+            && !handle.contains("..")
+            && handle
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
+            && ![
+                "p", "reel", "reels", "stories", "explore", "accounts",
+                "direct", "tv", "tags", "locations", "challenge", "login",
+                "signup", "about",
+            ]
+            .contains(&handle.to_ascii_lowercase().as_str());
+        return valid.then(|| ProfileHandle::Instagram(handle.to_ascii_lowercase()));
+    }
     let candidate = match host {
         "github.com" | "twitter.com" | "x.com" => segments.first().copied(),
         "tiktok.com" => segments
@@ -38,7 +70,7 @@ fn extract_username_from_profile_url(url: &str) -> Option<String> {
         }),
         _ => None,
     }?;
-    canonical_handle(candidate)
+    canonical_handle(candidate).map(ProfileHandle::Existing)
 }
 
 #[must_use]
@@ -54,18 +86,47 @@ pub fn derive_profile_links(entities: &[Entity], scan_id: &str) -> Vec<Relation>
         .iter()
         .filter(|entity| entity.kind == EntityKind::Url)
     {
-        let Some(handle) = extract_username_from_profile_url(&url.value) else {
+        let Some(profile) = extract_username_from_profile_url(&url.value) else {
             continue;
         };
-        if let Some(username) = usernames.get(handle.as_str()) {
-            out.push(Relation::new(
-                &username.uid,
-                &url.uid,
-                RelationKind::SameIdentity,
-                endpoint_confidence(username, url),
-                scan_id,
-            ));
-        }
+        let key = match &profile {
+            ProfileHandle::Existing(handle) => Some(handle.clone()),
+            ProfileHandle::Instagram(handle) => canonical_handle(handle),
+        };
+        let Some(username) = key.as_deref().and_then(|key| usernames.get(key)) else {
+            continue;
+        };
+        let kind = match profile {
+            ProfileHandle::Existing(_) => RelationKind::SameIdentity,
+            ProfileHandle::Instagram(ref exact) => {
+                // Canonical Username UIDs intentionally collapse separators for
+                // broad discovery. Instagram does not: @ruby.mae and @ruby_mae
+                // are distinct accounts. Only a literally observed or seeded
+                // spelling may link to its URL, and the link must not merge
+                // real-world identities merely because the text matches.
+                let observed = username
+                    .observed_spellings()
+                    .keys()
+                    .any(|spelling| spelling.eq_ignore_ascii_case(exact));
+                let seeded = username.evidence.iter().any(|e| e.is_operator_seed())
+                    && username
+                        .raw_value
+                        .trim()
+                        .trim_start_matches('@')
+                        .eq_ignore_ascii_case(exact);
+                if !observed && !seeded {
+                    continue;
+                }
+                RelationKind::AssociatedWith
+            }
+        };
+        out.push(Relation::new(
+            &username.uid,
+            &url.uid,
+            kind,
+            endpoint_confidence(username, url),
+            scan_id,
+        ));
     }
     out
 }
@@ -78,21 +139,21 @@ mod tests {
     fn extracts_supported_profile_shapes() {
         assert_eq!(
             extract_username_from_profile_url("https://github.com/rhino-ryno23"),
-            Some("rhinoryno23".into())
+            Some(ProfileHandle::Existing("rhinoryno23".into()))
         );
         assert_eq!(
             extract_username_from_profile_url("https://www.tiktok.com/@dancequeen"),
-            Some("dancequeen".into())
+            Some(ProfileHandle::Existing("dancequeen".into()))
         );
         assert_eq!(
             extract_username_from_profile_url(
                 "https://www.reddit.com/user/rhino-ryno23/about.json"
             ),
-            Some("rhinoryno23".into())
+            Some(ProfileHandle::Existing("rhinoryno23".into()))
         );
         assert_eq!(
             extract_username_from_profile_url("https://bsky.app/profile/haigen.bsky.social"),
-            Some("haigen".into())
+            Some(ProfileHandle::Existing("haigen".into()))
         );
         for (url, handle) in [
             ("https://bsky.app/profile/alice.bsky.team", "alice"),
@@ -102,17 +163,68 @@ mod tests {
         ] {
             assert_eq!(
                 extract_username_from_profile_url(url),
-                Some(handle.into()),
+                Some(ProfileHandle::Existing(handle.into())),
                 "{url}"
             );
         }
         assert_eq!(
             extract_username_from_profile_url("https://news.ycombinator.com/user?id=pg"),
-            Some("pg".into())
+            Some(ProfileHandle::Existing("pg".into()))
         );
         assert_eq!(
             extract_username_from_profile_url("https://unknown.example.com/x"),
             None
         );
     }
+    #[test]
+    fn instagram_profile_urls_preserve_exact_handle_and_do_not_bind_identity() {
+        assert_eq!(
+            extract_username_from_profile_url(
+                "https://www.instagram.com/RubyMae9777?dlrf=MWFmYnl5MjNqdjZxYg=="
+            ),
+            Some(ProfileHandle::Instagram("rubymae9777".into()))
+        );
+        for not_a_profile in [
+            "https://www.instagram.com/p/ABC123/",
+            "https://instagram.com/reel/ABC123/",
+            "https://instagram.com/stories/rubymae9777/",
+            "https://instagram.com/explore/",
+            "https://instagram.com/rubymae9777/p/ABC/",
+            "https://instagram.com/ruby..mae/",
+            "https://instagram.com/ruby-mae/",
+            "https://instagram.com/ruby%2Fmae/",
+            "https://notinstagram.com/rubymae9777/",
+        ] {
+            assert_eq!(
+                extract_username_from_profile_url(not_a_profile),
+                None,
+                "{not_a_profile}"
+            );
+        }
+
+        let scan = "scan";
+        let target = Entity::new(EntityKind::Username, "rubymae9777", 0.8, scan);
+        let url = Entity::new(
+            EntityKind::Url,
+            "https://www.instagram.com/rubymae9777?dlrf=opaque",
+            0.8,
+            scan,
+        );
+        let relations = derive_profile_links(&[target, url.clone()], scan);
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].kind, RelationKind::AssociatedWith);
+        assert!(!relations[0].kind.binds_identity());
+
+        // Their canonical entity keys collide, but their Instagram account
+        // names differ. Neither a separator change nor a near-name match
+        // licenses the link.
+        for different in ["ruby_mae9777", "ruby.mae9777", "rubymae3223"] {
+            let other = Entity::new(EntityKind::Username, different, 0.8, scan);
+            assert!(
+                derive_profile_links(&[other, url.clone()], scan).is_empty(),
+                "{different}"
+            );
+        }
+    }
+
 }
