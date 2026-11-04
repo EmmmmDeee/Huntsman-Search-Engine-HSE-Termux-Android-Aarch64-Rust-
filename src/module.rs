@@ -650,6 +650,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Wikidata item for a query, its full structured record, and website, coordinate and external-identifier pivots, from Wikidata's keyless search and REST APIs",
     },
     ReachableModule {
+        name: "asic_orgs",
+        command: "company NAME|ACN|ABN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1591"],
+        description: "ASIC registered companies, business names and banned or disqualified organisations for a name, ACN or ABN, with each record's numbers, status and dates, from data.gov.au's keyless CKAN datastore",
+    },
+    ReachableModule {
         name: "gleif_lei",
         command: "gleif LEI|NAME",
         access: "keyless",
@@ -1780,6 +1789,7 @@ mod tests {
             crate::oui::SOURCE,
             crate::wigle::SOURCE,
             crate::wigle::BLUETOOTH_SOURCE,
+            crate::asic_orgs::SRC,
         ];
         let registry = crate::indicator_legs::SOURCES
             .iter()

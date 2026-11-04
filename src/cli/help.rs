@@ -110,6 +110,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
         "wikidata" => huntsman_recon::wikidata_cli::WIKIDATA_HELP,
         "gleif" => huntsman_recon::gleif_cli::GLEIF_HELP,
+        "company" => huntsman_recon::company_cli::COMPANY_HELP,
         "geocode" => huntsman_recon::nominatim_cli::GEOCODE_HELP,
         "exif" => huntsman_recon::exif::EXIF_HELP,
         "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,

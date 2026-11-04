@@ -163,7 +163,7 @@ fn acquisition_modality(source: &str) -> &'static str {
     match source.trim().to_ascii_lowercase().as_str() {
         // Official registries and regulatory filing clients are source
         // modalities only; their lineage is NOT authenticated by this tag.
-        "acnc" | "sec_edgar" | "gleif" | "asic_persons" => "identity_registry",
+        "acnc" | "sec_edgar" | "gleif" | "asic_persons" | "asic_orgs" => "identity_registry",
         // Wikidata is community-curated: never mislabel it as an official
         // identity registry or an independent identity proof.
         "wikidata" => "knowledge_graph",
