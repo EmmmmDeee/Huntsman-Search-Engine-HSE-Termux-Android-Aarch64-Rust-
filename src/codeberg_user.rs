@@ -22,6 +22,7 @@ use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::textnorm::nonblank;
 
 pub const SRC: &str = "codeberg_user";
 const API_BASE: &str = "https://codeberg.org";
@@ -180,10 +181,6 @@ fn interpret_account(
         ));
     }
     Ok((account, response.status))
-}
-
-fn nonblank(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// A public address the account shows; Forgejo's private-address placeholder is dropped. **Pure.**

@@ -23,6 +23,7 @@ use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_resp
 use crate::github_user::valid_login_shape as valid_github_handle;
 use crate::http::{Request, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::textnorm::nonblank;
 
 pub const SRC: &str = "devto_user";
 const API_BASE: &str = "https://dev.to";
@@ -184,10 +185,6 @@ fn interpret_account(
         ));
     }
     Ok((account, response.status))
-}
-
-fn nonblank(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 /// A linked handle without its leading `@`. **Pure.**
