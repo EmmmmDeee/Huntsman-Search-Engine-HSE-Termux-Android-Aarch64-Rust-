@@ -64,6 +64,44 @@ pub struct ObservationReceipt {
     pub outcome: SourceExecutionOutcome,
     pub parsed_rows: usize,
     pub truncated: bool,
+    /// The provider's own quota report on this response, when it sent one: what the request
+    /// left, not an estimate. Absent on older saved receipts and on sources that send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<ProviderQuota>,
+}
+
+/// A provider's quota headers on one response, kept verbatim so consumption is accounted from
+/// what the provider said rather than inferred from the requests sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderQuota {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<String>,
+}
+
+impl ProviderQuota {
+    /// The quota a response reported, or `None` when it carried no quota header at all. **Pure.**
+    #[must_use]
+    pub fn reported(
+        limit: Option<u64>,
+        remaining: Option<u64>,
+        reset: Option<String>,
+    ) -> Option<Self> {
+        (limit.is_some() || remaining.is_some() || reset.is_some()).then_some(Self {
+            limit,
+            remaining,
+            reset,
+        })
+    }
+
+    /// Whether the provider said no request is left in the current window. **Pure.**
+    #[must_use]
+    pub fn exhausted(&self) -> bool {
+        self.remaining == Some(0)
+    }
 }
 
 /// Bounded candidate for a later orchestrator. A pivot never counts as evidence by itself.
