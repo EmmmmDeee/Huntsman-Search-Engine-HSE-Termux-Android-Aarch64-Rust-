@@ -1,5 +1,6 @@
 //! ASIC organisation registers over data.gov.au CKAN — the Company Dataset, the Business Names
-//! Dataset and Banned and Disqualified Organisations. Keyless. Blocking.
+//! Dataset, Banned and Disqualified Organisations, AFS licensees and credit licensees. Keyless.
+//! Blocking.
 //!
 //! One query is a name, a nine-digit ACN or an eleven-digit ABN. A name matches a record only when
 //! every query token is a whole word of the registered name; an ACN or ABN matches only a record
@@ -29,12 +30,14 @@ const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 pub(crate) const COMPANY_RES: &str = "5c3914e6-413e-4a2c-b890-bf8efe3eabf2";
 pub(crate) const BUSINESS_NAME_RES: &str = "55ad4b1c-5eeb-44ea-8b29-d410da431be3";
 pub(crate) const BANNED_ORG_RES: &str = "ced03961-e6f7-4263-895a-0fd1d7996043";
+pub(crate) const AFS_LICENSEE_RES: &str = "1fc2b334-74ae-4588-85aa-83e3a8c9f2cc";
+pub(crate) const CREDIT_LICENSEE_RES: &str = "35953a01-a9a8-4609-8566-c9fa7de465d3";
 const MAX_HITS: usize = 100;
 
 const CONF_ORG: f64 = 0.70;
 const CONF_ID: f64 = 0.72;
 
-/// One query across the three ASIC organisation registers.
+/// One query across the ASIC organisation registers.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
     pub entities: Vec<Entity>,
@@ -87,7 +90,7 @@ struct Register {
     emit: fn(&Map<String, Value>, &str, &mut Vec<Entity>),
 }
 
-const REGISTERS: [Register; 3] = [
+const REGISTERS: [Register; 5] = [
     Register {
         module: "asic_orgs.companies",
         resource: COMPANY_RES,
@@ -112,9 +115,26 @@ const REGISTERS: [Register; 3] = [
         abn_field: None,
         emit: emit_banned_org,
     },
+    Register {
+        module: "asic_orgs.afs_licensees",
+        resource: AFS_LICENSEE_RES,
+        name_fields: &["AFS_LIC_NAME"],
+        // One column holds the licensee's ABN or ACN.
+        acn_field: Some("AFS_LIC_ABN_ACN"),
+        abn_field: Some("AFS_LIC_ABN_ACN"),
+        emit: emit_afs_licensee,
+    },
+    Register {
+        module: "asic_orgs.credit_licensees",
+        resource: CREDIT_LICENSEE_RES,
+        name_fields: &["CRED_LIC_NAME"],
+        acn_field: Some("CRED_LIC_ABN_ACN"),
+        abn_field: Some("CRED_LIC_ABN_ACN"),
+        emit: emit_credit_licensee,
+    },
 ];
 
-/// Look up `query` on the three ASIC organisation registers. A register that cannot be asked the
+/// Look up `query` on the ASIC organisation registers. A register that cannot be asked the
 /// query's kind (a business name has no ACN; a banned organisation has no ABN) is not asked.
 ///
 /// # Errors
@@ -357,6 +377,99 @@ fn emit_banned_org(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity
     push_id(rec, "BD_ORG_ACN", &name, "asic-banned-org", scan_id, out);
 }
 
+/// One licence register row: the licensee `Organisation` with its verbatim licence fields, its
+/// ABN/ACN pivot and its registered address. A licence is a permission ASIC granted, never a
+/// finding about the licensee. **Pure.**
+fn emit_licensee(
+    rec: &Map<String, Value>,
+    scan_id: &str,
+    out: &mut Vec<Entity>,
+    licence: &Licence,
+) {
+    let Some(name) = field(rec, licence.name) else {
+        return;
+    };
+    let ev = with_fields(
+        Evidence::new(provenance(scan_id), format!("{}: {name}", licence.title))
+            .with_attr("register", licence.title)
+            .with_attr("dataset", licence.title)
+            .with_attr("matched_name", &name),
+        rec,
+        licence.attrs,
+    );
+    let mut org = Entity::new(EntityKind::Organisation, &name, CONF_ORG, scan_id);
+    org.tag("au");
+    org.tag("asic");
+    org.tag(licence.tag);
+    org.add_evidence(ev);
+    out.push(org);
+    push_id(rec, licence.id, &name, licence.tag, scan_id, out);
+    let (local, state, pcode) = licence.address;
+    crate::asic_persons::push_address(rec, local, state, pcode, &name, licence.tag, scan_id, out);
+}
+
+/// The columns of one licence register.
+struct Licence {
+    title: &'static str,
+    tag: &'static str,
+    name: &'static str,
+    id: &'static str,
+    address: (&'static str, &'static str, &'static str),
+    attrs: &'static [(&'static str, &'static str)],
+}
+
+fn emit_afs_licensee(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) {
+    emit_licensee(
+        rec,
+        scan_id,
+        out,
+        &Licence {
+            title: "ASIC AFS Licensees",
+            tag: "asic-afs-licensee",
+            name: "AFS_LIC_NAME",
+            id: "AFS_LIC_ABN_ACN",
+            address: (
+                "AFS_LIC_ADD_LOCAL",
+                "AFS_LIC_ADD_STATE",
+                "AFS_LIC_ADD_PCODE",
+            ),
+            attrs: &[
+                ("AFS_LIC_NUM", "afs_licence_no"),
+                ("AFS_LIC_ABN_ACN", "abn_acn"),
+                ("AFS_LIC_START_DT", "licensed_from"),
+                ("AFS_LIC_PRE_FSR", "pre_fsr_licence"),
+                ("AFS_LIC_CONDITION", "authorisations"),
+            ],
+        },
+    );
+}
+
+fn emit_credit_licensee(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) {
+    emit_licensee(
+        rec,
+        scan_id,
+        out,
+        &Licence {
+            title: "ASIC Credit Licensees",
+            tag: "asic-credit-licensee",
+            name: "CRED_LIC_NAME",
+            id: "CRED_LIC_ABN_ACN",
+            address: ("CRED_LIC_LOCALITY", "CRED_LIC_STATE", "CRED_LIC_PCODE"),
+            attrs: &[
+                ("CRED_LIC_NUM", "credit_licence_no"),
+                ("CRED_LIC_ABN_ACN", "abn_acn"),
+                ("CRED_LIC_STATUS", "status"),
+                ("CRED_LIC_START_DT", "licensed_from"),
+                ("CRED_LIC_END_DT", "licensed_to"),
+                ("CRED_LIC_AFSL_NUM", "afs_licence_no"),
+                ("CRED_LIC_EDRS", "dispute_scheme"),
+                ("CRED_LIC_BN", "business_names"),
+                ("CRED_LIC_AUTHORISATIONS", "authorisations"),
+            ],
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +518,8 @@ mod tests {
                 (COMPANY_RES, json_ok(&envelope(company))),
                 (BUSINESS_NAME_RES, json_ok(&envelope(business))),
                 (BANNED_ORG_RES, json_ok(&envelope(banned))),
+                (AFS_LICENSEE_RES, json_ok(&envelope(&[]))),
+                (CREDIT_LICENSEE_RES, json_ok(&envelope(&[]))),
             ],
             seen: RefCell::default(),
         }
@@ -482,7 +597,8 @@ mod tests {
             !seen.iter().any(|url| url.contains(BUSINESS_NAME_RES)),
             "{seen:?}"
         );
-        assert_eq!(report.outcomes.len(), 2);
+        // Companies, banned organisations and both licence registers hold an ACN.
+        assert_eq!(report.outcomes.len(), 4);
     }
 
     #[test]
@@ -565,10 +681,51 @@ mod tests {
             answers: vec![
                 (COMPANY_RES, fail.clone()),
                 (BUSINESS_NAME_RES, fail.clone()),
-                (BANNED_ORG_RES, fail),
+                (BANNED_ORG_RES, fail.clone()),
+                (AFS_LICENSEE_RES, fail.clone()),
+                (CREDIT_LICENSEE_RES, fail),
             ],
             seen: RefCell::default(),
         };
         assert!(lookup(&transport, &Query::Name("Monaka".into()), "s", 1).is_err());
+    }
+
+    /// Trimmed from the live AFS licensee row for `KORDAMENTHA ADVISORY PTY LTD` on 2026-11-04.
+    const AFS_LICENSEE: &str = r#"{"REGISTER_NAME":"AFS Licence","AFS_LIC_NUM":"441845","AFS_LIC_NAME":"KORDAMENTHA ADVISORY PTY LTD","AFS_LIC_ABN_ACN":"31163147680","AFS_LIC_START_DT":"03/10/2013","AFS_LIC_PRE_FSR":null,"AFS_LIC_ADD_LOCAL":"MELBOURNE","AFS_LIC_ADD_STATE":"VIC","AFS_LIC_ADD_PCODE":"3000","AFS_LIC_ADD_COUNTRY":"Australia","AFS_LIC_CONDITION":"1. Provide financial product advice"}"#;
+
+    #[test]
+    fn an_afs_licensee_keeps_its_licence_abn_and_address() {
+        let transport = Fake {
+            answers: vec![
+                (COMPANY_RES, json_ok(&envelope(&[]))),
+                (BUSINESS_NAME_RES, json_ok(&envelope(&[]))),
+                (BANNED_ORG_RES, json_ok(&envelope(&[]))),
+                (AFS_LICENSEE_RES, json_ok(&envelope(&[AFS_LICENSEE]))),
+                (CREDIT_LICENSEE_RES, json_ok(&envelope(&[]))),
+            ],
+            seen: RefCell::default(),
+        };
+        let report = lookup(&transport, &Query::Abn("31163147680".into()), "s", 1).unwrap();
+        let licensee = org(&report, "KORDAMENTHA ADVISORY PTY LTD").expect("AFS licensee");
+        assert!(licensee.has_tag("asic-afs-licensee"));
+        assert!(!licensee.has_tag("regulatory-action"));
+        assert_eq!(attr(licensee, "afs_licence_no"), Some("441845"));
+        assert_eq!(
+            attr(licensee, "authorisations"),
+            Some("1. Provide financial product advice")
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address && e.raw_value == "MELBOURNE VIC 3000")
+        );
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .any(|o| o.module == "asic_orgs.afs_licensees"
+                    && o.kind == SourceOutcomeKind::Success)
+        );
     }
 }

@@ -668,8 +668,10 @@ fn emit_listed(
     }
 }
 
+/// A register row's `(locality, state, postcode)` as an `Address`, with its offline postcode
+/// centroid as a derived `Coordinates`; shared by the ASIC person and organisation registers.
 #[allow(clippy::too_many_arguments)]
-fn push_address(
+pub(crate) fn push_address(
     rec: &Map<String, Value>,
     local_key: &str,
     state_key: &str,
