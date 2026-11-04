@@ -40,9 +40,20 @@ fn extract_username_from_profile_url(url: &str) -> Option<ProfileHandle> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_'))
             && ![
-                "p", "reel", "reels", "stories", "explore", "accounts",
-                "direct", "tv", "tags", "locations", "challenge", "login",
-                "signup", "about",
+                "p",
+                "reel",
+                "reels",
+                "stories",
+                "explore",
+                "accounts",
+                "direct",
+                "tv",
+                "tags",
+                "locations",
+                "challenge",
+                "login",
+                "signup",
+                "about",
             ]
             .contains(&handle.to_ascii_lowercase().as_str());
         return valid.then(|| ProfileHandle::Instagram(handle.to_ascii_lowercase()));
@@ -226,5 +237,4 @@ mod tests {
             );
         }
     }
-
 }
