@@ -101,6 +101,8 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             crate::docker_hub_user::SRC,
             crate::codeberg_user::SRC,
             crate::devto_user::SRC,
+            crate::huggingface_user::SRC,
+            crate::codewars_user::SRC,
             seeknow_collector::COLLECTOR_ID,
             crate::stolen_tax::SOURCE,
             oathnet::SOURCE,

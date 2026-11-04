@@ -38,7 +38,8 @@ pub fn source_family(source: &str) -> &'static str {
         | "xposed_or_not" | "oathnet" | "oathnet_pro" | "seeknow" | "see_know" | "stolen_tax" => {
             "breach"
         }
-        "github_user" | "npm_author" | "crates_io" | "codeberg_user" => "code",
+        "github_user" | "npm_author" | "crates_io" | "codeberg_user" | "huggingface_user"
+        | "codewars_user" => "code",
         "wigle" | "wigle_bluetooth" | "oui" => "rf",
         "reddit_user" | "hacker_news" | "lobsters" | "devto_user" => "forum",
         "social_probe" | "gravatar" | "duolingo" | "chess_com" | "lichess" => "social",
