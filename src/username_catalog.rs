@@ -92,7 +92,10 @@ impl SiteDefinition {
     pub fn validate(&self) -> Result<(), String> {
         if self.id.len() < 2
             || self.id.len() > 64
-            || !self.id.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+            || !self
+                .id
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
         {
             return Err("invalid source id".into());
         }
@@ -101,12 +104,17 @@ impl SiteDefinition {
             || !template.starts_with("https://")
             || template.matches("{username}").count() != 1
             || template.contains('#')
-            || !template.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'\\' | b'<' | b'>'))
+            || !template
+                .bytes()
+                .all(|b| b.is_ascii_graphic() && !matches!(b, b'\\' | b'<' | b'>'))
         {
             return Err(format!("invalid URL template for {}", self.id));
         }
         let without_placeholder = template.replace("{username}", "");
-        if without_placeholder.bytes().any(|b| matches!(b, b'{' | b'}')) {
+        if without_placeholder
+            .bytes()
+            .any(|b| matches!(b, b'{' | b'}'))
+        {
             return Err(format!("unresolved placeholder for {}", self.id));
         }
         let authority = template["https://".len()..]
@@ -116,16 +124,22 @@ impl SiteDefinition {
         // Credentials, explicit ports, private literals and non-DNS names do not
         // belong in external catalogue definitions. Runtime egress still applies.
         let labels: Vec<&str> = authority.split('.').collect();
-        if authority.bytes().any(|b| matches!(b, b'@' | b':' | b'[' | b']'))
+        if authority
+            .bytes()
+            .any(|b| matches!(b, b'@' | b':' | b'[' | b']'))
             || labels.len() < 2
             || labels.iter().any(|label| {
                 label.is_empty()
                     || label.len() > 63
                     || label.starts_with('-')
                     || label.ends_with('-')
-                    || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    || !label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
             })
-            || labels.last().is_none_or(|label| label.len() < 2 || label.bytes().all(|b| b.is_ascii_digit()))
+            || labels
+                .last()
+                .is_none_or(|label| label.len() < 2 || label.bytes().all(|b| b.is_ascii_digit()))
         {
             return Err(format!("invalid catalogue host for {}", self.id));
         }
@@ -136,7 +150,9 @@ impl SiteDefinition {
                     || !pointer.starts_with('/')
                     || pointer.split('/').skip(1).any(|segment| {
                         segment.is_empty()
-                            || !segment.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+                            || !segment
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
                     })
                 {
                     return Err(format!("invalid JSON identity pointer for {}", self.id));
@@ -167,7 +183,9 @@ impl SiteDefinition {
             && username.len() <= 64
             && username != "."
             && username != ".."
-            && username.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')))
+            && username
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')))
         .then(|| self.url_template.replace("{username}", username))
     }
 
@@ -190,9 +208,16 @@ impl SiteDefinition {
                 }
                 serde_json::from_slice::<Value>(body)
                     .ok()
-                    .and_then(|value| value.pointer(pointer).and_then(Value::as_str).map(str::to_owned))
+                    .and_then(|value| {
+                        value
+                            .pointer(pointer)
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
                     .filter(|actual| actual == username)
-                    .map_or(ProbeObservation::Inconclusive, |_| ProbeObservation::ExactAccount)
+                    .map_or(ProbeObservation::Inconclusive, |_| {
+                        ProbeObservation::ExactAccount
+                    })
             }
             Detection::HtmlMarkers { present, absent } => {
                 if http_status != 200 && http_status != 404 {
@@ -203,7 +228,11 @@ impl SiteDefinition {
                 };
                 let has_present = html.contains(present);
                 let has_absent = html.contains(absent);
-                if has_present && !has_absent && http_status == 200 && contains_exact_handle(html, username) {
+                if has_present
+                    && !has_absent
+                    && http_status == 200
+                    && contains_exact_handle(html, username)
+                {
                     ProbeObservation::Candidate
                 } else if has_absent && !has_present {
                     ProbeObservation::Absent
@@ -218,25 +247,29 @@ impl SiteDefinition {
 /// A handle must appear as its own token, not merely inside a longer account name.
 /// This is still only candidate evidence: controls must also agree.
 fn contains_exact_handle(page: &str, username: &str) -> bool {
-    if username.is_empty() { return false; }
+    if username.is_empty() {
+        return false;
+    }
     page.match_indices(username).any(|(offset, _)| {
         let before = page.as_bytes().get(offset.wrapping_sub(1)).copied();
         let after = page.as_bytes().get(offset + username.len()).copied();
         let member = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.');
-        (offset == 0 || before.is_none_or(|b| !member(b)))
-            && after.is_none_or(|b| !member(b))
+        (offset == 0 || before.is_none_or(|b| !member(b))) && after.is_none_or(|b| !member(b))
     })
 }
 
 /// Check same-length shape, prefix numbers and punctuation that can alter
 /// endpoint routing. A mismatched control cannot establish absence for this name.
 fn matches_shape(username: &str, control: &str) -> bool {
-    if username.len() != control.len() { return false; }
+    if username.len() != control.len() {
+        return false;
+    }
     let prefix_len = username.bytes().take_while(u8::is_ascii_digit).count();
     username.as_bytes()[..prefix_len] == control.as_bytes()[..prefix_len]
-        && username.bytes().zip(control.bytes()).all(|(left, right)| {
-            !matches!(left, b'.' | b'-' | b'_') || left == right
-        })
+        && username
+            .bytes()
+            .zip(control.bytes())
+            .all(|(left, right)| !matches!(left, b'.' | b'-' | b'_') || left == right)
 }
 
 /// Final account-existence verdict. Exact-identity API documents do not need
@@ -327,58 +360,125 @@ mod tests {
         let site = SiteDefinition {
             id: "identity_api".into(),
             url_template: "https://api.example.org/users/{username}".into(),
-            detection: Detection::JsonExact { pointer: "/user/login".into() },
+            detection: Detection::JsonExact {
+                pointer: "/user/login".into(),
+            },
         };
         let body = br#"{"user":{"login":"jack"}}"#;
-        assert_eq!(site.observe("jack", 200, body, false), ProbeObservation::ExactAccount);
-        assert_eq!(site.observe("jane", 200, body, false), ProbeObservation::Inconclusive);
-        assert_eq!(site.observe("jack", 429, body, false), ProbeObservation::Inconclusive);
-        assert_eq!(site.observe("jack", 200, body, true), ProbeObservation::Inconclusive);
-        assert_eq!(verdict("jack", ProbeObservation::ExactAccount, &[]), AccountVerdict::Exists);
+        assert_eq!(
+            site.observe("jack", 200, body, false),
+            ProbeObservation::ExactAccount
+        );
+        assert_eq!(
+            site.observe("jane", 200, body, false),
+            ProbeObservation::Inconclusive
+        );
+        assert_eq!(
+            site.observe("jack", 429, body, false),
+            ProbeObservation::Inconclusive
+        );
+        assert_eq!(
+            site.observe("jack", 200, body, true),
+            ProbeObservation::Inconclusive
+        );
+        assert_eq!(
+            verdict("jack", ProbeObservation::ExactAccount, &[]),
+            AccountVerdict::Exists
+        );
     }
 
     #[test]
     fn html_candidates_need_three_distinct_controls_with_matching_length() {
         let site = html_site();
         let page = b"<h1>account-profile-header jack</h1>";
-        assert_eq!(site.observe("jack", 200, page, false), ProbeObservation::Candidate);
-        let controls = ["xxxx", "zzzzzzzzzzzz", "yyyyyyyyyyyy"].map(|username| ControlObservation {
-            username: username.into(),
-            observation: ProbeObservation::Absent,
-        });
-        assert_eq!(verdict("jack", ProbeObservation::Candidate, &controls), AccountVerdict::Exists);
+        assert_eq!(
+            site.observe("jack", 200, page, false),
+            ProbeObservation::Candidate
+        );
+        let controls =
+            ["xxxx", "zzzzzzzzzzzz", "yyyyyyyyyyyy"].map(|username| ControlObservation {
+                username: username.into(),
+                observation: ProbeObservation::Absent,
+            });
+        assert_eq!(
+            verdict("jack", ProbeObservation::Candidate, &controls),
+            AccountVerdict::Exists
+        );
         let long_only = ["xxxxxxxx", "yyyyyyyy", "zzzzzzzz"].map(|username| ControlObservation {
             username: username.into(),
             observation: ProbeObservation::Absent,
         });
-        assert_eq!(verdict("jack", ProbeObservation::Candidate, &long_only), AccountVerdict::Unconfirmed);
+        assert_eq!(
+            verdict("jack", ProbeObservation::Candidate, &long_only),
+            AccountVerdict::Unconfirmed
+        );
         let mut blocked = controls.clone();
         blocked[0].observation = ProbeObservation::Inconclusive;
-        assert_eq!(verdict("jack", ProbeObservation::Candidate, &blocked), AccountVerdict::Unconfirmed);
+        assert_eq!(
+            verdict("jack", ProbeObservation::Candidate, &blocked),
+            AccountVerdict::Unconfirmed
+        );
         let mut repeated = controls.clone();
         repeated[1].username = repeated[0].username.clone();
-        assert_eq!(verdict("jack", ProbeObservation::Candidate, &repeated), AccountVerdict::Unconfirmed);
-        assert_eq!(verdict("jack", ProbeObservation::Candidate, &controls[..2]), AccountVerdict::Unconfirmed);
+        assert_eq!(
+            verdict("jack", ProbeObservation::Candidate, &repeated),
+            AccountVerdict::Unconfirmed
+        );
+        assert_eq!(
+            verdict("jack", ProbeObservation::Candidate, &controls[..2]),
+            AccountVerdict::Unconfirmed
+        );
         let prefixed = ["4xxx", "4yyy", "4zzz"].map(|username| ControlObservation {
-            username: username.into(), observation: ProbeObservation::Absent,
+            username: username.into(),
+            observation: ProbeObservation::Absent,
         });
-        assert_eq!(verdict("4abc", ProbeObservation::Candidate, &prefixed), AccountVerdict::Exists);
+        assert_eq!(
+            verdict("4abc", ProbeObservation::Candidate, &prefixed),
+            AccountVerdict::Exists
+        );
         let wrong_prefix = ["1xxx", "2yyy", "3zzz"].map(|username| ControlObservation {
-            username: username.into(), observation: ProbeObservation::Absent,
+            username: username.into(),
+            observation: ProbeObservation::Absent,
         });
-        assert_eq!(verdict("4abc", ProbeObservation::Candidate, &wrong_prefix), AccountVerdict::Unconfirmed);
+        assert_eq!(
+            verdict("4abc", ProbeObservation::Candidate, &wrong_prefix),
+            AccountVerdict::Unconfirmed
+        );
     }
 
     #[test]
     fn no_generic_title_or_soft_404_becomes_an_account() {
         let site = html_site();
-        assert_eq!(site.observe("jack", 200, b"<h1>account-profile-header</h1>", false), ProbeObservation::Inconclusive);
-        assert_eq!(site.observe("jack", 200, b"no-such-account-here", false), ProbeObservation::Absent);
-        assert_eq!(site.observe("jack", 200, b"account-profile-header jack no-such-account-here", false), ProbeObservation::Inconclusive);
-        assert_eq!(site.observe("jack", 403, b"account-profile-header jack", false), ProbeObservation::Inconclusive);
-        assert_eq!(site.url_for("jack"), Some("https://users.example.org/u/jack".into()));
+        assert_eq!(
+            site.observe("jack", 200, b"<h1>account-profile-header</h1>", false),
+            ProbeObservation::Inconclusive
+        );
+        assert_eq!(
+            site.observe("jack", 200, b"no-such-account-here", false),
+            ProbeObservation::Absent
+        );
+        assert_eq!(
+            site.observe(
+                "jack",
+                200,
+                b"account-profile-header jack no-such-account-here",
+                false
+            ),
+            ProbeObservation::Inconclusive
+        );
+        assert_eq!(
+            site.observe("jack", 403, b"account-profile-header jack", false),
+            ProbeObservation::Inconclusive
+        );
+        assert_eq!(
+            site.url_for("jack"),
+            Some("https://users.example.org/u/jack".into())
+        );
         assert_eq!(site.url_for("../private"), None);
         assert_eq!(site.url_for(".."), None);
-        assert_eq!(site.observe("jack", 200, b"account-profile-header jackie", false), ProbeObservation::Inconclusive);
+        assert_eq!(
+            site.observe("jack", 200, b"account-profile-header jackie", false),
+            ProbeObservation::Inconclusive
+        );
     }
 }
