@@ -7,7 +7,7 @@ use std::net::IpAddr;
 
 use crate::collector::{
     CollectionBatch, CollectionLimits, CollectionOutcome, CollectorError, CollectorPivot,
-    ObservationReceipt, ProviderQuota, differs_from_selector, query_text,
+    ObservationReceipt, differs_from_selector, query_text,
 };
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
