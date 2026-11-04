@@ -1,7 +1,9 @@
 //! ASIC people registers over data.gov.au CKAN — banned/disqualified persons,
-//! financial advisers, and credit representatives. Keyless. Blocking.
+//! financial advisers, credit representatives, registered liquidators, registered
+//! company auditors, approved SMSF auditors and AFS authorised representatives.
+//! Keyless. Blocking.
 //!
-//! The three registers are queried sequentially through [`crate::fetch::fetch`]
+//! The seven registers are queried sequentially through [`crate::fetch::fetch`]
 //! and an injected [`crate::http::Transport`]. Challenge pages, truncated bodies,
 //! and `success: false` CKAN envelopes are never turned into evidence. The binary
 //! exposes `people NAME` through [`crate::people_cli`], which also runs
@@ -25,6 +27,10 @@ const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 pub(crate) const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
 pub(crate) const ADVISER_RES: &str = "91d80440-5787-46fc-99de-0c1d93e6cc9f";
 pub(crate) const CREDIT_RES: &str = "999d9e92-df2c-4d6d-b580-321dcd205292";
+pub(crate) const LIQUIDATOR_RES: &str = "02388d87-3f0b-48fd-bffa-c4a661962fc3";
+pub(crate) const AUDITOR_RES: &str = "0f2e41ec-6f49-4d35-8e6d-ebcd4a0e3e27";
+pub(crate) const SMSF_AUDITOR_RES: &str = "13b12e77-8fda-42ca-aa43-23715036836b";
+pub(crate) const AFS_REP_RES: &str = "2572b6b0-31f0-49ca-bb67-55cfe9986b58";
 const MAX_HITS: usize = 100;
 
 const CONF_PERSON: f64 = 0.60;
@@ -33,14 +39,14 @@ const CONF_CONTROLLER: f64 = 0.58;
 const CONF_ADDRESS: f64 = 0.55;
 const CONF_COORDS: f64 = 0.45;
 
-/// One name lookup across the three ASIC people registers.
+/// One name lookup across the seven ASIC people registers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
 }
 
-/// Look up `name` on the three ASIC people registers.
+/// Look up `name` on the seven ASIC people registers.
 ///
 /// A name with fewer than two alphabetic tokens of length ≥ 2 makes no request.
 /// Egress refusals are [`Error::Network`]. A total register outage with no
@@ -71,26 +77,7 @@ pub fn lookup<T: Transport + ?Sized>(
     let mut outcomes = Vec::new();
     let mut hard_failure: Option<Error> = None;
 
-    for spec in [
-        Register {
-            module: "asic_persons.banned",
-            resource: BANNED_RES,
-            name_field: "BD_PER_NAME",
-            emit: emit_banned,
-        },
-        Register {
-            module: "asic_persons.advisers",
-            resource: ADVISER_RES,
-            name_field: "ADV_NAME",
-            emit: emit_adviser,
-        },
-        Register {
-            module: "asic_persons.credit",
-            resource: CREDIT_RES,
-            name_field: "CRED_REP_NAME",
-            emit: emit_credit_rep,
-        },
-    ] {
+    for spec in &REGISTERS {
         // A failed or refused register must not skip independent registers.
         let (mut outcome, records) = match query_register(
             transport,
@@ -182,9 +169,56 @@ fn name_filter_outcome(
     }
 }
 
-struct Register {
+/// Every register a lookup queries, in query order: the one list the lookup iterates and the
+/// tests and people front-end count from, so adding a register is one entry here.
+pub(crate) const REGISTERS: [Register; 7] = [
+    Register {
+        module: "asic_persons.banned",
+        resource: BANNED_RES,
+        name_field: "BD_PER_NAME",
+        emit: emit_banned,
+    },
+    Register {
+        module: "asic_persons.advisers",
+        resource: ADVISER_RES,
+        name_field: "ADV_NAME",
+        emit: emit_adviser,
+    },
+    Register {
+        module: "asic_persons.credit",
+        resource: CREDIT_RES,
+        name_field: "CRED_REP_NAME",
+        emit: emit_credit_rep,
+    },
+    Register {
+        module: "asic_persons.liquidators",
+        resource: LIQUIDATOR_RES,
+        name_field: LIQUIDATORS.name_field,
+        emit: |rec, scan_id, out| emit_listed(&LIQUIDATORS, rec, scan_id, out),
+    },
+    Register {
+        module: "asic_persons.auditors",
+        resource: AUDITOR_RES,
+        name_field: AUDITORS.name_field,
+        emit: |rec, scan_id, out| emit_listed(&AUDITORS, rec, scan_id, out),
+    },
+    Register {
+        module: "asic_persons.smsf_auditors",
+        resource: SMSF_AUDITOR_RES,
+        name_field: SMSF_AUDITORS.name_field,
+        emit: |rec, scan_id, out| emit_listed(&SMSF_AUDITORS, rec, scan_id, out),
+    },
+    Register {
+        module: "asic_persons.afs_reps",
+        resource: AFS_REP_RES,
+        name_field: AFS_REPS.name_field,
+        emit: |rec, scan_id, out| emit_listed(&AFS_REPS, rec, scan_id, out),
+    },
+];
+
+pub(crate) struct Register {
     module: &'static str,
-    resource: &'static str,
+    pub(crate) resource: &'static str,
     name_field: &'static str,
     emit: fn(&Map<String, Value>, &str, &mut Vec<Entity>),
 }
@@ -586,6 +620,174 @@ fn emit_credit_rep(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity
         scan_id,
         out,
     );
+}
+
+/// A register whose row is one named holder with verbatim attributes, optional ABN/ACN pivots, an
+/// optional firm and an optional address: the shape of the liquidator, auditor, SMSF-auditor and
+/// AFS-representative registers. One table entry per register keeps their emission identical.
+struct ListedRegister {
+    /// The register's own title, kept as the evidence `register` and `dataset`.
+    title: &'static str,
+    /// The tag every entity from this register carries.
+    tag: &'static str,
+    name_field: &'static str,
+    /// `(column, attribute)` pairs copied verbatim when present.
+    attrs: &'static [(&'static str, &'static str)],
+    /// Columns holding an ABN or ACN; each checksum-valid value becomes an `AbnAcn` pivot.
+    ids: &'static [&'static str],
+    /// The column naming the holder's firm, emitted as an `Organisation` the holder works for.
+    firm: Option<&'static str>,
+    /// `(locality, state, postcode)` columns of the holder's registered address.
+    address: Option<(&'static str, &'static str, &'static str)>,
+}
+
+const LIQUIDATORS: ListedRegister = ListedRegister {
+    title: "ASIC Registered Liquidators",
+    tag: "asic-liquidator",
+    name_field: "LIQ_NAME",
+    attrs: &[
+        ("LIQ_NUM", "registration_number"),
+        ("LIQ_STATUS", "registration_status"),
+        ("LIQ_START_DT", "registered_from"),
+        ("LIQ_SUSP_DT", "suspended_from"),
+        ("OFF_LIQ_NUM", "official_liquidator_number"),
+        ("OFF_LIQ_START_DT", "official_liquidator_from"),
+        ("LIQ_FIRM", "firm"),
+    ],
+    ids: &[],
+    firm: Some("LIQ_FIRM"),
+    address: Some(("LIQ_ADD_LOCAL", "LIQ_ADD_STATE", "LIQ_ADD_PCODE")),
+};
+
+const AUDITORS: ListedRegister = ListedRegister {
+    title: "ASIC Registered Company Auditors",
+    tag: "asic-registered-auditor",
+    name_field: "REG_AUD_NAME",
+    attrs: &[
+        ("REG_AUD_NUM", "registration_number"),
+        ("REG_AUD_STATUS", "registration_status"),
+        ("REG_AUD_START_DT", "registered_from"),
+        ("REG_AUD_SUSP_DT", "suspended_from"),
+    ],
+    ids: &["REG_AUD_ACN"],
+    firm: None,
+    address: Some((
+        "REG_AUD_ADD_LOCAL",
+        "REG_AUD_ADD_STATE",
+        "REG_AUD_ADD_PCODE",
+    )),
+};
+
+const SMSF_AUDITORS: ListedRegister = ListedRegister {
+    title: "ASIC Approved SMSF Auditors",
+    tag: "asic-smsf-auditor",
+    name_field: "SMSF_NAME",
+    attrs: &[
+        ("SMSF_NUM", "registration_number"),
+        ("SMSF_STATUS", "registration_status"),
+        ("SMSF_REG_DT", "registered_from"),
+        ("SMSF_SUSP_START_DT", "suspended_from"),
+        ("SMSF_SUSP_END_DT", "suspended_to"),
+        ("SMSF_CAPACITY", "capacity"),
+        ("SMSF_CAPACITY_FIRM_NAME", "firm"),
+        ("SMSF_CONDITION", "condition"),
+    ],
+    ids: &["SMSF_PERSON_ABN"],
+    firm: Some("SMSF_CAPACITY_FIRM_NAME"),
+    address: Some(("SMSF_LOCALITY", "SMSF_STATE", "SMSF_POST_CODE")),
+};
+
+const AFS_REPS: ListedRegister = ListedRegister {
+    title: "ASIC AFS Authorised Representatives",
+    tag: "asic-afs-authorised-rep",
+    name_field: "AFS_REP_NAME",
+    attrs: &[
+        ("AFS_REP_NUM", "authorised_rep_no"),
+        ("AFS_LIC_NUM", "afs_licence_no"),
+        ("AFS_REP_STATUS", "registration_status"),
+        ("AFS_REP_START_DT", "authorised_from"),
+        ("AFS_REP_END_DT", "authorised_to"),
+        ("AFS_REP_OTHER_ROLE", "other_role"),
+        ("AFS_REP_APPOINTED_BY", "appointed_by_licence"),
+    ],
+    ids: &["AFS_REP_ABN", "AFS_REP_ACN"],
+    firm: None,
+    address: Some((
+        "AFS_REP_ADD_LOCAL",
+        "AFS_REP_ADD_STATE",
+        "AFS_REP_ADD_PCODE",
+    )),
+};
+
+/// Emit one listed-register row: the holder (a `Person`, or an `Organisation` when the registered
+/// name is a company), its checksum-valid ABN/ACN pivots, its firm and its registered address. A
+/// register listing is a licence or registration record, never an adverse finding. **Pure.**
+fn emit_listed(
+    spec: &ListedRegister,
+    rec: &Map<String, Value>,
+    scan_id: &str,
+    out: &mut Vec<Entity>,
+) {
+    let Some(raw_name) = field(rec, spec.name_field) else {
+        return;
+    };
+    let (kind, holder) = classify_linked(&raw_name);
+    let mut ev = Evidence::new(provenance(scan_id), format!("{}: {holder}", spec.title))
+        .with_attr("register", spec.title)
+        .with_attr("dataset", spec.title)
+        .with_attr("matched_name", &raw_name);
+    for (key, attr) in spec.attrs {
+        if let Some(value) = field(rec, key) {
+            ev = ev.with_attr(*attr, value);
+        }
+    }
+    let mut entity = Entity::new(kind, &holder, CONF_PERSON, scan_id);
+    entity.tag("au");
+    entity.tag("asic");
+    entity.tag(spec.tag);
+    entity.add_evidence(ev);
+    out.push(entity);
+
+    for key in spec.ids {
+        let Some(id) = field(rec, key)
+            .map(|raw| crate::textnorm::ascii_digits(&raw))
+            .filter(|id| is_valid_abn(id) || is_valid_acn(id))
+        else {
+            continue;
+        };
+        let mut e = Entity::new(EntityKind::AbnAcn, &id, CONF_LICENSEE, scan_id);
+        e.tag("au");
+        e.tag("asic");
+        e.tag(spec.tag);
+        e.add_evidence(
+            Evidence::new(
+                provenance(scan_id),
+                format!("ABN/ACN of {holder} on the {}", spec.title),
+            )
+            .with_attr("abn_acn", &id),
+        );
+        out.push(e);
+    }
+
+    if let Some(firm) = spec.firm.and_then(|key| field(rec, key)) {
+        let mut org = Entity::new(EntityKind::Organisation, &firm, CONF_PERSON, scan_id);
+        org.tag("au");
+        org.tag("asic");
+        org.tag(spec.tag);
+        org.add_evidence(
+            Evidence::new(
+                provenance(scan_id),
+                format!("Firm of {holder} on the {}", spec.title),
+            )
+            .with_attr("relationship", "registered_holder_firm")
+            .with_attr("holder", &holder),
+        );
+        out.push(org);
+    }
+
+    if let Some((local, state, pcode)) = spec.address {
+        push_address(rec, local, state, pcode, &holder, spec.tag, scan_id, out);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1060,13 +1262,16 @@ mod tests {
         }
     }
 
+    /// Every register answering `response`: the base each test overrides one register on.
+    fn script_all(response: &Response) -> HashMap<String, Result<Response, TransportFailure>> {
+        REGISTERS
+            .iter()
+            .map(|spec| (spec.resource.to_string(), Ok(response.clone())))
+            .collect()
+    }
+
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
-        let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
-        HashMap::from([
-            (BANNED_RES.into(), Ok(empty.clone())),
-            (ADVISER_RES.into(), Ok(empty.clone())),
-            (CREDIT_RES.into(), Ok(empty)),
-        ])
+        script_all(&json_ok(r#"{"success":true,"result":{"records":[]}}"#))
     }
 
     #[test]
@@ -1093,7 +1298,7 @@ mod tests {
             "expected banned person: {:?}",
             report.entities
         );
-        assert_eq!(fake.seen.borrow().len(), 3);
+        assert_eq!(fake.seen.borrow().len(), REGISTERS.len());
         assert!(
             report
                 .outcomes
@@ -1173,9 +1378,9 @@ mod tests {
         let mut script = empty_script();
         script.insert(BANNED_RES.into(), Ok(json_ok(r#"{"success":false}"#)));
         let fake = Fake::new(script);
-        let report = lookup(&fake, "Bill Abbott", "scan", 1).expect("other two registers answered");
-        assert_eq!(report.outcomes.len(), 3);
-        assert_eq!(fake.seen.borrow().len(), 3);
+        let report = lookup(&fake, "Bill Abbott", "scan", 1).expect("other registers answered");
+        assert_eq!(report.outcomes.len(), REGISTERS.len());
+        assert_eq!(fake.seen.borrow().len(), REGISTERS.len());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
         assert!(
             report.outcomes[1..]
@@ -1196,9 +1401,9 @@ mod tests {
             }),
         );
         let fake = Fake::new(script);
-        let report = lookup(&fake, "Bill Abbott", "scan", 1).expect("other two registers answered");
-        assert_eq!(fake.seen.borrow().len(), 3);
-        assert_eq!(report.outcomes.len(), 3);
+        let report = lookup(&fake, "Bill Abbott", "scan", 1).expect("other registers answered");
+        assert_eq!(fake.seen.borrow().len(), REGISTERS.len());
+        assert_eq!(report.outcomes.len(), REGISTERS.len());
         assert_eq!(
             report.outcomes[0].kind,
             SourceOutcomeKind::RefusedBeforeSending
@@ -1214,9 +1419,9 @@ mod tests {
     fn missing_result_envelope_is_not_a_clean_zero() {
         let mut script = empty_script();
         script.insert(BANNED_RES.into(), Ok(json_ok(r#"{"success":true}"#)));
-        let report = lookup(&Fake::new(script), "Bill Abbott", "scan", 1)
-            .expect("other two registers answered");
-        assert_eq!(report.outcomes.len(), 3);
+        let report =
+            lookup(&Fake::new(script), "Bill Abbott", "scan", 1).expect("other registers answered");
+        assert_eq!(report.outcomes.len(), REGISTERS.len());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
         assert!(
             report.outcomes[0]
@@ -1228,12 +1433,7 @@ mod tests {
 
     #[test]
     fn ckan_success_false_is_not_empty_absence() {
-        let fail = json_ok(r#"{"success":false}"#);
-        let fake = Fake::new(HashMap::from([
-            (BANNED_RES.into(), Ok(fail.clone())),
-            (ADVISER_RES.into(), Ok(fail.clone())),
-            (CREDIT_RES.into(), Ok(fail)),
-        ]));
+        let fake = Fake::new(script_all(&json_ok(r#"{"success":false}"#)));
         let err = lookup(&fake, "Bill Abbott", "scan", 1).expect_err("outage");
         assert!(
             matches!(err, Error::Invalid(ref msg) if msg.contains("success=false")),
@@ -1245,15 +1445,12 @@ mod tests {
     fn truncated_body_is_not_evidence() {
         let mut truncated = json_ok(&envelope(BANNED));
         truncated.truncated = true;
-        let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
-        let fake = Fake::new(HashMap::from([
-            (BANNED_RES.into(), Ok(truncated)),
-            (ADVISER_RES.into(), Ok(empty.clone())),
-            (CREDIT_RES.into(), Ok(empty)),
-        ]));
+        let mut script = empty_script();
+        script.insert(BANNED_RES.into(), Ok(truncated));
+        let fake = Fake::new(script);
         let report =
             lookup(&fake, "Bill Abbott", "scan", 1).expect("healthy registers still answered");
-        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(report.outcomes.len(), REGISTERS.len());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ParserDrift);
         assert!(
             report.outcomes[1..]
@@ -1270,20 +1467,126 @@ mod tests {
             body: b"<html>Just a moment... checking your browser Cloudflare</html>".to_vec(),
             truncated: false,
         };
-        let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
-        let fake = Fake::new(HashMap::from([
-            (BANNED_RES.into(), Ok(challenge)),
-            (ADVISER_RES.into(), Ok(empty.clone())),
-            (CREDIT_RES.into(), Ok(empty)),
-        ]));
+        let mut script = empty_script();
+        script.insert(BANNED_RES.into(), Ok(challenge));
+        let fake = Fake::new(script);
         let report =
             lookup(&fake, "Bill Abbott", "scan", 1).expect("healthy registers still answered");
-        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(report.outcomes.len(), REGISTERS.len());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert!(
             report.outcomes[1..]
                 .iter()
                 .all(|o| o.kind == SourceOutcomeKind::ValidZero)
         );
+    }
+
+    /// Live rows captured from data.gov.au on 2026-11-04.
+    const LIQUIDATOR: &str = r#"{"REGISTER_NAME":"Liquidator","LIQ_NUM":"480116","OFF_LIQ_NUM":null,"LIQ_NAME":"ABBOTT, LACHLAN CHARLES MACARTHUR","LIQ_START_DT":"18/11/2015","LIQ_STATUS":"APPR","LIQ_SUSP_DT":null,"LIQ_ADD_LOCAL":"CANBERRA","LIQ_ADD_STATE":"ACT","LIQ_ADD_PCODE":"2601","LIQ_ADD_COUNTRY":"Australia","LIQ_FIRM":"KORDAMENTHA"}"#;
+    const AUDITOR_FIRM: &str = r#"{"REGISTER_NAME":"Registered Auditors","REG_AUD_NUM":"339233","REG_AUD_NAME":"A D DANIELI AUDIT PTY LTD","REG_AUD_ACN":"136616610","REG_AUD_START_DT":"24/07/2009","REG_AUD_STATUS":"APPR","REG_AUD_SUSP_DT":"null","REG_AUD_ADD_LOCAL":"SYDNEY","REG_AUD_ADD_STATE":"NSW","REG_AUD_ADD_PCODE":"2000"}"#;
+    const SMSF_AUDITOR: &str = r#"{"REGISTER_NAME":"SMSF Auditor","SMSF_NUM":"100263447","SMSF_NAME":"Benjamin Jenkins","SMSF_STATUS":"Registered","SMSF_PERSON_ABN":null,"SMSF_REG_DT":"10/02/2016","SMSF_LOCALITY":"West Bathurst","SMSF_POST_CODE":"2795","SMSF_STATE":"NSW","SMSF_CONDITION":"Compliance with competency standards"}"#;
+    const AFS_REP: &str = r#"{"REGISTER_NAME":"AFS Representative","AFS_REP_NUM":"001287705","AFS_LIC_NUM":"000525628","AFS_REP_NAME":"Greenston, Kirsty","AFS_REP_ABN":null,"AFS_REP_ACN":null,"AFS_REP_START_DT":"13/05/2021","AFS_REP_STATUS":"Ceased","AFS_REP_END_DT":"09/01/2022","AFS_REP_APPOINTED_BY":"000525628"}"#;
+
+    fn listed(spec: &ListedRegister, json: &str) -> Vec<Entity> {
+        let mut out = Vec::new();
+        emit_listed(spec, &rec(json), "scan", &mut out);
+        out
+    }
+
+    fn attr<'a>(entity: &'a Entity, key: &str) -> Option<&'a str> {
+        entity
+            .evidence
+            .first()
+            .and_then(|ev| ev.attributes.get(key))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn liquidator_emits_person_firm_and_address() {
+        let out = listed(&LIQUIDATORS, LIQUIDATOR);
+        let person = out
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("liquidator person");
+        assert!(
+            display_eq(person, "Lachlan Charles Macarthur Abbott"),
+            "{person:?}"
+        );
+        assert!(person.has_tag("asic-liquidator"));
+        assert!(!person.has_tag("regulatory-action"));
+        assert_eq!(attr(person, "registration_number"), Some("480116"));
+        assert_eq!(attr(person, "registration_status"), Some("APPR"));
+        assert_eq!(attr(person, "registered_from"), Some("18/11/2015"));
+        assert_eq!(attr(person, "firm"), Some("KORDAMENTHA"));
+        assert!(org_named(&out, "KORDAMENTHA").is_some());
+        assert!(
+            out.iter()
+                .any(|e| e.kind == EntityKind::Address && e.raw_value == "CANBERRA ACT 2601")
+        );
+    }
+
+    #[test]
+    fn a_company_auditor_is_an_organisation_with_its_acn_and_a_null_suspension_is_dropped() {
+        let out = listed(&AUDITORS, AUDITOR_FIRM);
+        let firm = org_named(&out, "A D DANIELI AUDIT PTY LTD").expect("auditor firm");
+        assert!(firm.has_tag("asic-registered-auditor"));
+        assert_eq!(attr(firm, "suspended_from"), None);
+        assert!(!out.iter().any(|e| e.kind == EntityKind::Person));
+        assert!(
+            out.iter()
+                .any(|e| e.kind == EntityKind::AbnAcn && e.raw_value == "136616610")
+        );
+    }
+
+    #[test]
+    fn smsf_auditor_and_afs_rep_emit_people_with_their_register_fields() {
+        let smsf = listed(&SMSF_AUDITORS, SMSF_AUDITOR);
+        let auditor = smsf
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("smsf auditor");
+        assert!(display_eq(auditor, "Benjamin Jenkins"), "{auditor:?}");
+        assert_eq!(
+            attr(auditor, "condition"),
+            Some("Compliance with competency standards")
+        );
+        assert!(!smsf.iter().any(|e| e.kind == EntityKind::AbnAcn));
+
+        let afs = listed(&AFS_REPS, AFS_REP);
+        let rep = afs
+            .iter()
+            .find(|e| e.kind == EntityKind::Person)
+            .expect("afs rep");
+        assert!(display_eq(rep, "Kirsty Greenston"), "{rep:?}");
+        assert_eq!(attr(rep, "registration_status"), Some("Ceased"));
+        assert_eq!(attr(rep, "authorised_to"), Some("09/01/2022"));
+        assert_eq!(attr(rep, "afs_licence_no"), Some("000525628"));
+        // A ceased authorisation with no address keeps no address entity.
+        assert!(!afs.iter().any(|e| e.kind == EntityKind::Address));
+    }
+
+    #[test]
+    fn the_lookup_queries_exactly_the_shared_register_list() {
+        let fake = Fake::new(empty_script());
+        lookup(&fake, "Lachlan Abbott", "scan", 1).expect("lookup");
+        let seen = fake.seen.borrow();
+        assert_eq!(seen.len(), REGISTERS.len());
+        for res in REGISTERS.iter().map(|spec| spec.resource) {
+            assert!(
+                seen.iter().any(|url| url.contains(res)),
+                "{res} not queried: {seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_liquidator_hit_reaches_the_report_through_lookup() {
+        let mut script = empty_script();
+        script.insert(LIQUIDATOR_RES.into(), Ok(json_ok(&envelope(LIQUIDATOR))));
+        let report = lookup(&Fake::new(script), "Lachlan Abbott", "scan", 1).expect("lookup");
+        assert!(report.outcomes.iter().any(
+            |o| o.module == "asic_persons.liquidators" && o.kind == SourceOutcomeKind::Success
+        ));
+        assert!(report.entities.iter().any(|e| e.has_tag("asic-liquidator")));
     }
 }
