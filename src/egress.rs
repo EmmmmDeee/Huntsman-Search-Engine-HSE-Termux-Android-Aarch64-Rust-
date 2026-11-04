@@ -55,6 +55,7 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         // IANA marks only 192.0.0.9/32 (PCP) and 192.0.0.10/32 (TURN)
         // globally reachable within the otherwise reserved 192.0.0.0/24.
         || (a == 192 && b == 0 && c == 0 && !matches!(d, 9 | 10))
+        || (a == 192 && b == 88 && c == 99) // deprecated 6to4 /24; 192.88.99.2 is not globally reachable
         || (a == 198 && (b == 18 || b == 19)) // benchmarking 198.18/15
         || a >= 240) // reserved 240/4
 }
@@ -70,6 +71,15 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
     }
     if seg[0] == 0x2002 {
         return is_public_v4(embedded_v4(seg[1], seg[2])); // 6to4
+    }
+    // IANA assigns public IPv6 unicast addresses from 2000::/3 only. Within that
+    // block, 2d00::/8 through 3fff::/16 remain reserved; 2c00::/12 is allocated.
+    // Refuse other address space by default, rather than assuming an arbitrary
+    // unicast-looking destination is Internet-reachable. The IPv4-bearing forms
+    // above are deliberately checked against their embedded IPv4 address first.
+    // https://www.iana.org/assignments/ipv6-unicast-address-assignments/
+    if !(0x2000..0x2d00).contains(&seg[0]) {
+        return false;
     }
     !(ip.is_unspecified()
         || ip.is_loopback()
@@ -119,6 +129,9 @@ mod tests {
             "192.0.0.11",
             "192.0.0.170",
             "192.0.0.171",
+            "192.88.99.1",
+            "192.88.99.2",
+            "192.88.99.255",
             "192.0.2.1",
             "198.18.0.1",
             "198.19.255.255",
@@ -155,6 +168,13 @@ mod tests {
             "2001:2:0:ffff::1",
             "3fff::1",
             "3fff:fff:ffff::1",
+            "3fff:1000::1",
+            "3ffe:ffff::1",
+            "2d00::1",
+            "2fff::1",
+            "3000::1",
+            "4000::1",
+            "64:ff9b:2::1",
         ] {
             assert!(!is_public_ip(ip(s)), "{s} must not be public");
         }
@@ -200,13 +220,32 @@ mod tests {
             "::ffff:8.8.8.8",
             "64:ff9b::808:808",
             "2002:808:808::1",
-            "64:ff9b:2::1",
             "2001:2:1::1",
-            "3ffe:ffff::1",
-            "3fff:1000::1",
-            "4000::1",
         ] {
             assert!(is_public_ip(ip(s)), "{s} should be public");
+        }
+    }
+
+    #[test]
+    fn reserved_public_egress_ranges_are_refused_through_ipv4_encapsulation() {
+        // Every IPv4-bearing form must share the IPv4 policy, not bypass it.
+        for address in [
+            "192.88.99.2",
+            "::ffff:192.88.99.2",
+            "64:ff9b::c058:6302",
+            "2002:c058:6302::1",
+        ] {
+            assert!(!is_public_ip(ip(address)), "{address} must not be public");
+            assert!(!EgressPolicy::PublicOnly.permits(ip(address)));
+            assert!(EgressPolicy::Unrestricted.permits(ip(address)));
+        }
+        for address in [
+            "8.8.8.8",
+            "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
+        ] {
+            assert!(is_public_ip(ip(address)), "{address} should be public");
         }
     }
 
