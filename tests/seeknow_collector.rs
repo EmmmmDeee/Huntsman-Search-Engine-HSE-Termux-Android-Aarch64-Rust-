@@ -13,7 +13,7 @@ use huntsman_recon::source_outcome::SourceOutcomeKind;
 #[path = "support/seeknow_doubles.rs"]
 mod seeknow_doubles;
 
-use seeknow_doubles::{ScriptedTransport, credential_with, response};
+use seeknow_doubles::{ScriptedTransport, credential_with, response, response_with};
 
 /// The collector's credential carries its own provenance and secret, so a test can tell it
 /// from the client's.
@@ -657,4 +657,94 @@ fn a_handle_is_asked_for_as_it_was_written_never_by_its_identity_key() {
         assert!(!body.contains("johndoe99"), "{body}");
     }
     assert!(batch.pivots.is_empty(), "{:?}", batch.pivots);
+}
+
+fn quota_headers(remaining: u64) -> Vec<(String, String)> {
+    vec![
+        ("x-ratelimit-limit".to_owned(), "20".to_owned()),
+        ("x-ratelimit-remaining".to_owned(), remaining.to_string()),
+        ("x-ratelimit-reset".to_owned(), "1793700000".to_owned()),
+    ]
+}
+
+#[test]
+fn an_exhausted_quota_on_the_fast_zero_never_sends_the_stealer_request() {
+    let transport = ScriptedTransport::new(vec![response_with(
+        200,
+        r#"{"success":true,"data":[]}"#,
+        quota_headers(0),
+        false,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "alice"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        30,
+    )
+    .unwrap();
+    // One credit-spending request only: the provider said none were left.
+    assert_eq!(transport.request_count(), 1);
+    assert_eq!(batch.receipts.len(), 1);
+    assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
+    let quota = batch.receipts[0].quota.as_ref().expect("quota recorded");
+    assert_eq!(quota.remaining, Some(0));
+    assert_eq!(quota.limit, Some(20));
+    assert_eq!(quota.reset.as_deref(), Some("1793700000"));
+}
+
+#[test]
+fn quota_left_on_the_fast_zero_still_escalates_and_both_receipts_keep_it() {
+    let transport = ScriptedTransport::new(vec![
+        response_with(
+            200,
+            r#"{"success":true,"data":[]}"#,
+            quota_headers(5),
+            false,
+        ),
+        response_with(
+            200,
+            r#"{"success":true,"data":[{"username":"alice","breach":"Breach B"}]}"#,
+            quota_headers(4),
+            false,
+        ),
+    ]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "alice"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        31,
+    )
+    .unwrap();
+    assert_eq!(transport.request_count(), 2);
+    assert_eq!(batch.outcome, CollectionOutcome::Success);
+    let left: Vec<Option<u64>> = batch
+        .receipts
+        .iter()
+        .map(|r| r.quota.as_ref().and_then(|q| q.remaining))
+        .collect();
+    assert_eq!(left, [Some(5), Some(4)]);
+}
+
+#[test]
+fn a_response_without_quota_headers_records_no_quota() {
+    let transport = ScriptedTransport::new(vec![
+        response(200, r#"{"success":true,"data":[]}"#),
+        response(200, r#"{"success":true,"data":[]}"#),
+    ]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "alice"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        32,
+    )
+    .unwrap();
+    // No header is never read as an exhausted quota: escalation proceeds as before.
+    assert_eq!(transport.request_count(), 2);
+    assert!(batch.receipts.iter().all(|r| r.quota.is_none()));
 }

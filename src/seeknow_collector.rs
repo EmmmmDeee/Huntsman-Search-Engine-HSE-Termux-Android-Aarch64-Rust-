@@ -7,7 +7,7 @@ use std::net::IpAddr;
 
 use crate::collector::{
     CollectionBatch, CollectionLimits, CollectionOutcome, CollectorError, CollectorPivot,
-    ObservationReceipt, differs_from_selector, query_text,
+    ObservationReceipt, ProviderQuota, differs_from_selector, query_text,
 };
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
@@ -137,9 +137,17 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                 let fast_kind = fast.outcome.kind;
                 append_result(&mut batch, selector, &fast, limits, now_unix);
 
+                // The fast search's own quota report gates the 2-credit stealer request: when
+                // the provider said nothing is left, escalating would only spend or be refused.
+                let quota_left = !batch
+                    .receipts
+                    .last()
+                    .and_then(|receipt| receipt.quota.as_ref())
+                    .is_some_and(ProviderQuota::exhausted);
                 if fast_kind == SourceOutcomeKind::ValidZero
                     && search.query_type.supports_stealer()
                     && limits.max_requests >= 2
+                    && quota_left
                 {
                     let deep =
                         search_deep(transport, credential, &search, now_unix).map_err(execution)?;
@@ -348,6 +356,11 @@ fn append_result(
         outcome: result.outcome.clone(),
         parsed_rows: result.rows.len(),
         truncated: result.meta.truncated || result.meta.normalized_rows_truncated,
+        quota: ProviderQuota::reported(
+            result.meta.rate_limit_limit,
+            result.meta.rate_limit_remaining,
+            result.meta.rate_limit_reset.clone(),
+        ),
     });
 
     if result.outcome.kind != SourceOutcomeKind::Success {

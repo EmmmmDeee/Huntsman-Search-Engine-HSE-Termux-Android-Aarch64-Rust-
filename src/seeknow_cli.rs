@@ -255,7 +255,7 @@ fn render_batch(batch: &crate::collector::CollectionBatch) -> String {
         let _ = writeln!(text, "lineage={}", escape_controls(&family));
     }
     for receipt in &batch.receipts {
-        let _ = writeln!(
+        let _ = write!(
             text,
             "source={} outcome={} rows={} truncated={}",
             receipt.source,
@@ -263,6 +263,18 @@ fn render_batch(batch: &crate::collector::CollectionBatch) -> String {
             receipt.parsed_rows,
             receipt.truncated
         );
+        if let Some(quota) = &receipt.quota {
+            for (key, value) in [
+                ("quota_remaining", quota.remaining.map(|n| n.to_string())),
+                ("quota_limit", quota.limit.map(|n| n.to_string())),
+                ("quota_reset", quota.reset.as_deref().map(escape_controls)),
+            ] {
+                if let Some(value) = value {
+                    let _ = write!(text, " {key}={value}");
+                }
+            }
+        }
+        text.push('\n');
     }
     text
 }
