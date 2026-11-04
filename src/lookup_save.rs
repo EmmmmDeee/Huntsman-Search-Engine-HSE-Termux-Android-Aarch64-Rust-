@@ -68,6 +68,8 @@ fn username_provenance(source: &str) -> (&str, &'static str) {
         crate::docker_hub_user::SRC => "src/docker_hub_user.rs",
         crate::codeberg_user::SRC => "src/codeberg_user.rs",
         crate::devto_user::SRC => "src/devto_user.rs",
+        crate::huggingface_user::SRC => "src/huggingface_user.rs",
+        crate::codewars_user::SRC => "src/codewars_user.rs",
         _ => "src/username_cli.rs",
     };
     (source, component)
@@ -886,6 +888,8 @@ mod tests {
             (crate::docker_hub_user::SRC, "src/docker_hub_user.rs"),
             (crate::codeberg_user::SRC, "src/codeberg_user.rs"),
             (crate::devto_user::SRC, "src/devto_user.rs"),
+            (crate::huggingface_user::SRC, "src/huggingface_user.rs"),
+            (crate::codewars_user::SRC, "src/codewars_user.rs"),
             (
                 crate::seeknow_collector::COLLECTOR_ID,
                 "src/seeknow_collector.rs",
