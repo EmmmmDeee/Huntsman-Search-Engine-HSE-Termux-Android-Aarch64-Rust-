@@ -75,6 +75,36 @@ fn a_report_on_another_address_or_not_a_list_is_refused() {
     ));
 }
 
+/// A report is about the queried address only when it names that address. The server-side
+/// `_where` filter is the only other tie, so a report without its `ip` (absent, null or blank)
+/// would brand the address malicious on the strength of a row that never mentions it.
+#[test]
+fn a_report_that_names_no_address_is_refused() {
+    for row in [
+        r#"{"id":1,"url":"https://phish.example/","host":"phish.example"}"#,
+        r#"{"id":1,"url":"https://phish.example/","ip":null,"host":"phish.example"}"#,
+        r#"{"id":1,"url":"https://phish.example/","ip":"","host":"phish.example"}"#,
+        r#"{"id":1,"url":"https://phish.example/","ip":"  ","host":"phish.example"}"#,
+    ] {
+        let body = format!(r#"[{{"id":0,"url":"https://a.example/","ip":"23.54.189.18"}},{row}]"#);
+        assert!(
+            matches!(
+                decode_page(body.as_bytes(), Indicator::Ip("23.54.189.18")),
+                Err(LegError::Decode(_))
+            ),
+            "a report without its address was kept: {row}"
+        );
+    }
+}
+
+/// The address a report names is compared as an address, not as text.
+#[test]
+fn a_report_naming_the_address_in_another_spelling_is_kept() {
+    let body = br#"[{"id":1,"url":"https://phish.example/","ip":"2001:DB8:0:0::1"}]"#;
+    let kept = decode_page(body, Indicator::Ip("2001:db8::1")).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(kept.len(), 1);
+}
+
 #[test]
 fn pages_count_from_zero_and_only_an_address_has_one() {
     assert_eq!(
