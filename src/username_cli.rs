@@ -1,7 +1,7 @@
 //! End-to-end front-end for `huntsman-recon username`.
 //!
 //! Derives deterministic handle variants and queries the keyless public GitHub, GitLab, Bluesky, Keybase
-//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, Chess.com and Lichess accounts, Docker Hub, Codeberg and DEV Community accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
+//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, Chess.com and Lichess accounts, Docker Hub, Codeberg, DEV Community, Hugging Face and Codewars accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
 //! profile source answered, the lookup ends from its rows through
 //! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
 //! 77), otherwise no usable response (exit 69). The handle's own derived variants are not a
@@ -13,6 +13,7 @@ use crate::bluesky_user;
 use crate::canonical::canonical_handle;
 use crate::chess_com;
 use crate::codeberg_user;
+use crate::codewars_user;
 use crate::concurrent::{self, Job};
 use crate::crates_io;
 use crate::devto_user;
@@ -24,6 +25,7 @@ use crate::github_user;
 use crate::gitlab_user;
 use crate::hacker_news;
 use crate::http::Transport;
+use crate::huggingface_user;
 use crate::keybase;
 use crate::keys::Keys;
 use crate::lichess;
@@ -89,7 +91,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     original: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 17] {
+) -> [(&'static str, Job<'a, Found>); 19] {
     [
         (
             github_user::SRC,
@@ -211,6 +213,23 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
             devto_user::SRC,
             Box::new(move || {
                 devto_user::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            huggingface_user::SRC,
+            Box::new(move || {
+                // A Hub handle keeps its case and another case is a redirect: query the
+                // operator's exact case.
+                huggingface_user::lookup(transport, original, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            codewars_user::SRC,
+            Box::new(move || {
+                // Codewars usernames are case-sensitive: query the operator's exact case.
+                codewars_user::lookup(transport, original, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -389,6 +408,8 @@ mod tests {
     const DOCKER: &str = "hub.docker.com";
     const CODEBERG: &str = "codeberg.org";
     const DEVTO: &str = "dev.to";
+    const HUGGINGFACE: &str = "huggingface.co";
+    const CODEWARS: &str = "www.codewars.com";
 
     /// Answers each source by its host, as the sources run at once and in no fixed order; a host
     /// with no reply answers nothing, which no source may take for absence.
@@ -666,7 +687,9 @@ mod tests {
                     lichess::SRC,
                     docker_hub_user::SRC,
                     codeberg_user::SRC,
-                    devto_user::SRC
+                    devto_user::SRC,
+                    huggingface_user::SRC,
+                    codewars_user::SRC
                 ]
             );
         }
@@ -739,11 +762,19 @@ mod tests {
             ),
             (CODEBERG, response(200, r#"{"login":"maxslow","id":3}"#)),
             (DEVTO, response(200, r#"{"username":"maxslow","id":4}"#)),
+            (
+                HUGGINGFACE,
+                response(200, r#"{"user":"maxslow","type":"user"}"#),
+            ),
+            (
+                CODEWARS,
+                response(200, r#"{"username":"maxslow","honor":1}"#),
+            ),
         ]));
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
-        assert_eq!(report.outcomes.len(), 17);
+        assert_eq!(report.outcomes.len(), 19);
         let peak = slow.2.load(Ordering::SeqCst);
         assert!(
             peak >= 4,
