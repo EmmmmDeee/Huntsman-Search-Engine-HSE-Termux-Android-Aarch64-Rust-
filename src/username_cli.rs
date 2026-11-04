@@ -1,7 +1,7 @@
 //! End-to-end front-end for `huntsman-recon username`.
 //!
 //! Derives deterministic handle variants and queries the keyless public GitHub, GitLab, Bluesky, Keybase
-//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, Chess.com and Lichess accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
+//! and Mastodon profiles, npm registry authorship, crates.io crate ownership, Hacker News accounts, Lobsters accounts, Chess.com and Lichess accounts, Docker Hub, Codeberg and DEV Community accounts, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
 //! profile source answered, the lookup ends from its rows through
 //! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
 //! 77), otherwise no usable response (exit 69). The handle's own derived variants are not a
@@ -12,8 +12,10 @@ use std::path::PathBuf;
 use crate::bluesky_user;
 use crate::canonical::canonical_handle;
 use crate::chess_com;
+use crate::codeberg_user;
 use crate::concurrent::{self, Job};
 use crate::crates_io;
+use crate::devto_user;
 use crate::docker_hub_user;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
@@ -87,7 +89,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     original: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 15] {
+) -> [(&'static str, Job<'a, Found>); 17] {
     [
         (
             github_user::SRC,
@@ -195,6 +197,20 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
             docker_hub_user::SRC,
             Box::new(move || {
                 docker_hub_user::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            codeberg_user::SRC,
+            Box::new(move || {
+                codeberg_user::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            devto_user::SRC,
+            Box::new(move || {
+                devto_user::lookup(transport, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -371,6 +387,8 @@ mod tests {
     const CHESS_COM: &str = "api.chess.com";
     const LICHESS: &str = "lichess.org";
     const DOCKER: &str = "hub.docker.com";
+    const CODEBERG: &str = "codeberg.org";
+    const DEVTO: &str = "dev.to";
 
     /// Answers each source by its host, as the sources run at once and in no fixed order; a host
     /// with no reply answers nothing, which no source may take for absence.
@@ -646,7 +664,9 @@ mod tests {
                     lobsters::SRC,
                     chess_com::SRC,
                     lichess::SRC,
-                    docker_hub_user::SRC
+                    docker_hub_user::SRC,
+                    codeberg_user::SRC,
+                    devto_user::SRC
                 ]
             );
         }
@@ -717,11 +737,13 @@ mod tests {
                     r#"{"username":"maxslow","full_name":"Max Slow","type":"User"}"#,
                 ),
             ),
+            (CODEBERG, response(200, r#"{"login":"maxslow","id":3}"#)),
+            (DEVTO, response(200, r#"{"username":"maxslow","id":4}"#)),
         ]));
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
-        assert_eq!(report.outcomes.len(), 15);
+        assert_eq!(report.outcomes.len(), 17);
         let peak = slow.2.load(Ordering::SeqCst);
         assert!(
             peak >= 4,
