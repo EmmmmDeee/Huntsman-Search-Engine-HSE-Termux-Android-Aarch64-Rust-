@@ -63,6 +63,8 @@ pub const CONTINUOUS_NOTIFY_ENV: &str = "HUNTSMAN_CONTINUOUS_NOTIFY";
 pub const CONTINUOUS_KEEP_ENV: &str = "HUNTSMAN_CONTINUOUS_KEEP";
 
 // Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
+/// The operator's Australian Business Register web-services GUID, for ABN Lookup.
+pub const ABR_GUID_ENV: &str = "HUNTSMAN_ABR_GUID";
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
 pub const ABUSEIPDB_KEY_ENV: &str = "HUNTSMAN_ABUSEIPDB_KEY";
 pub const BRAVE_KEY_ENV: &str = "HUNTSMAN_BRAVE_KEY";
@@ -140,6 +142,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     CONTINUOUS_INTERVAL_ENV,
     CONTINUOUS_NOTIFY_ENV,
     CONTINUOUS_KEEP_ENV,
+    ABR_GUID_ENV,
     ABUSECH_KEY_ENV,
     ABUSEIPDB_KEY_ENV,
     BRAVE_KEY_ENV,

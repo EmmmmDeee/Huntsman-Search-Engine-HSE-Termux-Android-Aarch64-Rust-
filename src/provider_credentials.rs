@@ -300,6 +300,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::HUNTER_KEY_ENV],
     },
     Provider {
+        name: "ABN Lookup (Australian Business Register)",
+        get_key_url: "https://abr.business.gov.au/Tools/WebServices",
+        free_tier: "free GUID on registration",
+        slots: &[crate::environment::ABR_GUID_ENV],
+    },
+    Provider {
         name: "Numverify (APILayer)",
         get_key_url: "https://apilayer.com/marketplace/number_verification-api",
         free_tier: "free: 100 lookups/month",

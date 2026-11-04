@@ -200,7 +200,8 @@ fn service_error(failure: &ServiceError) -> ApiResponse {
 /// then the keyed legs the `ip`, `domain` and `phone` lookups run beside them, plus the sources
 /// that read their key elsewhere.
 fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
-    let legs: [&Api; 6] = [
+    let legs: [&Api; 7] = [
+        &crate::abn_lookup::API,
         &crate::abuseipdb::API,
         &crate::certspotter::API,
         &crate::exa::API,
