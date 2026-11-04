@@ -2,6 +2,11 @@
 //!
 //! A directory entry is a lead only: no endpoint is contacted by these functions,
 //! and an indexed URL cannot establish an identity or a claim's provenance.
+//!
+//! Where Huntsman already queries a directory entry's source live, the entry carries a `live`
+//! link naming that module and the command that runs it, read from the module catalogue so the
+//! command is stated once. The link is attached on load and is never part of the reconstructed
+//! JSON, which stays as the APK published it; a link to an unknown entry or module fails load.
 
 use std::collections::BTreeSet;
 
@@ -18,7 +23,30 @@ pub struct Tool {
     pub query_template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<String>,
+    /// The Huntsman module that queries this source live, attached on load from [`LIVE_LINKS`].
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveLink>,
 }
+
+/// A Huntsman module that queries a directory entry's source live, and the command that runs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LiveLink {
+    pub module: &'static str,
+    pub command: &'static str,
+}
+
+/// Directory entries whose source a Huntsman module queries live: `(entry id, module name)`.
+/// Each module must be in the module catalogue, which supplies its command.
+const LIVE_LINKS: &[(&str, &str)] = &[
+    // abr.business.gov.au: the ABR record for an ABN or ACN.
+    ("t0343", "abn_lookup"),
+    // connectonline.asic.gov.au under Business Search: ASIC's company, business-name, banned
+    // organisation and licensee registers.
+    ("t0344", "asic_orgs"),
+    // connectonline.asic.gov.au under Registered Professions: ASIC's banned persons, advisers,
+    // credit representatives, liquidators, auditors and AFS representatives.
+    ("t0390", "asic_persons"),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Category {
@@ -63,6 +91,7 @@ impl Catalog {
             catalogue.origin_apk_sha256.retain(|c| c != ':');
         }
         catalogue.validate()?;
+        catalogue.attach_live_links()?;
         Ok(catalogue)
     }
 
@@ -117,6 +146,28 @@ impl Catalog {
         }
         if tool_ids.len() > 1024 {
             return Err("catalogue exceeds the supported entry budget".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Attach every [`LIVE_LINKS`] entry to its tool, with the command from the module catalogue.
+    ///
+    /// # Errors
+    /// Refuses a link to an entry or a module that does not exist.
+    fn attach_live_links(&mut self) -> Result<(), String> {
+        for (tool_id, module) in LIVE_LINKS {
+            let command = crate::module::reachable_modules()
+                .iter()
+                .find(|reachable| reachable.name == *module)
+                .map(|reachable| reachable.command)
+                .ok_or_else(|| format!("live link names unknown module {module}"))?;
+            let tool = self
+                .categories
+                .iter_mut()
+                .flat_map(|category| category.tools.iter_mut())
+                .find(|tool| tool.id == *tool_id)
+                .ok_or_else(|| format!("live link names unknown catalogue tool {tool_id}"))?;
+            tool.live = Some(LiveLink { module, command });
         }
         Ok(())
     }
@@ -301,5 +352,41 @@ mod tests {
             serde_json::to_value(Catalog::load().unwrap()).unwrap(),
             serde_json::to_value(Catalog::load().unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn sources_huntsman_queries_live_link_to_their_module_and_command() {
+        let catalog = Catalog::load().unwrap();
+        let link = |id: &str| catalog.tool(id).unwrap().tool.live.clone();
+        assert_eq!(
+            link("t0343"),
+            Some(LiveLink {
+                module: "abn_lookup",
+                command: "company ABN|ACN"
+            })
+        );
+        assert_eq!(link("t0344").unwrap().module, "asic_orgs");
+        assert_eq!(link("t0390").unwrap().command, "people NAME");
+        // An entry no module queries stays a lead with no live link.
+        assert_eq!(link("t0336"), None);
+        // Every link resolves to a catalogued module, and the link never changes the evidence role.
+        for (id, module) in LIVE_LINKS {
+            let hit = catalog.tool(id).unwrap();
+            assert_eq!(hit.tool.live.as_ref().unwrap().module, *module);
+            assert_eq!(hit.evidence_role, "lead_only_unverified");
+        }
+    }
+
+    #[test]
+    fn a_live_link_appears_in_the_json_a_search_returns() {
+        let catalog = Catalog::load().unwrap();
+        let hits = catalog.find("abr.business.gov.au");
+        let json = serde_json::to_string(&hits).unwrap();
+        assert!(
+            json.contains(r#""live":{"module":"abn_lookup","command":"company ABN|ACN"}"#),
+            "{json}"
+        );
+        // The reconstructed directory text itself carries no live link.
+        assert!(!CATALOG_JSON.contains("\"live\""));
     }
 }
