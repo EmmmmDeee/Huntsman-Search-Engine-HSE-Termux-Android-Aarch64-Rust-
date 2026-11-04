@@ -126,7 +126,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, credential.is_some(), scan_id, now_unix).unwrap_or_else(miss))
+    Ok(interpret(&fetched, username, credential.is_some(), scan_id, now_unix).unwrap_or_else(miss))
 }
 
 /// A report that found nothing, carrying only its outcome. **Pure.**
@@ -151,6 +151,7 @@ pub(crate) fn token_credential(
 /// **Pure.**
 fn interpret(
     fetched: &Fetched,
+    login: &str,
     authenticated: bool,
     scan_id: &str,
     now_unix: u64,
@@ -185,6 +186,17 @@ fn interpret(
             SourceOutcomeKind::SchemaDrift,
             Some(response.status),
             "GitHub profile has no login",
+        ));
+    }
+    // The profile is evidence only for the login that was asked for; GitHub compares logins
+    // without regard to case.
+    if !user.login.trim().eq_ignore_ascii_case(login) {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            Some(response.status),
+            "GitHub answered with another account than the queried login",
         ));
     }
 
@@ -760,5 +772,34 @@ mod tests {
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
         let detail = got.outcome.detail.unwrap_or_default();
         assert!(!detail.contains("secret@example.com"), "{detail}");
+    }
+
+    /// A profile counts only for the login that was asked for: GitHub answering with another
+    /// account is drift, never that account reported under the queried handle.
+    #[test]
+    fn a_profile_for_another_login_is_drift_not_an_account() {
+        let body =
+            r#"{"login":"someone-else","id":2,"html_url":"https://github.com/someone-else"}"#;
+        let got = lookup(
+            &OneResponse::with_headers(200, &[("content-type", "application/json")], body),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::SemanticDrift);
+        assert!(got.entities.is_empty(), "{:?}", got.entities);
+        // The login GitHub gives back in its own case is still the queried one.
+        let body = r#"{"login":"OctoCat","id":1,"html_url":"https://github.com/OctoCat"}"#;
+        let got = lookup(
+            &OneResponse::with_headers(200, &[("content-type", "application/json")], body),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::Success);
     }
 }
