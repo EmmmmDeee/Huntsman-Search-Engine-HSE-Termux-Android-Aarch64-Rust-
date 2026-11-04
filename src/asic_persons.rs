@@ -16,10 +16,10 @@ use crate::au_id::{is_valid_abn, is_valid_acn, looks_like_company};
 use crate::ckan::{self, field};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::fetch::{self, FetchOptions, Fetched};
-use crate::http::{self, Request, Transport};
+
+use crate::http::Transport;
 use crate::postcode_au;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::{name_tokens, title_case, whole_word_token_match};
 
 pub const SRC: &str = "asic_persons";
@@ -69,22 +69,19 @@ pub fn lookup<T: Transport + ?Sized>(
         });
     }
 
-    let options = FetchOptions {
-        max_redirects: fetch::DEFAULT_MAX_REDIRECTS,
-        ..FetchOptions::default()
-    };
     let mut entities = Vec::new();
     let mut outcomes = Vec::new();
     let mut hard_failure: Option<Error> = None;
 
     for spec in &REGISTERS {
         // A failed or refused register must not skip independent registers.
-        let (mut outcome, records) = match query_register(
+        let (mut outcome, records) = match ckan::query_datastore(
             transport,
-            &options,
+            CKAN_BASE,
             spec.module,
             spec.resource,
             name,
+            MAX_HITS,
             now_unix,
         ) {
             Ok(result) => result,
@@ -115,7 +112,7 @@ pub fn lookup<T: Transport + ?Sized>(
             .filter(|rec| record_name_matches(rec, spec.name_field, name))
             .take(MAX_HITS)
             .collect();
-        outcome = name_filter_outcome(outcome, matched.len(), spec.module, now_unix);
+        outcome = ckan::reconcile_matches(outcome, matched.len(), spec.module, now_unix);
         for rec in matched {
             (spec.emit)(rec, scan_id, &mut entities);
         }
@@ -131,42 +128,6 @@ pub fn lookup<T: Transport + ?Sized>(
         }
     }
     Ok(Report { entities, outcomes })
-}
-
-/// Reconcile the register's page verdict with the locally matched names.
-/// A cut-off result set can show a positive match but cannot prove absence.
-fn name_filter_outcome(
-    mut outcome: SourceExecutionOutcome,
-    matched: usize,
-    module: &'static str,
-    now_unix: u64,
-) -> SourceExecutionOutcome {
-    if !outcome.kind.is_accepted() {
-        return outcome;
-    }
-    let partial = outcome.detail.take();
-    let status = outcome.http_status.unwrap_or(200);
-    if matched == 0 {
-        if let Some(note) = partial {
-            SourceExecutionOutcome::observed(
-                module,
-                now_unix,
-                SourceOutcomeKind::Inconclusive,
-                Some(status),
-                Some(0),
-                note,
-            )
-        } else {
-            SourceExecutionOutcome::valid_zero(module, now_unix).with_http_status(status)
-        }
-    } else {
-        let mut found =
-            SourceExecutionOutcome::success(module, now_unix, matched).with_http_status(status);
-        if let Some(note) = partial {
-            found = found.with_detail(note);
-        }
-        found
-    }
 }
 
 /// Every register a lookup queries, in query order: the one list the lookup iterates and the
@@ -221,89 +182,6 @@ pub(crate) struct Register {
     pub(crate) resource: &'static str,
     name_field: &'static str,
     emit: fn(&Map<String, Value>, &str, &mut Vec<Entity>),
-}
-
-fn query_register<T: Transport + ?Sized>(
-    transport: &T,
-    options: &FetchOptions,
-    module: &'static str,
-    resource: &str,
-    name: &str,
-    now_unix: u64,
-) -> Result<(SourceExecutionOutcome, Vec<Map<String, Value>>), Error> {
-    let url = ckan::datastore_search_url(CKAN_BASE, resource, name, MAX_HITS);
-    let request = Request::get(url).header("accept", "application/json");
-    let fetched = fetch::fetch(transport, request, None, options, module, now_unix)?;
-    Ok(parse_register(module, now_unix, fetched))
-}
-
-fn parse_register(
-    module: &'static str,
-    now_unix: u64,
-    fetched: Fetched,
-) -> (SourceExecutionOutcome, Vec<Map<String, Value>>) {
-    let some_status = |kind: SourceOutcomeKind, status: Option<u16>, detail: Option<String>| {
-        let mut outcome = SourceExecutionOutcome::success(module, now_unix, 0);
-        outcome.kind = kind;
-        outcome.found = None;
-        outcome.http_status = status;
-        outcome.detail = detail;
-        (outcome, Vec::new())
-    };
-
-    let Some(response) = fetched.response else {
-        return (fetched.outcome, Vec::new());
-    };
-    if response.truncated {
-        return some_status(
-            SourceOutcomeKind::ParserDrift,
-            Some(response.status),
-            Some("truncated CKAN body is not evidence".into()),
-        );
-    }
-    let body = response.text();
-    let kind = classify_fetch(response.status, &body);
-    if kind != SourceOutcomeKind::Inconclusive {
-        let mut outcome = fetched.outcome;
-        outcome.kind = kind;
-        outcome.found = None;
-        return (outcome, Vec::new());
-    }
-    let parsed: ckan::Response = match http::parse_json_body(&response) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            return some_status(
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                Some(err.to_string()),
-            );
-        }
-    };
-    match ckan::check_envelope(parsed, module) {
-        Err(err) => some_status(
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            Some(err.to_string()),
-        ),
-        Ok(None) => some_status(
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            Some("CKAN response had no result envelope".into()),
-        ),
-        Ok(Some(result)) => {
-            let outcome = if result.records.is_empty() {
-                SourceExecutionOutcome::valid_zero(module, now_unix)
-            } else {
-                SourceExecutionOutcome::success(module, now_unix, result.records.len())
-            }
-            .with_http_status(response.status);
-            let outcome = match result.truncation() {
-                Some(note) => outcome.with_detail(note),
-                None => outcome,
-            };
-            (outcome, result.records)
-        }
-    }
 }
 
 fn record_name_matches(rec: &Map<String, Value>, name_field: &str, full_name: &str) -> bool {
@@ -865,11 +743,12 @@ fn humanise_name(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::json_ok;
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    use crate::http::{Response, TransportFailure};
+    use crate::http::{Request, Response, TransportFailure};
     use crate::textnorm::ascii_digits;
 
     const BANNED: &str = r##"{

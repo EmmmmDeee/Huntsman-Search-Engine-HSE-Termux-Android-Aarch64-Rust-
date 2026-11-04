@@ -28,10 +28,10 @@ use crate::au_id::is_valid_abn;
 use crate::ckan::{self, field};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::fetch::{self, FetchOptions, Fetched};
-use crate::http::{self, Request, Transport};
+
+use crate::http::Transport;
 use crate::postcode_au;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::name_tokens;
 
 pub const SRC: &str = "acnc";
@@ -85,14 +85,15 @@ pub fn lookup<T: Transport + ?Sized>(
         });
     }
 
-    let options = FetchOptions {
-        max_redirects: fetch::DEFAULT_MAX_REDIRECTS,
-        ..FetchOptions::default()
-    };
-    let url = ckan::datastore_search_url(CKAN_BASE, CHARITY_RES, name, MAX_HITS);
-    let request = Request::get(url).header("accept", "application/json");
-    let fetched = fetch::fetch(transport, request, None, &options, SRC, now_unix)?;
-    let (outcome, records) = parse(now_unix, fetched);
+    let (outcome, records) = ckan::query_datastore(
+        transport,
+        CKAN_BASE,
+        SRC,
+        CHARITY_RES,
+        name,
+        MAX_HITS,
+        now_unix,
+    )?;
 
     let mut entities = Vec::new();
     let matched: Vec<&Map<String, Value>> = records
@@ -105,111 +106,8 @@ pub fn lookup<T: Transport + ?Sized>(
     }
     merge_by_uid(&mut entities);
 
-    let outcome = reconcile(outcome, matched.len(), now_unix);
+    let outcome = ckan::reconcile_matches(outcome, matched.len(), SRC, now_unix);
     Ok(Report { entities, outcome })
-}
-
-/// Interpret the CKAN response: a truncated body, non-2xx status or malformed/`success: false`
-/// envelope is a fail-closed non-answer with no records; a clean envelope yields its records and a
-/// truncation note when the page was cut short of the total.
-fn parse(now_unix: u64, fetched: Fetched) -> (SourceExecutionOutcome, Vec<Map<String, Value>>) {
-    let drift = |kind: SourceOutcomeKind, status: Option<u16>, detail: String| {
-        let mut outcome = SourceExecutionOutcome::success(SRC, now_unix, 0);
-        outcome.kind = kind;
-        outcome.found = None;
-        outcome.http_status = status;
-        outcome.detail = Some(detail);
-        (outcome, Vec::new())
-    };
-
-    let Some(response) = fetched.response else {
-        return (fetched.outcome, Vec::new());
-    };
-    if response.truncated {
-        return drift(
-            SourceOutcomeKind::ParserDrift,
-            Some(response.status),
-            "truncated CKAN body is not evidence".to_owned(),
-        );
-    }
-    let body = response.text();
-    let kind = classify_fetch(response.status, &body);
-    if kind != SourceOutcomeKind::Inconclusive {
-        let mut outcome = fetched.outcome;
-        outcome.kind = kind;
-        outcome.found = None;
-        return (outcome, Vec::new());
-    }
-    let parsed: ckan::Response = match http::parse_json_body(&response) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            return drift(
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                err.to_string(),
-            );
-        }
-    };
-    match ckan::check_envelope(parsed, SRC) {
-        Err(err) => drift(
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            err.to_string(),
-        ),
-        Ok(None) => drift(
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "CKAN response had no result envelope".to_owned(),
-        ),
-        Ok(Some(result)) => {
-            let outcome = if result.records.is_empty() {
-                SourceExecutionOutcome::valid_zero(SRC, now_unix)
-            } else {
-                SourceExecutionOutcome::success(SRC, now_unix, result.records.len())
-            }
-            .with_http_status(response.status);
-            let outcome = match result.truncation() {
-                Some(note) => outcome.with_detail(note),
-                None => outcome,
-            };
-            (outcome, result.records)
-        }
-    }
-}
-
-/// Reconcile the register's page verdict with the locally matched charity names. A cut-off page can
-/// show a positive match but cannot prove absence.
-fn reconcile(
-    mut outcome: SourceExecutionOutcome,
-    matched: usize,
-    now_unix: u64,
-) -> SourceExecutionOutcome {
-    if !outcome.kind.is_accepted() {
-        return outcome;
-    }
-    let partial = outcome.detail.take();
-    let status = outcome.http_status.unwrap_or(200);
-    if matched == 0 {
-        if let Some(note) = partial {
-            SourceExecutionOutcome::observed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::Inconclusive,
-                Some(status),
-                Some(0),
-                note,
-            )
-        } else {
-            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(status)
-        }
-    } else {
-        let mut found =
-            SourceExecutionOutcome::success(SRC, now_unix, matched).with_http_status(status);
-        if let Some(note) = partial {
-            found = found.with_detail(note);
-        }
-        found
-    }
 }
 
 /// Whether this record matches the queried name as whole words against ONE of its individual
@@ -391,6 +289,7 @@ fn push_address(rec: &Map<String, Value>, legal_name: &str, scan_id: &str, out: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::{ScriptedTransport, json_ok};
 
     // A realistic ACNC datastore_search envelope for "smith family", trimmed to the modelled fields.
