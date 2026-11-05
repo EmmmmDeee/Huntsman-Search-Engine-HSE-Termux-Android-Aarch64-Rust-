@@ -472,6 +472,27 @@ pub fn canonicalise_token(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Every caller that checked a length before normalising may rely on it afterwards.
+    #[test]
+    fn canonical_whitespace_never_lengthens_its_input() {
+        for raw in [
+            "",
+            "   ",
+            "ADA  LOVELACE",
+            " a\tb\nc ",
+            "\u{3000}wide\u{3000}space\u{3000}",
+            "\u{2003}em\u{00a0}nbsp",
+            "ÉCOLE Straße İSTANBUL",
+            "a",
+        ] {
+            let normalized = canonical_whitespace(raw);
+            assert!(
+                normalized.len() <= raw.len(),
+                "{raw:?} grew to {normalized:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_source_origin_is_the_operator_value_the_public_default_or_one_refusal() {
         let public = "https://public.example.org";

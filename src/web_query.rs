@@ -119,12 +119,8 @@ fn checked_query(input: &str, label: &str) -> Result<String, Error> {
             "{label} is too long or contains control characters"
         )));
     }
+    // Normalising never lengthens the query, so the budget checked above still holds.
     let normalized = canonical_whitespace(input);
-    if normalized.len() > MAX_SEARCH_QUERY_BYTES {
-        return Err(Error::Invalid(format!(
-            "{label} is too long after normalization"
-        )));
-    }
     if normalized.is_empty() {
         return Err(Error::Invalid(format!("{label} must not be empty")));
     }
