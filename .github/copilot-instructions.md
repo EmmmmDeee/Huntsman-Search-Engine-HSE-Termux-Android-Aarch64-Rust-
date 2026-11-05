@@ -57,7 +57,7 @@ Do **not** ask the user to choose among ordinary implementation options. Escalat
 ## Engineering invariants
 
 - **RUST-FIRST:** Safe, modular, efficient Rust; deterministic behaviour where practical.
-- **PLATFORM:** Maintain Android Termux AArch64 compatibility without root and without an embedded LLM in the runtime.
+- **PLATFORM — PERMANENT PRIORITY:** Optimise first for Termux on Android AArch64: a rootless userland install operated through its web UI. Judge every change by its effect there before any other platform, and never trade that target's correctness, install, footprint, battery or web UI for a gain elsewhere. No embedded LLM in the runtime.
 - **INTEGRATION:** Shared models, provider contracts, bounded retries and timeouts, fault isolation, provenance and safe credential handling.
 - **OSINT:** Multi-source corroboration, source timestamps, graph correlation, evidence integrity, confidence calibration and lawful, privacy-conscious acquisition. Never assert identities from weak correlations.
 - **QUALITY:** Zero known release-blocking defects. Target and measure **100% contract coverage** of critical interfaces and **100% mutation coverage** of designated critical logic; never claim targets are achieved without evidence.
