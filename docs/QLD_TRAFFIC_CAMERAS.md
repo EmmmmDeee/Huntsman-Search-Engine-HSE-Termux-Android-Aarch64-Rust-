@@ -3,6 +3,19 @@
 Read-only, rootless Termux integration, based on the QLDTraffic API specification v1.10
 (19 February 2025), section 2.1.1.1 and sections 4.4–4.5 and 5.3.
 
+## Key
+
+The webcam feed answers only a request that carries a QLDTraffic key in its `apikey` query
+parameter. Put one in the `HUNTSMAN_QLDTRAFFIC_KEY` slot of `~/.huntsman.env` (mode 600) or the
+environment. The API specification (§2.1.1.1) prints a shared public developer key, limited to
+100 requests a minute across everyone who uses it; TMR also issues keys to developers who ask
+(§2.1.1.2, via the [Developers and data](https://qldtraffic.qld.gov.au/more/Developers-and-Data/index.html)
+page). No key is built into the binary: the request goes through the API leg kernel
+(`api_leg`), which adds the key only as the request is sent, binds it to
+`https://api.qldtraffic.qld.gov.au`, follows no redirect and scrubs it from every diagnostic.
+Without a key the command sends nothing, reports the slot as `not_configured` and exits 66.
+`credential-status` lists the slot with the other providers. The state-road GIS layer needs no key.
+
 ## Run
 
 ```sh
@@ -11,11 +24,12 @@ cargo run --locked -- traffic-cameras --district Metropolitan --limit 50
 cargo run --locked -- traffic-cameras --district 'North Coast' --locality Nambour
 ```
 
-The command requests the official GeoJSON collection **once** through Huntsman's
-guarded HTTPS transport and prints a JSON report with provider total, filter
-matches, returned rows, rejected features, collection timestamp and a typed
-source outcome. The command does **not** download or refresh camera images.
-It makes no HTTP requests until an operator explicitly executes it.
+The command requests the official GeoJSON collection **once** and prints a JSON report with
+provider total, filter matches, returned rows, rejected features, collection timestamp and a
+typed source outcome. The command does **not** download or refresh camera images. It makes no
+HTTP requests until an operator explicitly executes it. It exits 0 when every source it asked
+answered, 66 when the key is not configured, 77 when a request was refused before sending, and
+69 when a source gave no usable answer; each unanswered source's reason is printed on stderr.
 
 ## Upstream sources and roles
 
@@ -26,13 +40,8 @@ It makes no HTTP requests until an operator explicitly executes it.
 | Queensland OpenDataSoft | https://queensland.opendatasoft.com/explore/assets/live-traffic-cameras-gold-coast/ | Republished webcam data; different schema |
 | Brisbane City Council | https://data.brisbane.qld.gov.au/explore/dataset/traffic-cctv-cameras/ | Municipality CCTV locations; **not** a public video feed |
 
-The QLDTraffic public developer key is documented in the official API spec
-and globally shared at **100 requests per minute**. A global limit is not
-a per-device allowance: the CLI intentionally uses one request, with a paced
-circuit breaker; repeated requests must be operator-controlled. A private key
-must never be placed into the public-key constant. For production, register a
-separate key with TMR and implement it via the existing origin-bound
-`fetch::Credential` mechanism; do not interpolate user secrets into URLs.
+The shared public key's limit is global, not a per-device allowance: the command makes one
+request per run, and repeated requests must be operator-controlled.
 
 ## Live public-feed comparison, 2026-11-03 UTC
 
@@ -61,7 +70,10 @@ coordinates only as spatial context, not as identity.
 * The derived camera metadata URL uses the official fixed API origin.
   Untrusted URL fields must not become arbitrary HTTP fetch destinations.
 * An HTTP 429, 403, timeout, WAF, parser error or partial/truncated response is
-  **never** a verified zero-camera result.
+  **never** a verified zero-camera result. A GIS reply that says the layer holds more
+  records than it carries (`exceededTransferLimit`, at the top of the reply or under its
+  `properties`) keeps its rows, is flagged `exceeded_transfer_limit`, and is never used
+  for a reconciliation.
 * A camera `image_url` references the publisher's current JPEG location but
   is **not proof of freshness**, continuous live video, recording capability,
   face recognition, ANPR or access to internal municipal CCTV.
@@ -89,7 +101,7 @@ Queensland Transport and Main Roads.
   and `f=geojson`. GIS defaults to Web Mercator (metres), so the explicit
   WGS84 projection request is necessary for correct distance calculations.
 
-This opt-in second request uses the same bounded, guarded transport and
+This opt-in second request goes through the same API leg kernel, keyless, with the same
 typed outcome classification. Both complete inventories are reconciled
 **before** locality or result-limit filtering. Result fields include exact
 shared camera IDs, each source's unique IDs, shared-ID position conflicts
@@ -112,8 +124,8 @@ operational state, vehicle or person identity is inferred from catalogue
 membership. Both sources belong to the same publisher family, and
 `publisher_families=1` forbids falsely claiming independent corroboration.
 OpenDataSoft is a republication, not an additional independent witness.
-If either source is unavailable or incomplete, `reconciliation` is null
-rather than a false zero.
+If either source is unavailable, partly rejected or capped by the GIS layer's
+transfer limit, `reconciliation` is null rather than a false zero.
 
 ```sh
 cargo run --locked -- traffic-cameras --reconcile --limit 10
@@ -125,7 +137,7 @@ cargo test --locked qld_traffic_cameras
 
 Offline module tests cover valid and empty FeatureCollections, coordinate
 order, duplications, untrusted image URLs, malformed input, HTTP status
-classification and one-shot guarded requests.
+classification, the key's placement and absence, a capped GIS reply and one-shot requests.
 
 ```sh
 cargo fmt --all -- --check
@@ -138,51 +150,16 @@ The final command is a **live network test** and must run on the actual
 rootless Android Termux AArch64 target before claiming device support. No
 claim that CI or a desktop build is a substitute for a phone validation.
 
-## Web UI (manual collection, rootless Android)
+## Scope
 
-The Radar page has an explicit **Compare live camera catalogues** button.
-The page calls `GET /api/traffic/cameras`, which uses exactly the same
-Rust `collect` and `collect_gis` functions as the CLI. The endpoint has:
+**Delivered:** a one-shot, read-only Rust library and the `traffic-cameras` CLI, with exact
+ID, location and direction differences in structured JSON. There is no web route or web UI
+panel: the phone page has no room under its 144 KiB budget, and a request that fetches two
+catalogues should not hang off a GET route. **Not delivered:** persisted longitudinal change
+history, JPEG freshness validation, independent third-party corroboration or municipal CCTV
+imagery.
 
-- the existing bearer-token gate on non-loopback binds;
-- same-origin and `X-Huntsman-Lookup: 1` request guards;
-- a single bounded worker, a 40-second response deadline, no URL parameters,
-  and no network request until the operator presses the button;
-- source outcomes exposed individually rather than a fabricated empty list;
-- a compact on-demand reconciliation report and client-side JSON export of the complete
-  retrieved metadata (no privileged device APIs or image downloads).
-
-The response may contain sensitive investigation *context* if subsequently
-combined with separate data; do not infer person/vehicle identity or
-camera-operational status from metadata alone. The page only displays text
-using DOM `textContent` and has no external JS, CSS or image dependencies.
-The mobile page remains under its enforced 142 KiB budget; detailed typed
-conflicts remain inspectable as JSON rather than adding a large table UI.
-
-**Delivered scope:** One-shot read-only Rust library, CLI, guarded API, manual
-phone Web UI, exact ID/location/direction differences and structured JSON
-export. Not delivered: persisted longitudinal change history, a dedicated
-registered API-key slot, JPEG freshness validation, independent third-party
-corroboration or municipal CCTV imagery.
-
-**Native phone acceptance:** Once the exact reviewed feature revision has been built
-and installed in rootless Termux, start the embedded Web UI locally and run:
-
-```sh
-pkg install jq curl
-bash scripts/termux/traffic-camera-acceptance.sh
-```
-
-The script refuses non-Termux, non-AArch64 and root contexts, checks the
-binary build SHA, exercises both guarded collectors from the CLI and the
-live Web API, and independently verifies inventory arithmetic and publisher
-family semantics. It writes temporary JSON with mode-700 containment and
-removes it at exit; it makes no repeated/background source requests. Its
-`PASS` is **on-device evidence** only when executed on the phone; adding the
-script to GitHub does not constitute on-device testing. Only run it against
-an intentional and verified checkout of the feature revision.
-
-**Release acceptance:** `cargo gate full` on the tested commit; CI's Android
-cross-build and browser tests; then a live one-shot camera request and
-`huntsman-recon doctor serve` on the actual rootless Termux phone. Cloud
-CI and an Android cross-build are not on-device acceptance receipts.
+**Release acceptance:** `cargo gate full` on the tested commit and CI's Android cross-build;
+then, with the key configured, a live `traffic-cameras --reconcile --limit 2` on the actual
+rootless Termux phone. Cloud CI and an Android cross-build are not on-device acceptance
+receipts.
