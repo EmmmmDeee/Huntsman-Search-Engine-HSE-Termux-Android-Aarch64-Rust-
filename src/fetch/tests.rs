@@ -453,7 +453,7 @@ fn a_query_key_is_scrubbed_from_transport_diagnostics_in_both_forms() {
     let detail = r.outcome.detail.unwrap_or_default();
     assert!(
         !detail.contains("tok%2Fabc") && !detail.contains("tok/abc"),
-        "{detail}"
+        "the outcome detail kept the key, encoded or decoded"
     );
 }
 

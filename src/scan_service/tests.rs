@@ -802,8 +802,8 @@ fn saved_observations_name_the_saved_scan_not_the_lookups_private_id() {
     assert_eq!(record.status, ScanStatus::Finished);
     let results = service.store().results(&record.id).unwrap().unwrap();
     assert!(!results.entities.is_empty());
-    for entity in &results.entities {
-        assert_eq!(entity.scan_id, record.id, "{}", entity.uid);
+    for (index, entity) in results.entities.iter().enumerate() {
+        assert_eq!(entity.scan_id, record.id, "entity {index}");
         for evidence in &entity.evidence {
             assert_eq!(
                 evidence.provenance.scan_id.as_deref(),
