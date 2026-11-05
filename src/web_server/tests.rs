@@ -244,8 +244,7 @@ fn rhinser_native_browser_submission_matches_protected_http_contract() {
         "let rhinserNativeGeneration=0;",
         "if(generation!==rhinserNativeGeneration)return;",
         "function rhinserLoopbackOrigin(){",
-        "Capture inspection requires loopback HSE on this device. No capture was sent.",
-        "Capture file import requires loopback HSE on this device. No file was read or sent.",
+        "const RHINSER_LOCAL_ONLY='Needs HSE on loopback on this device; nothing was read or sent.';",
         "if(generation!==rhinserNativeGeneration||submitted!==",
         "Capture changed during inspection. Inspect the current input again.",
         "if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');",
@@ -257,6 +256,14 @@ fn rhinser_native_browser_submission_matches_protected_http_contract() {
             "missing native browser integration: {marker}"
         );
     }
+    // File import and inspection each refuse off loopback before anything is read or sent.
+    assert_eq!(
+        INDEX_HTML
+            .matches("rhinserNativeSay(RHINSER_LOCAL_ONLY);")
+            .count(),
+        2,
+        "both capture paths must refuse off loopback"
+    );
 }
 
 #[test]
