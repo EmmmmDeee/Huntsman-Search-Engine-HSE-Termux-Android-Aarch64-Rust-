@@ -356,12 +356,12 @@ mod tests {
         .unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(report.outcome.found, Some(2));
-        for username in ["Luis", "Mara"] {
+        for (index, username) in ["Luis", "Mara"].into_iter().enumerate() {
             assert!(
                 report.entities.iter().any(|entity| {
                     entity.kind == EntityKind::Username && entity.raw_value == username
                 }),
-                "missing {username}"
+                "the username of account {index} is missing"
             );
             assert!(
                 report.entities.iter().any(|entity| {
@@ -369,7 +369,7 @@ mod tests {
                         && entity.raw_value
                             == format!("https://www.duolingo.com/profile/{username}")
                 }),
-                "missing profile for {username}"
+                "the profile URL of account {index} is missing"
             );
         }
     }
