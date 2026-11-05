@@ -17,12 +17,11 @@
 
 use serde::Deserialize;
 
+use crate::account_leg::{Absent, AccountLeg, HandleCase, Identity};
 use crate::canonical::canonical_url;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::decode_html_entities;
 
 pub const SRC: &str = "hacker_news";
@@ -55,11 +54,7 @@ const NOISE_HOSTS: &[&str] = &[
     "ycombinator.com",
 ];
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::account_leg::Report;
 
 #[derive(Debug, Deserialize)]
 struct HnUser {
@@ -106,6 +101,18 @@ fn request(url: String) -> Request {
     Request::get_json(url)
 }
 
+/// This leg's messages and rules on the shared account-leg path.
+const LEG: AccountLeg = AccountLeg {
+    source: SRC,
+    document: "Hacker News user",
+    invalid: "selector is not a valid Hacker News handle",
+    no_identity: "Hacker News payload carried no id",
+    other_account: "Hacker News returned a different account than the queried handle",
+    handle_case: HandleCase::AsTyped,
+    identity: Identity::Exact,
+    absent: Absent::NullBody,
+};
+
 /// Look up one Hacker News account, keyless.
 ///
 /// # Errors
@@ -116,80 +123,27 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let handle = username.trim().trim_start_matches('@');
-    if !valid_handle(handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
-            SRC,
-            now_unix,
-            "selector is not a valid Hacker News handle",
-        )));
-    }
-    let fetched = fetch(
+    let handle = match LEG.handle(username, valid_handle, now_unix) {
+        Ok(handle) => handle,
+        Err(outcome) => return Ok(Report::miss(outcome)),
+    };
+    let found = LEG.fetch(
         transport,
-        request(user_url(handle)),
-        None,
-        &FetchOptions::no_redirects().paced(),
-        SRC,
+        request(user_url(&handle)),
+        &handle,
+        |user: &HnUser| user.id.as_str(),
         now_unix,
     )?;
-    let (user, status) = match interpret_user(&fetched, handle, now_unix) {
+    let (user, status) = match found {
         Ok(found) => found,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
-    let mut entities = build_entities(&user, scan_id);
-    merge_by_uid(&mut entities);
-    Ok(Report {
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
-            .with_http_status(status),
-        entities,
-    })
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
-/// The confirmed account, with the response status; `Err` is the outcome of a response that named no
-/// such account or a different one. The Firebase API answers `null` (a 200, not a 404) for an
-/// unknown id, which is a clean negative; a payload whose `id` is not the queried handle is semantic
-/// drift, never attributed to the query. **Pure.**
-fn interpret_user(
-    fetched: &Fetched,
-    handle: &str,
-    now_unix: u64,
-) -> Result<(HnUser, u16), SourceExecutionOutcome> {
-    let response = whole_response(fetched, "Hacker News user")?;
-    answer(fetched, "Hacker News user")?;
-    let parsed: Option<HnUser> = decode_json(response, SRC, now_unix, "Hacker News user")?;
-    let Some(user) = parsed else {
-        // `null`: the id is not a Hacker News account.
-        return Err(
-            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-        );
-    };
-    if user.id.trim().is_empty() {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Hacker News payload carried no id",
-        ));
-    }
-    if user.id.trim() != handle {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SemanticDrift,
-            Some(response.status),
-            "Hacker News returned a different account than the queried handle",
-        ));
-    }
-    Ok((user, response.status))
+    Ok(Report::found(
+        SRC,
+        build_entities(&user, scan_id),
+        status,
+        now_unix,
+    ))
 }
 
 /// Build the report entities from the confirmed account. **Pure** (no network/IO), so the
@@ -344,6 +298,7 @@ fn find_scheme(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::{ScriptedTransport, json_ok};
 
     const USER: &str = r#"{"id":"pg","created":1160418092,"karma":157316,"about":"Bug fixer. Site: &lt;a href=&quot;https://paulgraham.com&quot;&gt;paulgraham.com&lt;/a&gt;","submitted":[1,2,3]}"#;

@@ -18,12 +18,11 @@
 
 use serde::Deserialize;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::account_leg::{Absent, AccountLeg, HandleCase, Identity};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::github_user::valid_login_shape as valid_github_handle;
 use crate::http::{Request, Transport, percent_encode_unreserved};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::decode_html_entities;
 
 pub const SRC: &str = "lobsters";
@@ -40,11 +39,7 @@ const PROFILE_URL_CONF: f64 = 0.74;
 /// A GitHub handle the account self-declares in its profile: a candidate cross-platform lead.
 const GITHUB_LINK_CONF: f64 = 0.55;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::account_leg::Report;
 
 #[derive(Debug, Deserialize)]
 struct LobstersUser {
@@ -90,6 +85,21 @@ fn request(url: String) -> Request {
     Request::get_json(url)
 }
 
+/// Lobsters usernames are case-insensitive and lower-case canonical: an uppercase path 302-redirects,
+/// which the no-redirects fetch treats as a wall. The handle is lower-cased in-module so a direct
+/// mixed-case caller resolves the account too, as the `crates_io` and `keybase` legs do; the live
+/// fan-out already hands this leg the engine's canonical lower-case form.
+const LEG: AccountLeg = AccountLeg {
+    source: SRC,
+    document: "Lobsters user",
+    invalid: "selector is not a valid Lobsters handle",
+    no_identity: "Lobsters payload carried no username",
+    other_account: "Lobsters returned a different account than the queried handle",
+    handle_case: HandleCase::Lowered,
+    identity: Identity::IgnoreAsciiCase,
+    absent: Absent::NotFound,
+};
+
 /// Look up one Lobsters account, keyless.
 ///
 /// # Errors
@@ -100,85 +110,27 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    // Lobsters usernames are case-insensitive and lower-case canonical: an uppercase path 302-
-    // redirects, which the no-redirects fetch treats as a wall. Lower-case in-module so a direct
-    // mixed-case caller resolves the account too, as the crates_io and keybase legs do; the live
-    // fan-out already hands this leg the engine's canonical lower-case form.
-    let handle = username.trim().trim_start_matches('@').to_ascii_lowercase();
-    if !valid_handle(&handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
-            SRC,
-            now_unix,
-            "selector is not a valid Lobsters handle",
-        )));
-    }
-    let fetched = fetch(
+    let handle = match LEG.handle(username, valid_handle, now_unix) {
+        Ok(handle) => handle,
+        Err(outcome) => return Ok(Report::miss(outcome)),
+    };
+    let found = LEG.fetch(
         transport,
         request(user_url(&handle)),
-        None,
-        &FetchOptions::no_redirects().paced(),
-        SRC,
+        &handle,
+        |user: &LobstersUser| user.username.as_str(),
         now_unix,
     )?;
-    let (user, status) = match interpret_user(&fetched, &handle, now_unix) {
+    let (user, status) = match found {
         Ok(found) => found,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
-    let mut entities = build_entities(&user, scan_id);
-    merge_by_uid(&mut entities);
-    Ok(Report {
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
-            .with_http_status(status),
-        entities,
-    })
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
-/// The confirmed account, with the response status; `Err` is the outcome of a response that named
-/// no such account or a different one. A `404` read as a plain upstream 4xx is the clean negative;
-/// a challenge page at that status is a wall, not a zero. Lobsters usernames are case-insensitive,
-/// so the returned `username` is matched to the queried handle without regard to case. **Pure.**
-fn interpret_user(
-    fetched: &Fetched,
-    handle: &str,
-    now_unix: u64,
-) -> Result<(LobstersUser, u16), SourceExecutionOutcome> {
-    if let Some(response) = &fetched.response {
-        if response.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx {
-            return Err(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-            );
-        }
-    }
-    let response = whole_response(fetched, "Lobsters user")?;
-    answer(fetched, "Lobsters user")?;
-    let user: LobstersUser = decode_json(response, SRC, now_unix, "Lobsters user")?;
-    if user.username.trim().is_empty() {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Lobsters payload carried no username",
-        ));
-    }
-    if !user.username.trim().eq_ignore_ascii_case(handle) {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SemanticDrift,
-            Some(response.status),
-            "Lobsters returned a different account than the queried handle",
-        ));
-    }
-    Ok((user, response.status))
+    Ok(Report::found(
+        SRC,
+        build_entities(&user, scan_id),
+        status,
+        now_unix,
+    ))
 }
 
 /// Build the report entities from the confirmed account. **Pure** (no network/IO), so the
@@ -283,6 +235,7 @@ fn add_github_link(user: &LobstersUser, scan_id: &str, entities: &mut Vec<Entity
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::{OneResponse, ScriptedTransport, json_ok};
 
     const USER: &str = r#"{"username":"jcs","created_at":"2012-06-30T16:39:19.000-05:00","is_admin":true,"is_moderator":true,"karma":16905,"about":"<p>hello, cyberpals</p>","avatar_url":"/avatars/jcs-100.png","invited_by_user":null,"github_username":"jcs"}"#;

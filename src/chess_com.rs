@@ -16,11 +16,10 @@
 
 use serde::Deserialize;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::account_leg::{Absent, AccountLeg, HandleCase, Identity};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::nonblank;
 
 pub const SRC: &str = "chess_com";
@@ -38,11 +37,7 @@ const PROFILE_URL_CONF: f64 = 0.74;
 /// A display name or channel the account self-declares: a candidate lead, never a confirmed link.
 const SELF_DECLARED_CONF: f64 = 0.55;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::account_leg::Report;
 
 #[derive(Debug, Deserialize)]
 struct Player {
@@ -109,6 +104,18 @@ fn country_code(country: &str) -> Option<&str> {
     (code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic())).then_some(code)
 }
 
+/// This leg's messages and rules on the shared account-leg path.
+const LEG: AccountLeg = AccountLeg {
+    source: SRC,
+    document: "Chess.com player",
+    invalid: "selector is not a valid Chess.com username",
+    no_identity: "Chess.com payload carried no username",
+    other_account: "Chess.com returned a different player than the queried handle",
+    handle_case: HandleCase::Lowered,
+    identity: Identity::IgnoreAsciiCase,
+    absent: Absent::NotFound,
+};
+
 /// Look up one Chess.com account, keyless.
 ///
 /// # Errors
@@ -119,78 +126,27 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let handle = username.trim().trim_start_matches('@').to_ascii_lowercase();
-    if !valid_handle(&handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
-            SRC,
-            now_unix,
-            "selector is not a valid Chess.com username",
-        )));
-    }
-    let fetched = fetch(
+    let handle = match LEG.handle(username, valid_handle, now_unix) {
+        Ok(handle) => handle,
+        Err(outcome) => return Ok(Report::miss(outcome)),
+    };
+    let found = LEG.fetch(
         transport,
         Request::get_json(player_url(&handle)),
-        None,
-        &FetchOptions::no_redirects().paced(),
-        SRC,
+        &handle,
+        |player: &Player| player.username.as_str(),
         now_unix,
     )?;
-    let (player, status) = match interpret_player(&fetched, &handle, now_unix) {
+    let (player, status) = match found {
         Ok(found) => found,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
-    let mut entities = build_entities(&player, scan_id);
-    merge_by_uid(&mut entities);
-    Ok(Report {
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
-            .with_http_status(status),
-        entities,
-    })
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
-/// The confirmed player, with the response status; `Err` is the outcome of a response that named
-/// no such player or a different one. **Pure.**
-fn interpret_player(
-    fetched: &Fetched,
-    handle: &str,
-    now_unix: u64,
-) -> Result<(Player, u16), SourceExecutionOutcome> {
-    if let Some(response) = &fetched.response {
-        if response.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx {
-            return Err(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-            );
-        }
-    }
-    let response = whole_response(fetched, "Chess.com player")?;
-    answer(fetched, "Chess.com player")?;
-    let player: Player = decode_json(response, SRC, now_unix, "Chess.com player")?;
-    if player.username.trim().is_empty() {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Chess.com payload carried no username",
-        ));
-    }
-    if !player.username.trim().eq_ignore_ascii_case(handle) {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SemanticDrift,
-            Some(response.status),
-            "Chess.com returned a different player than the queried handle",
-        ));
-    }
-    Ok((player, response.status))
+    Ok(Report::found(
+        SRC,
+        build_entities(&player, scan_id),
+        status,
+        now_unix,
+    ))
 }
 
 /// Build the report entities from the confirmed player. **Pure.**
@@ -297,6 +253,7 @@ fn build_entities(player: &Player, scan_id: &str) -> Vec<Entity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::{OneResponse, ScriptedTransport, json_ok};
 
     /// Recorded from `GET /pub/player/hikaru` on 2026-11-03, shortened.
