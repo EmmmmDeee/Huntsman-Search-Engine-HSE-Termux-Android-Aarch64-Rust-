@@ -94,14 +94,14 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
             EvidenceProvenance::for_scan(phone_intl::SOURCE, &scan_id),
             format!("Phone {canonical} → {country_name}"),
         )
-        .with_attr("country_code", prefix)
+        .with_attr("country_code", prefix.to_string())
         .with_attr("country_iso", iso)
         .with_attr("country_name", country_name)
         .with_attr(
             "national_number",
             canonical
                 .trim_start_matches('+')
-                .strip_prefix(prefix)
+                .strip_prefix(prefix.to_string().as_str())
                 .unwrap_or_default(),
         ),
     );
