@@ -1,0 +1,3 @@
+# The fewest #[test] functions src/, tests/ and xtask/src/ may hold (tests/test_count_floor.rs).
+# Raise it freely; lower it only in a commit that says which tests were folded or removed.
+4351

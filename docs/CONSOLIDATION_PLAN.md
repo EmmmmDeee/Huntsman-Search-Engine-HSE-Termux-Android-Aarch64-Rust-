@@ -1,7 +1,16 @@
 # Consolidation and refactor plan
 
 Status: **PROPOSED**. Unless marked *estimate*, every number here was measured on `main` at
-`e7301b4c6` (2026-11-05). None of it is implemented yet.
+`e7301b4c6` (2026-11-05).
+
+**Progress.** Phase 0 is in place:
+
+- `tests/fixtures/source_classification.tsv` holds the classification snapshot, checked in `src/orthogonal_osint/tests.rs`.
+- `tests/fixtures/saved_attribution.tsv` holds the attribution snapshot, checked in `tests/saved_attribution.rs`.
+- The refusal-contract harness in `src/lookup_modules/tests.rs` covers every lookup but `phone`, whose run type has no refusal to end in. It lists today's 17 breakages as reviewed entries.
+- `tests/test_count_floor.rs` holds the test-count floor.
+
+The later phases are not implemented yet.
 
 - **Process.** Work under this plan follows [CLAUDE_CODE_REFACTOR_EXECUTION.md](CLAUDE_CODE_REFACTOR_EXECUTION.md).
 - **Authority.** The root [`ARCHITECTURE.md`](../ARCHITECTURE.md) and its tests stay authoritative for the module map.

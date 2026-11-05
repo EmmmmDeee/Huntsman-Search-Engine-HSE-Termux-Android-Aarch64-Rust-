@@ -352,3 +352,6 @@ pub fn discover(entities: &[Entity], ancestry: &EvidenceAncestryGraph) -> Orthog
         qualification: "Missing modality means no eligible observation was recorded, not that a source was searched or an entity was absent. Distinct modalities and collector counts are not independent corroboration.",
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -672,8 +672,8 @@ enum Net {
 
 /// The lookups the refusal contract holds. Each ends from its rows: a refusal (exit 77) when a
 /// chosen source was refused before anything was sent, unavailable (exit 69) when it got no
-/// response.
-const IN_SCOPE: [ScanKind; 8] = [
+/// response. The phone lookup is outside it: `PhoneRun` has no refusal to end in.
+const IN_SCOPE: [ScanKind; 11] = [
     ScanKind::Ip,
     ScanKind::Netblock,
     ScanKind::Asn,
@@ -682,6 +682,9 @@ const IN_SCOPE: [ScanKind; 8] = [
     ScanKind::Username,
     ScanKind::Exposure,
     ScanKind::Network,
+    ScanKind::People,
+    ScanKind::CryptoAddress,
+    ScanKind::Place,
 ];
 
 /// Every `(kind, module, net)` that breaks the refusal contract today: the module, chosen alone,
@@ -691,12 +694,31 @@ const IN_SCOPE: [ScanKind; 8] = [
 /// one as it fixed it; the last, stolen.tax reporting no response as a path failure with no
 /// transport kind, left with [`crate::stolen_tax::PathFailure::kind`]. Empty is the contract
 /// held in full; an entry is a reviewed, named exception, never a second list.
-const BROKEN: &[(ScanKind, &str, Net)] = &[];
+///
+/// The people, crypto and place lookups joined the contract with the entries below. Each ends a
+/// refusal with the bare egress reason, which names no module, and the people and place lookups
+/// end an unanswered lookup without the module or its reason. Each entry leaves as its lookup
+/// routes its legs' failures into rows that [`crate::source_outcome::SourceReach`] reads.
+const BROKEN: &[(ScanKind, &str, Net)] = &[
+    (ScanKind::People, "asic_persons", Net::Refusing),
+    (ScanKind::People, "asic_director", Net::Refusing),
+    (ScanKind::People, "wikidata", Net::Refusing),
+    (ScanKind::People, "acnc", Net::Refusing),
+    (ScanKind::CryptoAddress, "blockchain", Net::Refusing),
+    (ScanKind::Place, "nominatim", Net::Refusing),
+    (ScanKind::People, "asic_persons", Net::Silent),
+    (ScanKind::People, "asic_director", Net::Silent),
+    (ScanKind::People, "wikidata", Net::Silent),
+    (ScanKind::People, "acnc", Net::Silent),
+    (ScanKind::Place, "nominatim", Net::Silent),
+];
 
 /// Every `(kind, module, target)` case whose module, chosen alone, asks nothing: domain
 /// `dnsresolve` resolves only the hosts other sources found; the profile front-ends, not the
-/// email and username lookups, run seeknow and the breach modules; `ada_lovelace` is no GitHub
-/// login or Bluesky handle; `WiGLE` takes no cell and `OpenCelliD` no SSID. Over every net the
+/// email, username and people lookups, run seeknow and the breach modules; `ada_lovelace` is no GitHub
+/// login or Bluesky handle; `WiGLE` takes no cell and `OpenCelliD` no SSID; SEC EDGAR sends
+/// nothing without `HUNTSMAN_SEC_USER_AGENT`; a Bitcoin address goes to no Base, Ethereum or
+/// Solana node; STAC and `OpenSky` take the point the geocoder found. Over every net the
 /// cases that asked nothing must be exactly these (the three nets agree), so a module that falls
 /// silent (a renamed key slot, a `runs_module` name that no longer matches, a pacing hold) fails
 /// instead of passing with nothing to hold it to.
@@ -722,6 +744,25 @@ const ASKS_NOTHING: &[(ScanKind, &str, &str)] = &[
     (ScanKind::Username, "oathnet", "adalovelace"),
     (ScanKind::Network, "wigle", "cell:505:01:17:91"),
     (ScanKind::Network, "opencellid", "ssid:Cafe Guest"),
+    (ScanKind::People, "sec_edgar", "Ada Lovelace"),
+    (ScanKind::People, "seeknow", "Ada Lovelace"),
+    (
+        ScanKind::CryptoAddress,
+        "base_rpc",
+        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    ),
+    (
+        ScanKind::CryptoAddress,
+        "eth_rpc",
+        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    ),
+    (
+        ScanKind::CryptoAddress,
+        "solana_rpc",
+        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    ),
+    (ScanKind::Place, "stac", "Eiffel Tower"),
+    (ScanKind::Place, "opensky", "Eiffel Tower"),
 ];
 
 /// A time past every pacing hold another test can leave at a real host. A probe at it reaches
@@ -1009,6 +1050,147 @@ fn a_module_chosen_alone_without_a_response_is_unavailable_naming_it() {
 fn a_module_whose_source_answered_with_an_error_is_never_a_refusal() {
     let _serial = CONTRACT.lock().unwrap_or_else(PoisonError::into_inner);
     hold(Net::Failing, &cases::<Failing>(), |case| !case.refused());
+}
+
+/// The lookups without a scan kind, each case one module chosen alone: the command, its
+/// selector and the module. `company` takes a name (its registers and GLEIF) or an ABN (its
+/// registers and ABN Lookup).
+const STANDALONE: [(&str, &str, &str); 7] = [
+    ("company", "Monaka", "asic_orgs"),
+    ("company", "Monaka", "gleif_lei"),
+    ("company", "51 824 753 556", "asic_orgs"),
+    ("company", "51 824 753 556", "abn_lookup"),
+    ("gleif", "Monaka", "gleif_lei"),
+    ("itunes", "huntsman", "apple_itunes"),
+    ("wikidata", "Ada Lovelace", "wikidata"),
+];
+
+/// Every `(command, module, net)` of [`STANDALONE`] that breaks the refusal contract today, held
+/// as [`BROKEN`] holds the lookups with a scan kind: a case that newly breaks it fails, and so
+/// does an entry no case breaks any more. A leg whose guarded fetch is refused returns an error
+/// these lookups end in with the bare egress reason, naming no module; ABN Lookup records its
+/// refusal as a row, which `none_accepted` ends as unavailable (exit 69), not a refusal.
+const STANDALONE_BROKEN: &[(&str, &str, Net)] = &[
+    ("company", "asic_orgs", Net::Refusing),
+    ("company", "gleif_lei", Net::Refusing),
+    ("company", "abn_lookup", Net::Refusing),
+    ("gleif", "gleif_lei", Net::Refusing),
+    ("itunes", "apple_itunes", Net::Refusing),
+    ("wikidata", "wikidata", Net::Refusing),
+];
+
+/// How `command`'s lookup of `selector` ended over a fresh `Recording<N>` with only `module`
+/// chosen, and what it asked. Every keyed leg has a key, ABN Lookup's a GUID.
+fn standalone<N: Transport + Clone + Default + Send + Sync + 'static>(
+    command: &str,
+    selector: &str,
+    module: &'static str,
+    now: u64,
+) -> (Vec<Attempt>, Verdict) {
+    let net = Recording::new(N::default());
+    let transport = Selected::new(net.clone(), Selection::only([module]));
+    let keys = Keys::parse(&format!(
+        "{}=00000000-0000-0000-0000-000000000000",
+        crate::abn_lookup::KEY_SLOT
+    ))
+    .expect("a key line parses");
+    let found = |report: crate::company_cli::Report| (report.outcomes, report.entities);
+    let verdict = match command {
+        "company" => {
+            let args = crate::company_cli::CompanyArgs::parse(&[selector.to_owned()])
+                .expect("a valid company query");
+            ended(
+                crate::company_cli::run(&transport, &keys, &args.query, now),
+                found,
+            )
+        }
+        "gleif" => ended(crate::gleif_cli::run(&transport, selector, now), |report| {
+            (report.outcomes, report.entities)
+        }),
+        "itunes" => ended(
+            crate::itunes_cli::run(&transport, selector, now),
+            |report| (report.outcomes, report.entities),
+        ),
+        "wikidata" => ended(
+            crate::wikidata_cli::run(&transport, selector, now),
+            |report| (report.outcomes, report.entities),
+        ),
+        other => panic!("no standalone lookup {other}"),
+    };
+    (net.attempts(), verdict)
+}
+
+/// Whether `why` names `module`: past any `no source answered for …: ` lead, the text before the
+/// first `':'`, by [`module_of`].
+fn standalone_names(why: &str, module: &str) -> bool {
+    let rest = why
+        .strip_prefix("no source answered for ")
+        .map_or(why, |rest| {
+            rest.split_once(": ").map_or(rest, |(_, reason)| reason)
+        });
+    module_of(rest.split(':').next().unwrap_or(rest)) == module
+}
+
+/// The `(command, module)` pairs of [`STANDALONE`] that break the contract over `N`: refused
+/// before sending is a refusal naming the module, no response is unavailable naming it, and an
+/// error answer is never a refusal. A case that asked nothing is never a refusal.
+fn standalone_broken<N: Transport + Clone + Default + Send + Sync + 'static>(
+    net: Net,
+) -> Vec<(&'static str, &'static str)> {
+    let mut broken = Vec::new();
+    for (command, selector, module) in STANDALONE {
+        let (probed, _) = standalone::<N>(command, selector, module, PROBE_NOW);
+        forget_pacing(&probed);
+        let (asked, verdict) = standalone::<N>(command, selector, module, NOW);
+        forget_pacing(&asked);
+        let sent = asked
+            .iter()
+            .any(|attempt| matches!(attempt, Attempt::Http(_) | Attempt::Udp(_)));
+        let keeps = match (net, &verdict) {
+            _ if asked.is_empty() => !matches!(verdict, Verdict::Refused(_)),
+            (Net::Refusing, Verdict::Refused(why)) => sent && standalone_names(why, module),
+            (Net::Refusing, Verdict::Unavailable(why)) => !sent && standalone_names(why, module),
+            (Net::Silent, Verdict::Unavailable(why)) => standalone_names(why, module),
+            (Net::Failing, verdict) => !matches!(verdict, Verdict::Refused(_)),
+            _ => false,
+        };
+        if !keeps && !broken.contains(&(command, module)) {
+            broken.push((command, module));
+        }
+    }
+    broken
+}
+
+/// The lookups without a scan kind keep the refusal contract over every net, but for the
+/// reviewed [`STANDALONE_BROKEN`] entries.
+#[test]
+fn a_lookup_without_a_scan_kind_keeps_the_refusal_contract() {
+    let _serial = CONTRACT.lock().unwrap_or_else(PoisonError::into_inner);
+    let found: Vec<(&str, &str, Net)> = standalone_broken::<Refusing>(Net::Refusing)
+        .into_iter()
+        .map(|(command, module)| (command, module, Net::Refusing))
+        .chain(
+            standalone_broken::<Silent>(Net::Silent)
+                .into_iter()
+                .map(|(command, module)| (command, module, Net::Silent)),
+        )
+        .chain(
+            standalone_broken::<Failing>(Net::Failing)
+                .into_iter()
+                .map(|(command, module)| (command, module, Net::Failing)),
+        )
+        .collect();
+    let listed: Vec<(&str, &str, Net)> = STANDALONE_BROKEN.to_vec();
+    let as_rust: Vec<String> = found
+        .iter()
+        .map(|(command, module, net)| format!("    ({command:?}, {module:?}, Net::{net:?}),"))
+        .collect();
+    assert_eq!(
+        found,
+        listed,
+        "STANDALONE_BROKEN, as this run found it:\n&[\n{}\n]",
+        as_rust.join("\n")
+    );
 }
 
 /// Every module the catalogue lists under `people NAME` is one the people lookup asks, so a
