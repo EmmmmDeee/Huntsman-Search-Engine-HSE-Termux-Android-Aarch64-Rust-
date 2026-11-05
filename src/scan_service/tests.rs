@@ -2238,19 +2238,47 @@ fn targets_route_to_kinds_and_spiderfoot_types() {
 
 #[test]
 fn a_skipped_keyed_source_is_logged_as_information_and_is_not_a_scan_error() {
-    for kind in [
-        SourceOutcomeKind::ValidZero,
-        SourceOutcomeKind::NotConfigured,
+    for outcome in [
+        SourceExecutionOutcome::valid_zero("fixture", 7),
+        SourceExecutionOutcome::not_configured("fixture", 7),
     ] {
-        assert!(!is_error_outcome(kind), "{kind:?}");
-        assert_eq!(outcome_log_level(kind), LogLevel::Info, "{kind:?}");
+        assert!(!is_error_outcome(&outcome), "{outcome:?}");
+        assert_eq!(outcome_log_level(&outcome), LogLevel::Info, "{outcome:?}");
     }
     for kind in [
         SourceOutcomeKind::AuthRequired,
         SourceOutcomeKind::RateLimited,
         SourceOutcomeKind::Inconclusive,
     ] {
-        assert!(is_error_outcome(kind), "{kind:?}");
-        assert_eq!(outcome_log_level(kind), LogLevel::Error, "{kind:?}");
+        let outcome = SourceExecutionOutcome::failed("fixture", 7, kind, None, "failure");
+        assert!(is_error_outcome(&outcome), "{outcome:?}");
+        assert_eq!(outcome_log_level(&outcome), LogLevel::Error, "{outcome:?}");
     }
+}
+
+#[test]
+fn contradictory_source_counts_are_errors_across_scan_paths_and_logs() {
+    for (kind, found) in [
+        (SourceOutcomeKind::Success, Some(0)),
+        (SourceOutcomeKind::ValidZero, Some(2)),
+    ] {
+        let outcome = SourceExecutionOutcome::observed(
+            "provider",
+            7,
+            kind,
+            Some(200),
+            found,
+            "count mismatch",
+        );
+        assert!(!outcome.is_accepted(), "{outcome:?}");
+        assert!(is_error_outcome(&outcome), "{outcome:?}");
+        assert_eq!(outcome_log_level(&outcome), LogLevel::Error);
+        let log = outcome_line(&outcome);
+        assert!(log.contains("outcome_count_conflict=true"), "{log}");
+        assert!(log.contains("count mismatch"), "{log}");
+    }
+    let accepted = SourceExecutionOutcome::success("provider", 7, 2);
+    assert!(!is_error_outcome(&accepted));
+    assert_eq!(outcome_log_level(&accepted), LogLevel::Info);
+    assert!(!outcome_line(&accepted).contains("outcome_count_conflict"));
 }

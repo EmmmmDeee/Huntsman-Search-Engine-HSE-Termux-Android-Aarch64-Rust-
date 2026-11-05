@@ -454,11 +454,11 @@ impl ScanCollector<'_> {
         for outcome in &found.outcomes {
             self.errors = self
                 .errors
-                .saturating_add(usize::from(is_error_outcome(outcome.kind)));
+                .saturating_add(usize::from(is_error_outcome(outcome)));
             self.service.log(
                 self.id,
                 &outcome.module,
-                outcome_log_level(outcome.kind),
+                outcome_log_level(outcome),
                 outcome_line(outcome),
             );
         }
@@ -1575,11 +1575,11 @@ impl ScanService {
             Ok(output) => {
                 let mut failed = 0;
                 for outcome in &output.outcomes {
-                    failed += usize::from(is_error_outcome(outcome.kind));
+                    failed += usize::from(is_error_outcome(outcome));
                     self.log(
                         id,
                         &outcome.module,
-                        outcome_log_level(outcome.kind),
+                        outcome_log_level(outcome),
                         outcome_line(outcome),
                     );
                 }
@@ -1778,7 +1778,7 @@ impl ScanService {
         let errors = found
             .outcomes
             .iter()
-            .filter(|outcome| is_error_outcome(outcome.kind))
+            .filter(|outcome| is_error_outcome(outcome))
             .count();
         let (entities, outcomes) = (found.entities.len(), found.outcomes.len());
         let crawl = Crawl {
@@ -1952,13 +1952,13 @@ fn placeholder(id: &str) -> ScanRecord {
 
 /// Whether a source outcome is an error of the scan. An answer is not, and neither is a keyed
 /// source skipped for want of its key: nothing failed, and the skip is still logged in full.
-fn is_error_outcome(kind: SourceOutcomeKind) -> bool {
-    !kind.is_accepted() && !kind.is_not_configured()
+fn is_error_outcome(outcome: &SourceExecutionOutcome) -> bool {
+    !outcome.is_accepted() && !outcome.kind.is_not_configured()
 }
 
 /// The level one source outcome is logged at: an error only when it is an error of the scan.
-fn outcome_log_level(kind: SourceOutcomeKind) -> LogLevel {
-    if is_error_outcome(kind) {
+fn outcome_log_level(outcome: &SourceExecutionOutcome) -> LogLevel {
+    if is_error_outcome(outcome) {
         LogLevel::Error
     } else {
         LogLevel::Info
@@ -1977,6 +1977,9 @@ fn outcome_line(outcome: &SourceExecutionOutcome) -> String {
     }
     if let Some(retry) = outcome.retry_after_secs {
         parts.insert("retry_after_s", retry.to_string());
+    }
+    if outcome.kind.is_accepted() && !outcome.is_accepted() {
+        parts.insert("outcome_count_conflict", "true".to_owned());
     }
     let mut line = outcome.kind.as_str().to_owned();
     for (key, value) in parts {

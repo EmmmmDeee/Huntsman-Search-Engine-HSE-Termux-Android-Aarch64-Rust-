@@ -717,11 +717,7 @@ pub fn report(scan: &ScanRecord, results: &ScanResults) -> String {
         esc(crate::diagnostics::embedded_build_sha()),
     );
 
-    let answered = results
-        .outcomes
-        .iter()
-        .filter(|o| o.kind.is_accepted())
-        .count();
+    let answered = results.outcomes.iter().filter(|o| o.is_accepted()).count();
     let _ = writeln!(
         out,
         "<h2>Summary</h2><p>{} finding{} from {} of {} source{} consulted{}; {} correlation{}.</p>",
@@ -869,7 +865,7 @@ fn report_tail(out: &mut String, scan: &ScanRecord, results: &ScanResults) {
     let gaps: Vec<_> = results
         .outcomes
         .iter()
-        .filter(|outcome| !outcome.kind.is_accepted())
+        .filter(|outcome| !outcome.is_accepted())
         .collect();
     if gaps.is_empty() {
         out.push_str("<p>Every source consulted answered.</p>\n");
@@ -1364,6 +1360,38 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("How to read this report"));
+    }
+
+    #[test]
+    fn html_report_counts_only_accepted_outcomes_and_discloses_count_conflicts() {
+        use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+        let (scan, mut results) = scan();
+        results.outcomes = vec![
+            SourceExecutionOutcome::observed(
+                "untrusted_a",
+                7,
+                SourceOutcomeKind::Success,
+                Some(200),
+                Some(0),
+                "success label conflicts with zero findings",
+            ),
+            SourceExecutionOutcome::observed(
+                "untrusted_b",
+                7,
+                SourceOutcomeKind::ValidZero,
+                Some(200),
+                Some(2),
+                "zero label conflicts with positive findings",
+            ),
+        ];
+        let html = text(&render(&scan, &results, "html", None).unwrap());
+        assert!(html.contains("from 0 of 2 sources consulted"), "{html}");
+        assert!(!html.contains("Every source consulted answered."), "{html}");
+        assert!(html.contains("<li><b>untrusted_a</b>: success,"), "{html}");
+        assert!(
+            html.contains("<li><b>untrusted_b</b>: valid_zero,"),
+            "{html}"
+        );
     }
 
     #[test]

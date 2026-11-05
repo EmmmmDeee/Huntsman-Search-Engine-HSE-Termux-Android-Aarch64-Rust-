@@ -27,7 +27,8 @@ serde_json = "1.0"
 thiserror = "2.0"
 # The one blocking HTTP client behind the guarded fetch layer (rustls, no async runtime).
 ureq = "3"
-# DNSSEC signature verification (RSA, ECDSA, Ed25519).
+# DNSSEC signature verification (RSA, ECDSA, Ed25519), and SHA-256 where its hardware-backed
+# digest beats the portable one (src/sha256.rs).
 ring = "0.17"
 # Raw-deflate inflation of APK members (manifest, DEX, signature files), bounded per call;
 # already built into the binary through ureq's gzip support, so it adds no crate.
