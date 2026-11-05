@@ -130,6 +130,8 @@ const TRACK_PATH: &str = "/api/radar/track";
 /// `investigate` command for text pasted in the browser. The text is the body, read whole within
 /// [`MAX_FORM_BYTES`]; a longer text is for `investigate --file` in Termux.
 const OSINT_CASE_PATH: &str = "/api/osint/case";
+/// Source-code inventory, never a claim of live OSINT availability.
+const OSINT_MATRIX_PATH: &str = "/api/osint/matrix";
 const OSINT_RISK_PATH: &str = "/api/osint/area-risk";
 const INVESTIGATE_PATH: &str = "/api/investigate";
 /// Explicitly initiated autonomous recursive investigation, stored as an ordinary saved scan.
@@ -1432,6 +1434,7 @@ fn protected_path(path: &str) -> bool {
             | RHINSER_OVERLAPS_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
+            | OSINT_MATRIX_PATH
             | INVESTIGATE_PATH
     ) || ScanApi::handles(path)
 }
@@ -1497,6 +1500,10 @@ fn route(
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
         RHINSER_NATIVE_PATH => rhinser_native_response(parsed, config),
+        OSINT_MATRIX_PATH => match serde_json::to_string_pretty(&crate::osint_matrix::report()) {
+            Ok(body) => json_ok(&body, head),
+            Err(_) => json_error(500, "OSINT source matrix unavailable"),
+        },
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(

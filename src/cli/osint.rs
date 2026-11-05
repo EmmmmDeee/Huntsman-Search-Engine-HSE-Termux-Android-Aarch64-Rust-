@@ -16,6 +16,7 @@ use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
+use huntsman_recon::osint_matrix;
 use huntsman_recon::rhinser_catalog::Catalog;
 use huntsman_recon::rhinser_native;
 use huntsman_recon::rhinser_nfc;
@@ -24,7 +25,8 @@ use huntsman_recon::rhinser_tlv;
 use huntsman_recon::rhinser_workspace::{MAX_WORKSPACE_BYTES, Workspace};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-pub(super) const OSINT_HELP: &str = "osint native [--entities] FILE | osint demo SEED | osint nfc apdu|ndef|tlv HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|overlaps|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+pub(super) const OSINT_HELP: &str = "osint matrix [--json] | osint native [--entities] FILE | osint demo SEED | osint nfc apdu|ndef|tlv HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|overlaps|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+  matrix: compiled Rust OSINT file groups, synergies and explicitly unverified runtime status.\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
@@ -34,6 +36,29 @@ pub(super) const OSINT_HELP: &str = "osint native [--entities] FILE | osint demo
   plan: offline graph and source planning using the existing Huntsman engine.\n\
   lookup: existing Huntsman typed provider lookup with public and operator-configured enrichment.\n\
   Network reports are JSON; local search and graph planning retain established CLI output. No wallet signing.";
+
+/// One canonical, source-file-labelled matrix shared with the protected Web API.
+fn matrix_cmd(args: &[String]) -> ExitCode {
+    match args {
+        [] => {
+            println!("status=source_inventory_not_live_verification");
+            for row in osint_matrix::FILE_ROWS {
+                println!(
+                    "p{}\t{}\t{}\t{}\t{}\t{}",
+                    row.priority,
+                    row.id,
+                    row.discipline,
+                    row.mode,
+                    row.implementation,
+                    row.files.join(",")
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        [flag] if flag == "--json" => emit(&osint_matrix::report(), true),
+        _ => fail(EX_USAGE, "usage: osint matrix [--json]"),
+    }
+}
 
 /// Offline directory browser for all 83 reconstructed Rhinser Australian sources.
 fn catalog_cmd(args: &[String]) -> ExitCode {
@@ -286,6 +311,7 @@ fn fail_error(error: &Error) -> ExitCode {
 pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     let now = clock::unix_now();
     match args {
+        [mode, rest @ ..] if mode == "matrix" => matrix_cmd(rest),
         [mode, rest @ ..] if mode == "catalog" => catalog_cmd(rest),
         [mode, rest @ ..] if mode == "native" => native_cmd(rest),
         [mode, rest @ ..] if mode == "demo" => demo_cmd(rest),
