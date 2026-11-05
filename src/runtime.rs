@@ -233,6 +233,11 @@ pub struct GeoDistance {
     pub left: String,
     pub right: String,
     pub meters: f64,
+    /// The initial great-circle bearing from `left` to `right`, in degrees clockwise from true
+    /// north. Absent where no single direction exists: coincident or antipodal points, or a start
+    /// exactly at a pole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_bearing_deg: Option<f64>,
     pub basis: &'static str,
 }
 
@@ -260,6 +265,9 @@ fn geo_distances(seeds: &[NormalizedSeed]) -> (Vec<GeoDistance>, bool) {
                     left: left.to_owned(),
                     right: right.to_owned(),
                     meters,
+                    initial_bearing_deg: crate::geoint::initial_bearing_deg(
+                        lat_a, lon_a, lat_b, lon_b,
+                    ),
                     basis: "operator_supplied_coordinates",
                 });
             }
@@ -410,6 +418,28 @@ pub fn analyze_offline_with_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pair's bearing runs from `left` to `right` and crosses the antimeridian the short way.
+    /// Antipodal points have no single direction, so the field is left out.
+    #[test]
+    fn geo_distances_carry_the_initial_bearing_where_one_exists() {
+        let seeds = ["0.0,179.99", "0.0,-179.99"].map(str::to_owned);
+        let view = analyze_offline(&seeds).expect("offline analysis");
+        let pair = &view["geo_distances"][0];
+        let bearing = pair["initial_bearing_deg"].as_f64().expect("a bearing");
+        let expected = if pair["left"] == "0.000000,179.990000" {
+            90.0
+        } else {
+            270.0
+        };
+        assert!((bearing - expected).abs() < 1e-6, "{pair}");
+
+        let seeds = ["0.0,0.0", "0.0,180.0"].map(str::to_owned);
+        let view = analyze_offline(&seeds).expect("offline analysis");
+        let pair = &view["geo_distances"][0];
+        assert!(pair["meters"].as_f64().is_some(), "{view}");
+        assert!(pair.get("initial_bearing_deg").is_none(), "{pair}");
+    }
 
     #[test]
     fn offline_geo_distances_cross_the_antimeridian_without_identity_inference() {
