@@ -17,9 +17,24 @@ The same domain lookup feeds saved scans and the existing local web UI/API. The
 
 ## Exact method
 
-One GET to `https://web.archive.org/cdx/search/cdx` with `url`, `matchType=domain`,
-`output=json`, `fl=timestamp,original,statuscode,digest,mimetype`,
-`filter=statuscode:200`, `collapse=urlkey` and `limit=32`.
+Normally, one GET to `https://web.archive.org/cdx/search/cdx` requests
+`url`, `matchType=domain`, `output=json`,
+`fl=timestamp,original,statuscode,digest,mimetype`,
+`filter=statuscode:200`, `collapse=urlkey` and `limit=32`. Filtering
+successes on the server **before URL-key collapse** is essential: otherwise
+an older redirect or error can suppress a later successful capture for that
+URL. This standard path preserves the previous source evidence contract.
+
+Only when that index request encounters a first-byte timeout does the collector
+attempt one additional, paced, unfiltered CDX index request to the **same archive
+origin**. It still retains only validated HTTP 200 captures and excludes/counts
+non-200 records, but the fallback is explicitly **incomplete**: `collapse=urlkey`
+may hide a later successful capture. A fallback with only non-200 records is
+**inconclusive**, not proof that no historical pages existed. Other network
+failures, rate limits, HTTP refusals and valid empty responses never trigger
+the fallback. Both index responses retain the 32-record and 128-KiB limits.
+The fallback is a bounded recovery attempt, not proven to eliminate upstream
+timeouts or increase the completeness of normal archive results.
 
 The collector validates the CDX field header, complete JSON, domain boundary,
 HTTP(S) URL syntax, timestamp, row limit and source HTTP status before emitting

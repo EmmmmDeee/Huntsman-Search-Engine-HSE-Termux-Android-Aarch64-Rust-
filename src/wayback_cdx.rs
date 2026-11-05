@@ -53,23 +53,61 @@ pub fn lookup<T: Transport + ?Sized>(
     url = append_query_param(&url, "matchType", "domain");
     url = append_query_param(&url, "output", "json");
     url = append_query_param(&url, "fl", &FIELDS.join(","));
-    url = append_query_param(&url, "filter", "statuscode:200");
     url = append_query_param(&url, "collapse", "urlkey");
     url = append_query_param(&url, "limit", &MAX_CAPTURES.to_string());
 
-    let fetched = fetch(
+    // The normal query must filter *before* URL-key collapse. Otherwise an
+    // earlier 302/404 for a URL may hide its later successful capture.
+    let filtered_url = append_query_param(&url, "filter", "statuscode:200");
+    let options = FetchOptions::no_redirects().paced();
+    let primary = fetch(
         transport,
-        Request::get(url)
+        Request::get(filtered_url)
             .header("accept", "application/json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         None,
-        &FetchOptions::no_redirects().paced(),
+        &options,
         SOURCE,
         now_unix,
     )?;
+
+    // Retry the cheaper, unfiltered index only for a genuine first-byte timeout.
+    // Never retry DNS/TLS failures, refusals, rate limits, HTTP errors or a valid
+    // zero response. The same paced circuit protects this single fallback.
+    let mut fallback_used = false;
+    let fetched = if primary.outcome.kind == SourceOutcomeKind::TtfbTimeout {
+        let alternate = fetch(
+            transport,
+            Request::get(url)
+                .header("accept", "application/json")
+                .header("user-agent", crate::http::DEFAULT_USER_AGENT),
+            None,
+            &options,
+            SOURCE,
+            now_unix,
+        )?;
+        if alternate.response.is_some() {
+            fallback_used = true;
+            alternate
+        } else {
+            primary
+        }
+    } else {
+        primary
+    };
+
     let mut report = interpret(&fetched, &domain, scan_id, now_unix).unwrap_or_else(miss);
     if report.outcome.kind == SourceOutcomeKind::Success {
         read_contents(transport, &mut report, scan_id, now_unix);
+    }
+    if fallback_used {
+        let warning = "unfiltered fallback after CDX first-byte timeout; URL-key collapse may hide later successful captures";
+        let detail = report.outcome.detail.take().unwrap_or_default();
+        report.outcome = report.outcome.with_detail(if detail.is_empty() {
+            warning.to_owned()
+        } else {
+            format!("{detail}; {warning}")
+        });
     }
     Ok(report)
 }
@@ -273,6 +311,7 @@ fn parse_response(
     // fail-closed for provider drift; one bad capture cannot taint a saved report.
     let mut entities = Vec::new();
     let mut skipped_query_urls = 0usize;
+    let mut skipped_non_200 = 0usize;
     for row in rows.iter().skip(1) {
         if parse_capture(
             row,
@@ -284,22 +323,34 @@ fn parse_response(
         )? {
             skipped_query_urls += 1;
         }
+        if row[2] != "200" {
+            skipped_non_200 += 1;
+        }
     }
     if entities.is_empty() {
         return Err(failed(
             SourceOutcomeKind::Inconclusive,
             now_unix,
             response.status,
-            "Wayback CDX returned captures but none had safe evidence URLs",
+            "Wayback CDX returned captures but no safe HTTP 200 evidence URLs",
         ));
     }
     merge_by_uid(&mut entities);
     let mut outcome = SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())
         .with_http_status(response.status);
+    let mut notes = Vec::new();
     if skipped_query_urls != 0 {
-        outcome = outcome.with_detail(format!(
+        notes.push(format!(
             "{skipped_query_urls} URLs with query, fragment or user-info were excluded"
         ));
+    }
+    if skipped_non_200 != 0 {
+        notes.push(format!(
+            "{skipped_non_200} non-200 historical captures omitted from findings"
+        ));
+    }
+    if !notes.is_empty() {
+        outcome = outcome.with_detail(notes.join("; "));
     }
     Ok(Report { entities, outcome })
 }
@@ -314,7 +365,11 @@ fn parse_capture(
     status: u16,
     entities: &mut Vec<Entity>,
 ) -> Result<bool, SourceExecutionOutcome> {
-    if row.len() != FIELDS.len() || !archived_page::valid_timestamp(&row[0]) || row[2] != "200" {
+    if row.len() != FIELDS.len()
+        || !archived_page::valid_timestamp(&row[0])
+        || !(row[2] == "-"
+            || (row[2].len() == 3 && row[2].bytes().all(|byte| byte.is_ascii_digit())))
+    {
         return Err(failed(
             SourceOutcomeKind::SchemaDrift,
             now_unix,
@@ -336,6 +391,11 @@ fn parse_capture(
             ));
         }
     };
+    // The unfiltered index may contain redirects, errors and unavailable captures.
+    // These are genuine historical records but not successful page evidence.
+    if row[2] != "200" {
+        return Ok(false);
+    }
     let timestamp = &row[0];
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, scan_id),
@@ -451,7 +511,6 @@ mod tests {
         for body in [
             r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://notexample.org/","200","ABC","text/html"]]"#,
             r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102","https://example.org/","200","ABC","text/html"]]"#,
-            r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://example.org/","302","ABC","text/html"]]"#,
             r#"[["original","timestamp","statuscode","digest","mimetype"],["https://example.org/","20200102030405","200","ABC","text/html"]]"#,
             r#"{"error":"rate limit"}"#,
         ] {
@@ -460,6 +519,38 @@ mod tests {
                 "{body}"
             );
         }
+    }
+
+    #[test]
+    fn unfiltered_index_skips_non_ok_rows_and_preserves_successful_evidence() {
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200101000000","https://example.org/redirect","302","A","text/html"],["20200102000000","https://example.org/gone","404","B","text/html"],["20200103000000","https://example.org/private?token=secret","200","C","text/html"],["20200104000000","https://example.org/contact","200","D","text/html"]]"#;
+        let report = parse_response(&response(body), "example.org", "scan", NOW)
+            .expect("valid mixed CDX rows");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.entities.len(), 1);
+        assert_eq!(report.entities[0].value, "https://example.org/contact");
+        let detail = report.outcome.detail.as_deref().unwrap_or_default();
+        assert!(detail.contains("2 non-200 historical captures"), "{detail}");
+        assert!(detail.contains("1 URLs with query"), "{detail}");
+        assert!(!format!("{report:?}").contains("secret"));
+        assert!(!format!("{report:?}").contains("/redirect"));
+        assert!(!format!("{report:?}").contains("/gone"));
+    }
+
+    #[test]
+    fn non_successful_history_does_not_mean_no_captures() {
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200101000000","https://example.org/","302","A","text/html"],["20200102000000","https://example.org/gone","-","B","text/html"]]"#;
+        let outcome = parse_response(&response(body), "example.org", "scan", NOW)
+            .expect_err("no successful historical page must be inconclusive");
+        assert_eq!(outcome.kind, SourceOutcomeKind::Inconclusive);
+    }
+
+    #[test]
+    fn malformed_status_remains_schema_drift() {
+        let body = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200102030405","https://example.org/","OK","ABC","text/html"]]"#;
+        let outcome = parse_response(&response(body), "example.org", "scan", NOW)
+            .expect_err("bad provider status is not a historical record");
+        assert_eq!(outcome.kind, SourceOutcomeKind::SchemaDrift);
     }
 
     #[test]
@@ -480,6 +571,10 @@ mod tests {
             // The index, then the capture it named, both from the archive and nowhere else.
             if request.url.starts_with(API) {
                 assert!(request.url.contains("matchType=domain"));
+                assert!(
+                    request.url.contains("filter=statuscode%3A200"),
+                    "normal index must filter success before URL-key collapse"
+                );
                 // The fields asked for are the ones the answer's header is held to.
                 assert!(
                     request
@@ -510,6 +605,75 @@ mod tests {
                 .iter()
                 .any(|e| e.value == "https://example.org/a")
         );
+    }
+
+    #[test]
+    fn cdx_timeout_falls_back_once_without_claiming_complete_coverage() {
+        let index = r#"[["timestamp","original","statuscode","digest","mimetype"],["20200101000000","https://example.org/redirect","302","X","text/html"],["20200102000000","https://example.org/contact","200","Y","text/html"]]"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::TtfbTimeout,
+                detail: "first byte did not arrive".into(),
+                blocked: false,
+            }),
+            Ok(response(index)),
+            Ok(page(
+                200,
+                "text/html",
+                "<a href='mailto:team@example.org'>team</a>",
+            )),
+        ]);
+        let report = lookup(&transport, "example.org", "scan", NOW).expect("bounded fallback");
+        let requests = transport.seen.borrow();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].url.contains("filter=statuscode%3A200"));
+        assert!(!requests[1].url.contains("filter="));
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.url.starts_with("https://web.archive.org/"))
+        );
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.value == "https://example.org/contact")
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.value == "team@example.org")
+        );
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|e| e.value.contains("/redirect"))
+        );
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("collapse may hide later successful"),
+            "{:?}",
+            report.outcome
+        );
+    }
+
+    #[test]
+    fn other_transport_failures_never_trigger_unfiltered_retry() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![Err(TransportFailure {
+            kind: SourceOutcomeKind::DnsFailure,
+            detail: "DNS failed".into(),
+            blocked: false,
+        })]);
+        let report = lookup(&transport, "example.org", "scan", NOW).expect("typed source outcome");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::DnsFailure);
+        assert_eq!(transport.seen.borrow().len(), 1);
     }
 
     fn page(status: u16, content_type: &str, body: &str) -> Response {
