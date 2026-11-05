@@ -109,19 +109,32 @@ fn interpret(
             "Duolingo JSON has no users field",
         ));
     };
-    let accounts: Vec<&User> = users
+    // Collect the validated username beside its source row. Option's iterator
+    // collection fails atomically when *any* row lacks a usable username, so a
+    // partial provider response cannot emit a success-shaped set of entities;
+    // an all-blank list is the withheld-profile stub handled below.
+    let accounts: Option<Vec<(&User, &str)>> = users
         .iter()
-        .filter(|user| {
+        .map(|user| {
             user.username
                 .as_deref()
-                .is_some_and(|u| !u.trim().is_empty())
+                .map(str::trim)
+                .filter(|username| !username.is_empty())
+                .map(|username| (user, username))
         })
         .collect();
-    if accounts.is_empty() {
-        if users.is_empty() {
-            return Err(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-            );
+    let Some(accounts) = accounts else {
+        if users.iter().any(|user| {
+            user.username
+                .as_deref()
+                .is_some_and(|username| !username.trim().is_empty())
+        }) {
+            // Named accounts beside a blank row are neither the withheld-profile stub nor a
+            // complete list: fail closed rather than report a partial success.
+            return Err(failed(
+                SourceOutcomeKind::SchemaDrift,
+                "Duolingo users mix named accounts and blank records",
+            ));
         }
         // Duolingo returns a user stub with blank public fields (empty username and name, id 0)
         // for a registered address whose profile it now withholds, and an empty list for an
@@ -135,11 +148,16 @@ fn interpret(
             outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
                 .with_http_status(response.status),
         });
+    };
+    if accounts.is_empty() {
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
 
     let mut entities = Vec::new();
-    for user in &accounts {
-        build_entities(user, scan_id, &mut entities);
+    for (user, username) in &accounts {
+        build_entities(user, username, scan_id, &mut entities);
     }
     merge_by_uid(&mut entities);
     Ok(Report {
@@ -156,10 +174,7 @@ fn empty(outcome: SourceExecutionOutcome) -> Report {
     }
 }
 
-fn build_entities(user: &User, scan_id: &str, entities: &mut Vec<Entity>) {
-    let Some(username) = user.username.as_deref().map(str::trim) else {
-        return;
-    };
+fn build_entities(user: &User, username: &str, scan_id: &str, entities: &mut Vec<Entity>) {
     let profile_url = format!(
         "https://www.duolingo.com/profile/{}",
         crate::http::percent_encode_unreserved(username)
@@ -328,6 +343,38 @@ mod tests {
     }
 
     #[test]
+    fn complete_multi_account_response_preserves_all_accounts_and_trimmed_handles() {
+        let report = lookup(
+            &OneResponse::json(
+                200,
+                r#"{"users":[{"id":14,"username":"  Luis  "},{"id":15,"username":"Mara"}]}"#,
+            ),
+            "a@example.com",
+            "s",
+            1,
+        )
+        .unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.outcome.found, Some(2));
+        for username in ["Luis", "Mara"] {
+            assert!(
+                report.entities.iter().any(|entity| {
+                    entity.kind == EntityKind::Username && entity.raw_value == username
+                }),
+                "missing {username}"
+            );
+            assert!(
+                report.entities.iter().any(|entity| {
+                    entity.kind == EntityKind::Url
+                        && entity.raw_value
+                            == format!("https://www.duolingo.com/profile/{username}")
+                }),
+                "missing profile for {username}"
+            );
+        }
+    }
+
+    #[test]
     fn drift_is_never_a_clean_miss() {
         // A missing users field, a wrong-typed users field and non-JSON stay drift; a present
         // user stub is handled by the withheld-account test below, not here.
@@ -376,6 +423,33 @@ mod tests {
                     .any(|e| e.kind == EntityKind::Username)
             );
             assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Url));
+        }
+    }
+
+    #[test]
+    fn a_mixed_user_list_with_missing_handles_is_schema_drift_not_partial_success() {
+        for body in [
+            r#"{"users":[{"id":14,"username":"Luis"},{"id":99}]}"#,
+            r#"{"users":[{"id":14,"username":"Luis"},{"id":99,"username":""}]}"#,
+            r#"{"users":[{"id":99},{"id":14,"username":"Luis"}]}"#,
+            r#"{"users":[{"id":14,"username":"Luis"},{"id":99,"username":"  "}]}"#,
+        ] {
+            let report = lookup(&OneResponse::json(200, body), "a@example.com", "s", 1)
+                .expect("provider failures stay typed reports");
+            assert_eq!(
+                report.outcome.kind,
+                SourceOutcomeKind::SchemaDrift,
+                "{body}"
+            );
+            assert!(
+                report.entities.is_empty(),
+                "{body}: malformed response leaked candidates"
+            );
+            assert_ne!(
+                report.outcome.found,
+                Some(1),
+                "{body}: partial response counted as success"
+            );
         }
     }
 
