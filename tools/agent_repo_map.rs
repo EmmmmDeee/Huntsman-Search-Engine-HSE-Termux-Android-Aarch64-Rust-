@@ -13,9 +13,26 @@ const MAX_DIRS: usize = 20_000;
 const MAX_DIR_ENTRIES: usize = 20_000;
 const MAX_DEPTH: usize = 64;
 
+#[derive(Default)]
+struct Coverage {
+    oversized: usize,
+    non_utf8: usize,
+    symbol_truncated: usize,
+    matched: usize,
+    inspected: usize,
+    displayed_symbols_truncated: usize,
+    symbol_free_matches: usize,
+    skipped_directories: usize,
+    omitted_paths: Vec<String>,
+}
+
 fn is_symbol(line: &str) -> bool {
     let s = line.trim_start();
-    ["pub fn ", "pub(crate) fn ", "fn ", "pub struct ", "struct ",
+    ["pub fn ", "pub(crate) fn ", "pub(super) fn ", "fn ", "pub async fn ", "async fn ",
+     "pub(crate) async fn ", "pub(super) async fn ", "pub const fn ", "const fn ",
+     "pub(crate) const fn ", "pub(super) const fn ", "pub unsafe fn ", "unsafe fn ",
+     "pub(crate) unsafe fn ", "pub(super) unsafe fn ", "pub extern ", "extern ",
+     "pub struct ", "struct ",
      "pub enum ", "enum ", "pub trait ", "trait ", "impl ", "pub type ",
      "type ", "pub mod ", "mod "].iter().any(|p| s.starts_with(p))
 }
@@ -29,7 +46,7 @@ fn require_room(count: usize, limit: usize, kind: &str) -> io::Result<()> {
     }
     Ok(())
 }
-fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize) -> io::Result<()> {
+fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize, coverage: &mut Coverage) -> io::Result<()> {
     if depth > MAX_DEPTH {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "directory depth limit exceeded"));
     }
@@ -46,21 +63,31 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>, visited: &mut usize, depth: usize
         if ty.is_symlink() { continue; }
         if ty.is_dir() {
             if allowed_dir(&e.file_name().to_string_lossy()) {
-                collect(&e.path(), out, visited, depth + 1)?;
+                collect(&e.path(), out, visited, depth + 1, coverage)?;
+            } else {
+                coverage.skipped_directories += 1;
             }
-        } else if ty.is_file() && e.path().extension().is_some_and(|x| x == "rs")
-            && e.metadata()?.len() <= MAX_FILE_BYTES {
+        } else if ty.is_file() && e.path().extension().is_some_and(|x| x == "rs") { 
+            if e.metadata()?.len() > MAX_FILE_BYTES {
+                coverage.oversized += 1;
+                coverage.omitted_paths.push(e.path().display().to_string());
+                continue;
+            }
             require_room(out.len(), MAX_FILES, "Rust file")?;
             out.push(e.path());
         }
     }
     Ok(())
 }
-fn score(path: &str, lines: &[(usize, String)], terms: &[String]) -> usize {
+fn score(path: &str, source: &str, terms: &[String]) -> usize {
     if terms.is_empty() { return 1; }
-    let p = path.to_ascii_lowercase();
-    let body = lines.iter().map(|(_, s)| s.to_ascii_lowercase()).collect::<Vec<_>>().join(" ");
-    terms.iter().map(|t| if p.contains(t) { 12 } else if body.contains(t) { 3 } else { 0 }).sum()
+    let path_lower = path.to_ascii_lowercase();
+    let source_lower = source.to_ascii_lowercase();
+    terms.iter().map(|term| {
+        if path_lower.contains(term) { 12 }
+        else if source_lower.contains(term) { 3 }
+        else { 0 }
+    }).sum()
 }
 // Keep only the results that can be emitted: retaining every matched file could
 // otherwise accumulate millions of source symbols on a memory-limited phone.
@@ -76,7 +103,8 @@ fn main() -> io::Result<()> {
     let terms: Vec<String> = args.iter().skip(2).map(|s| s.to_ascii_lowercase()).collect();
     let mut paths = Vec::new();
     let mut visited = 0;
-    collect(&root, &mut paths, &mut visited, 0)?;
+    let mut coverage = Coverage::default();
+    collect(&root, &mut paths, &mut visited, 0, &mut coverage)?;
     let mut matches = Vec::new();
     for path in paths.iter() {
         let mut bytes = Vec::new();
@@ -85,20 +113,41 @@ fn main() -> io::Result<()> {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 "Rust source exceeded file size limit during read"));
         }
-        let Ok(src) = String::from_utf8(bytes) else { continue };
-        let symbols: Vec<(usize, String)> = src.lines().enumerate()
-            .filter(|(_, s)| is_symbol(s))
-            .take(MAX_SYMBOLS)
-            .map(|(n, s)| (n + 1, s.trim().chars().take(180).collect()))
-            .collect();
+        let Ok(src) = String::from_utf8(bytes) else {
+            coverage.non_utf8 += 1;
+            coverage.omitted_paths.push(path.display().to_string());
+            continue;
+        };
+        coverage.inspected += 1;
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        let rank = score(&relative, &symbols, &terms);
-        if rank > 0 { keep_best(&mut matches, rank, relative, symbols); }
+        let rank = score(&relative, &src, &terms);
+        let mut symbol_count = 0;
+        let mut symbols = Vec::new();
+        for (line_number, line) in src.lines().enumerate() {
+            if !is_symbol(line) { continue; }
+            symbol_count += 1;
+            if rank > 0 && symbols.len() < MAX_SYMBOLS {
+                symbols.push((line_number + 1, line.trim().chars().take(180).collect()));
+            }
+        }
+        if symbol_count > MAX_SYMBOLS { coverage.symbol_truncated += 1; }
+        if rank > 0 {
+            coverage.matched += 1;
+            if symbols.is_empty() { coverage.symbol_free_matches += 1; }
+            keep_best(&mut matches, rank, relative, symbols);
+        }
     }
-    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n", paths.len(), terms.join(" "));
+    coverage.displayed_symbols_truncated = matches.iter().filter(|(_, _, symbols)| symbols.len() > 35).count();
+    println!("# Repository symbol map (lexical; not a dependency graph)\n# Rust files inspected: {}\n# Query: {}\n# Coverage: oversized={} non_utf8={} symbol_truncated={} result_limit={} matched={} returned={} results_truncated={} inspected={} matched_files_with_hidden_symbols={} symbol_free_matches={} skipped_directories={}\n", paths.len(), terms.join(" "), coverage.oversized, coverage.non_utf8, coverage.symbol_truncated, MAX_RESULTS, coverage.matched, matches.len(), coverage.matched > matches.len(), coverage.inspected, coverage.displayed_symbols_truncated, coverage.symbol_free_matches, coverage.skipped_directories);
+    coverage.omitted_paths.sort();
+    for omitted in &coverage.omitted_paths {
+        let relative = Path::new(omitted).strip_prefix(&root).unwrap_or(Path::new(omitted));
+        eprintln!("# Omitted Rust file: {}", relative.display());
+    }
     for (rank, path, symbols) in matches.iter() {
         println!("## {} [relevance={}]", path, rank);
         for (line, text) in symbols.iter().take(35) { println!("{}: {}", line, text); }
+        if symbols.len() > 35 { println!("# {} additional symbols not displayed", symbols.len() - 35); }
     }
     Ok(())
 }
@@ -109,23 +158,32 @@ mod tests {
     #[test] fn symbols_and_non_symbols() {
         assert!(is_symbol("  pub(crate) fn resolve() {}"));
         assert!(is_symbol("impl Thing {"));
+        assert!(is_symbol("pub async fn fetch() {}"));
+        assert!(is_symbol("const fn limit() -> usize { 2 }"));
+        assert!(is_symbol("pub(crate) unsafe fn probe() {}"));
+        assert!(is_symbol("pub(super) fn helper() {}"));
         assert!(!is_symbol("let x = 3;"));
         assert!(!is_symbol("// fn fake()"));
     }
+    #[test] fn full_body_terms_are_not_symbol_only() {
+        let source = "fn unrelated() {}\nlet evidence_marker = 1;";
+        assert_eq!(score("src/other.rs", source, &["evidence_marker".into()]), 3);
+    }
     #[test] fn rankings() {
-        let s = vec![(1, "fn correlate()".to_string())];
-        assert_eq!(score("src/correlator.rs", &s, &["correlat".into()]), 12);
-        assert_eq!(score("src/other.rs", &s, &["correlat".into()]), 3);
+        let source = "fn correlate() {}";
+        assert_eq!(score("src/correlator.rs", source, &["correlat".into()]), 12);
+        assert_eq!(score("src/other.rs", source, &["correlat".into()]), 3);
+        assert_eq!(score("src/other.rs", source, &[]), 1);
     }
     #[test] fn budgets_fail_closed() {
         assert!(require_room(0, 1, "item").is_ok());
         assert_eq!(require_room(1, 1, "item").unwrap_err().kind(), io::ErrorKind::InvalidData);
         let mut paths = Vec::new();
         let mut visited = 0;
-        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, MAX_DEPTH + 1)
+        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, MAX_DEPTH + 1, &mut Coverage::default())
             .unwrap_err().kind(), io::ErrorKind::InvalidData);
         visited = MAX_DIRS;
-        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, 0)
+        assert_eq!(collect(Path::new("."), &mut paths, &mut visited, 0, &mut Coverage::default())
             .unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
     #[test] fn results_are_bounded_and_deterministic() {
@@ -140,6 +198,47 @@ mod tests {
         assert_eq!(matches.last().unwrap().1, format!("src/{:04}.rs", MAX_RESULTS - 1));
         keep_best(&mut matches, 10, "src/high.rs".to_string(), Vec::new());
         assert_eq!(matches.first().unwrap().1, "src/high.rs");
+    }
+    #[test] fn full_source_ranking_is_case_insensitive() {
+        assert_eq!(score("src/other.rs", "let Evidence_Marker = 1;", &["evidence_marker".into()]), 3);
+        assert_eq!(score("src/EVIDENCE.rs", "let evidence_marker = 1;", &["evidence".into()]), 12);
+        assert_eq!(score("src/other.rs", "let evidence_marker = 1;", &["absent".into()]), 0);
+    }
+    #[test] fn directory_skip_coverage_is_counted() {
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-mapper-test-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("target").join("ignored.rs"), "fn ignored() {}").unwrap();
+        fs::write(root.join("src").join("included.rs"), "fn included() {}").unwrap();
+        let mut paths = Vec::new();
+        let mut visited = 0;
+        let mut coverage = Coverage::default();
+        let result = collect(&root, &mut paths, &mut visited, 0, &mut coverage);
+        fs::remove_dir_all(&root).unwrap();
+        result.unwrap();
+        assert_eq!(coverage.skipped_directories, 1);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().unwrap(), "included.rs");
+    }
+    #[test] fn oversized_files_are_reported_and_skipped() {
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-mapper-large-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("large.rs"), vec![b'x'; MAX_FILE_BYTES as usize + 1]).unwrap();
+        let mut paths = Vec::new();
+        let mut visited = 0;
+        let mut coverage = Coverage::default();
+        let result = collect(&root, &mut paths, &mut visited, 0, &mut coverage);
+        fs::remove_dir_all(&root).unwrap();
+        result.unwrap();
+        assert_eq!(coverage.oversized, 1);
+        assert!(paths.is_empty());
+        assert_eq!(coverage.omitted_paths.len(), 1);
     }
     #[test] fn exclusions() {
         assert!(!allowed_dir(".git"));
