@@ -41,11 +41,7 @@ The lookup queries independent sources:
 Results are merged only by canonical entity UID. Name-matched Wikidata items, ACNC organisations and SEC EDGAR filers are source-scoped candidates, not automatic cross-register identity corroboration; precise identifiers retain their normal correlation keys.";
 
 /// Merged entities and outcomes from every people source that ran.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Report = crate::lookup_report::LookupReport;
 /// Parsed `people` arguments. The name is the positional tokens joined with spaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeopleArgs {

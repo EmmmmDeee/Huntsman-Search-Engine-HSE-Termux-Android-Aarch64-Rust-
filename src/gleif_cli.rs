@@ -4,12 +4,11 @@
 //! addresses and an Australian local registration number ride out as pivot entities so the geocoder
 //! and the ASIC director correlation can follow them.
 
-use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::gleif;
 use crate::http::Transport;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const GLEIF_USAGE: &str = "usage: huntsman-recon gleif LEI|NAME";
 pub const GLEIF_HELP: &str = "\
@@ -59,11 +58,8 @@ pub fn canonical_query(raw: &str) -> Result<String, Error> {
     Ok(query.to_owned())
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 pub type GleifRun = SourceRun<Report>;
 
@@ -91,17 +87,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
             )),
         }
     }
-    merge_by_uid(&mut report.entities);
-
-    if let Some(run) =
-        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {query:?}"))
-    {
-        return run;
-    }
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => GleifRun::Printed { text, report },
-        Err(message) => GleifRun::Failed(message),
-    }
+    lookup_report::finish(report, &format!("no source answered for {query:?}"))
 }
 
 #[cfg(test)]

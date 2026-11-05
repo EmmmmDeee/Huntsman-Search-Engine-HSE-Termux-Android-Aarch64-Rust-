@@ -31,11 +31,8 @@ Canonicalise a phone number offline, resolve its international dialling prefix, 
 
 const PHONE_CONFIDENCE: f64 = 0.90;
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhoneArgs {

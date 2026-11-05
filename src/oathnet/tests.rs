@@ -1,5 +1,5 @@
 use super::*;
-use crate::http::{Method, TransportFailure};
+use crate::http::Method;
 use crate::test_support::{CannedRecorder as Recorder, json_status as status};
 
 const KEY: &str = "on-test-key-0123456789abcdef";
@@ -523,17 +523,12 @@ fn no_key_sends_nothing() {
 
 #[test]
 fn a_blocked_request_is_refused_before_sending() {
-    struct Blocked;
-    impl Transport for Blocked {
-        fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
-            Err(TransportFailure {
-                kind: SourceOutcomeKind::ConnectFailure,
-                detail: "egress-policy: destination (0.0.0.0) is not publicly routable".to_owned(),
-                blocked: true,
-            })
-        }
-    }
-    let error = match search(&Blocked, &keys(), Query::Email("user@example.com"), 7) {
+    let error = match search(
+        &crate::test_support::Refusing,
+        &keys(),
+        Query::Email("user@example.com"),
+        7,
+    ) {
         Err(error) => error,
         Ok(search) => panic!("a blocked search answered: {search:?}"),
     };

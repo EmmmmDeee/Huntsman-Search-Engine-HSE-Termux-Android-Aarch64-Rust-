@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use crate::api_leg::LegError;
 use crate::canonical::canonical_asn;
 use crate::concurrent;
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
@@ -54,11 +54,8 @@ const PREFIX_CONFIDENCE: f64 = 0.85;
 /// Confidence of a neighbour seen in the collected paths.
 const NEIGHBOUR_CONFIDENCE: f64 = 0.60;
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsnArgs {

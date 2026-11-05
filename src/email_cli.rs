@@ -46,11 +46,8 @@ const CONF_USERNAME_FREEMAIL: f64 = 0.55;
 const CONF_PERSON_CORPORATE: f64 = 0.55;
 const CONF_PERSON_FREEMAIL: f64 = 0.45;
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailArgs {

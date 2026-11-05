@@ -53,11 +53,8 @@ const PIVOT_CONFIDENCE: f64 = 0.60;
 /// Confidence of an address in the block that its reverse zone names, and of each name.
 const PTR_CONFIDENCE: f64 = 0.80;
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetblockArgs {

@@ -6,14 +6,13 @@ use std::path::PathBuf;
 use crate::base_rpc;
 use crate::blockchain;
 use crate::canonical::canonical_bitcoin_address;
-use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::eth_rpc;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::solana_rpc;
-use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const CRYPTO_USAGE: &str = "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS|sol:ADDRESS [--save FILE]";
 pub const CRYPTO_HELP: &str = "\
@@ -66,11 +65,8 @@ impl Chain {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CryptoArgs {
@@ -153,17 +149,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, address: &str, now_unix: u64) -
             )),
         }
     }
-    merge_by_uid(&mut report.entities);
-
-    if let Some(run) =
-        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {address}"))
-    {
-        return run;
-    }
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => CryptoRun::Printed { text, report },
-        Err(message) => CryptoRun::Failed(message),
-    }
+    lookup_report::finish(report, &format!("no source answered for {address}"))
 }
 
 #[cfg(test)]
