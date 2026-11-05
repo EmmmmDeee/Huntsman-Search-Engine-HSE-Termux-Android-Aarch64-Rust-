@@ -44,6 +44,45 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_parsing_has_one_canonical_owner() {
+        for raw in [
+            "0,0",
+            "-0.0,-0.0",
+            " -27.4698 , 153.0251 ",
+            "90,180",
+            "-90,-180",
+            "91,0",
+            "0,181",
+            "NaN,0",
+            "0,inf",
+            "0,0,0",
+            "not-a-coordinate",
+            "",
+        ] {
+            assert_eq!(
+                parse_latlon(raw).ok(),
+                crate::geohash::parse_coords(raw),
+                "divergent coordinate parser for {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn distance_uses_canonical_geohash_implementation() {
+        for (a, b, c, d) in [
+            (0.0, 179.9, 0.0, -179.9),
+            (90.0, 0.0, -90.0, 0.0),
+            (-27.4698, 153.0251, -33.8688, 151.2093),
+            (0.0, 0.0, 0.0, 0.0),
+        ] {
+            let actual = haversine_m(a, b, c, d);
+            let canonical = crate::geohash::haversine_km(a, b, c, d) * 1_000.0;
+            assert_eq!(actual, canonical);
+            assert!(actual.is_finite() && actual >= 0.0);
+        }
+    }
+
+    #[test]
     fn rejects_out_of_range() {
         assert!(parse_latlon("91,0").is_err());
     }
