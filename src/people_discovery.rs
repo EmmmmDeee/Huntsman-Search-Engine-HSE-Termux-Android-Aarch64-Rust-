@@ -1,0 +1,440 @@
+//! Bounded, source-scoped public people discovery over Huntsman's existing search transport.
+//!
+//! Search-index URLs are *candidate leads* only. Even matching full names, domains,
+//! and repeats across engines do not establish that one person owns any account.
+//! The existing `people` command remains the authority for structured registers.
+//!
+//! The subject's full name leaves the device: [`discover`] sends it to Bing, Brave and
+//! Mojeek and to Open Library, and [`bibliography`] to Open Library alone.
+use std::collections::BTreeMap;
+
+use serde::Serialize;
+
+use crate::canonical::canonical_name;
+use crate::error::Error;
+use crate::http::{Transport, parse_http_uri};
+use crate::openlibrary_author;
+use crate::people_cli;
+use crate::source_outcome::SourceExecutionOutcome;
+use crate::web_query;
+
+const MAX_PEOPLE_DISCOVERY_NAME_BYTES: usize = 120;
+const MAX_CANDIDATES: usize = 80;
+pub const PEOPLE_DISCOVER_USAGE: &str =
+    "usage: huntsman-recon people-discover [--region au|us] [--bibliography-only] FULL NAME...";
+pub const PEOPLE_DISCOVER_HELP: &str = "people-discover [--region au|us] [--bibliography-only] FULL NAME...\nSearch public sources for leads on one person by full name. The name you type leaves this device: it is sent to Bing, Brave and Mojeek, in four site-scoped searches on each (LinkedIn profiles, GitHub accounts, ORCID research identifiers, and ASIC pages for --region au, the default, or SEC pages for us), and to Open Library's author search. --bibliography-only sends it to Open Library alone. No key is needed. Prints JSON: each admitted URL with the searches and engines that returned it, every engine's typed outcome, the count of returned URLs outside the searched site, the Open Library author leads with their own outcome, and whether anything was cut. Every result is an unverified lead: a matching name, an indexed page or the same URL from several engines does not prove identity, employment or control, and a blocked or empty source does not prove absence. Separate from `people`, which reads structured registers. No breach lookup, location tracing or automatic follow-up search. Exits 69 when no source returned a lead.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Region {
+    Au,
+    Us,
+}
+
+impl Region {
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "au" => Some(Self::Au),
+            "us" => Some(Self::Us),
+            _ => None,
+        }
+    }
+
+    const fn official_domain(self) -> &'static str {
+        match self {
+            Self::Au => "asic.gov.au",
+            Self::Us => "sec.gov",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Candidate {
+    pub url: String,
+    /// Source-scoped search contexts which returned this exact URL.
+    pub facets: Vec<&'static str>,
+    /// Indexes which first reported this URL in each matching facet.
+    /// Index repetition does not mean independent evidence corroboration.
+    pub reported_by: Vec<String>,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchFacet {
+    pub id: &'static str,
+    pub accepted_host: &'static str,
+    pub query: String,
+    pub index_hits: usize,
+    pub discarded_out_of_scope: usize,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Report {
+    pub subject: String,
+    pub region: Region,
+    pub facets: Vec<SearchFacet>,
+    pub candidates: Vec<Candidate>,
+    /// Separate direct, keyless public catalogue evidence. Catalogue names do not
+    /// corroborate any account, identity or index-source match.
+    pub bibliography: openlibrary_author::Report,
+    pub truncated: bool,
+    pub attribution: &'static str,
+    pub discovery_completeness: &'static str,
+}
+
+/// The canonical form of a subject's full name, the one name contract every
+/// people-discovery entry point (the CLI, the HTTP route, [`discover`] and
+/// [`bibliography`]) applies before any request.
+///
+/// # Errors
+/// [`Error::Invalid`] for a name over the byte bound, one holding a control character,
+/// quote, backslash or angle bracket, or one that is not two alphabetic tokens.
+pub fn checked_name(raw: &str) -> Result<String, Error> {
+    let refused = || {
+        Error::Invalid(format!(
+            "people-discover requires a full name (two alphabetic tokens) of at most \
+             {MAX_PEOPLE_DISCOVERY_NAME_BYTES} bytes, without quotes, controls or HTML delimiters"
+        ))
+    };
+    // Check the *original bytes* before canonical_name collapses whitespace.
+    // Otherwise a newline, tab or NUL can disappear and be accepted as a
+    // legitimate name, despite the command's safety and input contract.
+    if raw.len() > MAX_PEOPLE_DISCOVERY_NAME_BYTES
+        || raw
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '"' | '\\' | '<' | '>'))
+    {
+        return Err(refused());
+    }
+    let name = canonical_name(raw);
+    if !people_cli::is_name(&name) {
+        return Err(refused());
+    }
+    Ok(name)
+}
+
+fn is_accepted_host(url: &str, domain: &str) -> bool {
+    if !url.starts_with("https://") {
+        return false;
+    }
+    let Ok(parsed) = parse_http_uri(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case(domain)
+        || host
+            .to_ascii_lowercase()
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// Public-source discovery without changing canonical record ownership or promoting
+/// index URLs into verified person records.
+///
+/// # Errors
+/// Invalid names and network boundary errors propagate. Each search engine's
+/// transport, WAF, zero-yield and parser failures remain per-facet typed outcomes.
+pub fn discover<T: Transport + ?Sized>(
+    transport: &T,
+    raw_name: &str,
+    region: Region,
+    now_unix: u64,
+) -> Result<Report, Error> {
+    let name = checked_name(raw_name)?;
+    let sources = [
+        ("professional_profile", "linkedin.com"),
+        ("software_footprint", "github.com"),
+        ("research_identifier", "orcid.org"),
+        ("official_registry", region.official_domain()),
+    ];
+    let mut facets = Vec::with_capacity(sources.len());
+    let mut candidates = BTreeMap::<String, Candidate>::new();
+    let mut truncated = false;
+
+    for (facet, host) in sources {
+        let query = format!("\"{name}\" site:{host}");
+        // Owns the network requests and classification: no second search
+        // parser, scraping workaround, or provider-availability guess.
+        let (response, index_sightings) =
+            web_query::search_with_provenance(transport, &query, now_unix)?;
+        let mut discarded = 0;
+        let index_hits = index_sightings.len();
+        for hit in index_sightings {
+            if !is_accepted_host(&hit.url, host) {
+                discarded += 1;
+                continue;
+            }
+            if !candidates.contains_key(&hit.url) && candidates.len() == MAX_CANDIDATES {
+                truncated = true;
+                continue;
+            }
+            let candidate = candidates
+                .entry(hit.url.clone())
+                .or_insert_with(|| Candidate {
+                    url: hit.url,
+                    facets: Vec::new(),
+                    reported_by: Vec::new(),
+                    status: "unverified_search_index_lead",
+                });
+            if !candidate.facets.contains(&facet) {
+                candidate.facets.push(facet);
+            }
+            if !candidate.reported_by.contains(&hit.engine) {
+                candidate.reported_by.push(hit.engine);
+            }
+        }
+        facets.push(SearchFacet {
+            id: facet,
+            accepted_host: host,
+            query,
+            index_hits,
+            discarded_out_of_scope: discarded,
+            outcomes: response.outcomes,
+        });
+    }
+
+    // The catalogue is independent of search-index fanout. A failed live lookup
+    // must not erase valid index leads or pretend the catalogue said "no match".
+    let bibliography = openlibrary_author::lookup(transport, &name, now_unix)
+        .unwrap_or_else(|error| openlibrary_author::unavailable(now_unix, &error.to_string()));
+
+    Ok(Report {
+        subject: name,
+        region,
+        facets,
+        candidates: candidates.into_values().collect(),
+        bibliography,
+        truncated,
+        attribution: "none_established; indexed_page_is_not_proof_of_person_or_account",
+        discovery_completeness: "unknown_beyond_four_index_queries",
+    })
+}
+
+/// The Open Library author search alone, for `people-discover --bibliography-only`:
+/// one keyless request, and no search-engine request.
+///
+/// # Errors
+/// An invalid name, refused before any request, and the guarded fetch boundary's errors.
+pub fn bibliography<T: Transport + ?Sized>(
+    transport: &T,
+    raw_name: &str,
+    now_unix: u64,
+) -> Result<openlibrary_author::Report, Error> {
+    openlibrary_author::lookup(transport, &checked_name(raw_name)?, now_unix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    use crate::http::{Request, Response, TransportFailure};
+    use crate::source_outcome::SourceOutcomeKind;
+
+    struct Fixture {
+        seen: RefCell<Vec<String>>,
+        denied: bool,
+    }
+
+    impl Transport for Fixture {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            self.seen.borrow_mut().push(request.url.clone());
+            if self.denied {
+                return Err(TransportFailure {
+                    kind: SourceOutcomeKind::TlsFailure,
+                    detail: "offline test".into(),
+                    blocked: false,
+                });
+            }
+            if request
+                .url
+                .starts_with("https://openlibrary.org/search/authors.json")
+            {
+                return Ok(Response {
+                    status: 200,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: br#"{"numFound":2,"numFoundExact":true,"docs":[{"key":"OL776398A","name":"Clara Ashwell"},{"key":"OL8288549A","name":"Clara Ashwell"}]}"#.to_vec(),
+                    truncated: false,
+                });
+            }
+            let body = concat!(
+                "<html><a href='https://linkedin.com/in/jane-example'>profile</a>",
+                "<a href='https://github.com/jane-example'>code</a>",
+                "<a href='https://orcid.org/0000-0001-1111-1111'>research</a>",
+                "<a href='https://asic.gov.au/register/candidate'>register</a>",
+                "<a href='https://sec.gov/archives/candidate'>US</a>",
+                "<a href='https://github.com.evil.example/false'>impersonation</a></html>"
+            );
+            Ok(Response {
+                status: 200,
+                headers: vec![("content-type".into(), "text/html".into())],
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn four_existing_index_fanouts_are_scoped_and_never_attributed() {
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        let report = discover(&fixture, "Clara Ashwell", Region::Au, 100).unwrap();
+        assert!(fixture.seen.borrow().len() >= 12);
+        assert_eq!(report.facets.len(), 4);
+        assert_eq!(report.candidates.len(), 4);
+        assert!(
+            report
+                .candidates
+                .iter()
+                .all(|c| c.status == "unverified_search_index_lead")
+        );
+        assert!(report.candidates.iter().all(|c| c.reported_by.len() == 3));
+        assert!(
+            report
+                .facets
+                .iter()
+                .all(|f| f.index_hits >= 4 && f.discarded_out_of_scope > 0)
+        );
+        assert!(
+            !report
+                .candidates
+                .iter()
+                .any(|c| c.url.contains("evil.example"))
+        );
+        assert_eq!(
+            report.attribution,
+            "none_established; indexed_page_is_not_proof_of_person_or_account"
+        );
+        assert!(!report.truncated);
+        assert_eq!(report.bibliography.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.bibliography.leads.len(), 2);
+        assert!(
+            report
+                .bibliography
+                .leads
+                .iter()
+                .all(|lead| lead.status == "unverified_bibliographic_name_search_lead")
+        );
+        assert_eq!(
+            fixture
+                .seen
+                .borrow()
+                .iter()
+                .filter(|url| url.starts_with("https://openlibrary.org/search/authors.json"))
+                .count(),
+            1,
+            "one direct catalogue request, no extra index-engine fanout"
+        );
+    }
+
+    #[test]
+    fn regional_official_source_selection_reuses_all_other_facets() {
+        let au = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        let us = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        let au_report = discover(&au, "Jane Example", Region::Au, 1).unwrap();
+        let us_report = discover(&us, "Alyssa Example", Region::Us, 3600).unwrap();
+        assert_eq!(au_report.facets[3].accepted_host, "asic.gov.au");
+        assert_eq!(us_report.facets[3].accepted_host, "sec.gov");
+        assert_eq!(us_report.candidates.len(), 4);
+        assert!(
+            !us_report
+                .candidates
+                .iter()
+                .any(|c| c.url.contains("asic.gov.au"))
+        );
+        assert_eq!(
+            au_report.facets[..3]
+                .iter()
+                .map(|f| f.accepted_host)
+                .collect::<Vec<_>>(),
+            us_report.facets[..3]
+                .iter()
+                .map(|f| f.accepted_host)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_or_single_token_names_before_any_request() {
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        for bad in [
+            "A",
+            "Ada",
+            "A Example",
+            "Jane \"Example\"",
+            "Jane\nExample",
+            "Jane\tExample",
+            "Jane\rExample",
+            "Jane\u{0}Example",
+            "Jane <Example>",
+            &"X".repeat(130),
+        ] {
+            assert!(discover(&fixture, bad, Region::Au, 1).is_err(), "{bad:?}");
+        }
+        assert!(fixture.seen.borrow().is_empty());
+        assert!(!is_accepted_host(
+            "https://github.com.evil.example/x",
+            "github.com"
+        ));
+        assert!(!is_accepted_host("http://github.com/x", "github.com"));
+    }
+
+    #[test]
+    fn bibliography_only_asks_open_library_alone_after_the_same_name_check() {
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        for bad in ["Ada", "Ada\nLovelace", "Ada <Lovelace>", "Ada \"Lovelace\""] {
+            assert!(bibliography(&fixture, bad, 1).is_err(), "{bad:?}");
+        }
+        assert!(fixture.seen.borrow().is_empty());
+        let report = bibliography(&fixture, "Clara  Ashwell", 1).unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.leads.len(), 2);
+        let seen = fixture.seen.borrow();
+        assert_eq!(
+            seen.len(),
+            1,
+            "one catalogue request, no search engine: {seen:?}"
+        );
+        assert_eq!(
+            seen[0],
+            "https://openlibrary.org/search/authors.json?q=clara+ashwell&limit=5"
+        );
+    }
+
+    #[test]
+    fn unavailable_sources_do_not_claim_zero_results_are_confirmed() {
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: true,
+        };
+        let report = discover(&fixture, "Daphne Example", Region::Au, 7200).unwrap();
+        assert!(report.candidates.is_empty());
+        assert_eq!(report.facets.len(), 4);
+        assert!(
+            report
+                .facets
+                .iter()
+                .flat_map(|f| &f.outcomes)
+                .all(|o| !o.kind.is_accepted())
+        );
+        assert!(fixture.seen.borrow().len() >= 12);
+    }
+}
