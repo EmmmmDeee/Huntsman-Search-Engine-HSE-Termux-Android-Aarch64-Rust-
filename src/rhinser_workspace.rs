@@ -1,7 +1,7 @@
 //! Local, deterministic OSINT workspace: cases, notes, source leads and tool history.
 //! Nothing here fetches or verifies remote evidence. A source URL is a lead, not a fact.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,22 @@ pub struct Workspace {
     pub recent_tools: Vec<String>,
     pub search_history: Vec<String>,
     pub settings: BTreeMap<String, String>,
+}
+
+/// A reference URL repeated in multiple cases. Reuse is NOT independent corroboration.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SharedSourceUrl {
+    pub url: String,
+    pub case_ids: Vec<String>,
+}
+
+/// Deterministic, read-only cross-case index of operator-supplied source leads.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WorkspaceOverlapReport {
+    pub cases_considered: usize,
+    pub source_leads_considered: usize,
+    pub shared_source_urls: Vec<SharedSourceUrl>,
+    pub evidence_status: &'static str,
 }
 
 impl Default for Workspace {
@@ -143,6 +159,39 @@ impl Workspace {
             return Err("invalid history or setting".to_owned());
         }
         Ok(())
+    }
+
+    /// Discover exact source URLs reused across distinct cases, without network access.
+    ///
+    /// Source overlap identifies repeated leads, not independent witnesses or proven identities.
+    /// No URL normalization or fuzzy matching is used, avoiding false equivalence.
+    ///
+    /// # Errors
+    /// Rejects an invalid workspace before analyzing its references.
+    pub fn source_overlaps(&self) -> Result<WorkspaceOverlapReport, String> {
+        self.validate()?;
+        let mut references: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        let mut lead_count = 0usize;
+        for case in &self.cases {
+            for lead in &case.source_leads {
+                lead_count += 1;
+                references.entry(&lead.url).or_default().insert(&case.id);
+            }
+        }
+        let shared_source_urls = references
+            .into_iter()
+            .filter(|(_, case_ids)| case_ids.len() > 1)
+            .map(|(url, case_ids)| SharedSourceUrl {
+                url: url.to_owned(),
+                case_ids: case_ids.into_iter().map(str::to_owned).collect(),
+            })
+            .collect();
+        Ok(WorkspaceOverlapReport {
+            cases_considered: self.cases.len(),
+            source_leads_considered: lead_count,
+            shared_source_urls,
+            evidence_status: "reused_unverified_leads_not_independent_corroboration",
+        })
     }
 
     /// # Errors
@@ -315,5 +364,59 @@ mod tests {
         );
         assert!(workspace.add_note("missing", "note", 1).is_err());
         assert!(workspace.remember_tool("unknown", "favourite").is_err());
+    }
+    #[test]
+    fn exact_cross_case_overlap_is_sorted_and_not_corroboration() {
+        let mut workspace = Workspace::default();
+        workspace.create_case("case-b", "Second").unwrap();
+        workspace.create_case("case-a", "First").unwrap();
+        workspace
+            .add_lead("case-b", "a", "https://example.org/a", "Lead", 1)
+            .unwrap();
+        workspace
+            .add_lead("case-b", "b", "https://example.org/a", "Same case", 2)
+            .unwrap();
+        workspace
+            .add_lead("case-a", "c", "https://example.org/a", "Another case", 3)
+            .unwrap();
+        workspace
+            .add_lead("case-a", "d", "https://example.org/b", "Different page", 4)
+            .unwrap();
+        let report = workspace.source_overlaps().unwrap();
+        assert_eq!(report.cases_considered, 2);
+        assert_eq!(report.source_leads_considered, 4);
+        assert_eq!(report.shared_source_urls.len(), 1);
+        assert_eq!(report.shared_source_urls[0].url, "https://example.org/a");
+        assert_eq!(report.shared_source_urls[0].case_ids, ["case-a", "case-b"]);
+        assert_eq!(
+            report.evidence_status,
+            "reused_unverified_leads_not_independent_corroboration"
+        );
+        assert_eq!(workspace.source_overlaps().unwrap(), report);
+    }
+
+    #[test]
+    fn no_cross_case_overlap_for_same_host_or_same_case_only() {
+        let mut workspace = Workspace::default();
+        workspace.create_case("a", "A").unwrap();
+        workspace.create_case("b", "B").unwrap();
+        workspace
+            .add_lead("a", "a1", "https://example.org/one", "Lead", 1)
+            .unwrap();
+        workspace
+            .add_lead("a", "a2", "https://example.org/one", "Repeat", 1)
+            .unwrap();
+        workspace
+            .add_lead("b", "b1", "https://example.org/two", "Lead", 1)
+            .unwrap();
+        assert!(
+            workspace
+                .source_overlaps()
+                .unwrap()
+                .shared_source_urls
+                .is_empty()
+        );
+        workspace.cases[1].source_leads[0].evidence_status = "verified".to_owned();
+        assert!(workspace.source_overlaps().is_err());
     }
 }

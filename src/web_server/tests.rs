@@ -260,6 +260,55 @@ fn rhinser_native_browser_submission_matches_protected_http_contract() {
 }
 
 #[test]
+fn rhinser_overlap_api_is_same_site_guarded_bounded_and_read_only() {
+    let mut workspace = crate::rhinser_workspace::Workspace::default();
+    for id in ["case-1", "case-2"] {
+        workspace.create_case(id, id).unwrap();
+        workspace
+            .add_lead(id, "lead", "https://example.org/shared", "Unverified", 1)
+            .unwrap();
+    }
+    let body = serde_json::to_string(&workspace).unwrap();
+    let request = format!(
+        "POST /api/rhinser/overlaps HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nX-Huntsman-Lookup: 1\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let answer = response_for_request(&request, None, loopback_bind());
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let value: serde_json::Value =
+        serde_json::from_str(answer.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(
+        value["shared_source_urls"][0]["case_ids"],
+        serde_json::json!(["case-1", "case-2"])
+    );
+    assert_eq!(
+        value["evidence_status"],
+        "reused_unverified_leads_not_independent_corroboration"
+    );
+
+    let without_guard = request.replace("X-Huntsman-Lookup: 1\r\n", "");
+    assert!(
+        response_for_request(&without_guard, None, loopback_bind()).starts_with("HTTP/1.1 403")
+    );
+    let cross_site = request.replace(
+        "X-Huntsman-Lookup: 1\r\n",
+        "X-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n",
+    );
+    assert!(response_for_request(&cross_site, None, loopback_bind()).starts_with("HTTP/1.1 403"));
+    let bad = "POST /api/rhinser/overlaps HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nX-Huntsman-Lookup: 1\r\nContent-Length: 2\r\n\r\n{}";
+    assert!(response_for_request(bad, None, loopback_bind()).starts_with("HTTP/1.1 400"));
+    assert!(
+        response_for_request(
+            "GET /api/rhinser/overlaps HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
+            None,
+            loopback_bind(),
+        )
+        .starts_with("HTTP/1.1 405")
+    );
+}
+
+#[test]
 fn local_evidence_cannot_be_read_from_a_public_bind_even_with_token() {
     for path in ["/evidence", "/api/evidence"] {
         let request = format!(
