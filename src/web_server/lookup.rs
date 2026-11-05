@@ -18,9 +18,8 @@ use crate::value_syntax::form_decode;
 
 use super::{
     LOOKUP_STACK_BYTES, LookupQuery, LookupReport, Lookups, MAX_LOOKUPS, MAX_RADAR_REQUESTS,
-    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES, Sensor,
-    Slot,
-    json_error, json_ok, page_refusal, response, response_bytes,
+    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES,
+    Sensor, Slot, json_error, json_ok, page_refusal, response, response_bytes,
 };
 
 /// Read a sensor (Android's OS-cached Wi-Fi scan, or the cells it reports) or record one track
@@ -323,10 +322,13 @@ pub(super) fn people_discover_response(
         return refusal;
     }
     if !parsed.query.is_empty() {
-        return json_error(400, "people discovery parameters belong in the request body");
+        return json_error(
+            400,
+            "people discovery parameters belong in the request body",
+        );
     }
     let length = match parsed.content_length {
-        Some(1..=512) => parsed.content_length.unwrap_or(0),
+        Some(length @ 1..=512) => length,
         Some(0) | None => return json_error(400, "people discovery needs a JSON body"),
         _ => return json_error(413, "people discovery JSON exceeds 512 bytes"),
     };
@@ -358,7 +360,9 @@ pub(super) fn people_discover_response(
     if name.len() > crate::people_discovery::MAX_PEOPLE_DISCOVERY_NAME_BYTES || name.is_empty() {
         return json_error(400, "people discovery name must be 1..120 bytes");
     }
-    let Some(slot) = Slot::take_of(&discovery.live, MAX_LOOKUPS) else {
+    // Four sequential source facets can perform twelve guarded engine calls.
+    // Keep at most one such fan-out on a low-RAM Termux handset at a time.
+    let Some(slot) = Slot::take_of(&discovery.live, 1) else {
         return json_error(503, "people discovery capacity in use; retry shortly");
     };
     let handler = Arc::clone(&discovery.handler);
@@ -381,9 +385,10 @@ pub(super) fn people_discover_response(
         Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
             json_error(500, "people discovery failed unexpectedly")
         }
-        Err(RecvTimeoutError::Timeout) => {
-            json_error(504, "people discovery timed out; no completed report was saved")
-        }
+        Err(RecvTimeoutError::Timeout) => json_error(
+            504,
+            "people discovery timed out; no completed report was saved",
+        ),
     }
 }
 

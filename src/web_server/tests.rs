@@ -109,19 +109,21 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
 
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = Arc::clone(&calls);
-    let mut routes = Routes::default();
-    routes.people_discover = Some(PeopleDiscover {
-        handler: Arc::new(move |name, region| {
-            assert_eq!(name, "Jane Example");
-            assert_eq!(region, crate::people_discovery::Region::Au);
-            seen.fetch_add(1, Ordering::SeqCst);
-            Ok(serde_json::json!({
-                "candidates": [],
-                "attribution": "none_established"
-            }))
+    let routes = Routes {
+        people_discover: Some(PeopleDiscover {
+            handler: Arc::new(move |name, region| {
+                assert_eq!(name, "Jane Example");
+                assert_eq!(region, crate::people_discovery::Region::Au);
+                seen.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "candidates": [],
+                    "attribution": "none_established"
+                }))
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
         }),
-        live: Arc::new(AtomicUsize::new(0)),
-    });
+        ..Routes::default()
+    };
     let config = test_config(loopback_bind(), None);
     let body = r#"{"name":"Jane Example","region":"au"}"#;
     let head = format!(
@@ -136,7 +138,10 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
         head.replace("X-Huntsman-Lookup: 1\r\n", ""),
         head.replace("same-origin", "cross-site"),
         head.replace("POST /api/people/discover", "GET /api/people/discover"),
-        head.replace("/api/people/discover HTTP", "/api/people/discover?name=Jane HTTP"),
+        head.replace(
+            "/api/people/discover HTTP",
+            "/api/people/discover?name=Jane HTTP",
+        ),
         head.replace("Jane Example", "Jane\\nExample"),
         head.replace("\"au\"", "\"unknown\""),
         head.replace("Content-Length: 37", "Content-Length: 999"),

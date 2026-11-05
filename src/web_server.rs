@@ -1543,7 +1543,9 @@ fn route(
         },
         "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
         "/api/research" => lookup::research_response(parsed, routes.research.as_ref()),
-        PEOPLE_DISCOVER_PATH => lookup::people_discover_response(parsed, routes.people_discover.as_ref()),
+        PEOPLE_DISCOVER_PATH => {
+            lookup::people_discover_response(parsed, routes.people_discover.as_ref())
+        }
         RESEARCH_MISSION_PATH => lookup::research_mission_response(parsed, routes.scans.as_ref()),
         "/api/radar/wifi" => {
             sensor_response(parsed, routes.radar.as_ref(), "Wi-Fi radar", Method::Get)
