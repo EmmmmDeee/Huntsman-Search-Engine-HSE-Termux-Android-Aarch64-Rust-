@@ -29,7 +29,7 @@ use crate::api_leg::{Api, LegError};
 use crate::canonical::{canonical_domain, canonical_ip};
 use crate::dns::{self, RESOLVE_SOURCE, ResolveErrorKind};
 use crate::dnsbl::{self, Subject};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::greynoise;
 use crate::http::Transport;
@@ -59,11 +59,8 @@ const PIVOT_CONFIDENCE: f64 = 0.60;
 /// the name is not checked to resolve back.
 const PTR_CONFIDENCE: f64 = 0.80;
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IpArgs {

@@ -15,12 +15,35 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use crate::entity::{Entity, Evidence};
+use crate::entity::{Entity, Evidence, merge_by_uid};
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
 use crate::relation::{self, Relation};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 use crate::textnorm::escape_controls;
+
+/// What a lookup found: its entities and each source's row. Every lookup front-end whose report
+/// holds just these two names this type as its `Report`, so the shape is defined once.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LookupReport {
+    pub entities: Vec<Entity>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+/// Ends a lookup from what it found: its entities merged by UID, then a refusal (exit 77) or an
+/// unanswered lookup (exit 69) led by `lead` when no row was accepted
+/// ([`SourceReach::unanswered`]), else the rendered report.
+#[must_use]
+pub fn finish(mut report: LookupReport, lead: &str) -> SourceRun<LookupReport> {
+    merge_by_uid(&mut report.entities);
+    if let Some(run) = SourceReach::of(&report.outcomes).unanswered(lead) {
+        return run;
+    }
+    match render(&report.entities, &report.outcomes) {
+        Ok(text) => SourceRun::Printed { text, report },
+        Err(message) => SourceRun::Failed(message),
+    }
+}
 
 /// One entity row: kind, `value`, confidence, tags. The caller picks the value it shows: a lookup
 /// shows what the source said (`raw_value`), `recon` the normalised value.

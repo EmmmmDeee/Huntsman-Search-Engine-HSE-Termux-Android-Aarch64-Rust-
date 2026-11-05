@@ -7,13 +7,12 @@
 use std::path::PathBuf;
 
 use crate::canonical::canonical_coordinates;
-use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::nominatim;
-use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const GEOCODE_USAGE: &str =
     "usage: huntsman-recon geocode PLACE-OR-ADDRESS [--save FILE] | geocode LAT,LON [--save FILE]";
@@ -65,11 +64,8 @@ pub fn canonical_query(raw: &str) -> Result<String, Error> {
     Ok(query.to_owned())
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 pub type GeocodeRun = SourceRun<Report>;
 
@@ -137,17 +133,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
             )),
         }
     }
-    merge_by_uid(&mut report.entities);
-
-    if let Some(run) =
-        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {query:?}"))
-    {
-        return run;
-    }
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => GeocodeRun::Printed { text, report },
-        Err(message) => GeocodeRun::Failed(message),
-    }
+    lookup_report::finish(report, &format!("no source answered for {query:?}"))
 }
 
 #[cfg(test)]

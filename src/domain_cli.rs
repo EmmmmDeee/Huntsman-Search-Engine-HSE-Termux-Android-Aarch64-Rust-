@@ -66,11 +66,8 @@ const RECORD_CONFIDENCE: f64 = 0.85;
 /// observation than the zone's own answer.
 const SEEN_CONFIDENCE: f64 = 0.80;
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DomainArgs {

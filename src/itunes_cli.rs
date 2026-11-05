@@ -2,12 +2,11 @@
 //! Spiderfoot's `apple_itunes` leg, keyless. Each app found is a candidate for review, never a
 //! confirmed link to the keyword's owner.
 
-use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::itunes;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const ITUNES_USAGE: &str = "usage: huntsman-recon itunes KEYWORD";
 pub const ITUNES_HELP: &str = "\
@@ -36,11 +35,8 @@ impl ItunesArgs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 pub type ItunesRun = SourceRun<Report>;
 
@@ -91,17 +87,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keyword: &str, now_unix: u64) -
             )),
         }
     }
-    merge_by_uid(&mut report.entities);
-
-    if let Some(run) =
-        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {keyword:?}"))
-    {
-        return run;
-    }
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => ItunesRun::Printed { text, report },
-        Err(message) => ItunesRun::Failed(message),
-    }
+    lookup_report::finish(report, &format!("no source answered for {keyword:?}"))
 }
 
 #[cfg(test)]

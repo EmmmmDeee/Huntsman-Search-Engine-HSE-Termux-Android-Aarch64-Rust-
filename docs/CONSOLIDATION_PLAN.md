@@ -14,7 +14,9 @@ Status: **PROPOSED**. Unless marked *estimate*, every number here was measured o
 - Phase 1 is in place for its moves. The inline tests of the six files above now live in `<module>/tests.rs`: 8,926 lines, with every unit test name unchanged (3,223 before and after). `oathnet::non_blank` became `textnorm::nonblank`. A survey of the local transport fakes found them mostly bespoke (scripts, recorders, maps, panicking fakes); only `oathnet`'s blocking fake duplicates a shared double. G4 is therefore not adopted: its allow-list would hold most of the fakes.
 - Phase 3 is in place: B1 to B4. The refusal-contract harness holds every lookup but `phone` with no exceptions, and G2 is `a_saved_lookup_credits_each_record_to_the_file_that_made_it`.
 
-The later phases are not implemented yet.
+- Phase 5 is in place where the endings are identical. One `lookup_report::LookupReport` replaces fourteen identical `Report` structs, each now an alias. Six front-ends end through `lookup_report::finish`. Since B3, every lookup ends through `SourceReach`, which `REFUSAL_ROUTED` in `architecture_boundaries` enforces (G6). The other front-ends keep their own endings, because each does more than this one.
+
+Phases 4 and 6 are not implemented yet.
 
 - **Process.** Work under this plan follows [CLAUDE_CODE_REFACTOR_EXECUTION.md](CLAUDE_CODE_REFACTOR_EXECUTION.md).
 - **Authority.** The root [`ARCHITECTURE.md`](../ARCHITECTURE.md) and its tests stay authoritative for the module map.

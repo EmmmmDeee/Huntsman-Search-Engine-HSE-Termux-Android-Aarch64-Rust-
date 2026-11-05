@@ -5,11 +5,10 @@
 //! Wikidata says it is a human, an organisation only on a known organisation type, and otherwise
 //! an entity of unstated type -- a classification is never assumed from the absence of evidence.
 
-use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 use crate::wikidata;
 
 pub const WIKIDATA_USAGE: &str = "usage: huntsman-recon wikidata QUERY";
@@ -60,11 +59,8 @@ pub fn canonical_query(raw: &str) -> Result<String, Error> {
     Ok(query.to_owned())
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 pub type WikidataRun = SourceRun<Report>;
 
@@ -92,17 +88,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
             )),
         }
     }
-    merge_by_uid(&mut report.entities);
-
-    if let Some(run) =
-        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {query:?}"))
-    {
-        return run;
-    }
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => WikidataRun::Printed { text, report },
-        Err(message) => WikidataRun::Failed(message),
-    }
+    lookup_report::finish(report, &format!("no source answered for {query:?}"))
 }
 
 #[cfg(test)]

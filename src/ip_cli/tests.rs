@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use super::*;
+use crate::entity::Entity;
 use crate::http::{Request, Response, TransportFailure};
 use crate::source_outcome::SourceOutcomeKind;
 use crate::test_support::Refusing;

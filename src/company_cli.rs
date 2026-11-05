@@ -5,13 +5,12 @@
 
 use crate::abn_lookup;
 use crate::asic_orgs::{self, Query};
-use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::gleif;
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const COMPANY_USAGE: &str = "usage: huntsman-recon company NAME|ACN|ABN";
 pub const COMPANY_HELP: &str = "\
@@ -50,11 +49,8 @@ impl CompanyArgs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+/// What the lookup found: its entities and each source's row.
+pub type Report = crate::lookup_report::LookupReport;
 
 pub type CompanyRun = SourceRun<Report>;
 
@@ -123,17 +119,7 @@ pub fn run<T: Transport + ?Sized>(
             )),
         }
     }
-    merge_by_uid(&mut report.entities);
-
-    if let Some(run) =
-        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {text:?}"))
-    {
-        return run;
-    }
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => CompanyRun::Printed { text, report },
-        Err(message) => CompanyRun::Failed(message),
-    }
+    lookup_report::finish(report, &format!("no source answered for {text:?}"))
 }
 
 #[cfg(test)]

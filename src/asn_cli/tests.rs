@@ -1,4 +1,5 @@
 use super::*;
+use crate::entity::Entity;
 use crate::http::{Request, Response, TransportFailure};
 use crate::rdap::tests::{ASN_BOOTSTRAP, CLOUDFLARE_AS};
 use crate::ripestat::tests::{NEIGHBOURS, OVERVIEW, PREFIXES};
