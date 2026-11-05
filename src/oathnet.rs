@@ -36,6 +36,7 @@ use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_
 use crate::keys::{Keys, Secret};
 use crate::redact::{scrub_bounded, scrub_secrets};
 use crate::source_outcome::SourceOutcomeKind;
+use crate::textnorm::nonblank;
 
 /// Source label of this leg in outcomes, evidence and saved ledgers.
 pub const SOURCE: &str = "oathnet";
@@ -434,9 +435,9 @@ pub fn decode(body: &[u8], secrets: &[&str]) -> Result<Search, OathnetError> {
     }
     for (name, breach) in &mut breaches {
         if let Some(info) = data.dbname_info.get(name) {
-            breach.title = non_blank(info.title.as_deref());
-            breach.domain = non_blank(info.domain.as_deref());
-            breach.breach_date = non_blank(info.breach_date.as_deref());
+            breach.title = nonblank(info.title.as_deref()).map(str::to_owned);
+            breach.domain = nonblank(info.domain.as_deref()).map(str::to_owned);
+            breach.breach_date = nonblank(info.breach_date.as_deref()).map(str::to_owned);
             breach.pwn_count = info.pwn_count;
         }
     }
@@ -633,13 +634,6 @@ fn text<'a>(item: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-}
-
-fn non_blank(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
 }
 
 /// Replace `slot` with `candidate` when it is empty or `better(candidate, current)`. ISO 8601

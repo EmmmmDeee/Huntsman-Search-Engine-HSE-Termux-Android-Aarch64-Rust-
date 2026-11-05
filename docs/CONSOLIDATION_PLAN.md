@@ -11,6 +11,7 @@ Status: **PROPOSED**. Unless marked *estimate*, every number here was measured o
 - `tests/test_count_floor.rs` holds the test-count floor.
 
 - Phase 2 is in place. `src/source_profile.rs` is the one classification table, and `tests/source_profile.rs` holds G1. G3 is `every_key_slot_has_a_provider_row` in `src/scan_api.rs`.
+- Phase 1 is in place for its moves. The inline tests of the six files above now live in `<module>/tests.rs`: 8,926 lines, with every unit test name unchanged (3,223 before and after). `oathnet::non_blank` became `textnorm::nonblank`. A survey of the local transport fakes found them mostly bespoke (scripts, recorders, maps, panicking fakes); only `oathnet`'s blocking fake duplicates a shared double. G4 is therefore not adopted: its allow-list would hold most of the fakes.
 - Phase 3 is in place: B1 to B4. The refusal-contract harness holds every lookup but `phone` with no exceptions, and G2 is `a_saved_lookup_credits_each_record_to_the_file_that_made_it`.
 
 The later phases are not implemented yet.
