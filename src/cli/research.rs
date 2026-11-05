@@ -10,15 +10,26 @@ use huntsman_recon::research_route::{self, ResearchAction};
 
 use super::{fail, lookup};
 
-pub(super) const RESEARCH_HELP: &str = "research [--plan] TERM...\nResearch arbitrary text using an existing Huntsman capability. Recognised exact identifiers use the established typed scan route; general phrases use the keyless adaptive web search. A coordinate point uses geocode rather than the older scan radio-area default. --plan selects and prints the route offline without fetching. A typed scan can invoke existing configured source integrations; for guaranteed keyless research use query --adaptive. Does not require root or a runtime LLM.";
+pub(super) const RESEARCH_HELP: &str = "research [--plan] [--all] TERM...\nResearch arbitrary text using an existing Huntsman capability. Recognised exact identifiers use the established typed scan route; general phrases use the keyless adaptive web search over Bing, Brave and Mojeek. A coordinate point uses geocode rather than the older scan radio-area default. --plan selects and prints the route offline without fetching. --all asks all 16 keyless engines on the adaptive web route instead, inside one 110-second budget, as query --adaptive --all does; a typed scan route is unchanged. A typed scan can invoke existing configured source integrations; for guaranteed keyless research use query --adaptive. Does not require root or a runtime LLM.";
 
 pub(super) fn research_cmd(args: &[String]) -> ExitCode {
-    let (preview, terms) = match args.split_first() {
-        Some((first, rest)) if first == "--plan" => (true, rest),
-        _ => (false, args),
-    };
+    let mut preview = false;
+    let mut all = false;
+    let mut offset = 0;
+    while let Some(flag) = args.get(offset).map(String::as_str) {
+        match flag {
+            "--plan" if !preview => preview = true,
+            "--all" if !all => all = true,
+            _ => break,
+        }
+        offset += 1;
+    }
+    let terms = &args[offset..];
     if terms.is_empty() || terms.iter().any(|value| value.starts_with("--")) {
-        return fail(EX_USAGE, "usage: huntsman-recon research [--plan] TERM...");
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon research [--plan] [--all] TERM...",
+        );
     }
 
     let input = terms.join(" ");
@@ -37,10 +48,16 @@ pub(super) fn research_cmd(args: &[String]) -> ExitCode {
         }
         ResearchAction::AdaptiveWeb { query } => {
             if preview {
-                println!("route=adaptive_web_search\tkeyless=true");
+                // `--all` changes only this route, so only its preview names the engine set.
+                let engines = if all { "\tengines=all" } else { "" };
+                println!("route=adaptive_web_search\tkeyless=true{engines}");
                 return ExitCode::SUCCESS;
             }
-            lookup::query_cmd(&["--adaptive".into(), query])
+            if all {
+                lookup::query_cmd(&["--adaptive".into(), "--all".into(), query])
+            } else {
+                lookup::query_cmd(&["--adaptive".into(), query])
+            }
         }
     }
 }

@@ -228,8 +228,13 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
 fn web_research(query: &str) -> Result<serde_json::Value, LookupError> {
     let transport =
         huntsman_recon::http::UreqTransport::new(&huntsman_recon::http::TransportConfig::default());
-    let report = huntsman_recon::web_query::adaptive_search(&transport, query, clock::unix_now())
-        .map_err(|error| LookupError {
+    let report = huntsman_recon::web_query::adaptive_search(
+        &transport,
+        query,
+        clock::unix_now(),
+        huntsman_recon::web_query::EngineSet::Default,
+    )
+    .map_err(|error| LookupError {
         status: if matches!(error, Error::Invalid(_)) {
             400
         } else {

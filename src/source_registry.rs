@@ -5,6 +5,7 @@
 //! material must still pass Huntsman's normal provenance and source-outcome gates.
 
 use crate::entity::EntityKind;
+use crate::web_query::{EngineSet, search_url};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
@@ -275,7 +276,7 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
         return Vec::new();
     }
     let encoded = crate::http::percent_encode_unreserved(value);
-    SOURCES
+    let mut routes: Vec<SourceRoute> = SOURCES
         .iter()
         .filter(|source| {
             source
@@ -292,7 +293,38 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
             reference_url: source.reference_url,
             evidence_role: source.evidence_role,
         })
-        .collect()
+        .collect();
+
+    // The default keyless engines that `query` asks get one link each, built by the
+    // same `search_url` as the live request, so a pivot and a search never disagree.
+    // Only these entity classes are pivoted: a credential, API key, device identifier
+    // or residual text is never handed to a public search engine.
+    if matches!(
+        kind,
+        EntityKind::Person
+            | EntityKind::Organisation
+            | EntityKind::Email
+            | EntityKind::Username
+            | EntityKind::Domain
+            | EntityKind::IpAddress
+            | EntityKind::AbnAcn
+    ) {
+        routes.extend(
+            EngineSet::Default
+                .engines()
+                .iter()
+                .map(|engine| SourceRoute {
+                    source_id: engine.name,
+                    source_name: engine.name,
+                    execution: ExecutionMode::SearchUrl,
+                    access: SourceAccess::Public,
+                    url: search_url(*engine, value),
+                    reference_url: engine.base_url,
+                    evidence_role: EvidenceRole::LeadOnly,
+                }),
+        );
+    }
+    routes
 }
 
 #[cfg(test)]
@@ -310,6 +342,81 @@ mod tests {
             assert!(source.reference_url.starts_with("https://"));
             assert_eq!(source.url_template.matches("{value}").count(), 1);
             assert_ne!(source.accepted_kinds, []);
+        }
+        // An engine pivot's id never collides with a curated source's.
+        for engine in EngineSet::Default.engines() {
+            assert!(
+                ids.insert(engine.name),
+                "engine {} reuses a source id",
+                engine.name
+            );
+        }
+    }
+
+    #[test]
+    fn keyless_pivots_derive_from_live_engine_registry_and_remain_leads() {
+        let engines = EngineSet::Default.engines();
+        for kind in [
+            EntityKind::Person,
+            EntityKind::Organisation,
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Domain,
+            EntityKind::IpAddress,
+            EntityKind::AbnAcn,
+        ] {
+            let (selector, expected_bing_url) = match kind {
+                EntityKind::Username => (
+                    "@example_handle",
+                    "https://www.bing.com/search?q=example_handle",
+                ),
+                EntityKind::Domain => ("example.org", "https://www.bing.com/search?q=example.org"),
+                EntityKind::IpAddress => ("8.8.8.8", "https://www.bing.com/search?q=8.8.8.8"),
+                EntityKind::Email => (
+                    "research@example.org",
+                    "https://www.bing.com/search?q=research%40example.org",
+                ),
+                EntityKind::AbnAcn => ("12345678901", "https://www.bing.com/search?q=12345678901"),
+                _ => (
+                    "Example Research",
+                    "https://www.bing.com/search?q=Example%20Research",
+                ),
+            };
+            let routes = routes_for(&kind, selector);
+            let indexed: Vec<_> = routes
+                .iter()
+                .filter(|route| engines.iter().any(|engine| engine.name == route.source_id))
+                .collect();
+            // One link per default engine, in its order, built as the live request is.
+            assert_eq!(
+                indexed
+                    .iter()
+                    .map(|route| route.source_id)
+                    .collect::<Vec<_>>(),
+                ["bing", "brave", "mojeek"],
+                "{kind:?}"
+            );
+            assert!(indexed.iter().all(|route| {
+                route.evidence_role == EvidenceRole::LeadOnly
+                    && route.access == SourceAccess::Public
+                    && route.execution == ExecutionMode::SearchUrl
+                    && route.url.starts_with("https://")
+            }));
+            assert_eq!(indexed[0].url, expected_bing_url, "{kind:?}");
+            // An opt-in engine is never a default pivot.
+            assert!(
+                !routes.iter().any(|route| route.source_id == "yahoo"),
+                "{kind:?}"
+            );
+        }
+        for kind in [
+            EntityKind::Credential,
+            EntityKind::ApiKey,
+            EntityKind::DeviceId,
+            EntityKind::MacAddress,
+            EntityKind::Other,
+        ] {
+            assert!(routes_for(&kind, "sensitive-input").is_empty());
         }
     }
 

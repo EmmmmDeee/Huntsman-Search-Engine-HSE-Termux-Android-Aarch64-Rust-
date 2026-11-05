@@ -20,7 +20,7 @@ use huntsman_recon::http::{
 };
 use huntsman_recon::keys::{Keys, Secret};
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use huntsman_recon::web_query::{self, SearchHit};
+use huntsman_recon::web_query::{self, EngineSet, SearchHit};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -462,27 +462,29 @@ fn scan_indexed<T: Transport + ?Sized>(
 ) -> Result<Report, &'static str> {
     let username = checked_username(raw)?;
     let query = format!("site:facebook.com \"{username}\"");
-    let (hits, outcomes, state) = match web_query::search(transport, &query, now) {
-        Ok(report) => {
-            let mut seen = BTreeSet::new();
-            let mut hits = Vec::new();
-            for hit in report.hits {
-                if is_direct_facebook_page(&hit.url, &username) && seen.insert(hit.url.clone()) {
-                    hits.push(hit);
+    let (hits, outcomes, state) =
+        match web_query::search(transport, &query, now, EngineSet::Default) {
+            Ok(report) => {
+                let mut seen = BTreeSet::new();
+                let mut hits = Vec::new();
+                for hit in report.hits {
+                    if is_direct_facebook_page(&hit.url, &username) && seen.insert(hit.url.clone())
+                    {
+                        hits.push(hit);
+                    }
+                    if hits.len() >= 20 {
+                        break;
+                    }
                 }
-                if hits.len() >= 20 {
-                    break;
-                }
+                let state = if hits.is_empty() {
+                    "no_indexed_leads"
+                } else {
+                    "indexed_leads"
+                };
+                (hits, report.outcomes, state)
             }
-            let state = if hits.is_empty() {
-                "no_indexed_leads"
-            } else {
-                "indexed_leads"
-            };
-            (hits, report.outcomes, state)
-        }
-        Err(_) => (Vec::new(), Vec::new(), "search_unavailable"),
-    };
+            Err(_) => (Vec::new(), Vec::new(), "search_unavailable"),
+        };
     Ok(Report {
         page_url: format!("https://www.facebook.com/{username}"),
         profile: EndpointResult::new(

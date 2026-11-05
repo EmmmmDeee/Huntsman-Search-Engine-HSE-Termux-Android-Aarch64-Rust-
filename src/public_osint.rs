@@ -399,7 +399,9 @@ fn web_search<T: Transport + ?Sized>(
     scan_id: &str,
     now: u64,
 ) -> (Vec<Entity>, Vec<SourceExecutionOutcome>) {
-    let Ok(found) = crate::web_query::search(transport, query, now) else {
+    let Ok(found) =
+        crate::web_query::search(transport, query, now, crate::web_query::EngineSet::Default)
+    else {
         return (
             Vec::new(),
             vec![SourceExecutionOutcome::refused_before_sending(

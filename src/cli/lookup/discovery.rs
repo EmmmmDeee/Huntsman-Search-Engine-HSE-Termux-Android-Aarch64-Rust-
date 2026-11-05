@@ -19,7 +19,7 @@ use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::textnorm::escape_controls;
-use huntsman_recon::web_query;
+use huntsman_recon::web_query::{self, EngineSet};
 
 /// The actionable entities in `text`, each with the classifier's evidence, as `investigate`
 /// prints them and `POST /api/investigate` answers them: one authority for both.
@@ -70,6 +70,27 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The keyless query options, in either order and each at most once: `--adaptive`, and
+/// `--all`, which asks every keyless engine instead of the default three. The rest is the
+/// query; `None` when it is empty or holds anything flag-like, so a mistyped option is
+/// refused rather than sent to search engines as text.
+fn parse_query_flags(args: &[String]) -> Option<(bool, EngineSet, &[String])> {
+    let mut adaptive = false;
+    let mut engines = EngineSet::Default;
+    let mut offset = 0;
+    while let Some(flag) = args.get(offset).map(String::as_str) {
+        match flag {
+            "--adaptive" if !adaptive => adaptive = true,
+            "--all" if engines == EngineSet::Default => engines = EngineSet::All,
+            _ => break,
+        }
+        offset += 1;
+    }
+    let terms = &args[offset..];
+    (!terms.is_empty() && !terms.iter().any(|term| term.starts_with("--")))
+        .then_some((adaptive, engines, terms))
+}
+
 pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon query QUERY...");
@@ -115,20 +136,18 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
             }
         };
     }
-    let adaptive = args.first().is_some_and(|arg| arg == "--adaptive");
-    let terms = if adaptive { &args[1..] } else { args };
-    if terms.is_empty() {
+    let Some((adaptive, engines, terms)) = parse_query_flags(args) else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon query [--adaptive] QUERY...",
+            "usage: huntsman-recon query [--adaptive] [--all] QUERY...",
         );
-    }
+    };
     let query = terms.join(" ");
     let now = clock::unix_now();
     let transport = UreqTransport::new(&TransportConfig::default());
 
     if adaptive {
-        return match web_query::adaptive_search(&transport, &query, now) {
+        return match web_query::adaptive_search(&transport, &query, now, engines) {
             Ok(report) => {
                 match terminal_json_pretty(&report) {
                     Ok(serialized) => println!("{serialized}"),
@@ -146,7 +165,7 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
         };
     }
 
-    match web_query::search(&transport, &query, now) {
+    match web_query::search(&transport, &query, now, engines) {
         Ok(report) => {
             print!("{}", report.render());
             if report.hits.is_empty() {
@@ -288,4 +307,57 @@ pub(in crate::cli) fn sources_cmd(args: &[String]) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod query_flag_tests {
+    use super::{EngineSet, parse_query_flags};
+
+    #[test]
+    fn the_three_default_engines_unless_all_is_asked_for() {
+        fn parse(args: &[&str]) -> Option<(bool, EngineSet, Vec<String>)> {
+            let args = args
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect::<Vec<_>>();
+            parse_query_flags(&args)
+                .map(|(adaptive, engines, terms)| (adaptive, engines, terms.to_vec()))
+        }
+        let query = |words: &[&str]| -> Vec<String> {
+            words.iter().map(|word| (*word).to_owned()).collect()
+        };
+        assert_eq!(
+            parse(&["topic"]),
+            Some((false, EngineSet::Default, query(&["topic"])))
+        );
+        assert_eq!(
+            parse(&["--adaptive", "two", "words"]),
+            Some((true, EngineSet::Default, query(&["two", "words"])))
+        );
+        assert_eq!(
+            parse(&["--all", "topic"]),
+            Some((false, EngineSet::All, query(&["topic"])))
+        );
+        for flags in [["--adaptive", "--all"], ["--all", "--adaptive"]] {
+            assert_eq!(
+                parse(&[flags[0], flags[1], "topic"]),
+                Some((true, EngineSet::All, query(&["topic"]))),
+                "{flags:?}"
+            );
+        }
+        // A repeated, unknown or misplaced option, or no query, is a usage error.
+        for args in [
+            &["--all", "--all", "topic"][..],
+            &["--adaptive", "--adaptive", "topic"][..],
+            &["--fast", "topic"][..],
+            &["--adaptive", "--fast", "topic"][..],
+            &["--unknown", "topic"][..],
+            &["topic", "--all"][..],
+            &["--all", "--exa", "topic"][..],
+            &["--adaptive"][..],
+            &["--all"][..],
+        ] {
+            assert_eq!(parse(args), None, "{args:?}");
+        }
+    }
 }
