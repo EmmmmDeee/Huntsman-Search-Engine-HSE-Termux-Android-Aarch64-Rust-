@@ -139,7 +139,9 @@ pub(super) fn run(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::process::ExitCode;
+
+    use super::{EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, SourceExecutionOutcome, options, status};
     use huntsman_recon::source_outcome::SourceOutcomeKind;
 
     fn args(list: &[&str]) -> Vec<String> {

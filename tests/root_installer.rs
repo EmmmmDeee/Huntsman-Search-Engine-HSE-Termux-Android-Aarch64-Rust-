@@ -1689,7 +1689,7 @@ fn a_binary_that_fails_its_check_in_place_is_rolled_back() {
         !t.installed().exists(),
         "an unverified binary is not left installed"
     );
-    assert!(t.provenance().is_empty());
+    assert_eq!(t.provenance(), "");
 }
 
 /// A symlink at the install path is the operator's own arrangement. The installer refuses to
