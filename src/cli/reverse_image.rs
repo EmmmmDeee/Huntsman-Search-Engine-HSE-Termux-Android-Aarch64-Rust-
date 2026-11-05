@@ -124,6 +124,17 @@ fn print_text(report: &ImageReport) {
         .outcome
         .as_ref()
         .map_or_else(String::new, |outcome| escape_controls(&outcome.reason()));
+    if let Some(upload) = &report.upload {
+        let removed = if upload.metadata_removed.is_empty() {
+            "none found".to_owned()
+        } else {
+            escape_controls(&upload.metadata_removed.join(", "))
+        };
+        println!(
+            "uploaded to {provider}: sha256={} bytes={} metadata removed: {removed}",
+            upload.sha256, upload.bytes
+        );
+    }
     match (report.search, report.matches.as_deref()) {
         (Search::Completed, Some(matches)) => {
             println!(

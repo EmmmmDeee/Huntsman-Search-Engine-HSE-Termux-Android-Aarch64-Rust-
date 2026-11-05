@@ -608,8 +608,11 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 
 `reverse-image IMAGE-FILE [--json]` prints a local image's SHA-256, size and format offline:
 nothing is sent and no search runs, so the report holds no matches rather than zero matches.
-`--live --provider google_vision|lenso|saucenao` uploads the whole image to that one provider,
-with the key from its slot, and prints what the provider's own index returned. `--live` without
+`--live --provider google_vision|lenso|saucenao` uploads the image to that one provider, with
+the key from its slot, and prints what the provider's own index returned. Before the upload its
+embedded metadata is removed (Exif with its GPS position, XMP, IPTC, comments, colour profiles,
+PNG text and time chunks, data after the end of the image); only a JPEG, PNG or still WebP is
+uploaded, and anything else is refused before any request (exit 65). `--live` without
 `--provider` is refused, so no run asks more than one provider; a provider without a key is asked
 nothing (exit 66), and a failed search is never "no matches" (exit 69). Images are capped at
 4 MiB; the file reader refuses symlinks and changed inodes. CLI only: there is no web route or

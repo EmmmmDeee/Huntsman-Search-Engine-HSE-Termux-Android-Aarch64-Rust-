@@ -45,7 +45,7 @@ Primary policy: https://www.sec.gov/search-filings/edgar-search-assistance/acces
 
 These slots are shown by `credential-status` and the provider settings page. None
 causes background requests. An image is transmitted only when explicitly searching
-with `reverse-image IMAGE --live` (CLI only; there is no web route).
+with `reverse-image IMAGE --live --provider NAME` (CLI only; there is no web route).
 Only use API keys issued to your account, and confirm image-upload rights and any
 quota charges before enabling a service.
 
@@ -56,9 +56,9 @@ quota charges before enabling a service.
 | SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | image-index search; the key goes only to `saucenao.com`, as the `api_key` query parameter SauceNAO's API takes, added as the request is sent and never inside the uploaded form |
 
 `huntsman-recon reverse-image IMAGE --live --provider google_vision --json`
-uploads the image to that one provider. `--live` without `--provider` is refused, so
-no run sends the image to more than one provider or spends more than one provider's
-quota.
+uploads the image, with its embedded metadata removed, to that one provider. `--live`
+without `--provider` is refused, so no run sends the image to more than one provider or
+spends more than one provider's quota.
 
 ## Recovered/owned provider slots
 
