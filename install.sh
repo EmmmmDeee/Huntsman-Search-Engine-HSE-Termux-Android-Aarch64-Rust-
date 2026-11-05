@@ -13,7 +13,10 @@ probe_dir=""
 accept_dir=""
 legacy_download=""
 release_dir=""
+build_root=""
 stage=""
+previous_stage=""
+install_lock=""
 
 cleanup() {
   if [[ -n "${probe_dir:-}" && -d "$probe_dir" ]]; then
@@ -28,8 +31,18 @@ cleanup() {
   if [[ -n "${release_dir:-}" && -d "$release_dir" ]]; then
     rm -rf "$release_dir"
   fi
+  if [[ -n "${build_root:-}" && -d "$build_root" ]]; then
+    rm -rf "$build_root"
+  fi
   if [[ -n "${stage:-}" ]]; then
     rm -f "$stage"
+  fi
+  if [[ -n "${previous_stage:-}" ]]; then
+    rm -f "$previous_stage"
+  fi
+  # Last, so another run cannot start while this one still has files to remove.
+  if [[ -n "${install_lock:-}" ]]; then
+    rmdir "$install_lock" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -55,6 +68,13 @@ case "$TERMUX_PREFIX" in
   /data/data/com.termux/files/usr*) ;;
   *) die "non-standard Termux PREFIX: $TERMUX_PREFIX" ;;
 esac
+
+# Termux is a rootless userland. A root shell would leave root-owned files in
+# $INSTALL_ROOT/bin and the state directory that the Termux user, who runs the
+# web UI and every later upgrade, could no longer replace.
+if [[ "$(id -u 2>/dev/null || true)" == 0 ]]; then
+  die "refusing to run as root: run install.sh from a plain Termux shell, as the Termux user"
+fi
 
 # Product line. HUNTSMAN_REV installs huntsman-recon. Everything else named
 # hse installs legacy-hse, then stops. Recon setup below does not run.
@@ -104,6 +124,44 @@ if is_hse_update; then
   exit 0
 fi
 
+STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
+mkdir -p "$STATE_DIR"
+chmod 0700 "$STATE_DIR"
+
+# One install at a time: two runs would race for the binary, the copy kept of the
+# one it replaces, and the install record. mkdir either creates the lock or fails
+# because it exists, so exactly one run holds it, from here, before any package
+# or build work, until cleanup removes it on exit. A run killed outright (Android's
+# low-memory killer, mid-build) leaves the lock behind, so the refusal says how to
+# clear it.
+lock_dir="$STATE_DIR/.install.lock"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  [[ -e "$lock_dir" ]] || die "could not create the install lock $lock_dir"
+  die "another install.sh run is in progress: $lock_dir exists. Wait for it to finish; if none is running (Termux was stopped mid-install), remove the lock with: rmdir $lock_dir"
+fi
+install_lock="$lock_dir"
+
+installed="$INSTALL_ROOT/bin/huntsman-recon"
+# The binary an install replaces is kept here, so a bad upgrade can be undone.
+previous="$INSTALL_ROOT/bin/.huntsman-recon.previous"
+previous_kept=""
+
+# A symlink, or anything else that is not a regular file, at the install path is
+# the operator's own arrangement; replacing it would undo that silently. Checked
+# before anything is fetched or built, and again just before the move.
+refuse_unsafe_destination() {
+  if [[ -L "$installed" ]]; then
+    die "$installed is a symlink; not replacing it. Remove the link, or set HUNTSMAN_INSTALL_ROOT to install elsewhere"
+  fi
+  if [[ -e "$installed" && ! -f "$installed" ]]; then
+    die "$installed is not a regular file; not replacing it"
+  fi
+  if [[ -L "$previous" || ( -e "$previous" && ! -f "$previous" ) ]]; then
+    die "$previous is not a regular file; not replacing $installed"
+  fi
+}
+refuse_unsafe_destination
+
 # pkg prints "No mirror or mirror group selected" and probes every mirror on
 # each invocation until $PREFIX/etc/termux/chosen_mirrors exists. A probe that
 # succeeds is not remembered, so the next pkg install prints the warning again.
@@ -138,12 +196,55 @@ pin_default_package_mirror
 pkg update -y
 pkg install -y git curl coreutils termux-services jq
 
-installed="$INSTALL_ROOT/bin/huntsman-recon"
-
 build_sha_of() {
   local sha
   sha="$(timeout 30 "$1" build-sha 2>/dev/null)" || sha=""
   printf '%s' "$sha"
+}
+
+# The one way a binary replaces $installed, for a published build and a source
+# build alike, once it has passed build-sha and offline acceptance. The binary is
+# copied into the destination directory and the copy's SHA-256 checked there, the
+# current binary is kept as $previous, and a rename puts the copy in place, so an
+# interrupted install never leaves a half-written binary. The new binary must then
+# report REV from where it lies, or the previous one goes back.
+replace_installed() { # FILE SHA256 REV
+  local candidate="$1" want="$2" rev="$3" got placed_sha kept=0
+  refuse_unsafe_destination
+  mkdir -p "$INSTALL_ROOT/bin"
+  stage="$INSTALL_ROOT/bin/.huntsman-recon.install.$$"
+  install -m 0755 "$candidate" "$stage" ||
+    die "could not stage $stage; $installed left unchanged"
+  got="$(sha256sum "$stage" | cut -d' ' -f1)" || got=""
+  [[ -n "$want" && "$got" == "$want" ]] ||
+    die "staged copy failed the sha256 check; $installed left unchanged"
+  if [[ -f "$installed" ]]; then
+    previous_stage="$INSTALL_ROOT/bin/.huntsman-recon.previous.$$"
+    cp -p "$installed" "$previous_stage" ||
+      die "could not copy $installed aside; $installed left unchanged"
+    mv -f "$previous_stage" "$previous" ||
+      die "could not keep $installed as $previous; $installed left unchanged"
+    previous_stage=""
+    kept=1
+  fi
+  mv -f "$stage" "$installed" ||
+    die "could not move $stage into place; $installed left unchanged"
+  stage=""
+
+  placed_sha="$(build_sha_of "$installed")"
+  if [[ "$placed_sha" == "$rev" ]]; then
+    if (( kept )); then
+      previous_kept="$previous"
+    fi
+    return 0
+  fi
+  if (( kept )); then
+    mv -f "$previous" "$installed" ||
+      die "$installed reports build-sha ${placed_sha:-<none>} once installed, expected $rev, and $previous could not be moved back"
+    die "$installed reports build-sha ${placed_sha:-<none>} once installed, expected $rev; the previous binary is back in place"
+  fi
+  rm -f "$installed"
+  die "$installed reports build-sha ${placed_sha:-<none>} once installed, expected $rev; removed it, as no binary was installed before"
 }
 
 # Offline acceptance: `check` writes var/*.json in a disposable directory and
@@ -216,7 +317,7 @@ newest_published_rev() {
 }
 
 install_prebuilt() { # REV: 0 = installed, 1 = REV has no published build
-  local rev="$1" tag="main-${1:0:7}" want got staged_sha
+  local rev="$1" tag="main-${1:0:7}" want staged_sha
   release_dir="$(mktemp -d "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-release.XXXXXX")"
   if ! fetch_release_asset "$tag" "$ASSET.sha256" "$release_dir"; then
     rm -rf "$release_dir"
@@ -235,19 +336,8 @@ install_prebuilt() { # REV: 0 = installed, 1 = REV has no published build
   accept_binary "$release_dir/$ASSET" ||
     die "build $tag failed offline acceptance; $installed left unchanged"
 
-  # Stage on the destination filesystem, re-check the bytes there, then rename
-  # into place, so an interrupted install never leaves a half-written binary.
-  mkdir -p "$INSTALL_ROOT/bin"
-  stage="$INSTALL_ROOT/bin/.huntsman-recon.install.$$"
-  install -m 0755 "$release_dir/$ASSET" "$stage" ||
-    die "could not stage $stage; $installed left unchanged"
   want="$(cut -d' ' -f1 "$release_dir/$ASSET.sha256")"
-  got="$(sha256sum "$stage" | cut -d' ' -f1)"
-  [[ -n "$want" && "$got" == "$want" ]] ||
-    die "staged copy failed the sha256 check; $installed left unchanged"
-  mv -f "$stage" "$installed" ||
-    die "could not move $stage into place; $installed left unchanged"
-  stage=""
+  replace_installed "$release_dir/$ASSET" "$want" "$rev"
   rm -rf "$release_dir"
   release_dir=""
   install_source="prebuilt $tag"
@@ -330,7 +420,7 @@ build_jobs() {
 }
 
 install_recon() {
-  cargo install   --git "$REPO"   --rev "$install_rev"   --locked   --root "$INSTALL_ROOT"   "$@"   huntsman-recon
+  cargo install --git "$REPO" --rev "$install_rev" --locked --root "$build_root" "$@" huntsman-recon
 }
 
 build_from_source() {
@@ -351,21 +441,30 @@ build_from_source() {
     fi
   fi
 
-  local installed_sha
+  # Cargo installs into a staging root of its own, never over $installed: the new
+  # binary is checked there, and replaces the installed one only once it passes.
+  build_root="$(mktemp -d "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-build.XXXXXX")"
+  local built="$build_root/bin/huntsman-recon" built_sha want
   install_recon
-  # Cargo skips the build when this revision is already recorded as installed,
-  # even if that binary was built without provenance. The binary's own
-  # build-sha decides: on a mismatch, rebuild once with --force.
-  installed_sha="$(build_sha_of "$installed")"
-  if [[ "$installed_sha" != "$HUNTSMAN_BUILD_SHA" ]]; then
-    printf 'Installed binary reports build-sha %s, expected %s; rebuilding.\n' \
-      "${installed_sha:-<none>}" "$HUNTSMAN_BUILD_SHA"
+  # The staging root is new, so Cargo cannot skip the build on an earlier install
+  # record. The binary's own build-sha still decides: on a mismatch, reinstall
+  # once with --force before giving up.
+  built_sha="$(build_sha_of "$built")"
+  if [[ "$built_sha" != "$HUNTSMAN_BUILD_SHA" ]]; then
+    printf 'Built binary reports build-sha %s, expected %s; rebuilding.\n' \
+      "${built_sha:-<none>}" "$HUNTSMAN_BUILD_SHA"
     install_recon --force
-    installed_sha="$(build_sha_of "$installed")"
+    built_sha="$(build_sha_of "$built")"
   fi
-  [[ "$installed_sha" == "$HUNTSMAN_BUILD_SHA" ]] ||
-    die "installed binary reports build-sha ${installed_sha:-<none>}, expected $HUNTSMAN_BUILD_SHA"
-  accept_binary "$installed" || die "installed binary failed offline acceptance"
+  [[ "$built_sha" == "$HUNTSMAN_BUILD_SHA" ]] ||
+    die "built binary reports build-sha ${built_sha:-<none>}, expected $HUNTSMAN_BUILD_SHA; $installed left unchanged"
+  accept_binary "$built" ||
+    die "built binary failed offline acceptance; $installed left unchanged"
+
+  want="$(sha256sum "$built" | cut -d' ' -f1)" || want=""
+  replace_installed "$built" "$want" "$HUNTSMAN_BUILD_SHA"
+  rm -rf "$build_root"
+  build_root=""
   install_source="source $(rustc --version)"
 }
 
@@ -505,10 +604,6 @@ exit 0
   fi
 }
 
-STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
-mkdir -p "$STATE_DIR"
-chmod 0700 "$STATE_DIR"
-
 ENV_FILE="${HUNTSMAN_ENV_FILE:-$HOME/.huntsman.env}"
 if [[ ! -e "$ENV_FILE" ]]; then
   old_umask="$(umask)"
@@ -560,6 +655,9 @@ unset shadow_name shadow_resolved shadow_want shadow_resolved_real shadow_want_r
 
 printf 'Huntsman installed and accepted: %s\n' "$installed"
 printf 'Revision: %s (%s)\n' "$install_rev" "$install_source"
+if [[ -n "$previous_kept" ]]; then
+  printf 'Previous binary kept: %s\n' "$previous_kept"
+fi
 printf 'State directory: %s\n' "$STATE_DIR"
 printf 'Runtime variables file: %s\n' "$ENV_FILE"
 printf 'Install provenance: %s\n' "$PROVENANCE_FILE"

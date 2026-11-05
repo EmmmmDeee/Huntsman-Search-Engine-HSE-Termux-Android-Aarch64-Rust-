@@ -1,6 +1,6 @@
 //! Acceptance for top-level commands no other integration test invoked: `case-check`, `exif`,
-//! `docmeta` and `public-osint`. Every case here is offline: `public-osint` is only exercised on
-//! its usage paths, which return before any request.
+//! `docmeta`, `public-osint` and `people-discover`. Every case here is offline: `public-osint` and
+//! `people-discover` are only exercised on their usage paths, which return before any request.
 
 use std::fs;
 use std::path::PathBuf;
@@ -42,6 +42,10 @@ fn every_command_documents_itself_and_refuses_missing_arguments() {
             "public-osint",
             "public-osint news|notices|web|dossier QUERY...",
         ),
+        (
+            "people-discover",
+            "people-discover [--region au|us] [--bibliography-only] FULL NAME...",
+        ),
     ] {
         let help = run(&dir, &[command, "--help"]);
         assert!(help.status.success(), "{command} --help: {help:?}");
@@ -59,6 +63,51 @@ fn every_command_documents_itself_and_refuses_missing_arguments() {
     }
     let unknown = run(&dir, &["public-osint", "bogus", "query"]);
     assert_eq!(unknown.status.code(), Some(i32::from(EX_USAGE)));
+}
+
+/// The name leaves the device only after the options and the name pass, so each refusal here
+/// exits 64 with no report and no request.
+#[test]
+fn people_discover_refuses_bad_options_and_names_before_any_request() {
+    let dir = scratch("people-discover");
+    for args in [
+        &["people-discover", "--region"][..],
+        &["people-discover", "--region", "nz", "Ada", "Lovelace"],
+        &[
+            "people-discover",
+            "--region",
+            "au",
+            "--region",
+            "us",
+            "Ada",
+            "Lovelace",
+        ],
+        &[
+            "people-discover",
+            "--bibliography-only",
+            "--bibliography-only",
+            "Ada",
+            "Lovelace",
+        ],
+        &["people-discover", "--save", "out.json", "Ada", "Lovelace"],
+        &["people-discover", "Madonna"],
+        &["people-discover", "--bibliography-only", "Madonna"],
+        &["people-discover", "Ada", "<Lovelace>"],
+    ] {
+        let out = run(&dir, args);
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(EX_USAGE)),
+            "{args:?}: {out:?}"
+        );
+        assert!(out.stdout.is_empty(), "{args:?} printed a report: {out:?}");
+    }
+    let refused = run(&dir, &["people-discover", "--bibliography-only", "Madonna"]);
+    assert!(
+        text(&refused.stderr).contains("requires a full name"),
+        "{refused:?}"
+    );
+    assert!(!dir.join("out.json").exists(), "a refused run wrote a file");
 }
 
 #[test]

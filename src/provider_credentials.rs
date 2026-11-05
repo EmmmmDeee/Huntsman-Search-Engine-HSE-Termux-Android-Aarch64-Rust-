@@ -222,6 +222,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::WHOXY_KEY_ENV],
     },
     Provider {
+        name: "QLDTraffic",
+        get_key_url: "https://qldtraffic.qld.gov.au/more/Developers-and-Data/index.html",
+        free_tier: "free; the API specification prints a shared public key (100 requests/minute across all its users)",
+        slots: &[crate::environment::QLDTRAFFIC_KEY_ENV],
+    },
+    Provider {
         name: "HIBP",
         get_key_url: "https://haveibeenpwned.com/API/Key",
         free_tier: "US$3.50/mo, key required",

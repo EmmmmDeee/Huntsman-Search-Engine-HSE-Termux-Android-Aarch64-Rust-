@@ -110,6 +110,7 @@ fn is_network(args: &[String]) -> bool {
         || args.first().is_some_and(|a| a == "gleif")
         || args.first().is_some_and(|a| a == "company")
         || args.first().is_some_and(|a| a == "geocode")
+        || args.first().is_some_and(|a| a == "traffic-cameras")
         || args.first().is_some_and(|a| a == "serve")
         || (args.first().is_some_and(|a| a == "research") && !args.iter().any(|a| a == "--plan"))
         || (args.first().is_some_and(|a| a == "hibp") && args.get(1).is_some_and(|a| a != "help"))

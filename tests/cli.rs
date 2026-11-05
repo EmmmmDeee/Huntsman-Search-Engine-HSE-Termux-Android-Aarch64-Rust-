@@ -181,7 +181,7 @@ fn help_and_version_are_available() {
         ("research", "research [--plan] [--all] TERM..."),
         ("sf", "sf [-M|-T|-V]"),
         ("serve", "serve [--bind ADDR] [--history DIR]"),
-        ("fetch", "fetch URL [--body]"),
+        ("fetch", "fetch URL [--body|--raw-body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
     ] {

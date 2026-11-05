@@ -27,9 +27,16 @@ pub struct XDiscoveryReport {
     pub outcomes: Vec<SourceExecutionOutcome>,
 }
 
-fn checked_query(query: &str) -> Result<&str, Error> {
-    let query = query.trim();
-    if query.is_empty() || query.len() > 460 || query.chars().any(char::is_control) {
+fn checked_query(raw: &str) -> Result<&str, Error> {
+    // Refuse controls on the input bytes before trimming whitespace. A
+    // leading newline must not silently become an authorised API query.
+    if raw.len() > 460 || raw.chars().any(char::is_control) {
+        return Err(Error::invalid(
+            "X query must be 1..460 bytes without control characters",
+        ));
+    }
+    let query = raw.trim();
+    if query.is_empty() {
         return Err(Error::invalid(
             "X query must be 1..460 bytes without control characters",
         ));
@@ -286,7 +293,9 @@ mod tests {
         assert!(is_public_x_url("https://x.com/u/status/1"));
         assert!(!is_public_x_url("https://x.com.attacker.example/status/1"));
         assert!(!is_public_x_url("http://x.com/u/status/1"));
-        assert!(search_indexed_x(&fake, "a\nb", 100).is_err());
+        for bad in ["a\nb", "\na", "a\r", "\ta", "a\0b"] {
+            assert!(search_indexed_x(&fake, bad, 100).is_err(), "{bad:?}");
+        }
         assert!(fake.requests.lock().expect("requests").is_empty());
     }
 }

@@ -203,6 +203,8 @@ pub const PROFILES: &[SourceProfile] = &[
     row("official_x_recent_search", C::Search, None),
     row("opencellid", C::Other, Some(C::Rf)),
     row("opendns", C::Infra, None),
+    // A community-edited catalogue searched by name: never an independent family.
+    row("openlibrary_author", C::Other, None),
     row("openpgp_keys", C::EmailIntel, None),
     row("openphish", C::Other, None),
     row("opensky", C::Other, Some(C::Transport)),
@@ -218,6 +220,8 @@ pub const PROFILES: &[SourceProfile] = &[
     row("public_osint", C::Other, Some(C::Search)),
     row("public_web_indexes", C::Other, None),
     row("pulsedive", C::Infra, None),
+    row("qld_state_road_camera_gis", C::Other, Some(C::Transport)),
+    row("qld_traffic_cameras", C::Other, Some(C::Transport)),
     row("quad9", C::Other, None),
     row("rdap", C::Other, Some(C::Infra)),
     row("recall", C::Other, None),

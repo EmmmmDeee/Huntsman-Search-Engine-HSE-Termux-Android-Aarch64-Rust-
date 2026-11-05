@@ -2,6 +2,8 @@
 //! the authorization, same-site, body-bound and timeout gates of `web_server.rs`; behaviour is
 //! unchanged from the handlers that lived in `web_server.rs`.
 
+use serde::Serialize;
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
@@ -16,8 +18,8 @@ use crate::value_syntax::form_decode;
 
 use super::{
     LOOKUP_STACK_BYTES, LookupQuery, LookupReport, Lookups, MAX_LOOKUPS, MAX_RADAR_REQUESTS,
-    MAX_SELECTOR_BYTES, Method, ParsedRequest, RADAR_WAIT, SCANS_STACK_BYTES, Sensor, Slot,
-    json_error, json_ok, page_refusal, response, response_bytes,
+    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES,
+    Sensor, Slot, json_error, json_ok, page_refusal, response, response_bytes,
 };
 
 /// Read a sensor (Android's OS-cached Wi-Fi scan, or the cells it reports) or record one track
@@ -74,6 +76,22 @@ pub(super) fn sensor_response<T: serde::Serialize + Send + 'static>(
             json_error(504, &format!("{noun} did not answer in time"))
         }
     }
+}
+
+/// One shared response contract for live and saved lookups. Deriving a lead
+/// does not mutate collected entities, so the original evidence remains intact.
+#[derive(Serialize)]
+struct LookupWithSynergy<'a> {
+    #[serde(flatten)]
+    report: &'a LookupReport,
+    synergy: crate::osint_synergy::SynergyReport,
+}
+
+fn serialize_lookup(report: &LookupReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&LookupWithSynergy {
+        report,
+        synergy: crate::osint_synergy::discover(&report.entities),
+    })
 }
 
 /// `GET /api/lookup`: one lookup, answered with its report. With saved scans on, the lookup runs
@@ -134,7 +152,7 @@ pub(super) fn lookup_response(
         return json_error(503, "could not start a lookup worker");
     }
     match receiver.recv_timeout(until.saturating_duration_since(Instant::now())) {
-        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
+        Ok(Ok(Ok(report))) => match serialize_lookup(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, "report could not be encoded"),
         },
@@ -211,7 +229,7 @@ fn saved_lookup(service: &Arc<ScanService>, query: &LookupQuery, until: Instant)
         scan: Some(record.id.clone()),
         status: Some(record.status.as_str()),
     };
-    match serde_json::to_string(&report) {
+    match serialize_lookup(&report) {
         Ok(body) => json_ok(&body, false),
         Err(_) => json_error(500, "report could not be encoded"),
     }
@@ -283,6 +301,96 @@ pub(super) fn research_response(
                 }
             }
         }
+    }
+}
+
+/// `POST /api/people/discover`: the `people-discover` search for a JSON body
+/// `{"name": …, "region": "au"|"us"}`, answered with the library's report. It never infers
+/// account ownership or puts the subject in an HTTP URL. The same host, token, origin and
+/// custom-header protections as a live lookup apply, and the name passes
+/// `people_discovery::checked_name`, before any network work; one discovery runs at a time.
+pub(super) fn people_discover_response(
+    parsed: &ParsedRequest<'_>,
+    discovery: Option<&PeopleDiscover>,
+) -> String {
+    let Some(discovery) = discovery else {
+        return json_error(404, "people discovery is not enabled on this server");
+    };
+    if parsed.method != Method::Post {
+        return json_error(405, "people discovery requires POST with a JSON body");
+    }
+    if let Some(refusal) = page_refusal(parsed, "people discovery", true) {
+        return refusal;
+    }
+    if !parsed.query.is_empty() {
+        return json_error(
+            400,
+            "people discovery parameters belong in the request body",
+        );
+    }
+    let length = match parsed.content_length {
+        Some(length @ 1..=512) => length,
+        Some(0) | None => return json_error(400, "people discovery needs a JSON body"),
+        _ => return json_error(413, "people discovery JSON exceeds 512 bytes"),
+    };
+    let Some(body) = parsed.body else {
+        return json_error(400, "people discovery request body is missing");
+    };
+    if body.len() != length {
+        return json_error(400, "people discovery request body length does not match");
+    }
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return json_error(400, "people discovery needs valid JSON");
+    };
+    let Some(object) = json.as_object() else {
+        return json_error(400, "people discovery JSON must be an object");
+    };
+    if object.len() != 2 {
+        return json_error(400, "people discovery accepts only name and region");
+    }
+    let Some(name) = object.get("name").and_then(serde_json::Value::as_str) else {
+        return json_error(400, "people discovery name must be text");
+    };
+    let Some(region) = object
+        .get("region")
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::people_discovery::Region::parse)
+    else {
+        return json_error(400, "people discovery region must be au or us");
+    };
+    // The library's one name contract, before a worker or the discovery slot is taken.
+    let name = match crate::people_discovery::checked_name(name) {
+        Ok(name) => name,
+        Err(error) => return json_error(400, &error.to_string()),
+    };
+    // Four sequential source facets can perform twelve guarded engine calls.
+    // Keep at most one such fan-out on a low-RAM Termux handset at a time.
+    let Some(slot) = Slot::take_of(&discovery.live, 1) else {
+        return json_error(503, "people discovery capacity in use; retry shortly");
+    };
+    let handler = Arc::clone(&discovery.handler);
+    let (sender, receiver) = sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("serve-people-discover".into())
+        .stack_size(LOOKUP_STACK_BYTES)
+        .spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| handler(&name, region)));
+            drop(slot);
+            let _ = sender.send(result);
+        });
+    if worker.is_err() {
+        return json_error(503, "could not start people discovery worker");
+    }
+    match receiver.recv_timeout(super::LOOKUP_WAIT) {
+        Ok(Ok(Ok(report))) => json_ok(&report.to_string(), false),
+        Ok(Ok(Err(error))) => json_error(error.status, &error.message),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            json_error(500, "people discovery failed unexpectedly")
+        }
+        Err(RecvTimeoutError::Timeout) => json_error(
+            504,
+            "people discovery timed out; no completed report was saved",
+        ),
     }
 }
 
@@ -531,4 +639,67 @@ fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
         .filter(|k| !k.is_empty())
         .unwrap_or_else(|| "auto".into());
     Ok(LookupQuery { kind, selector })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+
+    #[test]
+    fn live_lookup_json_includes_canonical_source_join_without_mutating_evidence() {
+        let mut domain = Entity::new(EntityKind::Domain, "example.org", 0.8, "live-a");
+        domain.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("dns", "live-a"),
+                "DNS response",
+            )
+            .with_attr("ip", "192.0.2.9"),
+        );
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.9", 0.8, "live-b");
+        ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "live-b"),
+            "RDAP response",
+        ));
+        let before = vec![domain.clone(), ip.clone()];
+        let report = LookupReport {
+            route: "domain",
+            text: String::new(),
+            entities: vec![domain, ip],
+            outcomes: Vec::new(),
+            scan: None,
+            status: None,
+        };
+        let encoded = serialize_lookup(&report).expect("encode lookup");
+        let json: serde_json::Value = serde_json::from_str(&encoded).expect("JSON");
+        assert_eq!(
+            json["synergy"]["links"][0]["relation"],
+            "reported_dns_address"
+        );
+        assert_eq!(
+            json["synergy"]["links"][0]["status"],
+            "separately_observed_target"
+        );
+        assert_eq!(json["synergy"]["links"][0]["source_scan_id"], "live-a");
+        assert_eq!(json["synergy"]["links"][0]["target_scan_id"], "live-b");
+        assert_eq!(report.entities, before);
+        assert_eq!(json["route"], "domain");
+    }
+
+    #[test]
+    fn no_source_observations_means_no_live_synergy_claim() {
+        let report = LookupReport {
+            route: "domain",
+            text: String::new(),
+            entities: vec![Entity::new(EntityKind::Domain, "example.org", 0.8, "seed")],
+            outcomes: Vec::new(),
+            scan: Some("seed".to_owned()),
+            status: Some("FINISHED"),
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serialize_lookup(&report).expect("encode")).expect("JSON");
+        assert_eq!(json["synergy"]["links"], serde_json::json!([]));
+        assert_eq!(json["scan"], "seed");
+        assert_eq!(json["status"], "FINISHED");
+    }
 }

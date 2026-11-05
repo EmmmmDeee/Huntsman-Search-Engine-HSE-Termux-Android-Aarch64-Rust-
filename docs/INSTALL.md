@@ -36,10 +36,14 @@ still followed by `huntsman-recon doctor` and `huntsman-recon doctor serve`;
 if the web service was deliberately disabled, the installer respects that
 choice rather than enabling it.
 
-The installer is no-root userland only. It refreshes Termux repository metadata,
-installs `git curl coreutils`, and resolves `main` once to a full immutable
-commit SHA (unless `HUNTSMAN_REV` already names one). Then it installs, in this
-order:
+The installer is no-root userland only: it refuses to run as root. One install
+runs at a time: a run holds `~/.huntsman/.install.lock` (under `HUNTSMAN_HOME`
+when that is set) until it exits, and a second run is refused meanwhile. If
+Termux was stopped mid-install, the lock stays behind; once no install is
+running, remove it with `rmdir ~/.huntsman/.install.lock`. The installer
+refreshes Termux repository metadata, installs `git curl coreutils`, and
+resolves `main` once to a full immutable commit SHA (unless `HUNTSMAN_REV`
+already names one). Then it installs, in this order:
 
 1. **The verified prebuilt build of that commit**, when CI published one as the
    `main-<sha7>` pre-release: about 5 MB, no compiler. The download must match
@@ -54,16 +58,23 @@ order:
    `HUNTSMAN_FROM_SOURCE=1` asks for one. It installs `rust clang`, aligns the
    Termux Rust compiler with its host `rust-std-<target>` package, compiles a
    native toolchain probe, then builds the locked revision with the SHA
-   embedded. When Cargo keeps an already-installed binary whose `build-sha`
-   does not match (for example one built before the SHA was embedded), the
-   installer rebuilds once with `--force` and fails if the result still does
-   not match. It runs one compile job per GiB of `MemAvailable`, at most one
+   embedded. Cargo installs the build into a fresh staging directory, never
+   over `$PREFIX/bin/huntsman-recon`. There the new binary must print the
+   commit from `build-sha` (the installer reinstalls once with `--force` when
+   it does not, and fails if it still does not) and pass `check` plus ledger
+   verification. It runs one compile job per GiB of `MemAvailable`, at most one
    per CPU and at least one, so a phone with a few GiB free is not pushed into
    Android's low-memory killer mid-build; set `CARGO_BUILD_JOBS` to choose the
    number yourself.
 
 A published build that fails its checksum, `build-sha` or acceptance stops the
-install with the old binary untouched; it never falls back to compiling. The
+install with the old binary untouched; it never falls back to compiling. A
+source build that fails `build-sha` or acceptance does the same. A build that
+passes, published or compiled, is copied next to `$PREFIX/bin/huntsman-recon`,
+its SHA-256 re-checked there, and renamed into place. The binary it replaces is
+kept as `$PREFIX/bin/.huntsman-recon.previous`, and is put back if the newly
+installed binary does not print the commit from `build-sha` where it lies. The
+installer refuses to replace a `huntsman-recon` that is a symlink. The
 `huntsman` command and shell shortcuts are fetched from the **accepted binary's
 commit**, including when the installer selects an older published build because
 `main` has no release yet. This prevents newer launcher commands from being
@@ -100,8 +111,8 @@ Upgrade by running the same two commands again. The installer resolves the
 current `main` head to a full SHA once, so a branch movement during the install
 cannot change what is installed, then repeats the checks, the runtime
 acceptance and the provenance record. Do not upgrade with a bare
-`cargo install`: without the installer's `--root "$PREFIX"` it installs into
-`~/.cargo/bin`, and Termux keeps running the old `$PREFIX/bin/huntsman-recon`.
+`cargo install`: it installs into `~/.cargo/bin` without any of the installer's
+checks, and Termux keeps running the old `$PREFIX/bin/huntsman-recon`.
 For a source build, Cargo intermediates stay under
 `$HOME/.cache/huntsman-recon-target` by default; set `CARGO_TARGET_DIR` to
 override that cache path. To install a specific revision, run the installer
@@ -223,18 +234,17 @@ rm -rf "$PREFIX/var/service/huntsman-serve" "$PREFIX/var/log/sv/huntsman-serve"
 rm -f "$PREFIX/bin/huntsman" "$PREFIX/bin/huntsmanctl" "$PREFIX/etc/profile.d/huntsman.sh"
 ```
 
-Remove the binary the way it was installed. `~/.huntsman/installed-revision`
-says which: `installed_from=source …` is registered with Cargo:
+Earlier installers registered a source build with Cargo. If
+`$PREFIX/.crates.toml` names `huntsman-recon`, remove that record first:
 
 ```sh
 cargo uninstall --root "$PREFIX" huntsman-recon
 ```
 
-A prebuilt install (`installed_from=prebuilt …`, or `install-termux.sh`) is a
-single file:
+Then remove the binary, and the previous binary the installer keeps beside it:
 
 ```sh
-rm -f "$PREFIX/bin/huntsman-recon"   # or "$PREFIX/bin/hse" for the legacy channel
+rm -f "$PREFIX/bin/huntsman-recon" "$PREFIX/bin/.huntsman-recon.previous"   # or "$PREFIX/bin/hse" for the legacy channel
 ```
 
 Installing and running Huntsman also creates state that those commands keep.

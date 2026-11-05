@@ -4,8 +4,9 @@ mod executable;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 const DEFAULT_MAIN_REV: &str = "0123456789abcdef0123456789abcdef01234567";
 static SCRATCH_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -33,6 +34,12 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
     write_executable(
         &fake_bin.join("uname"),
         "#!/bin/sh\nprintf '%s\\n' aarch64\n",
+    );
+    // A Termux app user, whoever runs the tests: the installer refuses uid 0, and FAKE_UID=0
+    // plays a root shell.
+    write_executable(
+        &fake_bin.join("id"),
+        "#!/bin/sh\n[ \"$1\" = -u ] || exit 2\nprintf '%s\\n' \"${FAKE_UID:-10123}\"\n",
     );
     write_executable(
         &fake_bin.join("timeout"),
@@ -101,15 +108,40 @@ PROBE
 esac
 "#,
     );
-    write_executable(
-        &fake_bin.join("cargo"),
-        r#"#!/bin/sh
-printf 'target=%s cargo %s\n' "${CARGO_TARGET_DIR:-}" "$*" >> "$INSTALL_LOG"
-printf '%s\n' "${HUNTSMAN_BUILD_SHA:-unknown}" > "$INSTALL_LOG.build-sha"
-printf '%s\n' "${CARGO_BUILD_JOBS:-default}" > "$INSTALL_LOG.jobs"
-"#,
-    );
+    write_executable(&fake_bin.join("cargo"), &fake_cargo(EMBEDS_THE_PINNED_SHA));
     install_fake_github(fake_bin);
+}
+
+/// Shell for [`fake_cargo`]: the build embeds the revision the installer pinned.
+const EMBEDS_THE_PINNED_SHA: &str = "sha=\"${HUNTSMAN_BUILD_SHA:-unknown}\"";
+
+/// A fake `cargo`. It logs its target directory and arguments, records the jobs it was given and
+/// what its build answers to `build-sha` (`$sha`, which the shell in `set_sha` assigns), and for
+/// `install --root R` leaves `R/bin/huntsman-recon` as Cargo does: [`source_build`] of `$sha`.
+fn fake_cargo(set_sha: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+printf 'target=%s cargo %s\n' "${{CARGO_TARGET_DIR:-}}" "$*" >> "$INSTALL_LOG"
+{set_sha}
+printf '%s\n' "$sha" > "$INSTALL_LOG.build-sha"
+printf '%s\n' "${{CARGO_BUILD_JOBS:-default}}" > "$INSTALL_LOG.jobs"
+root=''
+while [ $# -gt 0 ]; do
+  if [ "$1" = --root ]; then shift; root="$1"; fi
+  shift
+done
+if [ -n "$root" ]; then
+  mkdir -p "$root/bin"
+  printf '#!/bin/sh\n# huntsman-recon built from %s\n' "$sha" > "$root/bin/huntsman-recon"
+  chmod 0755 "$root/bin/huntsman-recon"
+fi
+"#
+    )
+}
+
+/// The bytes of the binary [`fake_cargo`] builds when it embeds SHA.
+fn source_build(sha: &str) -> String {
+    format!("#!/bin/sh\n# huntsman-recon built from {sha}\n")
 }
 
 fn install_fake_github(fake_bin: &Path) {
@@ -150,7 +182,17 @@ esac
     );
 }
 
-fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &str) {
+/// Whether CALLS ran `timeout 30 <staged binary> STEP` on a binary Cargo left in a staging root
+/// under TMPDIR.
+fn staged_binary_ran(calls: &str, tmpdir: &Path, step: &str) -> bool {
+    let staged = format!("timeout 30 {}/huntsman-build.", tmpdir.display());
+    let step = format!("/bin/huntsman-recon {step}");
+    calls
+        .lines()
+        .any(|line| line.starts_with(&staged) && line.ends_with(&step))
+}
+
+fn assert_first_install_contract(calls: &str, temp: &Path, root: &Path, tmpdir: &Path, rev: &str) {
     assert!(calls.contains("pkg update -y"), "{calls}");
     assert!(
         calls.contains("pkg install -y git rust clang curl coreutils"),
@@ -177,8 +219,13 @@ fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &
     assert!(calls.contains(&format!("--rev {rev}")), "{calls}");
     assert!(calls.contains("--locked"), "{calls}");
     assert!(
-        calls.contains(&format!("--root {}", prefix.display())),
-        "{calls}"
+        calls.lines().any(|line| line.contains("cargo install")
+            && line.contains(&format!("--root {}/huntsman-build.", tmpdir.display()))),
+        "Cargo must install into a fresh staging root: {calls}"
+    );
+    assert!(
+        !calls.contains(&format!("--root {}", root.display())),
+        "Cargo must never install over the installed binary: {calls}"
     );
     assert!(
         !calls.contains("--force"),
@@ -191,26 +238,25 @@ fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &
         )),
         "default build cache must persist across installer invocations: {calls}"
     );
+    for step in ["build-sha", "check", "verify var/ledger.json"] {
+        assert!(
+            staged_binary_ran(calls, tmpdir, step),
+            "the staged build must run {step} before it replaces anything: {calls}"
+        );
+    }
     assert!(
-        calls.contains(&format!(
+        !calls.contains(&format!(
             "timeout 30 {}/bin/huntsman-recon check",
-            prefix.display()
+            root.display()
         )),
-        "installer must runtime-check the installed binary: {calls}"
-    );
-    assert!(
-        calls.contains(&format!(
-            "timeout 30 {}/bin/huntsman-recon verify var/ledger.json",
-            prefix.display()
-        )),
-        "installer must verify the generated ledger before success: {calls}"
+        "acceptance runs on the staged build, not on the installed binary: {calls}"
     );
     assert!(
         calls.contains(&format!(
             "timeout 30 {}/bin/huntsman-recon build-sha",
-            prefix.display()
+            root.display()
         )),
-        "installer must check the installed binary's embedded revision: {calls}"
+        "installer must check the installed binary's embedded revision where it lies: {calls}"
     );
 }
 
@@ -252,6 +298,8 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
 
     let temp = scratch();
     let prefix = PathBuf::from("/data/data/com.termux/files/usr");
+    // The binary lands here, never under the real Termux prefix of the machine running the tests.
+    let install_root = temp.join("install-root");
     let fake_bin = temp.join("fake-bin");
     let fake_target_libdir = temp.join("rustlib");
     let log = temp.join("install.log");
@@ -266,6 +314,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         .arg(&installer)
         .env("PATH", path)
         .env("PREFIX", &prefix)
+        .env("HUNTSMAN_INSTALL_ROOT", &install_root)
         .env("INSTALL_LOG", &log)
         .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
         .env("HUNTSMAN_REV", rev)
@@ -283,14 +332,17 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
     );
 
     let calls = fs::read_to_string(&log).expect("fake installer log");
-    assert_first_install_contract(&calls, &temp, &prefix, rev);
+    assert_first_install_contract(&calls, &temp, &install_root, &tmpdir, rev);
     assert_private_state(&temp, rev);
+    let binary = install_root.join("bin/huntsman-recon");
+    assert_eq!(fs::read_to_string(&binary).unwrap(), source_build(rev));
 
     let custom_cache = temp.join("custom-cache");
     let second = Command::new("bash")
         .arg(&installer)
         .env("PATH", format!("{}:{existing_path}", fake_bin.display()))
         .env("PREFIX", &prefix)
+        .env("HUNTSMAN_INSTALL_ROOT", &install_root)
         .env("INSTALL_LOG", &log)
         .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
         .env("CARGO_TARGET_DIR", &custom_cache)
@@ -299,6 +351,16 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         .output()
         .expect("repeat installer must execute");
     assert!(second.status.success(), "repeat installer failed");
+    assert_eq!(
+        fs::read_to_string(&binary).unwrap(),
+        source_build(DEFAULT_MAIN_REV),
+        "the repeat install replaces the binary"
+    );
+    assert_eq!(
+        fs::read_to_string(install_root.join("bin/.huntsman-recon.previous")).unwrap(),
+        source_build(rev),
+        "and keeps the one it replaced"
+    );
     let calls = fs::read_to_string(&log).unwrap();
     assert!(
         calls.contains(&format!("target={}", custom_cache.display())),
@@ -329,6 +391,7 @@ fn installer_embeds_the_resolved_revision_and_rebuilds_a_binary_without_it() {
     let fake_target_libdir = temp.join("rustlib");
     let log = temp.join("install.log");
     let tmpdir = temp.join("tmp");
+    let install_root = temp.join("install-root");
     fs::create_dir_all(&tmpdir).unwrap();
     install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
     let run = |home: &Path, rev: &str| {
@@ -336,6 +399,7 @@ fn installer_embeds_the_resolved_revision_and_rebuilds_a_binary_without_it() {
             .arg(&installer)
             .env("PATH", format!("{}:{existing_path}", fake_bin.display()))
             .env("PREFIX", "/data/data/com.termux/files/usr")
+            .env("HUNTSMAN_INSTALL_ROOT", &install_root)
             .env("INSTALL_LOG", &log)
             .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
             .env("HUNTSMAN_REV", rev)
@@ -357,17 +421,11 @@ fn installer_embeds_the_resolved_revision_and_rebuilds_a_binary_without_it() {
         "b2731d117009a841c302a124f38a808d36f6eac7\n"
     );
 
-    // Cargo reports "already installed" for this revision and keeps a binary
-    // built without provenance. The installer rebuilds once with --force.
+    // A build that does not report the pinned revision (one made without it) is
+    // reinstalled once with --force before the installer gives up on it.
     write_executable(
         &fake_bin.join("cargo"),
-        r#"#!/bin/sh
-printf 'cargo %s\n' "$*" >> "$INSTALL_LOG"
-case "$*" in
-  *--force*) printf '%s\n' "$HUNTSMAN_BUILD_SHA" > "$INSTALL_LOG.build-sha" ;;
-  *) printf '%s\n' unknown > "$INSTALL_LOG.build-sha" ;;
-esac
-"#,
+        &fake_cargo("sha=unknown\ncase \"$*\" in *--force*) sha=\"$HUNTSMAN_BUILD_SHA\" ;; esac"),
     );
     let home = temp.join("stale-home");
     fs::create_dir_all(&home).unwrap();
@@ -387,24 +445,21 @@ esac
     assert!(
         calls
             .lines()
-            .filter(|l| l.starts_with("cargo install"))
+            .filter(|l| l.contains("cargo install"))
             .nth(1)
             .is_some_and(|l| l.contains("--force")),
         "the rebuild must pass --force: {calls}"
     );
     assert!(
         String::from_utf8_lossy(&output.stdout).contains(
-            "Installed binary reports build-sha unknown, expected b2731d117009a841c302a124f38a808d36f6eac7; rebuilding."
+            "Built binary reports build-sha unknown, expected b2731d117009a841c302a124f38a808d36f6eac7; rebuilding."
         )
     );
     assert_private_state(&home, "b2731d117009a841c302a124f38a808d36f6eac7");
 
     // A build that never embeds the revision fails, even after the forced
     // rebuild, and records no provenance.
-    write_executable(
-        &fake_bin.join("cargo"),
-        "#!/bin/sh\nprintf '%s\\n' unknown > \"$INSTALL_LOG.build-sha\"\n",
-    );
+    write_executable(&fake_bin.join("cargo"), &fake_cargo("sha=unknown"));
     let home = temp.join("no-provenance-home");
     fs::create_dir_all(&home).unwrap();
     let output = run(&home, "b2731d117009a841c302a124f38a808d36f6eac7");
@@ -414,7 +469,7 @@ esac
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("installed binary reports build-sha unknown, expected b2731d117009a841c302a124f38a808d36f6eac7"),
+        stderr.contains("built binary reports build-sha unknown, expected b2731d117009a841c302a124f38a808d36f6eac7"),
         "{stderr}"
     );
     assert!(
@@ -671,7 +726,7 @@ fn install_doc_uninstall_removes_every_path_the_installer_creates() {
         .expect("docs/INSTALL.md must have an \"Uninstall from Termux\" section");
     assert!(
         uninstall.contains("cargo uninstall --root \"$PREFIX\" huntsman-recon"),
-        "install.sh installs with `cargo install --root \"$PREFIX\"`, so Cargo must uninstall it"
+        "earlier installers ran `cargo install --root \"$PREFIX\"`, so Cargo must remove its record"
     );
     assert!(
         installer.contains("dir=\"$svdir/huntsman-serve\"")
@@ -679,7 +734,13 @@ fn install_doc_uninstall_removes_every_path_the_installer_creates() {
             && uninstall.contains("rm -rf \"$PREFIX/var/service/huntsman-serve\""),
         "the uninstall steps must stop and remove the web UI service install.sh creates"
     );
+    assert!(
+        installer.contains("previous=\"$INSTALL_ROOT/bin/.huntsman-recon.previous\""),
+        "install.sh keeps the binary it replaces beside the new one"
+    );
     for path in [
+        "\"$PREFIX/bin/huntsman-recon\"",
+        "\"$PREFIX/bin/.huntsman-recon.previous\"",
         "\"$PREFIX/bin/huntsman\"",
         "\"$PREFIX/bin/huntsmanctl\"",
         "\"$PREFIX/etc/profile.d/huntsman.sh\"",
@@ -757,14 +818,25 @@ impl Prebuilt {
 
     /// Runs install.sh. `build_sha` is what the downloaded binary answers to `build-sha`.
     fn run(&self, env: &[(&str, &str)], build_sha: &str) -> std::process::Output {
+        self.reset_log(build_sha);
+        self.command(env).output().expect("installer must execute")
+    }
+
+    /// Empties the call log, and makes `build_sha` what a binary answers to `build-sha`.
+    fn reset_log(&self, build_sha: &str) {
         fs::write(&self.log, "").unwrap();
         fs::write(
             self.log.with_extension("log.build-sha"),
             format!("{build_sha}\n"),
         )
         .unwrap();
+    }
+
+    /// install.sh with this fixture's environment, ENV over it.
+    fn command(&self, env: &[(&str, &str)]) -> Command {
         let existing_path = std::env::var("PATH").unwrap_or_default();
-        Command::new("bash")
+        let mut command = Command::new("bash");
+        command
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh"))
             .env(
                 "PATH",
@@ -779,6 +851,7 @@ impl Prebuilt {
             .env("TMPDIR", self.temp.join("tmp"))
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("HUNTSMAN_BUILD_SHA")
+            .env_remove("HUNTSMAN_HOME")
             .env_remove("HUNTSMAN_REV")
             .env_remove("HUNTSMAN_FROM_SOURCE")
             .env_remove("HUNTSMAN_REQUIRE_PREBUILT")
@@ -787,9 +860,8 @@ impl Prebuilt {
             .env("SVDIR", self.temp.join("service"))
             .env("FAKE_SCRIPTS_DIR", env!("CARGO_MANIFEST_DIR"))
             .env("HUNTSMAN_START_TIMEOUT", "2")
-            .envs(env.iter().copied())
-            .output()
-            .expect("installer must execute")
+            .envs(env.iter().copied());
+        command
     }
 
     fn calls(&self) -> String {
@@ -798,6 +870,53 @@ impl Prebuilt {
 
     fn installed(&self) -> PathBuf {
         self.root.join("bin/huntsman-recon")
+    }
+
+    /// Where the installer keeps the binary it replaced.
+    fn previous(&self) -> PathBuf {
+        self.root.join("bin/.huntsman-recon.previous")
+    }
+
+    /// The run lock, under the default state directory.
+    fn lock(&self) -> PathBuf {
+        self.temp.join(".huntsman/.install.lock")
+    }
+
+    /// Names of the hidden files beside the binary, sorted: staging copies and the previous binary.
+    fn hidden_in_bin(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(self.root.join("bin"))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.starts_with('.'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// A failed install left everything as it found it: the binary at the install path is still
+    /// PREVIOUS, byte for byte, with no copy made of it and no staging file beside it, and the
+    /// run left no provenance, no temporary directory and no lock.
+    fn assert_untouched(&self, previous: &[u8], out: &std::process::Output) {
+        assert_eq!(
+            fs::read(self.installed()).unwrap(),
+            previous,
+            "the installed binary must be left as it was: {}",
+            stderr(out)
+        );
+        assert!(
+            self.hidden_in_bin().is_empty(),
+            "nothing is staged or kept beside it: {:?}",
+            self.hidden_in_bin()
+        );
+        assert!(
+            self.provenance().is_empty(),
+            "no provenance for a failed install"
+        );
+        assert!(self.tmp_is_clean(), "the staging directory is removed");
+        assert!(!self.lock().exists(), "the run lock is released");
     }
 
     fn provenance(&self) -> String {
@@ -1233,6 +1352,380 @@ fn a_source_build_sizes_its_parallel_jobs_to_the_memory_available() {
     );
     assert_eq!(jobs_with(Some(400_000), &[("CARGO_BUILD_JOBS", "3")]), "3");
     assert_eq!(jobs_with(None, &[]), "default");
+}
+
+/// Termux is a rootless userland. A run from a root shell would leave root-owned files in the
+/// install root and the state directory that the Termux user could no longer replace, so the
+/// installer refuses before it changes anything.
+#[test]
+fn a_root_shell_is_refused_before_anything_changes() {
+    let t = Prebuilt::new();
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    fs::write(t.installed(), b"previous").unwrap();
+
+    let out = t.run(&[("HUNTSMAN_REV", BUILT_REV), ("FAKE_UID", "0")], BUILT_REV);
+    assert!(
+        !out.status.success(),
+        "a root run must fail: {}",
+        stdout(&out)
+    );
+    assert!(
+        stderr(&out).contains("refusing to run as root"),
+        "{}",
+        stderr(&out)
+    );
+    let calls = t.calls();
+    assert!(
+        !calls.contains("pkg ") && !calls.contains("curl ") && !calls.contains("git "),
+        "refused before any package, network or build step: {calls}"
+    );
+    assert_eq!(fs::read(t.installed()).unwrap(), b"previous");
+    assert!(
+        !t.temp.join(".huntsman").exists(),
+        "a refused run creates no state directory and takes no lock"
+    );
+}
+
+/// A fake `pkg` whose first `pkg update` waits at a gate the test opens: it takes
+/// `$FAKE_PKG_GATE/held`, marks `entered`, then waits for `open`, a minute at most.
+const GATED_PKG: &str = r#"#!/bin/sh
+printf 'pkg %s\n' "$*" >> "$INSTALL_LOG"
+if [ "$1" = update ] && [ -n "${FAKE_PKG_GATE:-}" ] && mkdir "$FAKE_PKG_GATE/held" 2>/dev/null; then
+  : > "$FAKE_PKG_GATE/entered"
+  waited=0
+  while [ ! -e "$FAKE_PKG_GATE/open" ] && [ "$waited" -lt 600 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+fi
+"#;
+
+/// One install at a time. A run holds `~/.huntsman/.install.lock` from before its first package
+/// command until it exits. A second run started meanwhile is refused before it does anything and
+/// leaves the holder's lock alone; the lock is gone once the holder ends, and a run that fails
+/// releases it too.
+#[test]
+fn a_second_run_is_refused_while_the_first_holds_the_install_lock() {
+    let t = Prebuilt::new();
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    let gate = t.temp.join("gate");
+    fs::create_dir_all(&gate).unwrap();
+    write_executable(&t.fake_bin.join("pkg"), GATED_PKG);
+    let gate_path = gate.to_str().unwrap();
+
+    t.reset_log(BUILT_REV);
+    let mut first = t
+        .command(&[("HUNTSMAN_REV", BUILT_REV), ("FAKE_PKG_GATE", gate_path)])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the first installer starts");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !gate.join("entered").exists() {
+        let ended = first.try_wait().unwrap().is_some();
+        if ended || Instant::now() > deadline {
+            let _ = first.kill();
+            let out = first.wait_with_output().unwrap();
+            panic!("the first run never reached `pkg update`: {}", stderr(&out));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let held = t.lock().is_dir();
+
+    // The second run logs to a file of its own, so its calls cannot mix with the first run's.
+    let second_log = t.temp.join("second.log");
+    fs::write(
+        second_log.with_extension("log.build-sha"),
+        format!("{BUILT_REV}\n"),
+    )
+    .unwrap();
+    let second = t
+        .command(&[
+            ("HUNTSMAN_REV", BUILT_REV),
+            ("FAKE_PKG_GATE", gate_path),
+            ("INSTALL_LOG", second_log.to_str().unwrap()),
+        ])
+        .output()
+        .expect("the second installer runs");
+    let still_held = t.lock().is_dir();
+    // Open the gate before asserting anything, so a failure never leaves the first run waiting.
+    fs::write(gate.join("open"), "").unwrap();
+    let first = first.wait_with_output().expect("the first run ends");
+
+    assert!(
+        held,
+        "the first run holds {} while it works",
+        t.lock().display()
+    );
+    assert!(
+        !second.status.success(),
+        "a second run must be refused: {}",
+        stdout(&second)
+    );
+    assert!(
+        stderr(&second).contains("another install.sh run is in progress"),
+        "{}",
+        stderr(&second)
+    );
+    let second_calls = fs::read_to_string(&second_log).unwrap_or_default();
+    assert!(
+        !second_calls.contains("pkg "),
+        "the second run is refused before any package work: {second_calls}"
+    );
+    assert!(still_held, "a refused run leaves the holder's lock alone");
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(fs::read(t.installed()).unwrap(), b"bin");
+    assert!(!t.lock().exists(), "the lock is released when the run ends");
+
+    // A run that fails after taking the lock releases it as well.
+    let failed = t.run(
+        &[
+            ("HUNTSMAN_REV", "1111111111111111111111111111111111111111"),
+            ("HUNTSMAN_REQUIRE_PREBUILT", "1"),
+        ],
+        BUILT_REV,
+    );
+    assert!(!failed.status.success());
+    assert!(
+        t.calls().contains("pkg update -y"),
+        "the failed run got past the lock: {}",
+        t.calls()
+    );
+    assert!(!t.lock().exists(), "a failed run releases the lock too");
+}
+
+/// A fake `timeout` under which every binary fails `check`; `build-sha` answers as usual.
+const FAILING_CHECK_TIMEOUT: &str = r#"#!/bin/sh
+printf 'timeout %s\n' "$*" >> "$INSTALL_LOG"
+case "$*" in
+  *' build-sha') cat "$INSTALL_LOG.build-sha" ;;
+  *' check') exit 1 ;;
+esac
+exit 0
+"#;
+
+/// Cargo installs a source build into a staging root of its own and the build is checked there,
+/// so a build that does not report the pinned commit leaves the installed binary exactly as it
+/// was: nothing needs rolling back, because nothing was replaced.
+#[test]
+fn a_source_build_without_the_pinned_commit_leaves_the_installed_binary_in_place() {
+    let t = Prebuilt::new();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    fs::write(t.installed(), b"previous").unwrap();
+    // A build that never reports the commit, even after the forced rebuild.
+    write_executable(&t.fake_bin.join("cargo"), &fake_cargo("sha=unknown"));
+
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("HUNTSMAN_FROM_SOURCE", "1")],
+        BUILT_REV,
+    );
+    assert!(!out.status.success(), "{}", stdout(&out));
+    t.assert_untouched(b"previous", &out);
+    assert!(
+        stderr(&out).contains(&format!(
+            "built binary reports build-sha unknown, expected {BUILT_REV}; {} left unchanged",
+            t.installed().display()
+        )),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The same for a build that reports the commit but fails offline acceptance.
+#[test]
+fn a_source_build_that_fails_acceptance_leaves_the_installed_binary_in_place() {
+    let t = Prebuilt::new();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    fs::write(t.installed(), b"previous").unwrap();
+    write_executable(&t.fake_bin.join("timeout"), FAILING_CHECK_TIMEOUT);
+
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("HUNTSMAN_FROM_SOURCE", "1")],
+        BUILT_REV,
+    );
+    assert!(!out.status.success(), "{}", stdout(&out));
+    t.assert_untouched(b"previous", &out);
+    assert!(t.calls().contains("cargo install"), "{}", t.calls());
+    assert!(
+        stderr(&out).contains(&format!(
+            "built binary failed offline acceptance; {} left unchanged",
+            t.installed().display()
+        )),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// A source build that passes its checks replaces the installed binary through the same staged,
+/// checksum-verified rename as a published build, and the binary it replaced stays beside it as
+/// `.huntsman-recon.previous`.
+#[test]
+fn a_source_build_that_passes_replaces_the_binary_and_keeps_the_previous_one() {
+    let t = Prebuilt::new();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    fs::write(t.installed(), b"previous").unwrap();
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("HUNTSMAN_FROM_SOURCE", "1")],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    assert_eq!(
+        fs::read_to_string(t.installed()).unwrap(),
+        source_build(BUILT_REV)
+    );
+    assert_eq!(
+        fs::metadata(t.installed()).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(fs::read(t.previous()).unwrap(), b"previous");
+    assert_eq!(
+        t.hidden_in_bin(),
+        [".huntsman-recon.previous"],
+        "no staging file is left beside the binary"
+    );
+    assert!(
+        stdout(&out).contains(&format!("Previous binary kept: {}", t.previous().display())),
+        "{}",
+        stdout(&out)
+    );
+    assert!(t.tmp_is_clean(), "the staging root is removed");
+    assert!(!t.lock().exists(), "the run lock is released");
+    assert_private_state(&t.temp, BUILT_REV);
+
+    // Every check ran on the staged build before anything at the install path was touched, and
+    // the installed binary was checked again where it lies.
+    let calls = t.calls();
+    let tmpdir = t.temp.join("tmp");
+    for step in ["build-sha", "check", "verify var/ledger.json"] {
+        assert!(staged_binary_ran(&calls, &tmpdir, step), "{step}: {calls}");
+    }
+    let lines: Vec<&str> = calls.lines().collect();
+    let staged = format!("timeout 30 {}/huntsman-build.", tmpdir.display());
+    let last_staged_check = lines
+        .iter()
+        .rposition(|line| line.starts_with(&staged))
+        .unwrap();
+    let in_place = format!("timeout 30 {} build-sha", t.installed().display());
+    let in_place_check = lines
+        .iter()
+        .position(|line| *line == in_place)
+        .unwrap_or_else(|| panic!("the installed binary is checked where it lies: {calls}"));
+    assert!(
+        last_staged_check < in_place_check,
+        "the staged build is checked before it is moved into place: {calls}"
+    );
+}
+
+const OTHER_REV: &str = "ffffffffffffffffffffffffffffffffffffffff";
+
+/// A fake `timeout` under which the binary at `$FAKE_MISREPORTING_PATH` answers `build-sha` with
+/// [`OTHER_REV`]; every other binary answers as usual.
+const MISREPORTING_IN_PLACE_TIMEOUT: &str = r#"#!/bin/sh
+printf 'timeout %s\n' "$*" >> "$INSTALL_LOG"
+case "$*" in
+  "30 $FAKE_MISREPORTING_PATH build-sha") printf '%s\n' ffffffffffffffffffffffffffffffffffffffff ;;
+  *' build-sha') cat "$INSTALL_LOG.build-sha" ;;
+esac
+exit 0
+"#;
+
+/// The binary is checked once more where it was installed. When it does not report the commit
+/// there, the previous binary goes back in its place; when there was none, the new binary is
+/// removed rather than left installed unverified.
+#[test]
+fn a_binary_that_fails_its_check_in_place_is_rolled_back() {
+    let t = Prebuilt::new();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    fs::write(t.installed(), b"previous").unwrap();
+    write_executable(&t.fake_bin.join("timeout"), MISREPORTING_IN_PLACE_TIMEOUT);
+    let installed = t.installed().display().to_string();
+    let env = [
+        ("HUNTSMAN_REV", BUILT_REV),
+        ("HUNTSMAN_FROM_SOURCE", "1"),
+        ("FAKE_MISREPORTING_PATH", installed.as_str()),
+    ];
+
+    let out = t.run(&env, BUILT_REV);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert_eq!(
+        fs::read(t.installed()).unwrap(),
+        b"previous",
+        "the previous binary is restored: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains(&format!(
+            "{installed} reports build-sha {OTHER_REV} once installed, expected {BUILT_REV}; the previous binary is back in place"
+        )),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        t.hidden_in_bin()
+            .iter()
+            .all(|name| !name.starts_with(".huntsman-recon.install")),
+        "no staging copy is left: {:?}",
+        t.hidden_in_bin()
+    );
+    assert!(
+        t.provenance().is_empty(),
+        "no provenance for a rolled-back install"
+    );
+    assert!(t.tmp_is_clean());
+    assert!(!t.lock().exists());
+
+    // With no previous binary, the binary that failed in place is removed.
+    fs::remove_file(t.installed()).unwrap();
+    let out = t.run(&env, BUILT_REV);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("no binary was installed before"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !t.installed().exists(),
+        "an unverified binary is not left installed"
+    );
+    assert_eq!(t.provenance(), "");
+}
+
+/// A symlink at the install path is the operator's own arrangement. The installer refuses to
+/// replace it, before it downloads or builds anything, and leaves the link and its target alone.
+#[test]
+fn a_symlinked_binary_is_refused_before_anything_is_fetched_or_built() {
+    let t = Prebuilt::new();
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    let target = t.temp.join("elsewhere");
+    fs::write(&target, b"linked binary").unwrap();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    std::os::unix::fs::symlink(&target, t.installed()).unwrap();
+
+    for env in [
+        &[("HUNTSMAN_REV", BUILT_REV)][..],
+        &[("HUNTSMAN_REV", BUILT_REV), ("HUNTSMAN_FROM_SOURCE", "1")][..],
+    ] {
+        let out = t.run(env, BUILT_REV);
+        assert!(!out.status.success(), "{}", stdout(&out));
+        assert!(
+            stderr(&out).contains(&format!(
+                "{} is a symlink; not replacing it",
+                t.installed().display()
+            )),
+            "{}",
+            stderr(&out)
+        );
+        let calls = t.calls();
+        assert!(
+            !calls.contains("releases/download") && !calls.contains("cargo"),
+            "refused before anything is fetched or built: {calls}"
+        );
+        assert_eq!(fs::read_link(t.installed()).unwrap(), target);
+        assert_eq!(fs::read(&target).unwrap(), b"linked binary");
+        assert!(!t.lock().exists());
+    }
 }
 
 fn stdout(output: &std::process::Output) -> String {

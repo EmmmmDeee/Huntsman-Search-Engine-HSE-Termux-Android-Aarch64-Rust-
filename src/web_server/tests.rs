@@ -104,6 +104,73 @@ fn maximum_content_length_does_not_overflow_the_socket_reader() {
 }
 
 #[test]
+fn live_people_discovery_api_reuses_guarded_body_only_handler() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let routes = Routes {
+        people_discover: Some(PeopleDiscover {
+            handler: Arc::new(move |name, region| {
+                // The route hands over the name `people_discovery::checked_name` returned.
+                assert_eq!(name, "jane example");
+                assert_eq!(region, crate::people_discovery::Region::Au);
+                seen.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "candidates": [],
+                    "attribution": "none_established"
+                }))
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
+        }),
+        ..Routes::default()
+    };
+    let config = test_config(loopback_bind(), None);
+    let body = r#"{"name":"Jane Example","region":"au"}"#;
+    let head = format!(
+        "POST /api/people/discover HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nX-Huntsman-Lookup: 1\r\nSec-Fetch-Site: same-origin\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let ok = text(respond(&head, &config, &routes));
+    assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+    assert!(ok.contains("none_established"), "{ok}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    for bad in [
+        head.replace("X-Huntsman-Lookup: 1\r\n", ""),
+        head.replace("same-origin", "cross-site"),
+        head.replace("POST /api/people/discover", "GET /api/people/discover"),
+        head.replace(
+            "/api/people/discover HTTP",
+            "/api/people/discover?name=Jane HTTP",
+        ),
+        head.replace("Jane Example", "Jane\\nExample"),
+        head.replace("\"au\"", "\"unknown\""),
+        head.replace("Content-Length: 37", "Content-Length: 999"),
+    ] {
+        let answer = text(respond(&bad, &config, &routes));
+        assert!(!answer.starts_with("HTTP/1.1 200"), "{bad:?} -> {answer}");
+    }
+    // A name the library would refuse is refused by the route itself, before a worker.
+    for name in ["Jane\\nExample", "Jane", "Jane <Example>"] {
+        let bad = head.replace("Jane Example", name).replace(
+            &format!("Content-Length: {}", body.len()),
+            &format!(
+                "Content-Length: {}",
+                body.replace("Jane Example", name).len()
+            ),
+        );
+        let answer = text(respond(&bad, &config, &routes));
+        assert!(answer.starts_with("HTTP/1.1 400"), "{name:?} -> {answer}");
+        assert!(answer.contains("full name"), "{name:?} -> {answer}");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let public = test_config(public_bind(), Some("case-token"));
+    let denied = text(respond(&head, &public, &routes));
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn rhinser_catalogue_http_contract_is_read_only_and_complete() {
     let request = "GET /api/rhinser/catalog HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n";
     let answer = response_for_request(request, None, loopback_bind());
@@ -478,6 +545,7 @@ fn a_loopback_server_needs_no_token_even_when_one_is_supplied() {
             let routes = Routes {
                 lookups: Some(lookups.clone()),
                 research: None,
+                people_discover: None,
                 radar: None,
                 cells: None,
                 track: None,
@@ -1530,6 +1598,7 @@ fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> Stri
     let routes = Routes {
         lookups: lookups.cloned(),
         research: None,
+        people_discover: None,
         radar: None,
         cells: None,
         track: None,
@@ -1707,6 +1776,7 @@ fn saved_lookup_routes(
             ..echo_lookups()
         }),
         research: None,
+        people_discover: None,
         radar: None,
         cells: None,
         track: None,
@@ -2008,6 +2078,7 @@ fn analyses(
     Routes {
         lookups: None,
         research: None,
+        people_discover: None,
         radar: None,
         cells: None,
         track: None,
@@ -3429,6 +3500,7 @@ fn every_page_route_refuses_other_sites_through_one_guard() {
     let routes = Routes {
         lookups: Some(echo_lookups()),
         research: None,
+        people_discover: None,
         radar: Some(unused_sensor()),
         cells: Some(unused_sensor()),
         track: Some(unused_sensor()),

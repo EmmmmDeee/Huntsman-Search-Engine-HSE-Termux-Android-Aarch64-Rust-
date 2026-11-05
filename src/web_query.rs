@@ -252,6 +252,21 @@ pub fn search<T: Transport + ?Sized>(
     now_unix: u64,
     engines: EngineSet,
 ) -> Result<SearchReport, Error> {
+    search_with_provenance(transport, query, now_unix, engines).map(|(report, _)| report)
+}
+
+/// A complete, typed search with both the legacy URL-deduplicated report and the
+/// original per-engine URL sightings. Repeated index sightings are discoverability,
+/// never independently corroborating observations of the target page's claims.
+///
+/// # Errors
+/// Uses the same bounded input validation and fetch boundary as `search`.
+pub fn search_with_provenance<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    now_unix: u64,
+    engines: EngineSet,
+) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let query = checked_query(query, "query")?;
     let deadline = engines.start_deadline(&SystemClock);
     let round = Round {
@@ -259,8 +274,7 @@ pub fn search<T: Transport + ?Sized>(
         deadline: deadline.as_ref(),
         skip: None,
     };
-    let (report, _) = search_with_observations(transport, &query, now_unix, round)?;
-    Ok(report)
+    search_with_observations(transport, &query, now_unix, round)
 }
 
 /// Validate before allocating provider URLs or sending any network request.
@@ -1105,6 +1119,39 @@ mod tests {
              duckduckgo\thttps://a.example/x\\u{1b}[2J\\nbing\\thttps://b.example/\\u{2028}\n\
              mojeek\thttps://c.example/ordinary?q=1&r=2\n\
              hits=2\n"
+        );
+    }
+
+    #[test]
+    fn source_observation_view_keeps_index_overlap_without_changing_legacy_results() {
+        let html = "<html><a href='https://github.com/example-public'>public</a></html>";
+        let fake = Fake::new(vec![
+            Ok(response(200, html)),
+            Ok(response(200, html)),
+            Ok(response(200, html)),
+        ]);
+        let (deduped, sightings) = search_with_provenance(
+            &fake,
+            "source-overlap-facet-example",
+            171,
+            EngineSet::Default,
+        )
+        .unwrap();
+        assert_eq!(deduped.hits.len(), 1);
+        assert_eq!(sightings.len(), 3);
+        assert_eq!(
+            sightings
+                .iter()
+                .map(|row| row.engine.as_str())
+                .collect::<Vec<_>>(),
+            ["bing", "brave", "mojeek"]
+        );
+        assert_eq!(deduped.outcomes.len(), 3);
+        assert!(
+            deduped
+                .outcomes
+                .iter()
+                .all(|row| row.kind == SourceOutcomeKind::Success)
         );
     }
 

@@ -49,6 +49,7 @@ Primary policy: https://www.sec.gov/search-filings/edgar-search-assistance/acces
 | Brave Search | `HUNTSMAN_BRAVE_KEY` | owned credential material located; validate/reissue before production use if historical exposure applies |
 | Shodan | `HUNTSMAN_SHODAN_KEY` | used by `ip` (host, no query credits) and `domain` (DNS, one query credit) whenever set; private stored credential located; validity unverified |
 | Whoxy | `HUNTSMAN_WHOXY_KEY` | used by `domain` (live WHOIS, one credit each) and `email` (reverse WHOIS, one reverse credit a page) whenever set; an empty balance is reported as a plan refusal; private stored credential located; validity unverified |
+| QLDTraffic | `HUNTSMAN_QLDTRAFFIC_KEY` | used by `traffic-cameras` (CLI) for the one request it makes to the QLDTraffic webcam feed, sent only as the `apikey` query parameter; without it the command sends nothing and exits 66. The API specification (v1.10, §2.1.1.1) prints a shared public developer key limited to 100 requests a minute across everyone using it; TMR also issues keys to developers. No key is built into the binary; see [QLD_TRAFFIC_CAMERAS.md](QLD_TRAFFIC_CAMERAS.md) |
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | ABN Lookup (Australian Business Register) | `HUNTSMAN_ABR_GUID` | used by `company ABN|ACN` when set: the free web-services GUID from https://abr.business.gov.au/Tools/WebServices; an unrecognised GUID is reported as a rejected key; not probed by `credential-status --probe`, because the ABR answers a bad GUID with HTTP 200; credential is operator-supplied and never committed |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | native `seeknow` CLI and keyed lookup leg; generate an API key from the [SeekNow account](https://see-know.ru/register); website search quotas do not establish API entitlements or available credits; credential is operator-supplied and never committed |
@@ -127,6 +128,7 @@ HUNTSMAN_WIGLE_TOKEN=
 HUNTSMAN_BRAVE_KEY=
 HUNTSMAN_SHODAN_KEY=
 HUNTSMAN_WHOXY_KEY=
+HUNTSMAN_QLDTRAFFIC_KEY=
 HUNTSMAN_HIBP_KEY=
 HUNTSMAN_SEEKNOW_KEY=
 HUNTSMAN_OATHNET_KEY=
