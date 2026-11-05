@@ -304,10 +304,11 @@ pub(super) fn research_response(
     }
 }
 
-/// Body-only live people-index search, with typed outcomes and source-scoped URLs.
-/// Reuses the CLI/library discovery; it never infers account ownership or stores
-/// the subject in an HTTP URL. The same host, token, origin and custom-header
-/// protections as a normal live lookup apply before any network work.
+/// `POST /api/people/discover`: the `people-discover` search for a JSON body
+/// `{"name": …, "region": "au"|"us"}`, answered with the library's report. It never infers
+/// account ownership or puts the subject in an HTTP URL. The same host, token, origin and
+/// custom-header protections as a live lookup apply, and the name passes
+/// `people_discovery::checked_name`, before any network work; one discovery runs at a time.
 pub(super) fn people_discover_response(
     parsed: &ParsedRequest<'_>,
     discovery: Option<&PeopleDiscover>,
@@ -357,16 +358,17 @@ pub(super) fn people_discover_response(
     else {
         return json_error(400, "people discovery region must be au or us");
     };
-    if name.len() > crate::people_discovery::MAX_PEOPLE_DISCOVERY_NAME_BYTES || name.is_empty() {
-        return json_error(400, "people discovery name must be 1..120 bytes");
-    }
+    // The library's one name contract, before a worker or the discovery slot is taken.
+    let name = match crate::people_discovery::checked_name(name) {
+        Ok(name) => name,
+        Err(error) => return json_error(400, &error.to_string()),
+    };
     // Four sequential source facets can perform twelve guarded engine calls.
     // Keep at most one such fan-out on a low-RAM Termux handset at a time.
     let Some(slot) = Slot::take_of(&discovery.live, 1) else {
         return json_error(503, "people discovery capacity in use; retry shortly");
     };
     let handler = Arc::clone(&discovery.handler);
-    let name = name.to_owned();
     let (sender, receiver) = sync_channel(1);
     let worker = thread::Builder::new()
         .name("serve-people-discover".into())

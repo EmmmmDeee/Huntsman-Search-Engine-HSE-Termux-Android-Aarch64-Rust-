@@ -112,7 +112,8 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
     let routes = Routes {
         people_discover: Some(PeopleDiscover {
             handler: Arc::new(move |name, region| {
-                assert_eq!(name, "Jane Example");
+                // The route hands over the name `people_discovery::checked_name` returned.
+                assert_eq!(name, "jane example");
                 assert_eq!(region, crate::people_discovery::Region::Au);
                 seen.fetch_add(1, Ordering::SeqCst);
                 Ok(serde_json::json!({
@@ -148,6 +149,19 @@ fn live_people_discovery_api_reuses_guarded_body_only_handler() {
     ] {
         let answer = text(respond(&bad, &config, &routes));
         assert!(!answer.starts_with("HTTP/1.1 200"), "{bad:?} -> {answer}");
+    }
+    // A name the library would refuse is refused by the route itself, before a worker.
+    for name in ["Jane\\nExample", "Jane", "Jane <Example>"] {
+        let bad = head.replace("Jane Example", name).replace(
+            &format!("Content-Length: {}", body.len()),
+            &format!(
+                "Content-Length: {}",
+                body.replace("Jane Example", name).len()
+            ),
+        );
+        let answer = text(respond(&bad, &config, &routes));
+        assert!(answer.starts_with("HTTP/1.1 400"), "{name:?} -> {answer}");
+        assert!(answer.contains("full name"), "{name:?} -> {answer}");
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let public = test_config(public_bind(), Some("case-token"));

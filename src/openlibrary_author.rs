@@ -3,18 +3,18 @@
 //! One guarded, keyless HTTPS request uses Open Library's published Authors API.
 //! Two catalogue entries with the same display name remain two distinct leads.
 //! No account ownership, biography, date of birth, or family relationship is inferred.
+//! It sends only a name `people_discovery::checked_name` has bounded and checked: that
+//! module owns the subject-name contract.
 
 use serde::{Deserialize, Serialize};
 
-use crate::canonical::canonical_name;
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, append_query_param};
-use crate::people_cli;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "openlibrary_author";
-pub const MAX_LEADS: usize = 5;
+const MAX_LEADS: usize = 5;
 const API: &str = "https://openlibrary.org/search/authors.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -56,10 +56,15 @@ struct Author {
 /// Preserve source errors when this optional acquisition leg is unreachable.
 /// Other people-discovery facets must keep their own outcomes and leads.
 #[must_use]
-pub fn unavailable(now_unix: u64, reason: &str) -> Report {
+pub(crate) fn unavailable(now_unix: u64, reason: &str) -> Report {
+    miss(SourceExecutionOutcome::inconclusive(SRC, now_unix, reason))
+}
+
+/// A report with no leads, carrying only its outcome.
+fn miss(outcome: SourceExecutionOutcome) -> Report {
     Report {
         leads: Vec::new(),
-        outcome: SourceExecutionOutcome::inconclusive(SRC, now_unix, reason),
+        outcome,
         total_reported: None,
         total_exact: false,
         truncated: false,
@@ -73,33 +78,19 @@ fn valid_author_id(id: &str) -> bool {
     (1..=16).contains(&numbers.len()) && numbers.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// Search the public author catalogue once. Results are candidates, not verified
+/// Search the public author catalogue once for `name`, the canonical full name
+/// `people_discovery::checked_name` returned. Results are candidates, not verified
 /// connections to the name entered; no secondary person pivots are performed.
 ///
 /// # Errors
-/// Invalid/unbounded input or failure at the guarded HTTP transport boundary.
-pub fn lookup<T: Transport + ?Sized>(
+/// Failure at the guarded HTTP transport boundary.
+pub(crate) fn lookup<T: Transport + ?Sized>(
     transport: &T,
-    raw_name: &str,
+    name: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    if raw_name.len() > 120
-        || raw_name
-            .chars()
-            .any(|character| character.is_control() || matches!(character, '"' | '\\' | '<' | '>'))
-    {
-        return Err(Error::Invalid(
-            "invalid bounded bibliographic author name".into(),
-        ));
-    }
-    let name = canonical_name(raw_name);
-    if !people_cli::is_name(&name) {
-        return Err(Error::Invalid(
-            "bibliography requires a full personal name".into(),
-        ));
-    }
     let url = append_query_param(
-        &append_query_param(API, "q", &name),
+        &append_query_param(API, "q", name),
         "limit",
         &MAX_LEADS.to_string(),
     );
@@ -113,15 +104,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(
-        interpret(&fetched, now_unix).unwrap_or_else(|outcome| Report {
-            leads: Vec::new(),
-            outcome,
-            total_reported: None,
-            total_exact: false,
-            truncated: false,
-        }),
-    )
+    Ok(interpret(&fetched, now_unix).unwrap_or_else(miss))
 }
 
 /// One immutable response. Any malformed author row fails closed and leaks no
@@ -204,7 +187,7 @@ fn interpret(fetched: &Fetched, now_unix: u64) -> Result<Report, SourceExecution
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{OneResponse, ScriptedTransport};
+    use crate::test_support::OneResponse;
 
     #[test]
     fn distinct_catalogue_authors_with_same_name_are_not_merged() {
@@ -258,14 +241,5 @@ mod tests {
         assert!(report.truncated);
         assert_eq!(report.leads.len(), 1);
         assert_eq!(report.outcome.found, Some(1));
-    }
-
-    #[test]
-    fn unsafe_selector_never_creates_a_network_request() {
-        let transport = ScriptedTransport::new(Vec::new());
-        for selector in ["Ada", "Ada\nLovelace", "Ada <Lovelace>", "Ada \"Lovelace\""] {
-            assert!(lookup(&transport, selector, 1).is_err(), "{selector:?}");
-        }
-        assert!(transport.seen.borrow().is_empty());
     }
 }

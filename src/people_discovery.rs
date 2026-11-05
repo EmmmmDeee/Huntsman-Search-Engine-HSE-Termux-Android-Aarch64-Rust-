@@ -3,6 +3,9 @@
 //! Search-index URLs are *candidate leads* only. Even matching full names, domains,
 //! and repeats across engines do not establish that one person owns any account.
 //! The existing `people` command remains the authority for structured registers.
+//!
+//! The subject's full name leaves the device: [`discover`] sends it to Bing, Brave and
+//! Mojeek and to Open Library, and [`bibliography`] to Open Library alone.
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -15,11 +18,11 @@ use crate::people_cli;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::web_query;
 
-pub const MAX_PEOPLE_DISCOVERY_NAME_BYTES: usize = 120;
-pub const MAX_CANDIDATES: usize = 80;
+const MAX_PEOPLE_DISCOVERY_NAME_BYTES: usize = 120;
+const MAX_CANDIDATES: usize = 80;
 pub const PEOPLE_DISCOVER_USAGE: &str =
-    "usage: huntsman-recon people-discover [--region au|us] FULL NAME...";
-pub const PEOPLE_DISCOVER_HELP: &str = "people-discover [--region au|us] FULL NAME...\nRun four bounded, keyless public-index searches using the actual Rust Bing, Brave and Mojeek collectors. Cross-source discovery covers public professional profiles (LinkedIn), development footprints (GitHub), research identifiers (ORCID) and jurisdiction-specific official pages (ASIC for AU, SEC for US). This is separate from the existing people lookup, which collects structured records. Returns JSON with the exact index URLs, admitted domains, per-engine typed outcomes, discarded out-of-scope links and explicit truncation. A separate bounded, keyless Open Library Authors API lookup adds bibliographic catalogue candidates, with independent source status and no identity attribution. Use --bibliography-only for one direct public-author request without the search-engine fanout. Every hit is an UNVERIFIED LEAD: matching names, URL occurrence and multiple indexes do not prove identity, employment or control. No breach lookup, location tracing, private API, or automatic recursive expansion.";
+    "usage: huntsman-recon people-discover [--region au|us] [--bibliography-only] FULL NAME...";
+pub const PEOPLE_DISCOVER_HELP: &str = "people-discover [--region au|us] [--bibliography-only] FULL NAME...\nSearch public sources for leads on one person by full name. The name you type leaves this device: it is sent to Bing, Brave and Mojeek, in four site-scoped searches on each (LinkedIn profiles, GitHub accounts, ORCID research identifiers, and ASIC pages for --region au, the default, or SEC pages for us), and to Open Library's author search. --bibliography-only sends it to Open Library alone. No key is needed. Prints JSON: each admitted URL with the searches and engines that returned it, every engine's typed outcome, the count of returned URLs outside the searched site, the Open Library author leads with their own outcome, and whether anything was cut. Every result is an unverified lead: a matching name, an indexed page or the same URL from several engines does not prove identity, employment or control, and a blocked or empty source does not prove absence. Separate from `people`, which reads structured registers. No breach lookup, location tracing or automatic follow-up search. Exits 69 when no source returned a lead.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -81,7 +84,20 @@ pub struct Report {
     pub discovery_completeness: &'static str,
 }
 
-fn checked_name(raw: &str) -> Result<String, Error> {
+/// The canonical form of a subject's full name, the one name contract every
+/// people-discovery entry point (the CLI, the HTTP route, [`discover`] and
+/// [`bibliography`]) applies before any request.
+///
+/// # Errors
+/// [`Error::Invalid`] for a name over the byte bound, one holding a control character,
+/// quote, backslash or angle bracket, or one that is not two alphabetic tokens.
+pub fn checked_name(raw: &str) -> Result<String, Error> {
+    let refused = || {
+        Error::Invalid(format!(
+            "people-discover requires a full name (two alphabetic tokens) of at most \
+             {MAX_PEOPLE_DISCOVERY_NAME_BYTES} bytes, without quotes, controls or HTML delimiters"
+        ))
+    };
     // Check the *original bytes* before canonical_name collapses whitespace.
     // Otherwise a newline, tab or NUL can disappear and be accepted as a
     // legitimate name, despite the command's safety and input contract.
@@ -90,15 +106,11 @@ fn checked_name(raw: &str) -> Result<String, Error> {
             .chars()
             .any(|c| c.is_control() || matches!(c, '"' | '\\' | '<' | '>'))
     {
-        return Err(Error::Invalid(
-            "people-discover requires a bounded full name (two alphabetic tokens), without quotes, controls or HTML delimiters".into(),
-        ));
+        return Err(refused());
     }
     let name = canonical_name(raw);
     if !people_cli::is_name(&name) {
-        return Err(Error::Invalid(
-            "people-discover requires a bounded full name (two alphabetic tokens), without quotes, controls or HTML delimiters".into(),
-        ));
+        return Err(refused());
     }
     Ok(name)
 }
@@ -200,6 +212,19 @@ pub fn discover<T: Transport + ?Sized>(
         attribution: "none_established; indexed_page_is_not_proof_of_person_or_account",
         discovery_completeness: "unknown_beyond_four_index_queries",
     })
+}
+
+/// The Open Library author search alone, for `people-discover --bibliography-only`:
+/// one keyless request, and no search-engine request.
+///
+/// # Errors
+/// An invalid name, refused before any request, and the guarded fetch boundary's errors.
+pub fn bibliography<T: Transport + ?Sized>(
+    transport: &T,
+    raw_name: &str,
+    now_unix: u64,
+) -> Result<openlibrary_author::Report, Error> {
+    openlibrary_author::lookup(transport, &checked_name(raw_name)?, now_unix)
 }
 
 #[cfg(test)]
@@ -367,6 +392,31 @@ mod tests {
             "github.com"
         ));
         assert!(!is_accepted_host("http://github.com/x", "github.com"));
+    }
+
+    #[test]
+    fn bibliography_only_asks_open_library_alone_after_the_same_name_check() {
+        let fixture = Fixture {
+            seen: RefCell::new(Vec::new()),
+            denied: false,
+        };
+        for bad in ["Ada", "Ada\nLovelace", "Ada <Lovelace>", "Ada \"Lovelace\""] {
+            assert!(bibliography(&fixture, bad, 1).is_err(), "{bad:?}");
+        }
+        assert!(fixture.seen.borrow().is_empty());
+        let report = bibliography(&fixture, "Clara  Ashwell", 1).unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.leads.len(), 2);
+        let seen = fixture.seen.borrow();
+        assert_eq!(
+            seen.len(),
+            1,
+            "one catalogue request, no search engine: {seen:?}"
+        );
+        assert_eq!(
+            seen[0],
+            "https://openlibrary.org/search/authors.json?q=clara+ashwell&limit=5"
+        );
     }
 
     #[test]

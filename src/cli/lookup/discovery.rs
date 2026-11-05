@@ -239,7 +239,8 @@ pub(in crate::cli) fn search_cmd(args: &[String]) -> ExitCode {
 }
 
 /// Source-scoped professional/research/register candidate discovery over the shared
-/// guarded Rust web-query engines. The output is *not* an identity attribution.
+/// guarded Rust web-query engines, with the Open Library author leg beside it (or alone,
+/// with `--bibliography-only`). The output is *not* an identity attribution.
 pub(in crate::cli) fn people_discover_cmd(args: &[String]) -> ExitCode {
     use huntsman_recon::people_discovery::{self, Region};
 
@@ -283,43 +284,35 @@ pub(in crate::cli) fn people_discover_cmd(args: &[String]) -> ExitCode {
     }
     let name = name_parts.join(" ");
     let transport = UreqTransport::new(&TransportConfig::default());
-    if bibliography_only {
-        return match huntsman_recon::openlibrary_author::lookup(
-            &transport,
-            &name,
-            clock::unix_now(),
-        ) {
-            Ok(report) => {
-                match terminal_json_pretty(&report) {
-                    Ok(body) => println!("{body}"),
-                    Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
-                }
-                if report.leads.is_empty() {
-                    ExitCode::from(EX_UNAVAILABLE)
-                } else {
-                    ExitCode::SUCCESS
-                }
-            }
-            Err(Error::Invalid(message)) => fail(EX_USAGE, &message),
-            Err(Error::Network(message)) => fail(EX_NOPERM, &message),
-            Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
-        };
-    }
-    match people_discovery::discover(&transport, &name, region, clock::unix_now()) {
-        Ok(report) => {
-            match terminal_json_pretty(&report) {
-                Ok(body) => println!("{body}"),
-                Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
-            }
-            if report.candidates.is_empty() && report.bibliography.leads.is_empty() {
-                ExitCode::from(EX_UNAVAILABLE)
-            } else {
-                ExitCode::SUCCESS
-            }
-        }
+    let now = clock::unix_now();
+    let printed = if bibliography_only {
+        people_discovery::bibliography(&transport, &name, now)
+            .map(|report| print_people_leads(&report, !report.leads.is_empty()))
+    } else {
+        people_discovery::discover(&transport, &name, region, now).map(|report| {
+            let found = !report.candidates.is_empty() || !report.bibliography.leads.is_empty();
+            print_people_leads(&report, found)
+        })
+    };
+    match printed {
+        Ok(code) => code,
         Err(Error::Invalid(message)) => fail(EX_USAGE, &message),
         Err(Error::Network(message)) => fail(EX_NOPERM, &message),
         Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+}
+
+/// Print a people-discovery report as JSON, then exit 0 when some source `found` a lead and
+/// 69 when none did: an empty or blocked source is never a confirmed absence.
+fn print_people_leads<T: serde::Serialize>(report: &T, found: bool) -> ExitCode {
+    match terminal_json_pretty(report) {
+        Ok(body) => println!("{body}"),
+        Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+    if found {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EX_UNAVAILABLE)
     }
 }
 

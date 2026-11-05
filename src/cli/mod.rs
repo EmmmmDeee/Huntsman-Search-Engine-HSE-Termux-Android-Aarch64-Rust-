@@ -36,7 +36,7 @@ Commands:
   sources               Classify an indicator and print curated routes (offline)
   domain-lifecycle      Compare imported domain observations offline
   people                Look up a name on keyless ASIC/ACNC registers and Wikidata
-  people-discover       Public-index profile, research and official-registry candidates (unverified)
+  people-discover       Unverified public leads for a full name from web indexes and Open Library
   email                 Enrich an email and query its public Gravatar profile
   exposure              Keyed breach evidence for an email (HIBP account, stolen.tax, OathNet)
   username              Enrich public profiles, including TikTok self-published bio contacts
