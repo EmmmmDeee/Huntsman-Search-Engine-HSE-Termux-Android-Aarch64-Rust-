@@ -77,7 +77,7 @@ mod tests {
         ] {
             let actual = haversine_m(a, b, c, d);
             let canonical = crate::geohash::haversine_km(a, b, c, d) * 1_000.0;
-            assert_eq!(actual, canonical);
+            assert_eq!(actual.to_bits(), canonical.to_bits(), "{a},{b} to {c},{d}");
             assert!(actual.is_finite() && actual >= 0.0);
         }
     }
