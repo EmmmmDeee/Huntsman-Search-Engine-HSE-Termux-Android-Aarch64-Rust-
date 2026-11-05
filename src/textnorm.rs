@@ -264,7 +264,7 @@ pub fn nonblank(value: Option<&str>) -> Option<&str> {
 /// A trimmed, non-empty borrow of an optional string field.
 #[must_use]
 pub fn nonempty(value: &Option<String>) -> Option<&str> {
-    value.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    nonblank(value.as_deref())
 }
 
 /// Title-case each whitespace-delimited word.
@@ -737,6 +737,20 @@ mod tests {
         assert_eq!(super::nonblank(Some(" \t\n ")), None);
         assert_eq!(super::nonblank(Some("  a b  ")), Some("a b"));
         assert_eq!(super::nonblank(Some("x")), Some("x"));
+    }
+
+    #[test]
+    fn nonempty_and_nonblank_have_the_same_optional_text_contract() {
+        for input in [
+            None,
+            Some(String::new()),
+            Some(" \t\n ".to_owned()),
+            Some("\u{2003}\u{00a0}".to_owned()),
+            Some("  a b  ".to_owned()),
+            Some("é".to_owned()),
+        ] {
+            assert_eq!(super::nonempty(&input), super::nonblank(input.as_deref()));
+        }
     }
 
     use super::*;
