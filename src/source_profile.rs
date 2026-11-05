@@ -99,7 +99,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("abuseipdb", C::Infra, None),
     // Official registers and regulatory filing clients: an acquisition modality only; their
     // lineage is NOT authenticated by it.
-    row("acnc", C::Other, Some(C::IdentityRegistry)),
+    row("acnc", C::IdentityRegistry, None),
     row("adguard_dns", C::Infra, None),
     row("alienvaultiprep", C::Infra, None),
     row("apk_intel", C::Other, None),
@@ -151,7 +151,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("email_parse", C::EmailIntel, None),
     row("emergingthreats", C::Other, None),
     row("eth_rpc", C::Other, None),
-    row("exa", C::Other, None),
+    row("exa", C::Search, None),
     row("exif", C::Other, None),
     row("fixture", C::Other, None),
     row("geo_corroboration", C::Infra, None),
@@ -267,7 +267,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("wigle_bluetooth", C::Rf, None),
     // Community-curated: never an official identity registry or an independent identity proof.
     row("wikidata", C::Other, Some(C::KnowledgeGraph)),
-    row("wikipedia", C::Infra, None),
+    row("wikipedia", C::Other, None),
     row("xposed_or_not", C::Breach, None),
     row("yandexdns", C::Infra, None),
 ];
@@ -402,6 +402,19 @@ mod tests {
                 row.id
             );
         }
+    }
+
+    /// B1 and B2. The correlator's arms named `acnc_charities` and `exa_search`, which no collector
+    /// writes, so ACNC and Exa evidence counted as `other`; `wikipedia` matched the `ip` in its
+    /// name and counted as infrastructure. Each is now classed as what it is.
+    #[test]
+    fn acnc_exa_and_wikipedia_are_classed_as_what_they_are() {
+        assert_eq!(family("acnc"), SourceClass::IdentityRegistry);
+        assert_eq!(modality("acnc"), SourceClass::IdentityRegistry);
+        assert_eq!(family("exa"), SourceClass::Search);
+        assert_eq!(modality("exa"), SourceClass::Search);
+        assert_eq!(family("wikipedia"), SourceClass::Other);
+        assert_eq!(modality("wikipedia"), SourceClass::Other);
     }
 
     #[test]
