@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::rhinser_nfc::{self, ApduInspection, NdefInspection};
+use crate::rhinser_tlv::{self, TlvInspection};
 
 pub const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 const MAX_EVENTS: usize = 64;
@@ -39,6 +40,9 @@ enum CaptureEvent {
     Apdu {
         hex: String,
     },
+    Tlv {
+        hex: String,
+    },
     Bluetooth {
         transport: BluetoothTransport,
         rssi_dbm: i16,
@@ -55,6 +59,9 @@ pub enum NativeObservation {
     },
     Apdu {
         inspection: ApduInspection,
+    },
+    Tlv {
+        inspection: TlvInspection,
     },
     Bluetooth {
         transport: &'static str,
@@ -105,14 +112,27 @@ pub fn inspect_capture_json(bytes: &[u8]) -> Result<NativeCaptureReport, String>
         let observation = match event {
             CaptureEvent::Ndef { hex } => {
                 let data = rhinser_nfc::decode_hex(&hex)?;
-                NativeObservation::Ndef {
-                    inspection: rhinser_nfc::inspect_ndef(&data)?,
+                let mut inspection = rhinser_nfc::inspect_ndef(&data)?;
+                // NDEF record TYPE is caller-controlled metadata, not an authenticated
+                // schema name. Do not echo arbitrary type strings into native reports:
+                // they can encode identifiers even when the payload is suppressed.
+                for record_type in &mut inspection.record_types {
+                    if !matches!(record_type.as_str(), "T" | "U" | "Sp") {
+                        "redacted_type".clone_into(record_type);
+                    }
                 }
+                NativeObservation::Ndef { inspection }
             }
             CaptureEvent::Apdu { hex } => {
                 let data = rhinser_nfc::decode_hex(&hex)?;
                 NativeObservation::Apdu {
                     inspection: rhinser_nfc::inspect_apdu(&data)?,
+                }
+            }
+            CaptureEvent::Tlv { hex } => {
+                let data = rhinser_nfc::decode_hex(&hex)?;
+                NativeObservation::Tlv {
+                    inspection: rhinser_tlv::inspect_tlv(&data)?,
                 }
             }
             CaptureEvent::Bluetooth {
@@ -225,6 +245,26 @@ mod tests {
     }
 
     #[test]
+    fn native_ndef_report_does_not_echo_untrusted_type_identifiers() {
+        // TYPE metadata is not proof that an identifier is safe to display.
+        // A crafted external-type record can contain personally identifying text.
+        // Single short external-type NDEF record, whose TYPE is
+        // "user@example.invalid"; its one-byte payload is "X".
+        let hex = "D4140175736572406578616D706C652E696E76616C696458";
+        let fixture = serde_json::json!({
+            "schema_version": 1,
+            "captured_unix_ms": 1_730_000_000_000_u64,
+            "operator_consented": true,
+            "events": [{"kind": "ndef", "hex": hex}]
+        });
+        let input = serde_json::to_vec(&fixture).unwrap();
+        let report = inspect_capture_json(&input).unwrap();
+        let output = serde_json::to_string(&report).unwrap();
+        assert!(output.contains("redacted_type"), "{output}");
+        assert!(!output.contains("user@example.invalid"), "{output}");
+    }
+
+    #[test]
     fn refuse_untrusted_or_unbounded_envelopes() {
         for data in [
             br"{}".as_slice(),
@@ -246,5 +286,30 @@ mod tests {
         assert!(!a.sensor_observation);
         assert!((11..=17).contains(&a.elapsed_seconds));
         assert!((940..=999).contains(&a.score_tenths));
+    }
+
+    #[test]
+    fn invalid_tlv_rejects_the_whole_capture_without_echoing_values() {
+        for hex in [
+            "",
+            "not-hex",
+            "5A8000",
+            "5A0212",
+            &"5A00".repeat(129),
+            &"00".repeat(8193),
+        ] {
+            let input = serde_json::json!({
+                "schema_version": 1,
+                "captured_unix_ms": 1,
+                "operator_consented": true,
+                "events": [
+                    {"kind": "apdu", "hex": "00A40400023F00"},
+                    {"kind": "tlv", "hex": hex}
+                ]
+            });
+            let error = inspect_capture_json(&serde_json::to_vec(&input).unwrap()).unwrap_err();
+            assert!(!error.contains("5A0212"));
+            assert!(!error.contains("not-hex"));
+        }
     }
 }

@@ -39,12 +39,13 @@ struct Body {
     ip: Option<Entry>,
 }
 
-/// One queried value's record; `value` echoes the query and is not kept.
+/// One queried value's record. Verify any echoed `value` against the target; never retain it in evidence.
 #[derive(Deserialize)]
 struct Entry {
     #[serde(default)]
+    value: Option<String>,
+    // Both counters are required: an absent field must not manufacture a valid zero.
     appears: u8,
-    #[serde(default)]
     frequency: u64,
     #[serde(default)]
     lastseen: Option<String>,
@@ -91,8 +92,9 @@ pub fn lookup(
     decode(&body, indicator)
 }
 
-/// A score the service writes either as a JSON number or as a decimal string (`"40.00"`);
-/// any other string is not a score and fails the decode.
+/// A score from 0 to 100 the service writes either as a JSON number or as a decimal string
+/// (`"40.00"`). Any other value, or a score outside that range, fails the decode rather than read
+/// as no score.
 fn number_or_decimal_string<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -103,10 +105,32 @@ where
         Some(serde_json::Value::String(text)) => text.trim().parse::<f64>().ok(),
         Some(_) => None,
     };
+    // The range excludes NaN and both infinities as well.
     score
-        .filter(|score| score.is_finite())
+        .filter(|score| (0.0..=100.0).contains(score))
         .map(Some)
-        .ok_or_else(|| serde::de::Error::custom("confidence is not a number"))
+        .ok_or_else(|| serde::de::Error::custom("confidence is not a score from 0 to 100"))
+}
+
+// A provider's echoed target is not evidence about some other indicator.
+// Email local parts are case-sensitive; only the DNS domain is case-insensitive.
+fn matches_echo(indicator: Indicator<'_>, echoed: &str) -> bool {
+    match indicator {
+        Indicator::Email(email) => match (echoed.rsplit_once('@'), email.rsplit_once('@')) {
+            (Some((echo_local, echo_domain)), Some((local, domain))) => {
+                echo_local == local && echo_domain.eq_ignore_ascii_case(domain)
+            }
+            _ => echoed == email,
+        },
+        Indicator::Ip(ip) => match (
+            echoed.parse::<std::net::IpAddr>(),
+            ip.parse::<std::net::IpAddr>(),
+        ) {
+            (Ok(echo), Ok(target)) => echo == target,
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// One answer body for `indicator`. **Pure.**
@@ -130,6 +154,24 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
             "answer has no record for the value".into(),
         ));
     };
+    // Check the echoed indicator even for zero reports: a different target is not a valid zero.
+    // Keep both the request and the provider's echoed value out of error messages and findings.
+    if entry
+        .value
+        .as_deref()
+        .is_some_and(|echoed| !matches_echo(indicator, echoed))
+    {
+        return Err(LegError::Decode(
+            "StopForumSpam: echoed value does not match requested indicator".into(),
+        ));
+    }
+    // The provider's documented no-match response is exactly appears=0/frequency=0.
+    // Inconsistent flags or unsupported appears values establish neither presence nor absence.
+    if entry.appears > 1 || (entry.appears == 0) != (entry.frequency == 0) {
+        return Err(LegError::Decode(
+            "StopForumSpam: contradictory appears/frequency counters".into(),
+        ));
+    }
     if entry.appears == 0 {
         return Ok(None);
     }
@@ -251,6 +293,72 @@ mod tests {
     }
 
     #[test]
+    fn live_decimal_string_confidence_keeps_the_report_and_does_not_echo_the_email() {
+        // Reproduced from the public API for the reserved example-domain indicator
+        // test@example.com on 2026-11-03. The previous f64-only field rejected it.
+        let body = r#"{"success":1,"email":{"value":"test@example.com","appears":1,"frequency":3,"lastseen":"2026-10-31 11:47:01","confidence":"40.00"}}"#;
+        let finding = decode(body.as_bytes(), Indicator::Email("test@example.com"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("string-encoded confidence must decode"));
+        assert_eq!(
+            finding.summary,
+            "StopForumSpam: the address has 3 spam reports, last on 2026-10-31 11:47:01"
+        );
+        assert!(finding.attrs.contains(&("reports", "3".into())));
+        assert!(finding.attrs.contains(&("confidence", "40.00".into())));
+        assert!(!format!("{finding:?}").contains("test@example.com"));
+    }
+
+    #[test]
+    fn malformed_confidence_cannot_be_silently_accepted_as_absence() {
+        for malformed in [
+            r#""invalid""#,
+            r#""NaN""#,
+            "true",
+            "{}",
+            "[]",
+            "-0.01",
+            "100.01",
+            r#""-0.01""#,
+            r#""100.01""#,
+        ] {
+            let body = format!(
+                r#"{{"success":1,"email":{{"appears":1,"frequency":3,"confidence":{malformed}}}}}"#
+            );
+            assert!(
+                matches!(
+                    decode(body.as_bytes(), Indicator::Email("test@example.com")),
+                    Err(LegError::Decode(_))
+                ),
+                "malformed confidence must fail closed: {malformed}"
+            );
+        }
+    }
+
+    #[test]
+    fn confidence_range_boundaries_preserve_both_wire_formats() {
+        for (wire, expected) in [
+            ("0", "0.00"),
+            (r#""0""#, "0.00"),
+            ("100", "100.00"),
+            (r#""100.00""#, "100.00"),
+        ] {
+            let body = format!(
+                r#"{{"success":1,"email":{{"appears":1,"frequency":3,"confidence":{wire}}}}}"#
+            );
+            let finding = decode(body.as_bytes(), Indicator::Email("test@example.com"))
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| panic!("valid confidence boundary must decode: {wire}"));
+            assert!(
+                finding.attrs.contains(&("confidence", expected.to_owned())),
+                "unexpected confidence for {wire}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unreported_value_is_a_valid_zero_and_a_failure_is_an_error() {
         let none = r#"{"success":1,"ip":{"value":"8.8.8.8","frequency":0,"appears":0,"asn":15169,"country":"us"}}"#;
         assert!(matches!(
@@ -261,6 +369,74 @@ mod tests {
         assert!(matches!(
             decode(failed.as_bytes(), Indicator::Ip("8.8.8.8")),
             Err(LegError::Decode(m)) if m.contains("invalid ip")
+        ));
+    }
+
+    #[test]
+    fn missing_or_conflicting_report_counters_are_not_evidence() {
+        for record in [
+            r#"{"appears":0,"frequency":2}"#,
+            r#"{"appears":1,"frequency":0}"#,
+            r#"{"appears":2,"frequency":3}"#,
+            r#"{"appears":0}"#,
+            r#"{"frequency":0}"#,
+            r"{}",
+        ] {
+            let body = format!(r#"{{"success":1,"ip":{record}}}"#);
+            assert!(
+                matches!(
+                    decode(body.as_bytes(), Indicator::Ip("8.8.8.8")),
+                    Err(LegError::Decode(_))
+                ),
+                "missing or contradictory provider counters must fail closed: {record}"
+            );
+        }
+    }
+
+    #[test]
+    fn echoed_value_mismatch_is_not_attributed_to_the_target() {
+        for (body, indicator) in [
+            (
+                r#"{"success":1,"email":{"value":"other@example.com","appears":1,"frequency":3}}"#,
+                Indicator::Email("test@example.com"),
+            ),
+            (
+                r#"{"success":1,"email":{"value":"other@example.com","appears":0,"frequency":0}}"#,
+                Indicator::Email("test@example.com"),
+            ),
+            (
+                r#"{"success":1,"ip":{"value":"8.8.4.4","appears":0,"frequency":0}}"#,
+                Indicator::Ip("8.8.8.8"),
+            ),
+            (
+                r#"{"success":1,"email":{"value":"TEST@example.com","appears":1,"frequency":3}}"#,
+                Indicator::Email("test@example.com"),
+            ),
+        ] {
+            let result = decode(body.as_bytes(), indicator);
+            assert!(
+                matches!(&result, Err(LegError::Decode(_))),
+                "an echoed mismatch must not establish target evidence: {indicator:?}"
+            );
+            assert!(
+                !format!("{result:?}").contains("other@example.com"),
+                "do not expose echoed values in diagnostic errors"
+            );
+        }
+    }
+
+    #[test]
+    fn echo_verification_allows_equal_ip_addresses_and_email_domains() {
+        let ipv6 = r#"{"success":1,"ip":{"value":"2001:0db8:0:0::1","appears":1,"frequency":1}}"#;
+        assert!(matches!(
+            decode(ipv6.as_bytes(), Indicator::Ip("2001:db8::1")),
+            Ok(Some(_))
+        ));
+        let email =
+            r#"{"success":1,"email":{"value":"test@EXAMPLE.COM","appears":1,"frequency":1}}"#;
+        assert!(matches!(
+            decode(email.as_bytes(), Indicator::Email("test@example.com")),
+            Ok(Some(_))
         ));
     }
 

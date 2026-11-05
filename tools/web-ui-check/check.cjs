@@ -879,6 +879,68 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         rhinserLink.href.startsWith('https://') && rhinserLink.target === '_blank' &&
         rhinserLink.rel === 'noopener noreferrer' && rhinserLink.referrerPolicy === 'no-referrer', rhinserLink);
       await page.fill('#rhinser-source-search', '');
+
+      // Exercise the real browser -> guarded Rust HTTP -> redacted export path.
+      // Fixtures are synthetic, and no NFC or Bluetooth hardware is accessed.
+      const captureFixture = JSON.stringify({
+        schema_version: 1, captured_unix_ms: 1730000000000, operator_consented: true,
+        events: [
+          { kind: 'ndef', hex: 'D101055402656E4869' },
+          { kind: 'bluetooth', transport: 'ble', rssi_dbm: -66, bonded: false, randomized_address: true },
+        ],
+      });
+      check(`${scheme}: capture export disabled until Rust validation`,
+        await page.locator('#rhinser-native-export').isDisabled(), 'unexpected export availability');
+      await page.locator('#rhinser-native-file').setInputFiles({
+        name: 'authorized-test-capture.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(captureFixture, 'utf8'),
+      });
+      await page.waitForFunction(() => document.getElementById('rhinser-native-output').textContent.includes('Capture loaded locally'), null, { timeout: 10000 });
+      check(`${scheme}: Android file import matches selected contents`,
+        await page.inputValue('#rhinser-native-input') === captureFixture, 'file input did not populate the browser form');
+      await page.click('#rhinser-native-run');
+      await page.waitForFunction(() => !document.getElementById('rhinser-native-export').disabled, null, { timeout: 15000 });
+      let captureReport = null;
+      try { captureReport = JSON.parse(await page.textContent('#rhinser-native-output')); } catch (_) {}
+      check(`${scheme}: capture has redacted, unverified Rust evidence`,
+        captureReport?.evidence_role === 'operator_submitted_unverified' &&
+        captureReport?.radio_access === false &&
+        captureReport?.device_attested === false &&
+        captureReport?.observations?.[1]?.signal_class === 'medium' &&
+        !(await page.textContent('#rhinser-native-output')).includes('D101055402656E4869') &&
+        await page.inputValue('#rhinser-native-input') === '', captureReport);
+      const [captureDownload] = await Promise.all([
+        page.waitForEvent('download', { timeout: 10000 }),
+        page.click('#rhinser-native-export'),
+      ]);
+      let captureExport = null;
+      try { captureExport = JSON.parse(fs.readFileSync(await captureDownload.path(), 'utf8')); } catch (_) {}
+      check(`${scheme}: exported capture equals redacted Rust report`,
+        captureDownload.suggestedFilename().startsWith('huntsman-rhinser-redacted-') &&
+        JSON.stringify(captureExport) === JSON.stringify(captureReport), captureExport);
+
+      // Replacing a capture with an oversized file must clear the previous one, disable
+      // export, and never attempt an HTTP submission during file selection.
+      await page.locator('#rhinser-native-file').setInputFiles({
+        name: 'too-large.json', mimeType: 'application/json', buffer: Buffer.alloc(20001, 32),
+      });
+      check(`${scheme}: oversized file clears stale content and refuses export`,
+        await page.inputValue('#rhinser-native-input') === '' &&
+        await page.locator('#rhinser-native-export').isDisabled() &&
+        (await page.textContent('#rhinser-native-output')).includes('Import refused'), await page.textContent('#rhinser-native-output'));
+
+      await page.fill('#rhinser-native-input', captureFixture.replace('"operator_consented":true', '"operator_consented":false'));
+      await page.click('#rhinser-native-run');
+      await page.waitForFunction(() => document.getElementById('rhinser-native-output').textContent.includes('HTTP 400'), null, { timeout: 10000 });
+      check(`${scheme}: unconsented capture is refused without export`,
+        await page.locator('#rhinser-native-export').isDisabled(), await page.textContent('#rhinser-native-output'));
+      // Only the deliberately rejected capture may produce this expected HTTP 400.
+      const expectedCaptureRefusal = 'Failed to load resource: the server responded with a status of 400 (Bad Request)';
+      const captureRefusalIndex = errors.indexOf(expectedCaptureRefusal);
+      check(`${scheme}: refused capture produces expected HTTP 400`, captureRefusalIndex !== -1, errors);
+      if (captureRefusalIndex !== -1) errors.splice(captureRefusalIndex, 1);
+
       await page.fill('#seeds', SEEDS);
       const t = Date.now();
       await page.click('#arun');

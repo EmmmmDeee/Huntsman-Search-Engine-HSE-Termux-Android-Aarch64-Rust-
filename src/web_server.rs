@@ -119,6 +119,9 @@ const INSPECT_PATH: &str = "/api/inspect";
 const BLUEPRINT_PATH: &str = "/api/blueprint";
 /// Offline, unverified Rhinser source directory exposed to authenticated local clients.
 const RHINSER_CATALOG_PATH: &str = "/api/rhinser/catalog";
+/// Read-only, bounded inspection of operator-submitted Rhinser capture receipts.
+/// This neither accesses Android radio hardware nor establishes device authenticity.
+const RHINSER_NATIVE_PATH: &str = "/api/rhinser/native";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
 /// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
@@ -1423,6 +1426,7 @@ fn protected_path(path: &str) -> bool {
             | INSPECT_PATH
             | BLUEPRINT_PATH
             | RHINSER_CATALOG_PATH
+            | RHINSER_NATIVE_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
             | INVESTIGATE_PATH
@@ -1489,6 +1493,7 @@ fn route(
             json_ok(&body, head)
         }
         RHINSER_CATALOG_PATH => rhinser_catalog_response(head),
+        RHINSER_NATIVE_PATH => rhinser_native_response(parsed, config),
         "/api/command" => match engineering_command::render_json() {
             Ok(body) => json_ok(&body, head),
             Err(_) => response(
@@ -1584,7 +1589,10 @@ mod lookup;
 mod page;
 mod response;
 mod settings;
-use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response};
+use analysis::{
+    analyze_response, inspect_response, investigate_response, osint_offline_response,
+    rhinser_native_response,
+};
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use page::{FAVICON_SVG, PAGE, PAGE_ID};

@@ -45,6 +45,51 @@ Save this locally, then run \`huntsman-recon osint native CAPTURE.json\`. A Blue
 
 Demo: \`huntsman-recon osint demo 42\` emits the original scanner's approximate timing and score range but is hard-labelled \`simulation_only\` / \`not_evidence\`.
 
+## Loopback browser import and redacted export
+
+The Multi-hop Analysis page accepts a **locally selected** JSON capture file or pasted JSON.
+The browser file picker limits imports to 20,000 bytes, a conservative subset of the
+64 KiB offline CLI parser bound because the existing HSE HTTP server admits smaller
+POST bodies. Select **Inspect local capture** to submit it to the local
+`POST /api/rhinser/native` endpoint. The request requires the existing
+`X-Huntsman-Lookup: 1` same-origin guard, and is **refused for non-loopback
+server binds** even with a valid bearer token. Larger capture files must use
+`huntsman-recon osint native CAPTURE.json` in Termux.
+
+The browser refuses to read a selected capture file or submit a pasted capture
+on non-loopback origins; both checks run before the respective file read or
+HTTP request. The
+server independently rejects non-loopback capture inspection even when supplied
+a valid token. Choosing a new file invalidates the previous report and clears
+its previous input; overly large or failed replacements cannot silently
+re-submit the old capture. Asynchronous file imports and HTTP responses use
+a generation check so earlier activity cannot overwrite/export a newer input.
+The real phone-sized browser acceptance now exercises import, HTTP validation,
+redacted export and malformed/oversized input refusals.
+
+After successful inspection the browser clears its raw APDU/NDEF textarea; only the
+redacted report remains available for download. This does not guarantee the bytes
+were never held in browser, operating-system or network buffers during processing.
+
+The native import adapter additionally redacts arbitrary NDEF record TYPE strings,
+because untrusted type metadata may itself contain identifiers. It preserves only
+the standard well-known `T`, `U` and `Sp` labels; other types become
+`redacted_type`. Offline `osint nfc ndef HEX` inspection retains its existing
+behavior for compatibility; browser/native imported reports apply this stricter
+privacy boundary. A regression fixture verifies identifier-like TYPE strings
+cannot appear in the native JSON response.
+
+The HTTP handler calls the **same Rust parser** as the CLI and never persists
+the raw APDU/NDEF capture. On successful validation, the page can export
+**only the redacted Rust report** as a JSON file; export remains disabled
+until successful parsing and is invalidated on input edits or new file selection.
+This does not provide an Android radio callback, verify a capture's origin or
+authenticate the operator-supplied consent flag or timestamp.
+
+Do **not** expose capture imports through a public web bind or treat exported
+reports as cardholder identity, EMV issuer authentication or live Bluetooth
+proximity evidence.
+
 ## Real-device dependencies and verification
 
 A genuinely functioning NFC/Bluetooth bridge requires an Android UI/permission layer using Android NFC/Bluetooth APIs, with an explicit opt-in export to this Rust schema. A pure Termux CLI cannot acquire those framework callbacks solely by parsing code. The companion must authenticate the observation source and record permissions, collection timestamps, manufacturer capabilities, SDK compatibility and cryptographic provenance separately.
@@ -52,5 +97,12 @@ A genuinely functioning NFC/Bluetooth bridge requires an Android UI/permission l
 Run \`cargo fmt --all -- --check\`, \`cargo clippy --all-targets -- -D warnings\`, \`cargo test --locked\`, Android aarch64 cross-build, host-browser/UI checks, and **actual physical Termux acceptance**. Cross-compilation or a JSON fixture alone does not establish 100% application conversion.
 
 ## Read-only BER-TLV compatibility
+
+Saved capture envelopes also accept `{"kind":"tlv","hex":"6F0784021234500141"}`
+in their `events` array. The `osint native FILE` path reuses the same bounded
+BER-TLV inspector as `osint nfc tlv HEX` and emits only its structural report.
+Malformed TLV rejects the complete envelope; successful parsing still leaves
+the capture explicitly operator-submitted and unverified. Existing version-one
+NDEF, APDU and Bluetooth fixtures remain accepted.
 
 `huntsman-recon osint nfc tlv HEX` inspects nested BER-TLV metadata from operator-supplied frames, with an 8192-byte limit, 128-field limit and 8-level maximum nesting. The Rust parser outputs tag names and counts only; it does not expose card values, transmit APDUs or authenticate hardware observations. This covers a previously missing structure-inspection capability without claiming full EMV card-reader parity.
