@@ -248,12 +248,9 @@ pub fn discover_paths(
             thread::sleep(pause);
         }
         report.request_attempts += 1;
-        let response = match fetch_once(transport, &format!("{origin}/{path}")) {
-            Ok(response) => response,
-            Err(_) => {
-                report.probes_failed += 1;
-                continue;
-            }
+        let Ok(response) = fetch_once(transport, &format!("{origin}/{path}")) else {
+            report.probes_failed += 1;
+            continue;
         };
         if !(200..400).contains(&response.status) {
             continue;
