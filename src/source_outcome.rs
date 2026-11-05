@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::classify::is_challenge_at;
+use crate::error::Error;
 
 /// Causal outcome of one provider execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -372,6 +373,19 @@ impl SourceExecutionOutcome {
         )
     }
 
+    /// The row a leg that returned an error leaves, naming `module`: a request the guarded fetch
+    /// refused before sending ([`Error::Network`]) is refused before sending, and any other error
+    /// is inconclusive, so [`SourceReach`] reads why the leg gave nothing.
+    #[must_use]
+    pub fn of_leg_error(module: impl Into<String>, observed_at_unix: u64, error: &Error) -> Self {
+        match error {
+            Error::Network(reason) => {
+                Self::refused_before_sending(module, observed_at_unix, reason.clone())
+            }
+            other => Self::inconclusive(module, observed_at_unix, other.to_string()),
+        }
+    }
+
     /// The row of a source asked through several endpoints, from what each said (`answers`, in
     /// the order asked, read by [`Joined::of`]), with `detail` saying what each said: what they
     /// found; "nothing found" ([`Self::valid_zero`]) only when every endpoint said the subject is
@@ -477,25 +491,6 @@ impl SourceReach {
             other => other.stopped(lead),
         }
     }
-}
-
-/// A lookup where no row's validated outcome was accepted fails (exit 69, [`SourceRun::Failed`]) led by
-/// `lead` and, when a row exists, the first configured row's reason (else the first row's), so
-/// the operator reads why; `None` when some row was accepted.
-#[must_use]
-pub fn none_accepted<R>(outcomes: &[SourceExecutionOutcome], lead: &str) -> Option<SourceRun<R>> {
-    if outcomes.iter().any(SourceExecutionOutcome::is_accepted) {
-        return None;
-    }
-    let why = outcomes
-        .iter()
-        .find(|o| !o.kind.is_not_configured())
-        .or_else(|| outcomes.first())
-        .map(SourceExecutionOutcome::reason);
-    Some(SourceRun::Failed(match why {
-        Some(why) => format!("{lead}: {why}"),
-        None => lead.to_owned(),
-    }))
 }
 
 /// The result of one single-source CLI run: the rendered report, a network refusal, or a failure
@@ -699,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn none_accepted_names_why_and_always_exits_unavailable() {
+    fn unanswered_names_why_and_ends_a_lookup_nothing_refused_as_unavailable() {
         let down = SourceExecutionOutcome::failed(
             "blockchain",
             1,
@@ -708,28 +703,32 @@ mod tests {
             "bad gateway",
         );
         let skipped = SourceExecutionOutcome::not_configured("hunter", 1);
-        let Some(SourceRun::<()>::Failed(why)) =
-            none_accepted(&[skipped.clone(), down.clone()], "no source answered for x")
+        let Some(SourceRun::<()>::Failed(why)) = SourceReach::of(&[skipped.clone(), down.clone()])
+            .unanswered("no source answered for x")
         else {
             panic!("expected Failed");
         };
         assert_eq!(why, format!("no source answered for x: {}", down.reason()));
         let Some(SourceRun::<()>::Failed(why)) =
-            none_accepted(std::slice::from_ref(&skipped), "lead")
+            SourceReach::of(std::slice::from_ref(&skipped)).unanswered("lead")
         else {
             panic!("expected Failed");
         };
         assert_eq!(why, format!("lead: {}", skipped.reason()));
         assert!(matches!(
-            none_accepted::<()>(&[], "lead"),
+            SourceReach::of(&[]).unanswered::<()>("lead"),
             Some(SourceRun::Failed(why)) if why == "lead"
         ));
         let ok = SourceExecutionOutcome::valid_zero("blockchain", 1);
-        assert!(none_accepted::<()>(&[down, ok], "lead").is_none());
+        assert!(
+            SourceReach::of(&[down, ok])
+                .unanswered::<()>("lead")
+                .is_none()
+        );
     }
 
     #[test]
-    fn none_accepted_rejects_contradictory_saved_verdict_counts() {
+    fn unanswered_rejects_contradictory_saved_verdict_counts() {
         let false_success = SourceExecutionOutcome::observed(
             "provider",
             1,
@@ -753,7 +752,7 @@ mod tests {
                 SourceReach::Failed(Some(_))
             ));
             assert!(matches!(
-                none_accepted::<()>(std::slice::from_ref(&row), "no verified result"),
+                SourceReach::of(std::slice::from_ref(&row)).unanswered::<()>("no verified result"),
                 Some(SourceRun::Failed(_))
             ));
         }

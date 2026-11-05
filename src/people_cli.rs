@@ -22,7 +22,7 @@ use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::sec_edgar;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 use crate::textnorm::name_tokens;
 use crate::wikidata;
 
@@ -94,8 +94,6 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
 
     let scan_id = crate::entity::scan_id("person", &name);
     let mut report = Report::default();
-    let mut network = None;
-    let mut failed = None;
 
     if transport.runs_module(asic_persons::SRC) {
         collect(
@@ -104,8 +102,6 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
                 .map(|found| (found.entities, found.outcomes)),
             now_unix,
             &mut report,
-            &mut network,
-            &mut failed,
         );
     }
     if transport.runs_module(asic_director::SRC) {
@@ -115,8 +111,6 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
                 .map(|found| (found.entities, found.outcomes)),
             now_unix,
             &mut report,
-            &mut network,
-            &mut failed,
         );
     }
     if transport.runs_module(wikidata::SOURCE) {
@@ -129,8 +123,6 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
                 .map(|found| (scope_wikidata_items(found.entities), vec![found.outcome])),
             now_unix,
             &mut report,
-            &mut network,
-            &mut failed,
         );
     }
     if transport.runs_module(acnc::SRC) {
@@ -145,8 +137,6 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
                 .map(|found| (scope_acnc_charities(found.entities), vec![found.outcome])),
             now_unix,
             &mut report,
-            &mut network,
-            &mut failed,
         );
     }
     if transport.runs_module(sec_edgar::SOURCE) {
@@ -160,8 +150,6 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
                 .map(|found| (scope_sec_edgar_filers(found.entities), vec![found.outcome])),
             now_unix,
             &mut report,
-            &mut network,
-            &mut failed,
         );
     }
 
@@ -170,13 +158,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     // This consolidates cases where one person has records across multiple registers.
     merge_by_uid(&mut report.entities);
     if !usable(&report) {
-        if let Some(msg) = network {
-            return PeopleRun::Network(msg);
+        if let Some(run) =
+            SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {name}"))
+        {
+            return run;
         }
-        if let Some(msg) = failed {
-            return PeopleRun::Failed(msg);
-        }
-        return PeopleRun::Failed("nothing collected".into());
     }
 
     match lookup_report::render(&report.entities, &report.outcomes) {
@@ -312,50 +298,22 @@ fn scope_wikidata_items(mut entities: Vec<Entity>) -> Vec<Entity> {
     entities
 }
 
+/// Folds one people leg into `report`: its entities and rows, or the row its error leaves
+/// ([`SourceExecutionOutcome::of_leg_error`]), so the lookup ends from its rows alone.
 fn collect(
     module: &'static str,
     result: Result<(Vec<Entity>, Vec<SourceExecutionOutcome>), Error>,
     now_unix: u64,
     report: &mut Report,
-    network: &mut Option<String>,
-    failed: &mut Option<String>,
 ) {
     match result {
         Ok((entities, outcomes)) => {
             report.entities.extend(entities);
             report.outcomes.extend(outcomes);
         }
-        Err(Error::Network(msg)) => {
-            network.get_or_insert(msg.clone());
-            report.outcomes.push(SourceExecutionOutcome::failed(
-                module,
-                now_unix,
-                SourceOutcomeKind::ConnectFailure,
-                None,
-                msg,
-            ));
-        }
-        Err(Error::Invalid(msg)) => {
-            failed.get_or_insert(msg.clone());
-            report.outcomes.push(SourceExecutionOutcome::failed(
-                module,
-                now_unix,
-                SourceOutcomeKind::Inconclusive,
-                None,
-                msg,
-            ));
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            failed.get_or_insert(msg.clone());
-            report.outcomes.push(SourceExecutionOutcome::failed(
-                module,
-                now_unix,
-                SourceOutcomeKind::Inconclusive,
-                None,
-                msg,
-            ));
-        }
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+            module, now_unix, &error,
+        )),
     }
 }
 

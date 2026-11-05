@@ -11,7 +11,7 @@ use crate::gleif;
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 
 pub const COMPANY_USAGE: &str = "usage: huntsman-recon company NAME|ACN|ABN";
 pub const COMPANY_HELP: &str = "\
@@ -80,11 +80,10 @@ pub fn run<T: Transport + ?Sized>(
                 report.entities.extend(found.entities);
                 report.outcomes.extend(found.outcomes);
             }
-            Err(Error::Network(why)) => return CompanyRun::Network(why),
-            Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
                 asic_orgs::SRC,
                 now_unix,
-                error.to_string(),
+                &error,
             )),
         }
     }
@@ -117,15 +116,18 @@ pub fn run<T: Transport + ?Sized>(
                 report.entities.extend(found.entities);
                 report.outcomes.push(found.outcome);
             }
-            Err(error) => return CompanyRun::Network(error.to_string()),
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+                gleif::SOURCE,
+                now_unix,
+                &error,
+            )),
         }
     }
     merge_by_uid(&mut report.entities);
 
-    if let Some(run) = crate::source_outcome::none_accepted(
-        &report.outcomes,
-        &format!("no source answered for {text:?}"),
-    ) {
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {text:?}"))
+    {
         return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {

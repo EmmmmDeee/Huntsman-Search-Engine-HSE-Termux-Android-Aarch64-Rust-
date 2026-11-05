@@ -695,23 +695,10 @@ const IN_SCOPE: [ScanKind; 11] = [
 /// transport kind, left with [`crate::stolen_tax::PathFailure::kind`]. Empty is the contract
 /// held in full; an entry is a reviewed, named exception, never a second list.
 ///
-/// The people, crypto and place lookups joined the contract with the entries below. Each ends a
-/// refusal with the bare egress reason, which names no module, and the people and place lookups
-/// end an unanswered lookup without the module or its reason. Each entry leaves as its lookup
-/// routes its legs' failures into rows that [`crate::source_outcome::SourceReach`] reads.
-const BROKEN: &[(ScanKind, &str, Net)] = &[
-    (ScanKind::People, "asic_persons", Net::Refusing),
-    (ScanKind::People, "asic_director", Net::Refusing),
-    (ScanKind::People, "wikidata", Net::Refusing),
-    (ScanKind::People, "acnc", Net::Refusing),
-    (ScanKind::CryptoAddress, "blockchain", Net::Refusing),
-    (ScanKind::Place, "nominatim", Net::Refusing),
-    (ScanKind::People, "asic_persons", Net::Silent),
-    (ScanKind::People, "asic_director", Net::Silent),
-    (ScanKind::People, "wikidata", Net::Silent),
-    (ScanKind::People, "acnc", Net::Silent),
-    (ScanKind::Place, "nominatim", Net::Silent),
-];
+/// The people, crypto and place lookups joined the contract with eleven entries, each a refusal
+/// ending with the bare egress reason or an unanswered lookup without its module; all left when
+/// those lookups began recording each failed leg as a row that `SourceReach` reads.
+const BROKEN: &[(ScanKind, &str, Net)] = &[];
 
 /// Every `(kind, module, target)` case whose module, chosen alone, asks nothing: domain
 /// `dnsresolve` resolves only the hosts other sources found; the profile front-ends, not the
@@ -793,6 +780,9 @@ fn lead(kind: ScanKind, target: &str) -> String {
         ScanKind::Netblock => format!("no source answered for netblock {target}"),
         ScanKind::Domain => format!("no source answered for domain {target}"),
         ScanKind::Network => "no source answered the network lookup".to_owned(),
+        // A person's name is matched lowercased; a place query is quoted, being free text.
+        ScanKind::People => format!("no source answered for {}", target.to_ascii_lowercase()),
+        ScanKind::Place => format!("no source answered for {target:?}"),
         _ => format!("no source answered for {target}"),
     }
 }
@@ -1067,17 +1057,10 @@ const STANDALONE: [(&str, &str, &str); 7] = [
 
 /// Every `(command, module, net)` of [`STANDALONE`] that breaks the refusal contract today, held
 /// as [`BROKEN`] holds the lookups with a scan kind: a case that newly breaks it fails, and so
-/// does an entry no case breaks any more. A leg whose guarded fetch is refused returns an error
-/// these lookups end in with the bare egress reason, naming no module; ABN Lookup records its
-/// refusal as a row, which `none_accepted` ends as unavailable (exit 69), not a refusal.
-const STANDALONE_BROKEN: &[(&str, &str, Net)] = &[
-    ("company", "asic_orgs", Net::Refusing),
-    ("company", "gleif_lei", Net::Refusing),
-    ("company", "abn_lookup", Net::Refusing),
-    ("gleif", "gleif_lei", Net::Refusing),
-    ("itunes", "apple_itunes", Net::Refusing),
-    ("wikidata", "wikidata", Net::Refusing),
-];
+/// does an entry no case breaks any more. The six entries these lookups joined with (a refusal
+/// naming no module; ABN Lookup's refused row ending as unavailable) left when each began
+/// recording a failed leg as a row that `SourceReach` reads.
+const STANDALONE_BROKEN: &[(&str, &str, Net)] = &[];
 
 /// How `command`'s lookup of `selector` ended over a fresh `Recording<N>` with only `module`
 /// chosen, and what it asked. Every keyed leg has a key, ABN Lookup's a GUID.
