@@ -1367,8 +1367,8 @@ fn dir_size(dir: &Path) -> u64 {
             if visited > MAX_CACHE_ENTRIES {
                 return total;
             }
-            // DirEntry::metadata follows symlinks, including links outside the cache.
-            // Inspect the entry itself so linked directories and files are not counted.
+            // The link itself, never its target: a linked directory is not descended into, and
+            // only regular files count, so a symlink's own length is not added either.
             let Ok(meta) = fs::symlink_metadata(entry.path()) else {
                 continue;
             };
