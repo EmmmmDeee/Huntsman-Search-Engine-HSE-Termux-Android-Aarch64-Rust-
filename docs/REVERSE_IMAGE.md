@@ -25,8 +25,11 @@ resolution; store the file with mode 600. Slots:
 Only configure services for which the operator has authorized API access and accepted
 applicable terms. Third-party providers receive image bytes when called. Do not submit
 personal or sensitive photographs without appropriate authorization. Credentials are
-never written to reports. The SauceNAO API key travels inside a multipart field (rather
-than an unredacted URL); redirects are disabled for all image submissions.
+never written to reports. Each key is read only from its slot and sent only to its
+provider's origin, added to the request as it is sent: Google Cloud Vision's in the
+`X-goog-api-key` header, Lenso's as `Authorization: Bearer`, and SauceNAO's as the
+`api_key` query parameter, which is how SauceNAO's API takes it, never inside the
+uploaded form. Recorded URLs drop their query, and redirects are not followed.
 
 ## Result states
 

@@ -51,9 +51,9 @@ quota charges before enabling a service.
 
 | Provider | Runtime slot | Use |
 | --- | --- | --- |
-| Google Cloud Vision | `HUNTSMAN_GOOGLE_VISION_KEY` | Web Detection via pinned `vision.googleapis.com` |
-| Lenso.ai | `HUNTSMAN_LENSO_KEY` | Duplicate-index search via pinned `api.lenso.ai` |
-| SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | Image-index search via pinned `saucenao.com` |
+| Google Cloud Vision | `HUNTSMAN_GOOGLE_VISION_KEY` | web detection; the key goes only to `vision.googleapis.com`, in the `X-goog-api-key` header |
+| Lenso.ai | `HUNTSMAN_LENSO_KEY` | duplicate-image search; the token goes only to `api.lenso.ai`, as `Authorization: Bearer` |
+| SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | image-index search; the key goes only to `saucenao.com`, as the `api_key` query parameter SauceNAO's API takes, added as the request is sent and never inside the uploaded form |
 
 `huntsman-recon reverse-image IMAGE --live --provider google_vision --json`
 queries exactly one configured provider. Omitting `--provider` deliberately runs

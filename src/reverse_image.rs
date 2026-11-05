@@ -1,27 +1,82 @@
 //! Bounded, explicit reverse-image web search. These providers search their own indexes, not
 //! the whole internet. A visually similar image is never evidence of a person's identity.
 //! No provider is contacted unless the operator asks for --live and has configured its key.
+//!
+//! Each provider is an [`Api`] leg ([`crate::api_leg`]): its key comes only from its operator
+//! slot, goes only to the provider's own origin, is added to the request only as it is sent and
+//! is scrubbed from every diagnostic. Google Cloud Vision takes the key in the `X-goog-api-key`
+//! header, Lenso as a bearer token and `SauceNAO` as the `api_key` query parameter, never inside
+//! the uploaded form.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::credential_origin::AuthenticationAuthority;
-use crate::fetch::{AuthStyle, Credential, FetchOptions, answer, fetch, whole_response};
-use crate::http::{Request, Transport};
-use crate::keys::{Keys, Secret};
+use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
+use crate::http::Transport;
+use crate::keys::Keys;
 use crate::sha256::{hex32, sha256};
 
 /// Cap memory use for image bytes, Base64 encoding, request building and downstream providers.
 pub const MAX_REVERSE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MATCHES: usize = 80;
-const PROVIDERS: [(&str, &str); 3] = [
-    ("google_vision", crate::environment::GOOGLE_VISION_KEY_ENV),
-    ("lenso", crate::environment::LENSO_KEY_ENV),
-    ("saucenao", crate::environment::SAUCENAO_KEY_ENV),
-];
+
+/// The source label of Google Cloud Vision web detection.
+pub const GOOGLE_VISION_SOURCE: &str = "google_vision";
+/// The source label of Lenso's duplicate-image search.
+pub const LENSO_SOURCE: &str = "lenso";
+/// The source label of `SauceNAO`'s image-index search.
+pub const SAUCENAO_SOURCE: &str = "saucenao";
+
+/// Google Cloud Vision `images:annotate`, asked for web detection only.
+const GOOGLE_VISION_URL: &str = "https://vision.googleapis.com/v1/images:annotate";
+/// Lenso's category search, asked for duplicates.
+const LENSO_URL: &str = "https://api.lenso.ai/search";
+/// `SauceNAO`'s search over every index (`db=999`), answering in JSON (`output_type=2`). The key is
+/// not part of it: it is added as the `api_key` parameter as the request is sent.
+const SAUCENAO_URL: &str = "https://saucenao.com/search.php?output_type=2&numres=10&db=999";
+
+/// Google Cloud Vision takes an API key in the `X-goog-api-key` header, the placement Google's
+/// API-key documentation gives first; its `key` query parameter would put the key in a URL.
+pub const GOOGLE_VISION: Api = Api {
+    source: GOOGLE_VISION_SOURCE,
+    provider: "vision.googleapis.com",
+    origin: "https://vision.googleapis.com:443",
+    key: Some(KeyUse {
+        slot: crate::environment::GOOGLE_VISION_KEY_ENV,
+        place: KeyPlace::Header("X-goog-api-key"),
+        required: true,
+    }),
+};
+
+/// Lenso takes its access token as `Authorization: Bearer`, as its API documentation gives it.
+pub const LENSO: Api = Api {
+    source: LENSO_SOURCE,
+    provider: "lenso.ai",
+    origin: "https://api.lenso.ai:443",
+    key: Some(KeyUse {
+        slot: crate::environment::LENSO_KEY_ENV,
+        place: KeyPlace::Bearer,
+        required: true,
+    }),
+};
+
+/// `SauceNAO` takes its key as the `api_key` query parameter of `search.php`, as `SauceNAO`'s own
+/// example client sends it beside a multipart file upload. The uploaded form never holds it.
+pub const SAUCENAO: Api = Api {
+    source: SAUCENAO_SOURCE,
+    provider: "saucenao.com",
+    origin: "https://saucenao.com:443",
+    key: Some(KeyUse {
+        slot: crate::environment::SAUCENAO_KEY_ENV,
+        place: KeyPlace::Query("api_key"),
+        required: true,
+    }),
+};
+
+/// The providers, as `--provider` names them.
+const PROVIDERS: [&Api; 3] = [&GOOGLE_VISION, &LENSO, &SAUCENAO];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageMatch {
@@ -236,122 +291,64 @@ fn parse_saucenao(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
     Ok(matches)
 }
 
-fn multipart_body(image: &[u8], secret: &Secret, boundary: &str) -> Vec<u8> {
-    let mut body = Vec::with_capacity(image.len() + 1024);
-    for (name, value) in [
-        ("api_key", secret.expose()),
-        ("output_type", "2"),
-        ("db", "999"),
-        ("numres", "10"),
-    ] {
-        body.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
-            )
-            .as_bytes(),
-        );
-    }
-    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"image.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
-    body.extend_from_slice(image);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    body
-}
-
-fn sauce_request(image: &[u8], secret: &Secret) -> Request {
-    let mut boundary = "HSE_Image_Boundary_A".to_owned();
-    while image
+/// The image as the one `file` part of a multipart form, under a boundary drawn from the image's
+/// own digest, which its bytes do not hold. No other field is sent: the options are in
+/// [`SAUCENAO_URL`], and the key is added to it as the request is sent.
+fn multipart_upload(image: &[u8]) -> Result<(String, Vec<u8>), LegError> {
+    let boundary = format!("huntsman-{}", &hex32(&sha256(image))[..32]);
+    if image
         .windows(boundary.len())
         .any(|window| window == boundary.as_bytes())
     {
-        boundary.push('Z');
-    }
-    Request::post(
-        "https://saucenao.com/search.php",
-        multipart_body(image, secret, &boundary),
-    )
-    .header(
-        "Content-Type",
-        format!("multipart/form-data; boundary={boundary}"),
-    )
-}
-
-fn perform<T: Transport + ?Sized>(
-    transport: &T,
-    name: &'static str,
-    slot: &'static str,
-    image: &[u8],
-    secret: &Secret,
-    now: u64,
-) -> Result<Vec<ImageMatch>, String> {
-    let (request, credential) = match name {
-        "google_vision" => {
-            let body = json!({"requests": [{"image": {"content": crate::base64::standard(image)},
-                "features": [{"type": "WEB_DETECTION", "maxResults": 20}]}]});
-            let request = Request::post(
-                "https://vision.googleapis.com/v1/images:annotate",
-                serde_json::to_vec(&body).map_err(|_| "could not encode request")?,
-            )
-            .header("Content-Type", "application/json");
-            let authority = AuthenticationAuthority::configured_slot(name, slot, now)
-                .map_err(|_| "credential authority invalid")?;
-            let cred = Credential::new(
-                authority,
-                secret.clone(),
-                AuthStyle::Header("X-goog-api-key".into()),
-            )
-            .map_err(|_| "credential invalid")?
-            .only_for_origin("https://vision.googleapis.com:443");
-            (request, Some(cred))
-        }
-        "lenso" => {
-            let body = json!({"image": crate::base64::standard(image), "category": "duplicates",
-                "sortType": "QUALITY_DESCENDING", "page": 1});
-            let request = Request::post(
-                "https://api.lenso.ai/search",
-                serde_json::to_vec(&body).map_err(|_| "could not encode request")?,
-            )
-            .header("Content-Type", "application/json");
-            let authority = AuthenticationAuthority::configured_slot(name, slot, now)
-                .map_err(|_| "credential authority invalid")?;
-            let cred = Credential::new(authority, secret.clone(), AuthStyle::Bearer)
-                .map_err(|_| "credential invalid")?
-                .only_for_origin("https://api.lenso.ai:443");
-            (request, Some(cred))
-        }
-        "saucenao" => (sauce_request(image, secret), None),
-        _ => return Err("unknown provider".into()),
-    };
-    // Never follow redirects for image uploads or credentials, including SauceNAO's body secret.
-    let fetched = fetch(
-        transport,
-        request.with_timeout(Duration::from_secs(30)),
-        credential.as_ref(),
-        &FetchOptions::no_redirects(),
-        name,
-        now,
-    )
-    .map_err(|_| "network policy or request refused")?;
-    let status = fetched.response.as_ref().map(|response| response.status);
-    if status != Some(200) {
-        return Err(status.map_or_else(
-            || format!("transport: {}", fetched.outcome.kind.as_str()),
-            |code| format!("HTTP {code}: {}", fetched.outcome.kind.as_str()),
+        return Err(LegError::Refused(
+            "the image holds its own multipart boundary".into(),
         ));
     }
-    // A 200 can be a WAF/CAPTCHA or provider refusal, not a valid image search.
-    answer(&fetched, name)
-        .map_err(|failure| format!("provider outcome: {}", failure.kind.as_str()))?;
-    let response = whole_response(&fetched, name)
-        .map_err(|failure| format!("provider response: {}", failure.kind.as_str()))?;
-    let json: Value = serde_json::from_slice(&response.body)
-        .map_err(|_| "provider response is not valid JSON")?;
-    match name {
-        "google_vision" => parse_google(&json),
-        "lenso" => parse_lenso(&json),
-        "saucenao" => parse_saucenao(&json),
-        _ => Err("unknown provider"),
+    let mut body = Vec::with_capacity(image.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"image\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(image);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    Ok((format!("multipart/form-data; boundary={boundary}"), body))
+}
+
+/// One provider's search for `image`, through its [`Api`] leg. Redirects are not followed, a
+/// challenge page or a refusal is an error, and an answer that is not the provider's documented
+/// shape is an error, never an empty search.
+fn perform<T: Transport + ?Sized>(
+    transport: &T,
+    api: &Api,
+    image: &[u8],
+    keys: &Keys,
+    now: u64,
+) -> Result<Vec<ImageMatch>, LegError> {
+    let answer = match api.source {
+        GOOGLE_VISION_SOURCE => {
+            let request = json!({"requests": [{"image": {"content": crate::base64::standard(image)},
+                "features": [{"type": "WEB_DETECTION", "maxResults": 20}]}]});
+            api_leg::post_json(transport, api, keys, GOOGLE_VISION_URL, &request, now)?
+        }
+        LENSO_SOURCE => {
+            let request = json!({"image": crate::base64::standard(image), "category": "duplicates",
+                "sortType": "QUALITY_DESCENDING", "page": 1});
+            api_leg::post_json(transport, api, keys, LENSO_URL, &request, now)?
+        }
+        _ => {
+            let (content_type, body) = multipart_upload(image)?;
+            api_leg::post_body(transport, api, keys, SAUCENAO_URL, &content_type, body, now)?
+        }
+    };
+    let json: Value = api_leg::decode(&answer.body_or_unexpected()?)?;
+    match api.source {
+        GOOGLE_VISION_SOURCE => parse_google(&json),
+        LENSO_SOURCE => parse_lenso(&json),
+        _ => parse_saucenao(&json),
     }
-    .map_err(str::to_owned)
+    .map_err(|reason| LegError::Decode(reason.to_owned()))
 }
 
 /// The same search, optionally restricted to one provider. This avoids unintentionally
@@ -367,7 +364,7 @@ pub fn search_selected<T: Transport + ?Sized>(
     live: bool,
     selected: Option<&str>,
 ) -> Result<ImageReport, &'static str> {
-    if selected.is_some_and(|name| !PROVIDERS.iter().any(|(provider, _)| *provider == name)) {
+    if selected.is_some_and(|name| !PROVIDERS.iter().any(|api| api.source == name)) {
         return Err("unknown reverse-image provider");
     }
     if image.is_empty() || image.len() > MAX_REVERSE_IMAGE_BYTES || !is_image(image) {
@@ -383,7 +380,8 @@ pub fn search_selected<T: Transport + ?Sized>(
         statuses: Vec::new(),
         matches: Vec::new(),
     };
-    for (name, slot) in PROVIDERS {
+    for api in PROVIDERS {
+        let name = api.source;
         if selected.is_some_and(|chosen| chosen != name) {
             continue;
         }
@@ -394,8 +392,8 @@ pub fn search_selected<T: Transport + ?Sized>(
                 detail: "offline only (pass --live to send image to providers)".into(),
                 results: 0,
             }
-        } else if let Some(secret) = keys.get(slot) {
-            match perform(transport, name, slot, image, &secret, now) {
+        } else if api.wanted(keys) {
+            match perform(transport, api, image, keys, now) {
                 Ok(mut matches) => {
                     let count = matches.len();
                     report.matches.append(&mut matches);
@@ -406,10 +404,10 @@ pub fn search_selected<T: Transport + ?Sized>(
                         results: count,
                     }
                 }
-                Err(message) => ProviderStatus {
+                Err(error) => ProviderStatus {
                     provider: name,
                     state: "failed",
-                    detail: message,
+                    detail: error.to_string(),
                     results: 0,
                 },
             }
@@ -417,7 +415,9 @@ pub fn search_selected<T: Transport + ?Sized>(
             ProviderStatus {
                 provider: name,
                 state: "unconfigured",
-                detail: format!("set {slot} in the private credentials file"),
+                detail: api.key.map_or_else(String::new, |key| {
+                    format!("set {} in the private credentials file", key.slot)
+                }),
                 results: 0,
             }
         };
@@ -453,6 +453,7 @@ pub fn search_selected<T: Transport + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::Request;
 
     #[test]
     fn parser_google_uses_actual_image_matches_not_web_entities() {
@@ -572,7 +573,11 @@ mod tests {
                 "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]}))
             .unwrap(),
         };
-        let keys = Keys::parse("HUNTSMAN_GOOGLE_VISION_KEY=testing_provider_secret_123").unwrap();
+        let keys = Keys::parse(&format!(
+            "{}=testing_provider_secret_123",
+            crate::environment::GOOGLE_VISION_KEY_ENV
+        ))
+        .unwrap();
         let report =
             search_selected(&network, b"GIF89a", &keys, 123, true, Some("google_vision")).unwrap();
         assert_eq!(report.observed_at_unix, 123);
@@ -602,26 +607,69 @@ mod tests {
     }
 
     #[test]
-    fn paid_saucenao_upload_keeps_credential_out_of_the_url() {
+    fn saucenao_key_is_only_the_api_key_parameter_added_as_the_request_is_sent() {
         let network = ScriptedTransport {
             requests: std::sync::Mutex::new(Vec::new()),
             body: serde_json::to_vec(&json!({"header":{"status":0},"results":[]})).unwrap(),
         };
-        let keys = Keys::parse("HUNTSMAN_SAUCENAO_KEY=testing_sauce_secret_123").unwrap();
+        let secret = "testing_sauce_secret_123";
+        let keys = Keys::parse(&format!(
+            "{}={secret}",
+            crate::environment::SAUCENAO_KEY_ENV
+        ))
+        .unwrap();
         let report =
             search_selected(&network, b"GIF89a", &keys, 123, true, Some("saucenao")).unwrap();
         assert_eq!(report.statuses.len(), 1);
         assert_eq!(report.statuses[0].state, "completed");
         let requests = network.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
-        assert!(!requests[0].url.contains("testing_sauce_secret_123"));
-        assert!(!format!("{:?}", requests[0]).contains("testing_sauce_secret_123"));
+        // The URL the code builds holds no key; fetch adds it as `api_key` as it sends.
+        assert!(!SAUCENAO_URL.contains(secret));
+        assert_eq!(requests[0].url, format!("{SAUCENAO_URL}&api_key={secret}"));
+        assert!(
+            !requests[0]
+                .body
+                .windows(secret.len())
+                .any(|part| part == secret.as_bytes()),
+            "the key is in the uploaded form"
+        );
+        assert!(!requests[0].body.windows(7).any(|part| part == b"api_key"));
+        assert!(requests[0].headers.iter().all(|(_, v)| !v.contains(secret)));
+        assert!(!format!("{:?}", requests[0]).contains(secret));
+        let content_type = requests[0].header_value("content-type").unwrap();
+        let boundary = content_type
+            .strip_prefix("multipart/form-data; boundary=")
+            .unwrap();
         assert!(
             requests[0]
                 .body
-                .windows(24)
-                .any(|part| part == b"testing_sauce_secret_123")
+                .starts_with(format!("--{boundary}\r\n").as_bytes())
         );
+        assert!(
+            requests[0]
+                .body
+                .ends_with(format!("\r\n--{boundary}--\r\n").as_bytes())
+        );
+    }
+
+    #[test]
+    fn lenso_token_is_a_bearer_header_bound_to_its_origin() {
+        let network = ScriptedTransport {
+            requests: std::sync::Mutex::new(Vec::new()),
+            body: serde_json::to_vec(&json!({"results":[]})).unwrap(),
+        };
+        let secret = "testing_lenso_secret_123";
+        let keys = Keys::parse(&format!("{}={secret}", crate::environment::LENSO_KEY_ENV)).unwrap();
+        let report = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso")).unwrap();
+        assert_eq!(report.statuses[0].state, "completed");
+        let requests = network.requests.lock().unwrap();
+        assert_eq!(requests[0].url, LENSO_URL);
+        assert_eq!(
+            requests[0].header_value("authorization"),
+            Some(format!("Bearer {secret}").as_str())
+        );
+        assert!(!format!("{:?}", requests[0]).contains(secret));
     }
 
     #[test]
@@ -643,7 +691,11 @@ mod tests {
             requests: std::sync::Mutex::new(Vec::new()),
             body: serde_json::to_vec(&json!({"notResults": []})).unwrap(),
         };
-        let keys = Keys::parse("HUNTSMAN_LENSO_KEY=testing_lenso_secret_123").unwrap();
+        let keys = Keys::parse(&format!(
+            "{}=testing_lenso_secret_123",
+            crate::environment::LENSO_KEY_ENV
+        ))
+        .unwrap();
         let result = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso")).unwrap();
         assert_eq!(result.statuses[0].state, "failed");
         assert!(result.matches.is_empty());
