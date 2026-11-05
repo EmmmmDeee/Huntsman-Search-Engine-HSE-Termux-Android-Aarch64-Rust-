@@ -668,7 +668,7 @@ mod tests {
             Ok(reply(404, "No key found")),
             Ok(reply(
                 200,
-                r#"{"success":1,"email":{"value":"x","appears":0,"frequency":0}}"#,
+                r#"{"success":1,"email":{"value":"ada@example.com","appears":0,"frequency":0}}"#,
             )),
             Ok(reply(200, r#"{"disposable":false}"#)),
             Ok(reply(200, r#"{"Error":"Not found","email":null}"#)),
@@ -705,7 +705,7 @@ mod tests {
             Ok(reply(404, "No key found")),
             Ok(reply(
                 200,
-                r#"{"success":1,"email":{"value":"x","appears":0,"frequency":0}}"#,
+                r#"{"success":1,"email":{"value":"ada@example.com","appears":0,"frequency":0}}"#,
             )),
             Ok(reply(200, r#"{"disposable":false}"#)),
             Ok(reply(200, r#"{"breaches":[["Artsy","MyHeritage"]]}"#)),
@@ -750,7 +750,7 @@ mod tests {
             Ok(reply(404, "No key found")),
             Ok(reply(
                 200,
-                r#"{"success":1,"email":{"value":"x","appears":1,"frequency":3}}"#,
+                r#"{"success":1,"email":{"value":"ada@example.com","appears":1,"frequency":3}}"#,
             )),
             Ok(reply(200, r#"{"disposable":true}"#)),
             Ok(reply(200, r#"{"breaches":[["Artsy"]]}"#)),
@@ -849,7 +849,7 @@ mod tests {
             Ok(reply(404, "No key found")),
             Ok(reply(
                 200,
-                r#"{"success":1,"email":{"value":"x","appears":0,"frequency":0}}"#,
+                r#"{"success":1,"email":{"value":"ada@example.com","appears":0,"frequency":0}}"#,
             )),
             Ok(reply(200, r#"{"disposable":false}"#)),
             Ok(reply(200, r#"{"Error":"Not found","email":null}"#)),
