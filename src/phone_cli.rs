@@ -203,15 +203,19 @@ fn numverify_evidence(entity: &mut Entity, v: &numverify::Verification) {
         entity.tag(format!("carrier-line:{line}"));
     }
     let summary = match (v.valid, v.carrier.as_deref()) {
-        (false, _) => "Numverify: not a valid assigned number".to_owned(),
-        (true, Some(carrier)) => format!("Numverify: carrier {carrier}"),
-        (true, None) => "Numverify: valid number, carrier not given".to_owned(),
+        (false, _) => "Numverify: provider reports number invalid".to_owned(),
+        (true, Some(carrier)) => format!("Numverify: provider reports carrier {carrier}"),
+        (true, None) => "Numverify: provider reports valid number, carrier not given".to_owned(),
     };
     let evidence = Evidence::new(
         EvidenceProvenance::for_scan(numverify::SOURCE, &entity.scan_id),
         summary,
     )
     .with_attr("valid", v.valid.to_string())
+    .with_attr(
+        "provider_scope",
+        "number-validation metadata only, not subscriber identity, live service status or real-time geolocation",
+    )
     .with_optional_attrs([
         ("carrier", v.carrier.as_deref()),
         ("line_type", v.line_type.as_deref()),
@@ -500,6 +504,16 @@ mod tests {
                 let entity = &report.entities[0];
                 assert!(entity.has_tag("carrier-line:mobile"));
                 assert!(entity.evidence_sources().contains("numverify"));
+                let provider = entity
+                    .evidence
+                    .iter()
+                    .find(|e| e.provenance.source == "numverify")
+                    .expect("Numverify evidence");
+                assert!(
+                    provider.attr_values("provider_scope").eq([
+                        "number-validation metadata only, not subscriber identity, live service status or real-time geolocation"
+                    ])
+                );
                 assert!(text.contains("numverify\tsuccess\tfound=1"), "{text}");
                 assert!(!text.contains("numverify-test-key"));
             }
