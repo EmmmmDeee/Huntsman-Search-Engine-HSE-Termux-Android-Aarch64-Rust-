@@ -34,11 +34,16 @@ fn ci_cross_builds_the_actual_termux_target() {
         "android-aarch64:",
         "aarch64-linux-android",
         "./.github/actions/setup-ndk-aarch64",
-        "cargo build --release --locked --target aarch64-linux-android",
+        "cargo build --profile dist --locked --target aarch64-linux-android",
         "HUNTSMAN_BUILD_SHA: ${{ github.sha }}",
         "llvm-readelf",
         "/system/bin/linker64",
         "[ $((align)) -ge 16384 ]",
+        // The Termux binary's size is reported on every run and held to a budget.
+        "TERMUX_BINARY_BUDGET_BYTES: \"",
+        "size=\"$(stat -c %s \"$BIN\")\"",
+        "[ \"$size\" -le \"$TERMUX_BINARY_BUDGET_BYTES\" ]",
+        "$GITHUB_STEP_SUMMARY",
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
     }

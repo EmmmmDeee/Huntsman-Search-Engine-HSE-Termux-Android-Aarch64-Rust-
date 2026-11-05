@@ -213,11 +213,15 @@ jobs:
         with:
           android-api: "24"
       - name: Build aarch64 Android release binary
-        run: cargo build --release --locked --target aarch64-linux-android
+        run: cargo build --profile dist --locked --target aarch64-linux-android
       - name: Verify Android ELF and stage artifact
+        env:
+          # The Termux binary's size is part of its footprint, a permanent priority (CLAUDE.md,
+          # PLATFORM). Raise this only in a reviewed change that says what the bytes buy.
+          TERMUX_BINARY_BUDGET_BYTES: "14155776"
         run: |
           set -euo pipefail
-          BIN="target/aarch64-linux-android/release/huntsman-recon"
+          BIN="target/aarch64-linux-android/dist/huntsman-recon"
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           HEADER="$RUNNER_TEMP/huntsman-elf-header.txt"
           PROGRAM="$RUNNER_TEMP/huntsman-elf-program.txt"
@@ -231,6 +235,9 @@ jobs:
           for align in $(awk '$1 == "LOAD" { print $NF }' "$PROGRAM"); do
             [ $((align)) -ge 16384 ] || { echo "::error::a LOAD segment is aligned to $align; devices with 16 KiB pages need 0x4000 or more"; exit 1; }
           done
+          size="$(stat -c %s "$BIN")"
+          echo "Termux binary (aarch64-linux-android, dist profile): $size bytes; budget $TERMUX_BINARY_BUDGET_BYTES" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$size" -le "$TERMUX_BINARY_BUDGET_BYTES" ] || { echo "::error::the Termux binary is $size bytes, over its $TERMUX_BINARY_BUDGET_BYTES-byte budget"; exit 1; }
           mkdir -p dist
           cp "$BIN" dist/huntsman-recon-aarch64-linux-android
           (
@@ -241,7 +248,7 @@ jobs:
       - name: Verify MetaScan Android aarch64 ELF and stage standalone binary
         run: |
           set -euo pipefail
-          BIN="target/aarch64-linux-android/release/meta_scan"
+          BIN="target/aarch64-linux-android/dist/meta_scan"
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           HEADER="$RUNNER_TEMP/meta-scan-elf-header.txt"
           PROGRAM="$RUNNER_TEMP/meta-scan-elf-program.txt"

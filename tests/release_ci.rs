@@ -2489,7 +2489,7 @@ fn known_hex_values_come_from_the_workflow_not_from_build_outputs() {
         .find("name: Prove the key scan's pinned hex values still hold")
         .expect("build must check the pins");
     let cargo = build
-        .find("run: cargo build --release --locked --target aarch64-linux-android")
+        .find("run: cargo build --profile dist --locked --target aarch64-linux-android")
         .unwrap();
     assert!(
         pin < cargo,

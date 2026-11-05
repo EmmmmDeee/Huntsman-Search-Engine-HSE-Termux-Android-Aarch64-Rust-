@@ -331,12 +331,12 @@ jobs:
             || { echo "::error::src/directive_lock.rs EXPECTED_SHA256 != HUNTSMAN_DIRECTIVE_SHA256; update the pin with the directive"; exit 1; }
 
       - name: Build aarch64 Android release binary
-        run: cargo build --release --locked --target aarch64-linux-android
+        run: cargo build --profile dist --locked --target aarch64-linux-android
 
       - name: Verify Android ELF, strip and stage
         run: |
           set -euo pipefail
-          BIN="target/aarch64-linux-android/release/huntsman-recon"
+          BIN="target/aarch64-linux-android/dist/huntsman-recon"
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           mkdir -p dist
           "$TOOLCHAIN/llvm-strip" -o "dist/$ASSET" "$BIN"
