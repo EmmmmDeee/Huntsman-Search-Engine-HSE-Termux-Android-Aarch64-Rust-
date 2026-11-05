@@ -99,21 +99,26 @@ fn crate_roots_set_no_lint_level_outside_the_manifests() {
     }
 }
 
-/// The release profile is what both the phone (`cargo install`) and CI's Android build use, so
-/// the binary's speed and size come from it. Unwinding must stay: `serve` turns a panicking
-/// handler into a 500 for that request only (`web_server.rs`), and `panic = "abort"` would end
-/// the server instead.
-#[test]
-fn the_release_profile_optimises_across_crates_strips_and_unwinds() {
-    let manifest = fs::read_to_string("Cargo.toml").expect("root manifest");
-    // Settings by key, so a spelling that means the same thing passes and nothing else does.
-    let profile: BTreeMap<&str, &str> = section(&manifest, "profile.release")
+/// A profile's settings by key, so a spelling that means the same thing passes and nothing else
+/// does.
+fn profile_settings<'a>(manifest: &'a str, profile: &str) -> BTreeMap<&'a str, &'a str> {
+    section(manifest, &format!("profile.{profile}"))
         .into_iter()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .filter_map(|line| line.split_once('='))
         .map(|(key, value)| (key.trim(), value.trim().trim_matches('"')))
-        .collect();
+        .collect()
+}
+
+/// The release profile is what `cargo install` uses on the phone itself, so it must link within
+/// a phone's memory and time: thin LTO. Unwinding must stay: `serve` turns a panicking handler
+/// into a 500 for that request only (`web_server.rs`), and `panic = "abort"` would end the server
+/// instead.
+#[test]
+fn the_release_profile_optimises_across_crates_strips_and_unwinds() {
+    let manifest = fs::read_to_string("Cargo.toml").expect("root manifest");
+    let profile = profile_settings(&manifest, "release");
     assert_eq!(
         profile.get("lto"),
         Some(&"thin"),
@@ -127,6 +132,36 @@ fn the_release_profile_optimises_across_crates_strips_and_unwinds() {
         matches!(profile.get("panic"), None | Some(&"unwind")),
         "release profile must keep the unwinding panic strategy: {profile:?}"
     );
+}
+
+/// `dist` builds the prebuilt Termux binary that CI checks and the release workflow publishes:
+/// `release` plus whole-program LTO in one codegen unit, which made the binary 11% smaller and
+/// name matching up to 17% faster, at a link only CI pays for. It takes stripping and unwinding
+/// from `release`, so it cannot drift from them.
+#[test]
+fn the_dist_profile_is_release_with_whole_program_optimisation() {
+    let manifest = fs::read_to_string("Cargo.toml").expect("root manifest");
+    let profile = profile_settings(&manifest, "dist");
+    assert_eq!(
+        profile.get("inherits"),
+        Some(&"release"),
+        "dist must inherit release: {profile:?}"
+    );
+    assert!(
+        matches!(profile.get("lto"), Some(&"fat" | &"true")),
+        "dist must use whole-program LTO: {profile:?}"
+    );
+    assert_eq!(
+        profile.get("codegen-units"),
+        Some(&"1"),
+        "dist must optimise in one codegen unit: {profile:?}"
+    );
+    for inherited in ["strip", "panic"] {
+        assert!(
+            !profile.contains_key(inherited),
+            "dist must take {inherited} from release: {profile:?}"
+        );
+    }
 }
 
 /// The CI and release workflows must pin the stable Rust toolchain to a specific version,

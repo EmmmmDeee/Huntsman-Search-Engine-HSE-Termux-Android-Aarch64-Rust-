@@ -48,6 +48,17 @@ crc32fast = "1.5"
 lto = "thin"
 strip = "symbols"
 
+# The prebuilt Termux binary that CI checks and the release workflow publishes:
+# `cargo build --profile dist --target aarch64-linux-android`. Whole-program LTO in one codegen
+# unit made the binary 11% smaller, and name matching up to 17% faster with identical results,
+# than `release` (x86_64 measurement, 2026-11-05), for about 2.6 times the build time. `release`
+# stays thin because `cargo install` uses it on the phone itself, where that link would need far
+# more memory and time. Both inherit unwinding: see tests/manifest_policy.rs.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 # forbid cannot be reopened by a local allow, where deny can. The xtask crate sets the same.
 # Every crate-level lint level lives here; tests/manifest_policy.rs refuses one in a crate root.
 [lints.rust]
