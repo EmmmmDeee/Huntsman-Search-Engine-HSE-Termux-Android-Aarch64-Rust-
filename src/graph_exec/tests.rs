@@ -50,6 +50,15 @@ where
     Arc::new(f)
 }
 
+/// The instant the scheduler admitted this attempt, plus the task's timeout: the attempt's
+/// deadline. The tests that read it give every task one timeout and end far inside the run
+/// deadline, so two attempts' deadlines are exactly as far apart as their admissions, the
+/// instants a rate limit spaces. A clock read inside the handler is not: it also counts the
+/// time before the handler ran, which differs per attempt on a loaded machine.
+fn admitted_plus_timeout(context: &TaskContext) -> Instant {
+    context.deadline
+}
+
 fn policy() -> ExecutionPolicy {
     ExecutionPolicy {
         max_concurrency: 4,
@@ -516,11 +525,11 @@ fn rate_limit_group_spaces_task_start_times() {
         let observed_starts = Arc::clone(&starts);
         handlers.insert(
             id.into(),
-            handler(move |_| {
+            handler(move |context| {
                 observed_starts
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(Instant::now());
+                    .push(admitted_plus_timeout(&context));
                 Ok(output(json!(true), id))
             }),
         );
@@ -534,7 +543,7 @@ fn rate_limit_group_spaces_task_start_times() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert_eq!(observed.len(), 2);
-    assert!(observed[1].duration_since(observed[0]) >= Duration::from_millis(30));
+    assert!(observed[1].duration_since(observed[0]) >= Duration::from_millis(40));
 }
 
 #[test]
@@ -833,12 +842,13 @@ fn checkpoint_resume_retains_provider_rate_limit_and_rejects_unknown_groups() {
         Err(GraphError::CheckpointMismatch)
     ));
 
-    // Make the persisted start recent, independent of the CI runner's setup delays.
+    // Make the persisted start recent, independent of the CI runner's setup delays. The clock
+    // starts first, so a stall before the start is planted only lengthens what it measures.
+    let resumed_at = Instant::now();
     checkpoint
         .report
         .rate_limit_last_start_unix_ms
         .insert("checkpoint-provider".into(), clock::unix_now_millis());
-    let resumed_at = Instant::now();
     let resumed = executor
         .resume(
             &definition,
@@ -897,8 +907,16 @@ fn legacy_checkpoint_recovers_latest_provider_completion() {
         .as_object_mut()
         .unwrap()
         .remove("rate_limit_last_start_unix_ms");
-    let legacy: ExecutionCheckpoint = serde_json::from_value(serialized).unwrap();
+    let mut legacy: ExecutionCheckpoint = serde_json::from_value(serialized).unwrap();
+    // A legacy checkpoint dates the provider call by its task's finish second. Date it now,
+    // after the clock starts, so setup time since the real call cannot shorten the wait.
     let resumed_at = Instant::now();
+    legacy
+        .report
+        .tasks
+        .get_mut("a")
+        .expect("the first wave recorded its task")
+        .finished_at_unix = Some(clock::unix_now());
     let result = executor
         .resume(&graph, &handlers, &Arc::new(AtomicBool::new(false)), legacy)
         .unwrap();
@@ -1030,8 +1048,11 @@ fn provider_rate_limit_applies_to_each_retry_and_next_task() {
     let first_calls = Arc::clone(&calls);
     handlers.insert(
         "a".into(),
-        handler(move |_| {
-            first_observed.lock().unwrap().push(Instant::now());
+        handler(move |context| {
+            first_observed
+                .lock()
+                .unwrap()
+                .push(admitted_plus_timeout(&context));
             if first_calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 Err(TaskFailure::transient("retry"))
             } else {
@@ -1042,8 +1063,11 @@ fn provider_rate_limit_applies_to_each_retry_and_next_task() {
     let second_observed = Arc::clone(&observed);
     handlers.insert(
         "b".into(),
-        handler(move |_| {
-            second_observed.lock().unwrap().push(Instant::now());
+        handler(move |context| {
+            second_observed
+                .lock()
+                .unwrap()
+                .push(admitted_plus_timeout(&context));
             Ok(output(json!(true), "b"))
         }),
     );
@@ -1055,7 +1079,7 @@ fn provider_rate_limit_applies_to_each_retry_and_next_task() {
     let starts = observed.lock().unwrap();
     assert_eq!(starts.len(), 3);
     for window in starts.windows(2) {
-        assert!(window[1].duration_since(window[0]) >= Duration::from_millis(55));
+        assert!(window[1].duration_since(window[0]) >= Duration::from_millis(65));
     }
 }
 #[test]
