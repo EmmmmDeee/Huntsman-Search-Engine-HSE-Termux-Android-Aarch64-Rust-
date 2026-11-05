@@ -9,7 +9,7 @@ use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 use crate::wikidata;
 
 pub const WIKIDATA_USAGE: &str = "usage: huntsman-recon wikidata QUERY";
@@ -85,15 +85,18 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
                 report.entities.extend(found.entities);
                 report.outcomes.push(found.outcome);
             }
-            Err(error) => return WikidataRun::Network(error.to_string()),
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+                wikidata::SOURCE,
+                now_unix,
+                &error,
+            )),
         }
     }
     merge_by_uid(&mut report.entities);
 
-    if let Some(run) = crate::source_outcome::none_accepted(
-        &report.outcomes,
-        &format!("no source answered for {query:?}"),
-    ) {
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {query:?}"))
+    {
         return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {

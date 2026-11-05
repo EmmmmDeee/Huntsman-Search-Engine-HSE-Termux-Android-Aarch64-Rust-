@@ -13,7 +13,7 @@ use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::solana_rpc;
-use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 
 pub const CRYPTO_USAGE: &str = "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS|sol:ADDRESS [--save FILE]";
 pub const CRYPTO_HELP: &str = "\
@@ -146,15 +146,18 @@ pub fn run<T: Transport + ?Sized>(transport: &T, address: &str, now_unix: u64) -
                 report.entities.extend(entities);
                 report.outcomes.push(outcome);
             }
-            Err(error) => return CryptoRun::Network(error.to_string()),
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+                chain.module(),
+                now_unix,
+                &error,
+            )),
         }
     }
     merge_by_uid(&mut report.entities);
 
-    if let Some(run) = crate::source_outcome::none_accepted(
-        &report.outcomes,
-        &format!("no source answered for {address}"),
-    ) {
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {address}"))
+    {
         return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {

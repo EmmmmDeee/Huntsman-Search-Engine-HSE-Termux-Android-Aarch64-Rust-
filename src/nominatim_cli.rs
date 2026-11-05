@@ -13,7 +13,7 @@ use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::nominatim;
-use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 
 pub const GEOCODE_USAGE: &str =
     "usage: huntsman-recon geocode PLACE-OR-ADDRESS [--save FILE] | geocode LAT,LON [--save FILE]";
@@ -102,7 +102,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
                 report.entities.extend(found.entities);
                 report.outcomes.push(found.outcome);
             }
-            Err(error) => return GeocodeRun::Network(error.to_string()),
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+                nominatim::SOURCE,
+                now_unix,
+                &error,
+            )),
         }
     }
     // A point also asks the imagery catalogue which satellite passes covered it.
@@ -112,7 +116,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
                 report.entities.extend(found.entities);
                 report.outcomes.push(found.outcome);
             }
-            Err(error) => return GeocodeRun::Network(error.to_string()),
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+                crate::stac::SOURCE,
+                now_unix,
+                &error,
+            )),
         }
     }
     // ... and which aircraft OpenSky's receivers last reported around it.
@@ -122,17 +130,19 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
                 report.entities.extend(found.entities);
                 report.outcomes.push(found.outcome);
             }
-            Err(error) => return GeocodeRun::Network(error.to_string()),
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+                crate::opensky::SOURCE,
+                now_unix,
+                &error,
+            )),
         }
     }
     merge_by_uid(&mut report.entities);
 
-    if !report
-        .outcomes
-        .iter()
-        .any(|outcome| outcome.kind.is_accepted())
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {query:?}"))
     {
-        return GeocodeRun::Failed(format!("no source answered for {query:?}"));
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => GeocodeRun::Printed { text, report },

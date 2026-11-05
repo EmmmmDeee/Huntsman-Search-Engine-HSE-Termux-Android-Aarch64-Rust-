@@ -57,7 +57,7 @@ const CLOCK_READER: [&str; 1] = ["src/clock.rs"];
 /// none names a typed refusal (`LegError::Refused`, `LegError::Transport`) or reads the
 /// `is_transport_failure` predicate at the call site, and none keeps a `refused`/`unanswered`/
 /// `no_response`/`network` side channel of type `Option<String>` beside those rows.
-const REFUSAL_ROUTED: [&str; 13] = [
+const REFUSAL_ROUTED: [&str; 20] = [
     "src/ip_cli.rs",
     "src/ip_cli",
     "src/netblock_cli.rs",
@@ -70,6 +70,13 @@ const REFUSAL_ROUTED: [&str; 13] = [
     "src/exposure_cli.rs",
     "src/network_cli.rs",
     "src/network_cli",
+    "src/people_cli.rs",
+    "src/crypto_cli.rs",
+    "src/nominatim_cli.rs",
+    "src/company_cli.rs",
+    "src/gleif_cli.rs",
+    "src/itunes_cli.rs",
+    "src/wikidata_cli.rs",
     "src/indicator_legs.rs",
 ];
 /// The side-channel field and parameter names a refusal-routed lookup must not keep beside its

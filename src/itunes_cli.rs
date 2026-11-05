@@ -7,7 +7,7 @@ use crate::error::Error;
 use crate::http::Transport;
 use crate::itunes;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 
 pub const ITUNES_USAGE: &str = "usage: huntsman-recon itunes KEYWORD";
 pub const ITUNES_HELP: &str = "\
@@ -84,15 +84,18 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keyword: &str, now_unix: u64) -
                 report.entities.extend(found.entities);
                 report.outcomes.push(found.outcome);
             }
-            Err(error) => return ItunesRun::Network(error.to_string()),
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::of_leg_error(
+                itunes::SOURCE,
+                now_unix,
+                &error,
+            )),
         }
     }
     merge_by_uid(&mut report.entities);
 
-    if let Some(run) = crate::source_outcome::none_accepted(
-        &report.outcomes,
-        &format!("no source answered for {keyword:?}"),
-    ) {
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {keyword:?}"))
+    {
         return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
