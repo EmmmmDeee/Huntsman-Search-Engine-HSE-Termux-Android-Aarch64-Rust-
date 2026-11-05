@@ -218,6 +218,8 @@ pub const PROFILES: &[SourceProfile] = &[
     row("public_osint", C::Other, Some(C::Search)),
     row("public_web_indexes", C::Other, None),
     row("pulsedive", C::Infra, None),
+    row("qld_state_road_camera_gis", C::Other, Some(C::Transport)),
+    row("qld_traffic_cameras", C::Other, Some(C::Transport)),
     row("quad9", C::Other, None),
     row("rdap", C::Other, Some(C::Infra)),
     row("recall", C::Other, None),

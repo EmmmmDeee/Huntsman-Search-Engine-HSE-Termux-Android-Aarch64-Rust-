@@ -195,6 +195,7 @@ cargo run -- wikidata "Douglas Adams"  # keyless Wikidata: bounded statement pro
 cargo run -- gleif "5493001KJTIIGC8Y1R12"  # keyless GLEIF LEI register: an LEI or a name resolved to the registered legal entity, its legal + headquarters addresses as geocodable points, and an Australian entity's checksum-validated ACN; a candidate, not a confirmed identity; network
 cargo run -- company "KordaMentha"  # keyless ASIC registers on data.gov.au: registered companies (current and former names, ACN, ABN, status, registration dates), business names linked to their holder by ABN, and banned or disqualified organisations; a NAME is also looked up on GLEIF; an ACN or ABN must pass its checksum; a register entry, not a confirmed identity; network
 cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenStreetMap Nominatim: a place or address to coordinates + full address (a LAT,LON argument is reverse-geocoded instead); network
+cargo run -- traffic-cameras --reconcile --limit 5  # two public TMR camera catalogues; network, no image downloads
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
 cargo run -- apk --help                   # offline Android APK archive intelligence: structural ZIP/DEX/ABI/signing indicators, exact-byte SHA-256
