@@ -33,3 +33,31 @@ Other copies are not this engine:
 SeekNow on this binary is `huntsman-recon seeknow search KIND VALUE --fast-only`. It reads `HUNTSMAN_SEEKNOW_KEY`. It does not read `SEEKNOW_COOKIE`.
 
 No repository was deleted.
+
+## Native full-source rebuild and acceptance (Android AArch64)
+
+For an operator-controlled source rebuild on a **real rootless Termux handset**, use
+`bash scripts/termux-full-rebuild.sh` from a clone, or obtain this script from the
+canonical GitHub `main` after its PR has merged. The script always fetches a fresh,
+shallow `main` snapshot, pins its full commit SHA, verifies the Rust/Termux stdlib
+pair, runs rustfmt, warning-free Clippy, the locked complete Rust test suite and
+a native release build. It then runs `scripts/termux-runtime-acceptance.sh` on the
+candidate **before** atomically installing it at `$PREFIX/bin/huntsman-recon`.
+It does not reuse a prebuilt, touch saved investigations, install a runtime LLM,
+require root or silently substitute a host acceptance for a phone acceptance.
+
+Optional `HUNTSMAN_EXPECT_SHA=<full 40-character sha>` refuses to rebuild if the
+fetched main commit differs from the operator-selected version.
+`CARGO_BUILD_JOBS=1` is the default to bound phone compiler concurrency; an
+explicit override is respected. `CARGO_TARGET_DIR` and
+`HUNTSMAN_REBUILD_CACHE` may be set for persistent local compilation caches.
+A failed gate leaves the installed binary unchanged. The prior executable is
+retained at `$PREFIX/bin/.huntsman-recon.previous` on a successful replacement;
+if post-install verification fails, it is restored. A running `serve` process
+must be restarted separately to use the newly installed binary.
+
+The device acceptance validates the existing embedded web UI and several CLI/API
+paths with isolated test data. It does **not** establish that every external
+provider was live, paid credentials were configured, or radio APIs were granted
+by Android. Those checks need explicit independent receipts and are never
+implied by a successful source rebuild.
