@@ -8,6 +8,6 @@ pub use crate::{
     dns_wire, domains, engineering_command, environment, error, exit, fsio, geohash, html_text,
     json, lookup_args, md5, netblock, network_selector, oui, oui_ieee, pattern, phone_intl,
     postcode_au, radar, redact, scan_batch, sha256, spf, stage, stdio_failure, tags, termination,
-    textnorm, timefmt, tlsrpt, union_find, username_variants, validation, value_syntax, x509,
-    yaml_lite,
+    textnorm, timefmt, tlsrpt, union_find, username_catalog, username_variants, validation,
+    value_syntax, x509, yaml_lite,
 };

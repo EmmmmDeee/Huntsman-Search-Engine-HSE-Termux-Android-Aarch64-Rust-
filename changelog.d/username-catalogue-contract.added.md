@@ -1,0 +1,3 @@
+- Add a bounded, pure-Rust username site-definition validation and interpretation contract in `username_catalog`, rejecting unsafe/ambiguous URLs and status-only detectors.
+- Distinguish exact JSON identifiers from HTML candidates; require at least three distinct negative controls including one shaped like the queried handle before promoting an HTML candidate to account-existence evidence.
+- Keep the catalogue engine offline and inactive in the live scan path until separately verified; add adversarial fixture tests without a new network client or mandatory provider key.
