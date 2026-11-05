@@ -1,7 +1,7 @@
 # Consolidation and refactor plan
 
-Status: **PROPOSED**. Unless marked *estimate*, every number here was measured on `main` at
-`e7301b4c6` (2026-11-05).
+Status: **IN PLACE** through Phase 5. Phase 6 moves with Stage 9, as **Progress** below records.
+Unless marked *estimate*, every number here was measured on `main` at `e7301b4c6` (2026-11-05).
 
 **Progress.** Phase 0 is in place:
 
