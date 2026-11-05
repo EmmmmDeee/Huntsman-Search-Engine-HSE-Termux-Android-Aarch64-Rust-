@@ -170,7 +170,7 @@ fn no_package_or_a_bad_bound_is_a_usage_error_that_runs_nothing() {
         "{}",
         run_without_packages.stderr
     );
-    assert!(run_without_packages.calls.is_empty());
+    assert_eq!(run_without_packages.calls, Vec::<String>::new());
     for bad in ["0", "-5", "ten", "1.5", "60s"] {
         let refused = run("success", &PACKAGES, bad);
         assert_eq!(refused.code, Some(64), "bound {bad:?}: {}", refused.stderr);
