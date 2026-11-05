@@ -23,6 +23,8 @@ const FIELDS: &str =
 
 /// Duolingo matched the account on the exact address, so the handle is close to certain.
 const CONF_USERNAME: f64 = 0.85;
+/// An address Duolingo confirms holds an account whose public profile it now withholds.
+const CONF_ACCOUNT_EXISTS: f64 = 0.80;
 const CONF_PROFILE: f64 = 0.80;
 /// Display names and locations are free text the account holder typed.
 const CONF_PERSON: f64 = 0.60;
@@ -84,13 +86,14 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(empty))
+    Ok(interpret(&fetched, &email, scan_id, now_unix).unwrap_or_else(empty))
 }
 
 /// Turn one fetched user-list response into a report; `Err` is the outcome of a response that
 /// named no account. **Pure.**
 fn interpret(
     fetched: &Fetched,
+    email: &str,
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, SourceExecutionOutcome> {
@@ -120,10 +123,18 @@ fn interpret(
                 SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
             );
         }
-        return Err(failed(
-            SourceOutcomeKind::SchemaDrift,
-            "Duolingo users carry no username",
-        ));
+        // Duolingo returns a user stub with blank public fields (empty username and name, id 0)
+        // for a registered address whose profile it now withholds, and an empty list for an
+        // address with no account. The stub's presence is the account-existence signal, so it is
+        // a confirmed low-detail match, never schema drift. Its blank fields are not fabricated
+        // into a handle; only the queried address is kept.
+        let mut entities = Vec::new();
+        add_withheld_account(email, scan_id, &mut entities);
+        return Ok(Report {
+            entities,
+            outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
+                .with_http_status(response.status),
+        });
     }
 
     let mut entities = Vec::new();
@@ -219,6 +230,23 @@ fn build_entities(user: &User, scan_id: &str, entities: &mut Vec<Entity>) {
     }
 }
 
+/// A registered address whose Duolingo profile is withheld: the queried address is kept as a
+/// confirmed account-existence lead, with no fabricated handle, name or location. **Pure.**
+fn add_withheld_account(email: &str, scan_id: &str, entities: &mut Vec<Entity>) {
+    let evidence = Evidence::new(
+        EvidenceProvenance::for_scan(SRC, scan_id),
+        "Duolingo confirms an account registered to this address; its public profile is withheld",
+    )
+    .with_attr("dataset", "Duolingo public user profiles")
+    .with_attr("platform", "duolingo")
+    .with_attr("profile_fields", "withheld");
+    let mut entity = Entity::new(EntityKind::Email, email, CONF_ACCOUNT_EXISTS, scan_id);
+    entity.tag(SRC);
+    entity.tag("account-exists");
+    entity.add_evidence(evidence);
+    entities.push(entity);
+}
+
 fn add_entity(
     entities: &mut Vec<Entity>,
     kind: EntityKind,
@@ -301,12 +329,9 @@ mod tests {
 
     #[test]
     fn drift_is_never_a_clean_miss() {
-        for body in [
-            r#"{"errors":[]}"#,
-            r#"{"users":"x"}"#,
-            r#"{"users":[{"id":3}]}"#,
-            "<html>",
-        ] {
+        // A missing users field, a wrong-typed users field and non-JSON stay drift; a present
+        // user stub is handled by the withheld-account test below, not here.
+        for body in [r#"{"errors":[]}"#, r#"{"users":"x"}"#, "<html>"] {
             let report = lookup(&OneResponse::json(200, body), "a@example.com", "s", 1).unwrap();
             assert!(
                 matches!(
@@ -317,6 +342,40 @@ mod tests {
                 report.outcome.kind
             );
             assert!(report.entities.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_withheld_profile_stub_is_a_confirmed_account_not_drift() {
+        // Duolingo now returns blank public fields for a registered address (observed
+        // 2026-11-04); the stub's presence confirms the account.
+        for body in [
+            r#"{"users":[{"name":"","id":0,"username":""}]}"#,
+            r#"{"users":[{"id":3}]}"#,
+        ] {
+            let report = lookup(
+                &OneResponse::json(200, body),
+                "Jane.Doe@Example.com",
+                "s",
+                1,
+            )
+            .unwrap();
+            assert_eq!(report.outcome.kind, SourceOutcomeKind::Success, "{body}");
+            let email = report
+                .entities
+                .iter()
+                .find(|e| e.kind == EntityKind::Email)
+                .unwrap_or_else(|| panic!("email entity for {body}"));
+            // The canonical queried address is kept; no handle is invented from the blank stub.
+            assert_eq!(email.raw_value, "jane.doe@example.com");
+            assert!(email.has_tag("account-exists"));
+            assert!(
+                !report
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Username)
+            );
+            assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Url));
         }
     }
 
