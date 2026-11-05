@@ -37,15 +37,20 @@ pub struct Report {
 }
 
 fn checked_query(raw: &str) -> Result<String, &'static str> {
-    let query = raw.trim();
-    if query.is_empty() || query.len() > MAX_PUBLIC_QUERY_BYTES {
+    if raw.len() > MAX_PUBLIC_QUERY_BYTES {
         return Err("query must be between 1 and 160 UTF-8 bytes");
     }
-    if query
+    // Check raw input before trimming; otherwise a newline or tab at the
+    // boundary evades the public-source query control-character gate.
+    if raw
         .chars()
         .any(|c| c.is_control() || matches!(c, '"' | '\\'))
     {
         return Err("query cannot contain controls, quotes or backslashes");
+    }
+    let query = raw.trim();
+    if query.is_empty() {
+        return Err("query must be between 1 and 160 UTF-8 bytes");
     }
     Ok(query.to_owned())
 }
@@ -586,6 +591,12 @@ mod tests {
         let silent = crate::test_support::Silent;
         assert!(search(&silent, Source::All, "", "s", 1).is_err());
         assert!(search(&silent, Source::All, "a\"b", "s", 1).is_err());
+        for bad in ["\ntext", "text\r", "\ttext", "te\0xt"] {
+            assert!(
+                search(&silent, Source::All, bad, "s", 1).is_err(),
+                "{bad:?}"
+            );
+        }
         assert!(search(&silent, Source::All, &"x".repeat(161), "s", 1).is_err());
     }
 

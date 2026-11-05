@@ -45,6 +45,21 @@ jobs:
           }
           echo "main origin: merged PR association verified (${count})"
 
+  termux-online-acceptance-contract:
+    name: Safe online acceptance contract (mock providers)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify standalone online-acceptance script and failure semantics
+        run: |
+          set -euo pipefail
+          bash -n scripts/termux-online-acceptance.sh
+          bash -n tests/termux_online_acceptance.sh
+          bash -n scripts/termux-hybrid-evidence.sh
+          bash -n tests/termux_hybrid_evidence.sh
+          bash tests/termux_online_acceptance.sh
+          bash tests/termux_hybrid_evidence.sh
+
   web-ui:
     name: Web UI in a phone browser
     runs-on: ubuntu-24.04

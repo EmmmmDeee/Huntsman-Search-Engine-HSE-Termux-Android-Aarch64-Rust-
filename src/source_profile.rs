@@ -203,6 +203,8 @@ pub const PROFILES: &[SourceProfile] = &[
     row("official_x_recent_search", C::Search, None),
     row("opencellid", C::Other, Some(C::Rf)),
     row("opendns", C::Infra, None),
+    // A community-edited catalogue searched by name: never an independent family.
+    row("openlibrary_author", C::Other, None),
     row("openpgp_keys", C::EmailIntel, None),
     row("openphish", C::Other, None),
     row("opensky", C::Other, Some(C::Transport)),

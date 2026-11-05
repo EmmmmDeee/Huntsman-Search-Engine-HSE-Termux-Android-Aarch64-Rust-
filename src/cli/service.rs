@@ -223,6 +223,30 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     }
 }
 
+/// POST /api/people/discover delegates to the identical library discovery
+/// function as `people-discover`, keeping the web page free of custom scrapers.
+fn web_people_discover(
+    name: &str,
+    region: huntsman_recon::people_discovery::Region,
+) -> Result<serde_json::Value, LookupError> {
+    let transport =
+        huntsman_recon::http::UreqTransport::new(&huntsman_recon::http::TransportConfig::default());
+    let report =
+        huntsman_recon::people_discovery::discover(&transport, name, region, clock::unix_now())
+            .map_err(|error| LookupError {
+                status: if matches!(error, Error::Invalid(_)) {
+                    400
+                } else {
+                    502
+                },
+                message: error.to_string(),
+            })?;
+    serde_json::to_value(report).map_err(|error| LookupError {
+        status: 500,
+        message: format!("people discovery JSON unavailable: {error}"),
+    })
+}
+
 /// /api/research uses the same bounded, keyless adaptive search as `query --adaptive`.
 /// The server handles capacity and same-origin controls; this adapter owns the transport.
 fn web_research(query: &str) -> Result<serde_json::Value, LookupError> {
@@ -426,6 +450,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
             let server = server
                 .with_lookup(std::sync::Arc::new(web_lookup))
                 .with_research(std::sync::Arc::new(web_research))
+                .with_people_discover(std::sync::Arc::new(web_people_discover))
                 .with_radar(std::sync::Arc::new(web_radar))
                 .with_radar_cells(std::sync::Arc::new(web_cells))
                 .with_radar_track(std::sync::Arc::new(web_track))
