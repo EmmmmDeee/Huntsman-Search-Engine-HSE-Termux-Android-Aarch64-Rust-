@@ -27,41 +27,12 @@ pub fn text_mentions_ip(text: &str, ip: &str) -> bool {
     })
 }
 
+/// The class the correlator counts `source` under (`breach`, `code`, …, else `other`), from the one
+/// classification table in [`crate::source_profile`]. `see_know`, the ID the legacy 7dca720 build
+/// wrote for `SeekNow`, keeps its row there, as its consensus fixture still uses it.
 #[must_use]
 pub fn source_family(source: &str) -> &'static str {
-    let source = source.trim().to_ascii_lowercase();
-    // `seeknow` is the live SeekNow collector id. `see_know` is the id the legacy 7dca720 build
-    // wrote, and its consensus fixture still uses it.
-    match source.as_str() {
-        "comb_search" | "dehashed" | "hibp" | "hibp_account" | "hudsonrock" | "intelx"
-        | "leakcheck_public" | "leakix" | "niamonx" | "osintcat" | "psbdmp" | "pwned_passwords"
-        | "xposed_or_not" | "oathnet" | "oathnet_pro" | "seeknow" | "see_know" | "stolen_tax" => {
-            "breach"
-        }
-        "github_user" | "npm_author" | "crates_io" | "codeberg_user" | "huggingface_user"
-        | "codewars_user" => "code",
-        "wigle" | "wigle_bluetooth" | "oui" => "rf",
-        "reddit_user" | "hacker_news" | "lobsters" | "devto_user" => "forum",
-        "social_probe" | "gravatar" | "duolingo" | "chess_com" | "lichess" => "social",
-        "username_search" | "epieos" => "presence",
-        "search_engines" | "google" | "exa_search" => "search",
-        "smtp_vrfy" | "emailrep" | "openpgp_keys" | "hunter" | "kickbox" => "email_intel",
-        "proxycurl" | "name_intel" | "fullcontact" | "contact_enrich" | "gleif_lei"
-        | "asic_orgs" | "abn_lookup" | "asic_director" | "au_electoral" | "au_people" | "ahpra"
-        | "acnc_charities" => "identity_registry",
-        "shodan" | "dns_intel" | "ip_geo" | "geocode" | "ip_whois_geo" | "ip2location"
-        | "mylnikov" | "abuseipdb" | "bgpview" | "criminal_ip" | "ipqs" | "netblock" | "netlas"
-        | "onyphe" | "portscan" | "ripestat" | "securitytrails" | "zoomeye" | "domainsdb"
-        | "internetdb" | "greynoise" | "virustotal" | "pulsedive" | "threatfox" | "urlhaus"
-        | "whoxy" | "otx" | "urlscan" | "ipinfo" | "robtex" | "hackertarget" | "stopforumspam"
-        | "isc" | "maltiverse" | "phishstats" => "infra",
-        _ if source.contains("github") || source.contains("npm") => "code",
-        _ if source.contains("forum") || source.contains("reddit") => "forum",
-        _ if source.contains("search") => "search",
-        _ if source.contains("mail") || source.contains("smtp") => "email_intel",
-        _ if source.contains("dns") || source.contains("geo") || source.contains("ip") => "infra",
-        _ => "other",
-    }
+    crate::source_profile::family(source).as_str()
 }
 
 #[must_use]

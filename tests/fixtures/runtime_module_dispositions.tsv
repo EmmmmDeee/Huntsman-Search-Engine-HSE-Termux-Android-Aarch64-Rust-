@@ -243,6 +243,7 @@ shodan	adapter	Shodan host and DNS leg reached through indicator_legs from ip, d
 snake_graph	exporter	compact graph rendering
 source_intel	adapter	offline APK URL candidate projection via source-intel CLI; existing APK parser owns extraction, no network or source verification
 source_outcome	runtime	causal provider outcome model
+source_profile	leaf	source classification table
 source_registry	runtime	lead-only discovery route registry
 spf	leaf	SPF parser
 stac	adapter	keyless Earth Search STAC satellite-scene catalogue reached through nominatim_cli's point leg from geocode LAT,LON, scan -k geocode and /api/lookup
