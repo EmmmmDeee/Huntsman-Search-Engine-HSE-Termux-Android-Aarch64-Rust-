@@ -16,12 +16,11 @@
 
 use serde::Deserialize;
 
+use crate::account_leg::{Absent, AccountLeg, HandleCase, Identity};
 use crate::canonical::{canonical_email, canonical_url};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::nonblank;
 
 pub const SRC: &str = "codeberg_user";
@@ -41,11 +40,7 @@ const SELF_REPORTED_CONF: f64 = 0.55;
 /// The host of the self-declared website, as a pivot.
 const DOMAIN_CONF: f64 = 0.50;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::account_leg::Report;
 
 #[derive(Debug, Deserialize)]
 struct Account {
@@ -99,6 +94,18 @@ fn profile_url(handle: &str) -> String {
     format!("{API_BASE}/{}", percent_encode_unreserved(handle))
 }
 
+/// This leg's messages and rules on the shared account-leg path.
+const LEG: AccountLeg = AccountLeg {
+    source: SRC,
+    document: "Codeberg user",
+    invalid: "selector is not a valid Codeberg handle",
+    no_identity: "Codeberg payload carried no login",
+    other_account: "Codeberg returned a different account than the queried handle",
+    handle_case: HandleCase::AsTyped,
+    identity: Identity::IgnoreAsciiCase,
+    absent: Absent::NotFound,
+};
+
 /// Look up one Codeberg account, keyless.
 ///
 /// # Errors
@@ -109,78 +116,27 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let handle = username.trim().trim_start_matches('@');
-    if !valid_handle(handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
-            SRC,
-            now_unix,
-            "selector is not a valid Codeberg handle",
-        )));
-    }
-    let fetched = fetch(
+    let handle = match LEG.handle(username, valid_handle, now_unix) {
+        Ok(handle) => handle,
+        Err(outcome) => return Ok(Report::miss(outcome)),
+    };
+    let found = LEG.fetch(
         transport,
-        Request::get_json(user_url(handle)),
-        None,
-        &FetchOptions::no_redirects().paced(),
-        SRC,
+        Request::get_json(user_url(&handle)),
+        &handle,
+        |account: &Account| account.login.as_str(),
         now_unix,
     )?;
-    let (account, status) = match interpret_account(&fetched, handle, now_unix) {
+    let (account, status) = match found {
         Ok(found) => found,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
-    let mut entities = build_entities(&account, scan_id);
-    merge_by_uid(&mut entities);
-    Ok(Report {
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
-            .with_http_status(status),
-        entities,
-    })
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
-/// The confirmed account and response status; `Err` is the outcome of a response that named no
-/// such account or a different one. **Pure.**
-fn interpret_account(
-    fetched: &Fetched,
-    handle: &str,
-    now_unix: u64,
-) -> Result<(Account, u16), SourceExecutionOutcome> {
-    if let Some(response) = &fetched.response {
-        if response.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx {
-            return Err(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-            );
-        }
-    }
-    let response = whole_response(fetched, "Codeberg user")?;
-    answer(fetched, "Codeberg user")?;
-    let account: Account = decode_json(response, SRC, now_unix, "Codeberg user")?;
-    if account.login.trim().is_empty() {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Codeberg payload carried no login",
-        ));
-    }
-    if !account.login.trim().eq_ignore_ascii_case(handle) {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SemanticDrift,
-            Some(response.status),
-            "Codeberg returned a different account than the queried handle",
-        ));
-    }
-    Ok((account, response.status))
+    Ok(Report::found(
+        SRC,
+        build_entities(&account, scan_id),
+        status,
+        now_unix,
+    ))
 }
 
 /// A public address the account shows; Forgejo's private-address placeholder is dropped. **Pure.**
@@ -299,6 +255,7 @@ fn build_entities(account: &Account, scan_id: &str) -> Vec<Entity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::{OneResponse, ScriptedTransport, json_ok};
 
     /// Captured from `codeberg.org/api/v1/users/forgejo` on 2026-11-04.

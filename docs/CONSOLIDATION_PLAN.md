@@ -16,7 +16,9 @@ Status: **PROPOSED**. Unless marked *estimate*, every number here was measured o
 
 - Phase 5 is in place where the endings are identical. One `lookup_report::LookupReport` replaces fourteen identical `Report` structs, each now an alias. Six front-ends end through `lookup_report::finish`. Since B3, every lookup ends through `SourceReach`, which `REFUSAL_ROUTED` in `architecture_boundaries` enforces (G6). The other front-ends keep their own endings, because each does more than this one.
 
-Phases 4 and 6 are not implemented yet.
+- Phase 4 is in place for the eight legs whose path was identical. They are Lobsters, Chess.com, Lichess, Codeberg, DEV, Codewars, Hugging Face and Hacker News, and they now run on `src/account_leg.rs`. First, `tests/fixtures/account_leg_snapshot.tsv` recorded each leg's outcome and entities in eleven scenarios. All 88 rows are unchanged after the move. The legs that differ in rule, not just wording, stay bespoke, as section 4.3 lists. Those are GitHub, GitLab, Bluesky, Keybase, Mastodon, Docker Hub, crates.io, npm, TikTok and Wikipedia.
+
+Phase 6 is not implemented yet.
 
 - **Process.** Work under this plan follows [CLAUDE_CODE_REFACTOR_EXECUTION.md](CLAUDE_CODE_REFACTOR_EXECUTION.md).
 - **Authority.** The root [`ARCHITECTURE.md`](../ARCHITECTURE.md) and its tests stay authoritative for the module map.

@@ -13,11 +13,10 @@
 
 use serde::Deserialize;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::account_leg::{Absent, AccountLeg, HandleCase, Identity};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::nonblank;
 
 pub const SRC: &str = "codewars_user";
@@ -33,11 +32,7 @@ const PROFILE_URL_CONF: f64 = 0.74;
 /// A self-declared name: a candidate lead.
 const SELF_REPORTED_CONF: f64 = 0.55;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::account_leg::Report;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +96,18 @@ fn profile_url(handle: &str) -> String {
     format!("{API_BASE}/users/{}", percent_encode_unreserved(handle))
 }
 
+/// This leg's messages and rules on the shared account-leg path.
+const LEG: AccountLeg = AccountLeg {
+    source: SRC,
+    document: "Codewars user",
+    invalid: "selector is not a valid Codewars handle",
+    no_identity: "Codewars payload carried no username",
+    other_account: "Codewars returned a different account than the queried handle",
+    handle_case: HandleCase::AsTyped,
+    identity: Identity::Exact,
+    absent: Absent::NotFound,
+};
+
 /// Look up one Codewars account, keyless.
 ///
 /// # Errors
@@ -111,78 +118,27 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let handle = username.trim().trim_start_matches('@');
-    if !valid_handle(handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
-            SRC,
-            now_unix,
-            "selector is not a valid Codewars handle",
-        )));
-    }
-    let fetched = fetch(
+    let handle = match LEG.handle(username, valid_handle, now_unix) {
+        Ok(handle) => handle,
+        Err(outcome) => return Ok(Report::miss(outcome)),
+    };
+    let found = LEG.fetch(
         transport,
-        Request::get_json(user_url(handle)),
-        None,
-        &FetchOptions::no_redirects().paced(),
-        SRC,
+        Request::get_json(user_url(&handle)),
+        &handle,
+        |account: &Account| account.username.as_str(),
         now_unix,
     )?;
-    let (account, status) = match interpret_account(&fetched, handle, now_unix) {
+    let (account, status) = match found {
         Ok(found) => found,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
-    let mut entities = build_entities(&account, scan_id);
-    merge_by_uid(&mut entities);
-    Ok(Report {
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
-            .with_http_status(status),
-        entities,
-    })
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
-/// The confirmed account and response status; `Err` is the outcome of a response that named no
-/// such account or a different one. **Pure.**
-fn interpret_account(
-    fetched: &Fetched,
-    handle: &str,
-    now_unix: u64,
-) -> Result<(Account, u16), SourceExecutionOutcome> {
-    if let Some(response) = &fetched.response {
-        if response.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx {
-            return Err(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
-            );
-        }
-    }
-    let response = whole_response(fetched, "Codewars user")?;
-    answer(fetched, "Codewars user")?;
-    let account: Account = decode_json(response, SRC, now_unix, "Codewars user")?;
-    if account.username.trim().is_empty() {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Codewars payload carried no username",
-        ));
-    }
-    if account.username.trim() != handle {
-        return Err(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::SemanticDrift,
-            Some(response.status),
-            "Codewars returned a different account than the queried handle",
-        ));
-    }
-    Ok((account, response.status))
+    Ok(Report::found(
+        SRC,
+        build_entities(&account, scan_id),
+        status,
+        now_unix,
+    ))
 }
 
 /// Build the report entities from the confirmed account. **Pure.**
@@ -257,6 +213,7 @@ fn build_entities(account: &Account, scan_id: &str) -> Vec<Entity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::{OneResponse, ScriptedTransport, json_ok};
 
     /// Trimmed from `www.codewars.com/api/v1/users/g964` on 2026-11-04.
