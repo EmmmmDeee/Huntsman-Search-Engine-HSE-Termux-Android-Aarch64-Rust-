@@ -99,7 +99,7 @@ huntsman-recon search "brisbane port"
 ```
 
 `check` runs offline self-acceptance and rejects an invalid engineering-command contract; when run from a source checkout containing the canonical directive, it also rejects directive drift. `command` validates and prints the fixed engineering hierarchy. `huntsman-recon directive check [ROOT]` verifies a specific checkout when `ROOT` is supplied, auto-discovers a checkout from the current directory or its parents when possible, and otherwise verifies the canonical directive embedded in the installed binary. `huntsman-recon directive sync [ROOT]` requires a real checkout and rewrites all agent-facing mirrors byte-for-byte from the canonical file. `search` and `sources` are offline.
-`fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
+`fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, `people`, and `people-discover` make HTTP
 requests and use public-only egress by default. `phone` is fully offline. `serve` accepts inbound HTTP on `127.0.0.1:8080` by default.
 TLS is verified against Mozilla's roots built into the binary. On a network that intercepts
 TLS with its own CA (a corporate inspection proxy, a sandbox), every lookup fails with
@@ -174,6 +174,7 @@ cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a 
 cargo run -- hibp help                   # HIBP subcommands; offline
 cargo run -- dehashed help               # DeHashed subcommands; offline (search needs a key and --purpose)
 cargo run -- seeknow --help              # SeekNow subcommands; offline
+cargo run -- people-discover -h           # discover indexed profiles, citations and public registries (offline help only)
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup, plus every configured keyed breach leg
@@ -511,7 +512,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### SpiderFoot-compatible front end
 
-`sf` is Spiderfoot 4.0's `sf.py` command line over Huntsman's saved scans. `sf -M`, `sf -T`, and `sf -V` are offline. `sf -s TARGET` detects the target's Spiderfoot type as `sf.py` does and runs the scan `scans run` runs for it: a domain (`INTERNET_NAME`), an IPv4 or IPv6 address, an email address, a phone number, a username or a quoted name, through the same lookups, keyed sources included whenever their key is set, with an email's breach lookup after it. The scan is saved with the others in `~/.huntsman/scans`, as `sf.py` keeps its scans in its database, so `scans` and `serve` read it and `sf -C ID` runs every correlation rule again over it, as `sf.py -C` does; stderr names its id unless `-q` is given, and `-d` prints the scan's log there. `sf -l IP:PORT` serves the web UI there, as `serve --bind` does. `-u all|footprint|investigate|passive` is the scan's use case (footprint leaves out the threat, blocklist and reputation sources, investigate runs them with the basic footprint and without the social, search, people and corporate sources, and passive asks no keyed breach source, HIBP, DeHashed, OathNet, stolen.tax or SeekNow, in any lookup, as `scans run -u` does), `-t TYPE[,TYPE...]` keeps only those types in the saved scan, `-f` prints only the `-t` types, `-x` (with `-t`) runs only the lookups that take the target itself and prints only the `-t` types, `-F TYPE[,TYPE...]` prints only those types without changing what the scan keeps, `-m MODULE[,MODULE...]` asks only those modules, by Huntsman's name or Spiderfoot's (`sfp_dnsresolve`, `sfp_whois`), as `scans run -m` does, and `--depth N` follows what the scan finds N hops, as `scans run --depth` does. The rows are `sf.py`'s: tab (module and type padded to 30 and 45 characters), CSV (`-D DELIMITER`) or JSON (`-o`), with `-H` leaving out the header, `-r` adding the source data, `-n` turning line breaks in data into spaces and `-S LENGTH` cutting each value to that many characters. A JSON row has `sf.py`'s keys (`generated`, `type`, `data`, `module`, `source`) and the rest of the element too: `event_type`, `id`, `source_id`, `confidence`, `false_positive`, `entity` and the raw evidence. An address block (`1.2.3.0/24`, `2606:4700::/32`) is scanned as a `netblock`. `sf.py` quotes bare digits, so `sf -s 13335` is a username scan as it is in `sf.py`; an AS target comes from `scan`, `scans run` or the web UI and runs `asn`. A scan whose every lookup refused exits with the status and message of the plain lookup. `-f` or `-x` without `-t`, `-x` with `--depth` or `-m`, `-m` naming no module, and `-D` outside CSV are refused, as `sf.py` refuses them; `-max-threads` is not taken yet. `sf -T` lists Spiderfoot 4.0's full 172-type event taxonomy plus Huntsman's own `HSE_` types, and `-t` and `-F` accept any of them.
+`people-discover --region au|us FULL NAME` is a separate keyless public-index candidate search over LinkedIn professional profiles, GitHub software footprints, ORCID research identifiers, and official ASIC (AU) or SEC (US) pages. It uses existing Bing, Brave and Mojeek Rust collectors, restricts admitted result URLs to the searched source domains, and returns exact URLs and per-engine outcomes as JSON. Name-only results are unverified leads, not evidence that the same person controls an account or works at an organisation. A blocked or no-yield index cannot establish absence. The existing `people` record lookup, source-scoped canonical keys and saved evidence ledgers are unaffected.\n\n`sf` is Spiderfoot 4.0's `sf.py` command line over Huntsman's saved scans. `sf -M`, `sf -T`, and `sf -V` are offline. `sf -s TARGET` detects the target's Spiderfoot type as `sf.py` does and runs the scan `scans run` runs for it: a domain (`INTERNET_NAME`), an IPv4 or IPv6 address, an email address, a phone number, a username or a quoted name, through the same lookups, keyed sources included whenever their key is set, with an email's breach lookup after it. The scan is saved with the others in `~/.huntsman/scans`, as `sf.py` keeps its scans in its database, so `scans` and `serve` read it and `sf -C ID` runs every correlation rule again over it, as `sf.py -C` does; stderr names its id unless `-q` is given, and `-d` prints the scan's log there. `sf -l IP:PORT` serves the web UI there, as `serve --bind` does. `-u all|footprint|investigate|passive` is the scan's use case (footprint leaves out the threat, blocklist and reputation sources, investigate runs them with the basic footprint and without the social, search, people and corporate sources, and passive asks no keyed breach source, HIBP, DeHashed, OathNet, stolen.tax or SeekNow, in any lookup, as `scans run -u` does), `-t TYPE[,TYPE...]` keeps only those types in the saved scan, `-f` prints only the `-t` types, `-x` (with `-t`) runs only the lookups that take the target itself and prints only the `-t` types, `-F TYPE[,TYPE...]` prints only those types without changing what the scan keeps, `-m MODULE[,MODULE...]` asks only those modules, by Huntsman's name or Spiderfoot's (`sfp_dnsresolve`, `sfp_whois`), as `scans run -m` does, and `--depth N` follows what the scan finds N hops, as `scans run --depth` does. The rows are `sf.py`'s: tab (module and type padded to 30 and 45 characters), CSV (`-D DELIMITER`) or JSON (`-o`), with `-H` leaving out the header, `-r` adding the source data, `-n` turning line breaks in data into spaces and `-S LENGTH` cutting each value to that many characters. A JSON row has `sf.py`'s keys (`generated`, `type`, `data`, `module`, `source`) and the rest of the element too: `event_type`, `id`, `source_id`, `confidence`, `false_positive`, `entity` and the raw evidence. An address block (`1.2.3.0/24`, `2606:4700::/32`) is scanned as a `netblock`. `sf.py` quotes bare digits, so `sf -s 13335` is a username scan as it is in `sf.py`; an AS target comes from `scan`, `scans run` or the web UI and runs `asn`. A scan whose every lookup refused exits with the status and message of the plain lookup. `-f` or `-x` without `-t`, `-x` with `--depth` or `-m`, `-m` naming no module, and `-D` outside CSV are refused, as `sf.py` refuses them; `-max-threads` is not taken yet. `sf -T` lists Spiderfoot 4.0's full 172-type event taxonomy plus Huntsman's own `HSE_` types, and `-t` and `-F` accept any of them.
 
 ### Saved scans
 
@@ -601,3 +602,33 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 ### Domain lifecycle analysis
 
 `domain-lifecycle analyze INPUT.json --as-of UNIX_SECONDS [--output REPORT.json]` compares imported domain observations entirely offline. It preserves source/upstream boundaries, rejects conflicting duplicate identifiers, records failed/truncated observations as coverage gaps, and emits only conservative observed changes. Ownership, causality, and registration availability remain explicitly unknown unless established elsewhere. See [docs/DOMAIN_LIFECYCLE.md](DOMAIN_LIFECYCLE.md).
+
+### Public bibliographic authorship leads (keyless, live Open Library)
+
+The source-scoped people-discovery command combines public search-index candidates
+with one independent, guarded query to Open Library's documented Authors API:
+https://openlibrary.org/search/authors.json
+
+To search the author catalogue alone, without the twelve search-engine requests:
+
+~~~sh
+huntsman-recon people-discover --bibliography-only "Ada Lovelace"
+~~~
+
+The JSON fields leads, outcome, total_reported, total_exact and truncated
+retain source-scoped catalogue identifiers and exact URLs. Every item is an
+UNVERIFIED bibliographic name-search lead, not proof of identity, account
+ownership or authorship by the named person. Matching names and multiple
+catalogue IDs must not be merged into an identity. Missing count fields,
+malformed author rows and uncertain zero counts are never treated as absence.
+The direct collector is capped at five candidates and uses one keyless HTTPS GET.
+
+For the combined web-index and independent catalogue view:
+
+~~~sh
+huntsman-recon people-discover --region au "Ada Lovelace"
+~~~
+
+An unavailable catalogue retains separately observed search-index outcomes and
+reports its own inconclusive status; no raw private data is collected. Physical
+rootless Android Termux execution remains a separate acceptance gate.

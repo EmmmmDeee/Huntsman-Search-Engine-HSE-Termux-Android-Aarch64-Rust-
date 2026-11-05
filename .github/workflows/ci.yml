@@ -45,6 +45,80 @@ jobs:
           }
           echo "main origin: merged PR association verified (${count})"
 
+  termux-online-acceptance-contract:
+    name: Safe online acceptance contract (mock providers)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify standalone online-acceptance script and failure semantics
+        run: |
+          set -euo pipefail
+          bash -n scripts/termux-online-acceptance.sh
+          bash -n tests/termux_online_acceptance.sh
+          bash -n scripts/termux-hybrid-evidence.sh
+          bash -n tests/termux_hybrid_evidence.sh
+          bash tests/termux_online_acceptance.sh
+          bash tests/termux_hybrid_evidence.sh
+
+  live-authoritative-osint:
+    name: Live IANA source through real Rust binary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.99"
+      - name: Build the genuine source-head binary
+        run: cargo build --locked --bin huntsman-recon
+      - name: Collect and validate real IANA registry bootstrap without credentials
+        run: |
+          set -euo pipefail
+          umask 077
+          out="$RUNNER_TEMP/iana-rdap-bootstrap.json"
+          timeout 90 target/debug/huntsman-recon fetch \
+            https://data.iana.org/rdap/dns.json --raw-body > "$out"
+          test -s "$out"
+          jq -e '
+            (.publication | type == "string") and
+            (.services | type == "array") and
+            any(.services[];
+              (.[0] | index("au") != null) and
+              (.[1] | index("https://rdap.cctld.au/rdap/") != null)
+            ) and
+            any(.services[];
+              (.[0] | index("org") != null) and
+              (.[1] | index("https://rdap.publicinterestregistry.org/rdap/") != null)
+            )
+          ' "$out" >/dev/null
+          printf 'real_source=IANA_RDAP_BOOTSTRAP\n'
+          printf 'publication=%s\n' "$(jq -r .publication "$out")"
+          printf 'raw_bytes=%s\n' "$(wc -c < "$out")"
+          printf 'raw_sha256=%s\n' "$(sha256sum "$out" | cut -d' ' -f1)"
+          printf 'source_schema=PASS verified_claims=NOT_TESTED\n'
+      - name: Verify live Open Library author leads with real Rust binary
+        run: |
+          set -euo pipefail
+          umask 077
+          out="$RUNNER_TEMP/openlibrary-public-authors.json"
+          timeout 90 target/debug/huntsman-recon people-discover --bibliography-only "Ada Lovelace" > "$out"
+          test -s "$out"
+          jq -e '
+            (.outcome.kind == "success") and
+            (.outcome.found == (.leads | length)) and
+            ((.leads | length) >= 1) and
+            ((.leads | length) <= 5) and
+            all(.leads[];
+                (.status == "unverified_bibliographic_name_search_lead") and
+                (.url | startswith("https://openlibrary.org/authors/OL")) and
+                (.id | test("^OL[0-9]+A$"))
+            )
+          ' "$out" > /dev/null
+          printf 'real_source=OPEN_LIBRARY_AUTHORS\n'
+          printf 'result_count=%s\n' "$(jq -r '.leads | length' "$out")"
+          printf 'truncated=%s\n' "$(jq -r '.truncated' "$out")"
+          printf 'result_sha256=%s\n' "$(sha256sum "$out" | cut -d' ' -f1)"
+          printf 'source_schema=PASS identity_attribution=NONE\n'
+
   web-ui:
     name: Web UI in a phone browser
     runs-on: ubuntu-24.04

@@ -202,6 +202,11 @@ grep -q '^POST /api/scans NO-ID' "$out/serve.tsv" && ui_ok=0
 grep -qE '^scan-state FINISHED ([2-9]|[1-9][0-9]+)$' "$out/serve.tsv" || ui_ok=0
 grep -qx 'ui-content PASS' "$out/serve.tsv" || ui_ok=0
 printf 'web-ui-flow %s\n' "$([ "$ui_ok" = 1 ] && echo PASS || echo FAIL)" >> "$out/serve.tsv"
+# The live browser/API flow is an acceptance gate, not merely a diagnostic line.
+# A failed cross-view comparison or any non-200 endpoint must fail the job.
+if [ "$ui_ok" != 1 ]; then
+  failed=1
+fi
 kill "$serve_pid" 2>/dev/null
 cat "$out/serve.tsv"
 exit "$failed"

@@ -18,7 +18,8 @@ use crate::value_syntax::form_decode;
 
 use super::{
     LOOKUP_STACK_BYTES, LookupQuery, LookupReport, Lookups, MAX_LOOKUPS, MAX_RADAR_REQUESTS,
-    MAX_SELECTOR_BYTES, Method, ParsedRequest, RADAR_WAIT, SCANS_STACK_BYTES, Sensor, Slot,
+    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES, Sensor,
+    Slot,
     json_error, json_ok, page_refusal, response, response_bytes,
 };
 
@@ -300,6 +301,88 @@ pub(super) fn research_response(
                     json_error(504, "research timed out; no completed report was saved")
                 }
             }
+        }
+    }
+}
+
+/// Body-only live people-index search, with typed outcomes and source-scoped URLs.
+/// Reuses the CLI/library discovery; it never infers account ownership or stores
+/// the subject in an HTTP URL. The same host, token, origin and custom-header
+/// protections as a normal live lookup apply before any network work.
+pub(super) fn people_discover_response(
+    parsed: &ParsedRequest<'_>,
+    discovery: Option<&PeopleDiscover>,
+) -> String {
+    let Some(discovery) = discovery else {
+        return json_error(404, "people discovery is not enabled on this server");
+    };
+    if parsed.method != Method::Post {
+        return json_error(405, "people discovery requires POST with a JSON body");
+    }
+    if let Some(refusal) = page_refusal(parsed, "people discovery", true) {
+        return refusal;
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "people discovery parameters belong in the request body");
+    }
+    let length = match parsed.content_length {
+        Some(1..=512) => parsed.content_length.unwrap_or(0),
+        Some(0) | None => return json_error(400, "people discovery needs a JSON body"),
+        _ => return json_error(413, "people discovery JSON exceeds 512 bytes"),
+    };
+    let Some(body) = parsed.body else {
+        return json_error(400, "people discovery request body is missing");
+    };
+    if body.len() != length {
+        return json_error(400, "people discovery request body length does not match");
+    }
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return json_error(400, "people discovery needs valid JSON");
+    };
+    let Some(object) = json.as_object() else {
+        return json_error(400, "people discovery JSON must be an object");
+    };
+    if object.len() != 2 {
+        return json_error(400, "people discovery accepts only name and region");
+    }
+    let Some(name) = object.get("name").and_then(serde_json::Value::as_str) else {
+        return json_error(400, "people discovery name must be text");
+    };
+    let Some(region) = object
+        .get("region")
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::people_discovery::Region::parse)
+    else {
+        return json_error(400, "people discovery region must be au or us");
+    };
+    if name.len() > crate::people_discovery::MAX_PEOPLE_DISCOVERY_NAME_BYTES || name.is_empty() {
+        return json_error(400, "people discovery name must be 1..120 bytes");
+    }
+    let Some(slot) = Slot::take_of(&discovery.live, MAX_LOOKUPS) else {
+        return json_error(503, "people discovery capacity in use; retry shortly");
+    };
+    let handler = Arc::clone(&discovery.handler);
+    let name = name.to_owned();
+    let (sender, receiver) = sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("serve-people-discover".into())
+        .stack_size(LOOKUP_STACK_BYTES)
+        .spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| handler(&name, region)));
+            drop(slot);
+            let _ = sender.send(result);
+        });
+    if worker.is_err() {
+        return json_error(503, "could not start people discovery worker");
+    }
+    match receiver.recv_timeout(super::LOOKUP_WAIT) {
+        Ok(Ok(Ok(report))) => json_ok(&report.to_string(), false),
+        Ok(Ok(Err(error))) => json_error(error.status, &error.message),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            json_error(500, "people discovery failed unexpectedly")
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            json_error(504, "people discovery timed out; no completed report was saved")
         }
     }
 }
