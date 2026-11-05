@@ -194,13 +194,16 @@ fn parse(
     let mut entities = Vec::new();
     let mut seen = BTreeSet::new();
     let mut skipped = rows.len().saturating_sub(MAX_ROWS);
+    // A nonempty upstream result set with no validated rows is not a verified zero.
+    // Preserve the count of omitted records for outcome classification.
 
     for row in rows.iter().take(MAX_ROWS) {
         let Some(url) = row.get("url").and_then(Value::as_str) else {
             skipped += 1;
             continue;
         };
-        if !url.starts_with("https://")
+        if url.chars().any(char::is_control)
+            || !url.starts_with("https://")
             || url.len() > 2048
             || (source == Source::Notices
                 && !(url.starts_with("https://www.fbi.gov/wanted/")
@@ -213,7 +216,7 @@ fn parse(
         let Some(title) = row
             .get("title")
             .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.trim().is_empty() && !s.chars().any(char::is_control))
         else {
             skipped += 1;
             continue;
@@ -359,7 +362,7 @@ fn classify_document(
         }
         Ok((_, skipped)) => {
             let total = document.get("total").and_then(Value::as_u64).unwrap_or(0);
-            if skipped == 0 && (source != Source::Notices || total == 0) {
+            if skipped == 0 && total == 0 {
                 (
                     Vec::new(),
                     SourceExecutionOutcome::valid_zero(label, now).with_http_status(200),
@@ -408,7 +411,10 @@ fn web_search<T: Transport + ?Sized>(
     };
     let mut entities = Vec::new();
     for hit in found.hits.into_iter().take(40) {
-        if !hit.url.starts_with("https://") || hit.url.len() > 2048 {
+        if !hit.url.starts_with("https://")
+            || hit.url.len() > 2048
+            || hit.url.chars().any(char::is_control)
+        {
             continue;
         }
         let evidence = Evidence::new(
@@ -611,6 +617,56 @@ mod tests {
         let fake = OneResponse::json(200, r#"{"articles":[]}"#);
         let report = search(&fake, Source::News, "story", "s", 1).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    }
+
+    #[test]
+    fn rejects_control_characters_in_upstream_urls() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"articles":[{"title":"Headline","url":"https://example.org/a\nInjected"}]}"#,
+        );
+        let report = search(&fake, Source::News, "test", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn rejects_control_characters_in_upstream_titles() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"articles":[{"title":"Headline\nInjected","url":"https://example.org/a"}]}"#,
+        );
+        let report = search(&fake, Source::News, "test", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn rejects_blank_upstream_titles() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"articles":[{"title":"   ","url":"https://example.org/a"}]}"#,
+        );
+        let report = search(&fake, Source::News, "test", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn reported_nonzero_total_is_not_a_verified_empty_result() {
+        for source in [Source::News, Source::Notices] {
+            let fake = OneResponse::json(
+                200,
+                if source == Source::News {
+                    r#"{"articles":[],"total":7}"#
+                } else {
+                    r#"{"items":[],"total":7}"#
+                },
+            );
+            let report = search(&fake, source, "test", "s", 1).unwrap();
+            assert!(report.entities.is_empty());
+            assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+        }
     }
 
     #[test]
