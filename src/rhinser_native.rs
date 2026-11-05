@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::rhinser_nfc::{self, ApduInspection, NdefInspection};
+use crate::rhinser_tlv::{self, TlvInspection};
 
 pub const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 const MAX_EVENTS: usize = 64;
@@ -39,6 +40,9 @@ enum CaptureEvent {
     Apdu {
         hex: String,
     },
+    Tlv {
+        hex: String,
+    },
     Bluetooth {
         transport: BluetoothTransport,
         rssi_dbm: i16,
@@ -55,6 +59,9 @@ pub enum NativeObservation {
     },
     Apdu {
         inspection: ApduInspection,
+    },
+    Tlv {
+        inspection: TlvInspection,
     },
     Bluetooth {
         transport: &'static str,
@@ -113,6 +120,12 @@ pub fn inspect_capture_json(bytes: &[u8]) -> Result<NativeCaptureReport, String>
                 let data = rhinser_nfc::decode_hex(&hex)?;
                 NativeObservation::Apdu {
                     inspection: rhinser_nfc::inspect_apdu(&data)?,
+                }
+            }
+            CaptureEvent::Tlv { hex } => {
+                let data = rhinser_nfc::decode_hex(&hex)?;
+                NativeObservation::Tlv {
+                    inspection: rhinser_tlv::inspect_tlv(&data)?,
                 }
             }
             CaptureEvent::Bluetooth {
@@ -246,5 +259,30 @@ mod tests {
         assert!(!a.sensor_observation);
         assert!((11..=17).contains(&a.elapsed_seconds));
         assert!((940..=999).contains(&a.score_tenths));
+    }
+
+    #[test]
+    fn invalid_tlv_rejects_the_whole_capture_without_echoing_values() {
+        for hex in [
+            "",
+            "not-hex",
+            "5A8000",
+            "5A0212",
+            &"5A00".repeat(129),
+            &"00".repeat(8193),
+        ] {
+            let input = serde_json::json!({
+                "schema_version": 1,
+                "captured_unix_ms": 1,
+                "operator_consented": true,
+                "events": [
+                    {"kind": "apdu", "hex": "00A40400023F00"},
+                    {"kind": "tlv", "hex": hex}
+                ]
+            });
+            let error = inspect_capture_json(&serde_json::to_vec(&input).unwrap()).unwrap_err();
+            assert!(!error.contains("5A0212"));
+            assert!(!error.contains("not-hex"));
+        }
     }
 }
