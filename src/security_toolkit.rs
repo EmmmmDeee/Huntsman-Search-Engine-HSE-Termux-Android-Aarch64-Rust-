@@ -19,7 +19,7 @@ pub struct ToolCapability {
     pub id: &'static str,
     pub upstream: &'static str,
     pub category: &'static str,
-    /// native_subset, existing_subset or unavailable; never full upstream parity.
+    /// `native_subset`, `existing_subset` or `unavailable`; never full upstream parity.
     pub status: &'static str,
     pub commands: &'static [&'static str],
     pub implemented: &'static [&'static str],
@@ -300,7 +300,10 @@ mod tests {
         assert!(
             audit_sha256(
                 &"0".repeat(64),
-                &vec![b'a'; MAX_WORDLIST_BYTES as usize + 1]
+                &vec![
+                    b'a';
+                    usize::try_from(MAX_WORDLIST_BYTES + 1).expect("the limit fits in usize")
+                ]
             )
             .is_err()
         );
