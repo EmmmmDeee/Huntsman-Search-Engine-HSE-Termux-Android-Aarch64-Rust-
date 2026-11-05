@@ -243,6 +243,7 @@ phone	outcome	otx	otx	src/otx.rs
 phone	outcome	phishstats	phishstats	src/phishstats.rs
 phone	outcome	phishtank	phishtank	src/threat_feeds.rs
 phone	outcome	phone_intl	phone_intl	src/phone_intl.rs
+phone	outcome	phone_nanp	phone_nanp	src/phone_intl.rs
 phone	outcome	pulsedive	pulsedive	src/pulsedive.rs
 phone	outcome	quad9	quad9	src/dns_filter.rs
 phone	outcome	rdap	rdap	src/rdap.rs
@@ -304,6 +305,7 @@ phone	entity	otx	otx	src/otx.rs
 phone	entity	phishstats	phishstats	src/phishstats.rs
 phone	entity	phishtank	phishtank	src/threat_feeds.rs
 phone	entity	phone_intl	phone_intl	src/phone_intl.rs
+phone	entity	phone_nanp	phone_nanp	src/phone_intl.rs
 phone	entity	pulsedive	pulsedive	src/pulsedive.rs
 phone	entity	quad9	quad9	src/dns_filter.rs
 phone	entity	rdap	rdap	src/rdap.rs

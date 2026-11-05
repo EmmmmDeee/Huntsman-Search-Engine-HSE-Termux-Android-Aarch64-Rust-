@@ -1327,3 +1327,94 @@ fn text_of<R>(run: SourceRun<R>) -> String {
         SourceRun::Network(why) | SourceRun::Failed(why) => panic!("printed no report: {why}"),
     }
 }
+
+/// The save policy each lookup kind writes with: e-mail and username with their exposure legs'
+/// policy, which credits those legs and otherwise the lookup's own.
+fn save_policy(kind: ScanKind) -> crate::lookup_save::SavePolicy {
+    use crate::lookup_save as save;
+    match kind {
+        ScanKind::Ip => save::IP_POLICY,
+        ScanKind::Domain => save::DOMAIN_POLICY,
+        ScanKind::Netblock => save::NETBLOCK_POLICY,
+        ScanKind::Asn => save::ASN_POLICY,
+        ScanKind::Email => save::EMAIL_EXPOSURE_POLICY,
+        ScanKind::Exposure => save::EXPOSURE_POLICY,
+        ScanKind::Username => save::USERNAME_EXPOSURE_POLICY,
+        ScanKind::Phone => save::PHONE_POLICY,
+        ScanKind::People => save::PEOPLE_POLICY,
+        ScanKind::Network => save::NETWORK_POLICY,
+        ScanKind::CryptoAddress => save::CRYPTO_POLICY,
+        ScanKind::Place => save::PLACE_POLICY,
+    }
+}
+
+/// The records a lookup's own front-end makes, which its save policy credits to the lookup's file:
+/// the queried value's seed, a reading the lookup takes of that value itself (an e-mail's parts,
+/// an Australian number's plan), and the HIBP account leg `exposure_cli` runs.
+const MADE_BY_THE_LOOKUP: &[(ScanKind, &str)] = &[
+    (ScanKind::Email, "email_parse"),
+    (ScanKind::Email, "seed"),
+    (ScanKind::Exposure, "seed"),
+    (ScanKind::Exposure, "hibp_account"),
+    (ScanKind::Username, "seed"),
+    (ScanKind::Phone, "phone_au"),
+    (ScanKind::Network, "seed"),
+];
+
+/// A saved lookup credits each record to the file that made it. Every outcome row and every piece
+/// of evidence each lookup writes, with every source answering, is credited by its kind's save
+/// policy to a file other than the one an unregistered source falls back to, unless the lookup's
+/// own front-end made it ([`MADE_BY_THE_LOOKUP`]). A source added to a lookup without an
+/// attribution row would be saved as the lookup's own work; this fails instead.
+#[test]
+fn a_saved_lookup_credits_each_record_to_the_file_that_made_it() {
+    let mut fallen = Vec::new();
+    let mut seen = Vec::new();
+    for kind in ScanKind::ALL {
+        let policy = save_policy(kind);
+        let (_, fallback) = (policy.outcome_provenance)("zz_unregistered_probe");
+        let mut records: std::collections::BTreeSet<(bool, String)> =
+            std::collections::BTreeSet::new();
+        for selector in targets(kind) {
+            let net = Everywhere::default();
+            let Verdict::Printed(rows, entities) =
+                verdict(kind, selector, &Selection::all(), &net, NOW)
+            else {
+                panic!("{kind:?} printed no report for {selector}");
+            };
+            records.extend(rows.into_iter().map(|row| (true, row.module)));
+            records.extend(
+                entities
+                    .into_iter()
+                    .flat_map(|entity| entity.evidence)
+                    .map(|evidence| (false, evidence.provenance.source)),
+            );
+        }
+        for (is_row, label) in records {
+            let credit = if is_row {
+                policy.outcome_provenance
+            } else {
+                policy.entity_provenance
+            };
+            if credit(&label).1 != fallback {
+                continue;
+            }
+            if MADE_BY_THE_LOOKUP.contains(&(kind, label.as_str())) {
+                seen.push((kind, label));
+            } else {
+                fallen.push(format!("{kind:?} {label} -> {fallback}"));
+            }
+        }
+    }
+    assert!(
+        fallen.is_empty(),
+        "these records would be saved as the lookup's own work; give each an attribution row in \
+         src/lookup_save.rs naming the file that makes it: {fallen:#?}"
+    );
+    for (kind, label) in MADE_BY_THE_LOOKUP {
+        assert!(
+            seen.iter().any(|(k, l)| k == kind && l == label),
+            "stale MADE_BY_THE_LOOKUP entry: {kind:?} {label}"
+        );
+    }
+}
