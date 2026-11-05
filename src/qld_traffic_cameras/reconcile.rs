@@ -1,0 +1,545 @@
+//! Opt-in second-source reconciliation of TMR camera metadata against its GIS asset layer.
+//!
+//! Both catalogues are issued by Transport and Main Roads. Agreement is source
+//! consistency, not independent corroboration, a working JPEG, or surveillance proof.
+//! The GIS source is read once on explicit CLI request, never automatically polled.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::Serialize;
+use serde_json::Value;
+
+use super::{Camera, Catalogue, MAX_CAMERAS, point, short_text};
+use crate::api_leg::{self, Answer, Api};
+use crate::http::Transport;
+use crate::keys::Keys;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+
+pub const GIS_SOURCE: &str = "qld_state_road_camera_gis";
+/// Fixed and encoded `ArcGIS` query. `outSR=4326` explicitly requests WGS84 lon/lat,
+/// rather than the layer's default Web Mercator metre coordinates.
+pub const GIS_URL: &str = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Transportation/StateRoadInformation/MapServer/4/query?where=1%3D1&outFields=camera_id%2Cdescription%2Cdirection%2Clocality&returnGeometry=true&outSR=4326&f=geojson";
+/// The keyless GIS layer, on the same request path as the keyed webcam feed.
+pub const GIS_API: Api = Api {
+    source: GIS_SOURCE,
+    provider: "information.qld.gov.au",
+    origin: "https://spatial-gis.information.qld.gov.au:443",
+    key: None,
+};
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GisCamera {
+    pub id: u64,
+    pub description: String,
+    pub direction: Option<String>,
+    pub locality: Option<String>,
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GisCatalogue {
+    pub source: &'static str,
+    pub fetched_at_unix: u64,
+    pub cameras: Vec<GisCamera>,
+    pub rejected_features: usize,
+    /// The layer said it holds more records than this reply carries (`ArcGIS`
+    /// `exceededTransferLimit`), so its membership is incomplete.
+    pub exceeded_transfer_limit: bool,
+    pub outcome: SourceExecutionOutcome,
+}
+
+/// A shared identifier whose publisher-coordinates disagree beyond 100 metres.
+#[derive(Debug, Clone, Serialize)]
+pub struct PositionConflict {
+    pub id: u64,
+    pub separation_metres: f64,
+    pub webcam_description: String,
+    pub gis_description: String,
+    pub webcam_latitude: f64,
+    pub webcam_longitude: f64,
+    pub gis_latitude: f64,
+    pub gis_longitude: f64,
+}
+
+/// Distinct official directions for the same publisher camera identifier.
+#[derive(Debug, Clone, Serialize)]
+pub struct DirectionConflict {
+    pub id: u64,
+    pub webcam_direction: String,
+    pub gis_direction: String,
+}
+
+/// Nearby records with different IDs; **never** automatic identity links.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpatialCandidate {
+    pub webcam_id: u64,
+    pub gis_id: u64,
+    pub separation_metres: f64,
+    pub relation: &'static str,
+}
+
+/// Counts and exact differences are reported without asserting either source is complete.
+#[derive(Debug, Clone, Serialize)]
+pub struct Reconciliation {
+    pub webcam_count: usize,
+    pub gis_count: usize,
+    pub shared_ids: usize,
+    pub webcam_only_ids: Vec<u64>,
+    pub gis_only_ids: Vec<u64>,
+    pub position_conflicts: Vec<PositionConflict>,
+    pub direction_conflicts: Vec<DirectionConflict>,
+    pub spatial_candidates: Vec<SpatialCandidate>,
+    pub candidate_search_truncated: bool,
+    pub publisher_families: usize,
+    pub evidence_role: &'static str,
+}
+
+/// One keyless request for the whole GIS layer; no arbitrary URL input. A refusal, or a network,
+/// status or decoding failure is the outcome of an empty catalogue, never a zero-camera answer.
+#[must_use]
+pub fn collect_gis<T: Transport + ?Sized>(transport: &T, now_unix: u64) -> GisCatalogue {
+    let parsed = api_leg::get(transport, &GIS_API, &Keys::default(), GIS_URL, now_unix)
+        .and_then(Answer::body_or_unexpected)
+        .and_then(|body| api_leg::decode::<Value>(&body))
+        .map_err(|error| error.outcome(&GIS_API, now_unix))
+        .and_then(|json| parse_gis(&json, now_unix));
+    parsed.unwrap_or_else(|outcome| GisCatalogue {
+        source: GIS_SOURCE,
+        fetched_at_unix: now_unix,
+        cameras: Vec::new(),
+        rejected_features: 0,
+        exceeded_transfer_limit: false,
+        outcome,
+    })
+}
+
+fn failed(now: u64, kind: SourceOutcomeKind, reason: &str) -> SourceExecutionOutcome {
+    SourceExecutionOutcome::failed(GIS_SOURCE, now, kind, None, reason)
+}
+
+fn row(feature: &Value) -> Option<GisCamera> {
+    let (latitude, longitude) = point(feature)?;
+    let props = feature.get("properties")?;
+    let id = props.get("camera_id")?.as_u64().filter(|id| *id > 0)?;
+    Some(GisCamera {
+        id,
+        description: short_text(props.get("description"), 250)?,
+        direction: short_text(props.get("direction"), 50),
+        locality: short_text(props.get("locality"), 120),
+        latitude,
+        longitude,
+    })
+}
+
+/// Whether the reply says the layer holds more records than it carries. `ArcGIS` writes the flag
+/// at the top of a `GeoJSON` reply and again under its `properties`; either one counts.
+fn exceeded_transfer_limit(json: &Value) -> bool {
+    [
+        json.get("exceededTransferLimit"),
+        json.pointer("/properties/exceededTransferLimit"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|flag| flag.as_bool() == Some(true))
+}
+
+/// Parse a GIS catalogue requested with `outSR=4326&f=geojson`.
+///
+/// # Errors
+/// A schema or cardinality violation; malformed individual features are counted.
+pub fn parse_gis(json: &Value, now_unix: u64) -> Result<GisCatalogue, SourceExecutionOutcome> {
+    if json.get("type").and_then(Value::as_str) != Some("FeatureCollection") {
+        return Err(failed(
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            "GIS response is not a FeatureCollection",
+        ));
+    }
+    let Some(features) = json.get("features").and_then(Value::as_array) else {
+        return Err(failed(
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            "GIS response has no features array",
+        ));
+    };
+    if features.len() > MAX_CAMERAS {
+        return Err(failed(
+            now_unix,
+            SourceOutcomeKind::ParserDrift,
+            "GIS response contains more than 2000 features",
+        ));
+    }
+    let exceeded = exceeded_transfer_limit(json);
+    let mut ids = BTreeSet::new();
+    let mut cameras = Vec::new();
+    let mut rejected_features = 0;
+    for feature in features {
+        match row(feature) {
+            Some(camera) if ids.insert(camera.id) => cameras.push(camera),
+            _ => rejected_features += 1,
+        }
+    }
+    cameras.sort_by_key(|camera| camera.id);
+    let outcome = if cameras.is_empty() && !features.is_empty() {
+        failed(
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            "no GIS features survived validation",
+        )
+    } else if cameras.is_empty() && exceeded {
+        failed(
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            "the GIS layer reported more records than it returned, and returned none",
+        )
+    } else if cameras.is_empty() {
+        SourceExecutionOutcome::valid_zero(GIS_SOURCE, now_unix)
+    } else {
+        SourceExecutionOutcome::success(GIS_SOURCE, now_unix, cameras.len())
+    };
+    let mut notes = Vec::new();
+    if rejected_features > 0 {
+        notes.push(format!(
+            "{rejected_features} of {} GIS camera features rejected",
+            features.len()
+        ));
+    }
+    if exceeded && !cameras.is_empty() {
+        notes.push(
+            "the GIS layer holds more records than this reply carries (exceededTransferLimit)"
+                .to_owned(),
+        );
+    }
+    let outcome = if notes.is_empty() {
+        outcome
+    } else {
+        outcome.with_detail(notes.join("; "))
+    };
+    Ok(GisCatalogue {
+        source: GIS_SOURCE,
+        fetched_at_unix: now_unix,
+        cameras,
+        rejected_features,
+        exceeded_transfer_limit: exceeded,
+        outcome,
+    })
+}
+
+fn metres(a: (f64, f64), b: (f64, f64)) -> f64 {
+    crate::geohash::haversine_km(a.0, a.1, b.0, b.1) * 1_000.0
+}
+
+fn coordinates(camera: &Camera) -> (f64, f64) {
+    (camera.latitude, camera.longitude)
+}
+
+/// Compare two accepted publisher reports. A failed source produces `None`, not
+/// false zero coverage. Different IDs within 100m are review candidates only.
+#[must_use]
+pub fn reconcile(webcam: &Catalogue, gis: &GisCatalogue) -> Option<Reconciliation> {
+    if !webcam.outcome.kind.is_accepted()
+        || !gis.outcome.kind.is_accepted()
+        || webcam.rejected_features != 0
+        || gis.rejected_features != 0
+        || gis.exceeded_transfer_limit
+    {
+        // A partly rejected or partly returned catalogue has unknown membership: do not
+        // invent source-only IDs or completeness percentages from lossy or capped data.
+        return None;
+    }
+    let primary: BTreeMap<u64, &Camera> = webcam.cameras.iter().map(|c| (c.id, c)).collect();
+    let secondary: BTreeMap<u64, &GisCamera> = gis.cameras.iter().map(|c| (c.id, c)).collect();
+    let webcam_only_ids: Vec<u64> = primary
+        .keys()
+        .filter(|id| !secondary.contains_key(*id))
+        .copied()
+        .collect();
+    let gis_only_ids: Vec<u64> = secondary
+        .keys()
+        .filter(|id| !primary.contains_key(*id))
+        .copied()
+        .collect();
+    let mut shared_ids = 0;
+    let mut position_conflicts = Vec::new();
+    let mut direction_conflicts = Vec::new();
+    for (id, one) in &primary {
+        if let Some(two) = secondary.get(id) {
+            shared_ids += 1;
+            let separation = metres(coordinates(one), (two.latitude, two.longitude));
+            if separation > 100.0 {
+                position_conflicts.push(PositionConflict {
+                    id: *id,
+                    separation_metres: separation,
+                    webcam_description: one.description.clone(),
+                    gis_description: two.description.clone(),
+                    webcam_latitude: one.latitude,
+                    webcam_longitude: one.longitude,
+                    gis_latitude: two.latitude,
+                    gis_longitude: two.longitude,
+                });
+            }
+            if let Some(direction) = &two.direction {
+                if !direction.eq_ignore_ascii_case(&one.direction) {
+                    direction_conflicts.push(DirectionConflict {
+                        id: *id,
+                        webcam_direction: one.direction.clone(),
+                        gis_direction: direction.clone(),
+                    });
+                }
+            }
+        }
+    }
+    // Bound the cross-product to 256 x 256 and emit at most 64 candidate links.
+    // Only one nearest GIS-only candidate per webcam-only record.
+    let mut spatial_candidates = Vec::new();
+    for id in webcam_only_ids.iter().take(256) {
+        let one = primary[id];
+        let nearest = gis_only_ids
+            .iter()
+            .take(256)
+            .filter_map(|other_id| {
+                let other = secondary[other_id];
+                // Cheap rectangular prefilter before trigonometry.
+                if (one.latitude - other.latitude).abs() > 0.002
+                    || (one.longitude - other.longitude).abs() > 0.002
+                {
+                    return None;
+                }
+                let distance = metres(coordinates(one), (other.latitude, other.longitude));
+                (distance <= 100.0).then_some((*other_id, distance))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+        if let Some((gis_id, separation_metres)) = nearest {
+            spatial_candidates.push(SpatialCandidate {
+                webcam_id: *id,
+                gis_id,
+                separation_metres,
+                relation: "nearby_different_id_candidate_not_identity",
+            });
+        }
+    }
+    let candidate_search_truncated =
+        webcam_only_ids.len() > 256 || gis_only_ids.len() > 256 || spatial_candidates.len() > 64;
+    spatial_candidates.truncate(64);
+    Some(Reconciliation {
+        webcam_count: primary.len(),
+        gis_count: secondary.len(),
+        shared_ids,
+        webcam_only_ids,
+        gis_only_ids,
+        position_conflicts,
+        direction_conflicts,
+        spatial_candidates,
+        candidate_search_truncated,
+        publisher_families: 1,
+        evidence_role: "same_publisher_catalogue_consistency_not_independent_corroboration",
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn gis(ids: &[u64]) -> GisCatalogue {
+        let features: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({
+                "type":"Feature",
+                "geometry":{"type":"Point","coordinates":[153.008_697_5,-27.555_179_6]},
+                "properties":{"camera_id":id,"description":"Sample camera","direction":"North","locality":"Archerfield"}
+            }))
+            .collect();
+        parse_gis(&json!({"type":"FeatureCollection","features":features}), 10)
+            .expect("GIS fixture")
+    }
+
+    fn camera(id: u64) -> Camera {
+        Camera {
+            id,
+            description: "Sample camera".into(),
+            direction: "North".into(),
+            district: "Metropolitan".into(),
+            locality: "Archerfield".into(),
+            postcode: "4108".into(),
+            latitude: -27.555_179_6,
+            longitude: 153.008_697_5,
+            metadata_url: format!("https://api.qldtraffic.qld.gov.au/v1/webcams/{id}"),
+            image_url: "https://cameras.qldtraffic.qld.gov.au/Metropolitan/test.jpg".into(),
+            image_sourced_from: None,
+            is_custom: None,
+            extra_info: None,
+        }
+    }
+
+    fn webcam(ids: &[u64]) -> Catalogue {
+        Catalogue {
+            source: super::super::SOURCE,
+            fetched_at_unix: 10,
+            cameras: ids.iter().map(|id| camera(*id)).collect(),
+            rejected_features: 0,
+            outcome: SourceExecutionOutcome::success(super::super::SOURCE, 10, ids.len()),
+        }
+    }
+
+    #[test]
+    fn overlap_is_distinct_from_total_difference() {
+        let r = reconcile(&webcam(&[1, 2, 3]), &gis(&[2, 3, 4, 5])).expect("both responded");
+        assert_eq!(r.shared_ids, 2);
+        assert_eq!(r.webcam_only_ids, vec![1]);
+        assert_eq!(r.gis_only_ids, vec![4, 5]);
+        assert_eq!(r.publisher_families, 1);
+        assert_eq!(r.spatial_candidates.len(), 1);
+        assert_ne!(
+            r.spatial_candidates[0].webcam_id,
+            r.spatial_candidates[0].gis_id
+        );
+    }
+
+    #[test]
+    fn malformed_or_duplicated_gis_id_is_not_accepted() {
+        let j = json!({"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[150.0,-27.0]},
+             "properties":{"camera_id":12,"description":"A"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[150.0,-27.0]},
+             "properties":{"camera_id":12,"description":"B"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1000,-27]},
+             "properties":{"camera_id":13,"description":"C"}}
+        ]});
+        let r = parse_gis(&j, 10).expect("some usable rows");
+        assert_eq!(r.cameras.len(), 1);
+        assert_eq!(r.rejected_features, 2);
+    }
+
+    #[test]
+    fn unresolved_source_failure_never_becomes_no_camera_claim() {
+        let mut g = gis(&[2]);
+        g.outcome = SourceExecutionOutcome::failed(
+            GIS_SOURCE,
+            10,
+            SourceOutcomeKind::RateLimited,
+            Some(429),
+            "provider limit",
+        );
+        assert!(reconcile(&webcam(&[1]), &g).is_none());
+        assert!(parse_gis(&json!({"error":{"code":403}}), 10).is_err());
+    }
+
+    #[test]
+    fn partially_rejected_catalogues_cannot_claim_exact_source_differences() {
+        let mut w = webcam(&[1, 2]);
+        w.rejected_features = 1;
+        assert!(reconcile(&w, &gis(&[2])).is_none());
+        let mut g = gis(&[1]);
+        g.rejected_features = 1;
+        assert!(reconcile(&webcam(&[1]), &g).is_none());
+    }
+
+    #[test]
+    fn position_conflict_keeps_shared_id_without_claiming_equivalent_position() {
+        let mut g = gis(&[1]);
+        g.cameras[0].latitude += 0.02;
+        let r = reconcile(&webcam(&[1]), &g).expect("accepted sources");
+        assert_eq!(r.shared_ids, 1);
+        assert_eq!(r.position_conflicts.len(), 1);
+    }
+
+    #[test]
+    fn opposite_orientation_is_a_separate_source_conflict() {
+        let mut g = gis(&[1]);
+        g.cameras[0].direction = Some("South".into());
+        let r = reconcile(&webcam(&[1]), &g).expect("accepted sources");
+        assert_eq!(r.shared_ids, 1);
+        assert_eq!(r.direction_conflicts.len(), 1);
+        assert_eq!(r.direction_conflicts[0].webcam_direction, "North");
+        assert_eq!(r.direction_conflicts[0].gis_direction, "South");
+        assert!(r.position_conflicts.is_empty());
+    }
+
+    #[test]
+    fn empty_is_only_valid_with_explicit_empty_feature_collection() {
+        assert_eq!(
+            parse_gis(&json!({"type":"FeatureCollection","features":[]}), 10)
+                .expect("empty collection")
+                .outcome
+                .kind,
+            SourceOutcomeKind::ValidZero
+        );
+        assert!(parse_gis(&json!({"features":[]}), 10).is_err());
+    }
+
+    /// The layer's own reply when it holds more records than one reply carries, in each of the
+    /// two places `ArcGIS` writes the flag.
+    fn capped(flag_at_top: bool) -> Value {
+        let mut reply = json!({"type":"FeatureCollection","features":[{
+            "type":"Feature",
+            "geometry":{"type":"Point","coordinates":[153.008_697_5,-27.555_179_6]},
+            "properties":{"camera_id":2,"description":"Sample camera","direction":"North"}
+        }]});
+        if flag_at_top {
+            reply["exceededTransferLimit"] = json!(true);
+        } else {
+            reply["properties"] = json!({"exceededTransferLimit": true});
+        }
+        reply
+    }
+
+    #[test]
+    fn a_capped_gis_reply_keeps_its_rows_but_claims_no_source_differences() {
+        for flag_at_top in [true, false] {
+            let g = parse_gis(&capped(flag_at_top), 10).expect("rows parse");
+            assert!(g.exceeded_transfer_limit);
+            assert_eq!(g.cameras.len(), 1);
+            assert_eq!(g.outcome.kind, SourceOutcomeKind::Success);
+            assert!(
+                g.outcome
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("exceededTransferLimit")),
+                "{:?}",
+                g.outcome.detail
+            );
+            assert!(reconcile(&webcam(&[1, 2]), &g).is_none());
+        }
+        let whole = gis(&[2]);
+        assert!(!whole.exceeded_transfer_limit);
+        assert!(reconcile(&webcam(&[1, 2]), &whole).is_some());
+    }
+
+    #[test]
+    fn a_capped_reply_with_no_rows_is_not_a_verified_zero() {
+        let mut reply = capped(true);
+        reply["features"] = json!([]);
+        let g = parse_gis(&reply, 10).expect("well-formed");
+        assert_eq!(g.outcome.kind, SourceOutcomeKind::SemanticDrift);
+        assert!(reconcile(&webcam(&[1]), &g).is_none());
+    }
+
+    #[test]
+    fn the_gis_layer_is_asked_once_without_a_key_and_its_failure_is_typed() {
+        use crate::http::Response;
+        use crate::test_support::ScriptedTransport;
+        let body = json!({"type":"FeatureCollection","features":[]}).to_string();
+        let transport = ScriptedTransport::new(vec![Ok(Response {
+            status: 200,
+            headers: vec![],
+            body: body.into_bytes(),
+            truncated: false,
+        })]);
+        let g = collect_gis(&transport, 10);
+        assert_eq!(g.outcome.kind, SourceOutcomeKind::ValidZero);
+        assert_eq!(transport.seen.borrow().len(), 1);
+        assert_eq!(transport.seen.borrow()[0].url, GIS_URL);
+        let refused = ScriptedTransport::new(vec![Ok(Response {
+            status: 500,
+            headers: vec![],
+            body: b"{}".to_vec(),
+            truncated: false,
+        })]);
+        let g = collect_gis(&refused, 10);
+        assert!(g.cameras.is_empty());
+        assert!(!g.outcome.kind.is_accepted());
+        assert!(reconcile(&webcam(&[1]), &g).is_none());
+    }
+}

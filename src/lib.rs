@@ -207,6 +207,7 @@ pub mod proof;
 pub mod provider_credentials;
 pub mod public_osint;
 pub mod pulsedive;
+pub mod qld_traffic_cameras;
 pub mod radar;
 pub mod rdap;
 pub mod rdap_legs;

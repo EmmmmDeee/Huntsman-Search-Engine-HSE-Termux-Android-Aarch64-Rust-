@@ -113,6 +113,9 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "gleif" => huntsman_recon::gleif_cli::GLEIF_HELP,
         "company" => huntsman_recon::company_cli::COMPANY_HELP,
         "geocode" => huntsman_recon::nominatim_cli::GEOCODE_HELP,
+        "traffic-cameras" => {
+            "traffic-cameras [--district NAME] [--locality NAME] [--limit 1..2000] [--reconcile]\nRead the official Queensland camera location and JPEG URL catalogue once, without downloading camera images. Needs a QLDTraffic key in HUNTSMAN_QLDTRAFFIC_KEY (the API specification prints a shared public one); without it nothing is sent and the command exits 66. With --reconcile, compare publisher camera IDs and coordinates against the public TMR state-road GIS catalogue. Nearby different IDs remain review candidates, never identities. JSON output gives source provenance and status; images and freshness are not independently verified."
+        }
         "exif" => huntsman_recon::exif::EXIF_HELP,
         "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,
         "apk" => huntsman_recon::apk_intel::APK_HELP,
