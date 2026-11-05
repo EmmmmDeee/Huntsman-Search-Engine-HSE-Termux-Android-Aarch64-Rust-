@@ -154,8 +154,10 @@ collector that made it, not the shared lookup front-end".
 - a hand-written `[&Api; 7]` array;
 - extra rows.
 
-No test compares the result with `provider_credentials::PROVIDERS`. A new keyed leg can be missing
-from the Settings key slots without any test failing.
+A keyed leg left out of it is caught: a `scan_api` test reads every keyed `API` constant from the
+source text and requires its slots on the Settings page. No test, though, checks that each slot it
+lists has a `provider_credentials::PROVIDERS` row, which is where the operator learns how to get
+the key.
 
 **F4. Three mechanisms decide "no source answered", and seven lookups end it without naming the
 module.** The 15 CLIs that return a `SourceRun` finish in different ways.
@@ -187,9 +189,7 @@ a refusing, a silent and a failing network. Measured with it:
   - both classifiers (`src/correlator/rules.rs` and `src/orthogonal_osint.rs`);
   - the dispositions TSV and `ARCHITECTURE.md`.
 - A keyed source (`abn_lookup`) appears on 47 lines in 20 files.
-- The username source order is written twice, as two lists in the same order:
-  - the `public_sources` array in `src/username_cli.rs`;
-  - the `ScanKind::Username` list in `src/lookup_modules.rs`.
+- The username sources are listed twice: the `public_sources` array in `src/username_cli.rs`, and the `ScanKind::Username` list in `src/lookup_modules.rs`. The refusal-contract harness holds the two to the same set.
 
 **D2. Account-leg boilerplate.** The 19 account legs each repeat the same steps:
 
@@ -248,8 +248,7 @@ pub struct SourceProfile {
     pub id: &'static str,                    // provenance.source, exactly as written
     pub family: Family,                      // correlator class, today's value
     pub modality: Option<Modality>,          // None: same as family
-    pub component: &'static str,             // file credited in saved lookups
-    pub key_slot: Option<&'static str>,      // operator key, when keyed
+    pub component: &'static str,             // file credited in saved lookups (B4)
 }
 pub const PROFILES: &[SourceProfile] = &[/* generated from today's classifier output */];
 pub const LEGACY: &[SourceProfile] = &[/* the IDs no current collector writes */];
@@ -263,9 +262,7 @@ pub const LEGACY: &[SourceProfile] = &[/* the IDs no current collector writes */
   - `correlator::source_family` reads `PROFILES`, then `LEGACY`. It keeps the substring tests only for IDs in neither table, such as unknown IDs in old saved scans.
   - `acquisition_modality` reads the `modality` column.
   - `lookup_save` reads `component`, with B4. Each policy recognises only its own lookup's sources today, so deriving the pairs changes the attribution of the others; that is B4's declared change, not Phase 2's.
-  - `scan_api::key_slots` reads `key_slot`.
-- **One username order.** A `collection`-home list fixes the username source order once. Both `username_cli::public_sources` and `lookup_modules` consume it. The fixed-order test stays.
-- **Rename.** The correlator function becomes `source_category`. This frees the word "family" for the persisted spelling family. The rename is internal; no output contains the name.
+- **Not adopted.** Merging the two username source lists: the refusal-contract harness already holds them to the same set, and only `username_cli` fixes the order. Renaming the correlator function: the churn buys only a clearer word.
 
 **T2. Account-leg kernel.** Create `src/account_leg.rs` in the `collection` home:
 
@@ -335,7 +332,7 @@ Each phase lands as small pull requests. A pure-move pull request never also cha
 |---|---|---|
 | 0. Safety net | Commit a classification snapshot (source ID to family and modality, for every live, legacy and probe ID) and an attribution snapshot (every save policy's pair for every ID). Bring every lookup under the refusal-contract harness, listing today's breakages as reviewed entries. Add a `#[test]` count floor. Before the first phase that changes how a lookup collects (Phase 4), extend the differential comparator to that lookup, using recorded responses for public, non-personal selectors only. | Snapshots and contract entries committed; no production change |
 | 1. Test-only consolidation | Move the inline tests of the six files above to `<module>/tests.rs`, one commit per file. Point the in-crate fakes at `test_support`. Add `tests/support/transport.rs`. Replace `oathnet::non_blank`. | `cargo test -- --list` names unchanged; count never lower |
-| 2. Source profile table (T1) | Generate `PROFILES` and `LEGACY` from today's classifier output. Route the classifiers and `key_slots` through them. Add the single username order list and the rename. | Phase 0 snapshots byte-identical; G1 and G3 green |
+| 2. Source profile table (T1) | Generate `PROFILES` and `LEGACY` from today's classifier output and route both classifiers through them. Add G1 and G3. | Phase 0 snapshots byte-identical; G1 and G3 green |
 | 3. Declared fixes | B1, B2, B3 and B4, one pull request each. B4 routes `lookup_save` through the `component` column and adds G2. | Each regression test fails before and passes after; snapshot and contract diffs limited to the declared rows |
 | 4. Account-leg kernel (T2) | Move one leg per commit, with that leg's existing tests unchanged in the same commit; the divergent legs go last or stay bespoke | `username` differential output identical |
 | 5. One finish path (T3) | Move every `SourceRun` CLI to `SourceReach` plus `finish`, then delete `none_accepted` | Phase 0 exit-code tests unchanged (B3 rows updated in Phase 3); G6 green |
@@ -350,7 +347,7 @@ self-test, or as plain tests where the rule needs runtime data.
 |---|---|
 | G1 | Each source ID that a collector constant names (`SRC`, `SOURCE`, `COLLECTOR_ID`, `Api.source`) has exactly one `PROFILES` row. Each `PROFILES` row is named by a constant. Each `LEGACY` row is named by no constant. |
 | G2 | No attribution map in `lookup_save` has a fallback arm that names a CLI file. |
-| G3 | The keyed `PROFILES` rows, `scan_api::key_slots` and `provider_credentials::PROVIDERS` name the same slots. |
+| G3 | Every slot `scan_api::key_slots` lists is declared by a `provider_credentials::PROVIDERS` row or is one's fallback alias. Key slots stay on each source's `Api` constant, so the profile table holds no copy of them. |
 | G4 | No new `impl Transport for` exists outside `src/test_support.rs`, `tests/support/` and an allow-list. |
 | G5 | The six oversized files may not grow past a committed line ceiling. This guard is optional and can be dropped once Phase 6 lands. |
 | G6 | No `*_cli.rs` decides "no source answered" except through `SourceReach`. |
@@ -361,7 +358,7 @@ The Phase 0 snapshots stay as regression locks after the phases finish.
 
 **Expected outcome.** All figures are *estimates* until each phase measures them.
 
-- **Registration.** A keyless username source touches 6 places instead of 10 files and 15 lines: its module, `lib.rs`, a `PROFILES` row, the username order list, the TSV row and `ARCHITECTURE.md`.
+- **Registration.** After Phase 2 and B4, a keyless username source touches about 8 places, instead of 15 lines in 10 files. One `PROFILES` row replaces two classifier arms, and the attribution map and its test copy drop out. Every place left is checked by a test that names what is missing.
 - **Lines removed:**
   - about 650 to 750 lines of leg boilerplate;
   - about 280 lines of CLI tails;
