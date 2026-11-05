@@ -260,6 +260,7 @@ textnorm	leaf	text normalization
 threat_feeds	adapter	downloaded threat feeds (abuse.ch, AlienVault, blocklist.de, botvrij, CINS, CleanTalk, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black, Tor exits, VoIPBL, VXVault) kept in the state directory and reached through ip_cli, domain_cli and netblock_cli from ip, domain, netblock, scan and /api/lookup
 threatfox	adapter	ThreatFox IOC leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 timefmt	leaf	timestamp parsing
+temporal_consistency	runtime	one source's impossible date orders through intelligence report
 timeline	runtime	timeline reconstruction through intelligence report
 tlsrpt	leaf	TLS-RPT parser
 trafficking_intel	diagnostic	offline evidence-linked indicator review and entity tree exercised only by tests; no shipped CLI, UI or live collection caller
