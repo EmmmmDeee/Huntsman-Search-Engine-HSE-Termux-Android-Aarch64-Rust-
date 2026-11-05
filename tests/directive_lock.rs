@@ -12,7 +12,7 @@ fn repository_directive_contract_is_valid() {
     verify_at(&root()).unwrap();
     assert_eq!(
         EXPECTED_SHA256,
-        "da616286c0a12312129fdeb1ebe8de049e9123a437f59d637c859b761f96ae7d"
+        "114056de822bf906c9d148e61fe1e5e696c1ac47ef643522e953b4aae09ddd98"
     );
     assert_eq!(MIRRORS.len(), 6);
 }
@@ -33,6 +33,10 @@ fn canonical_directive_contains_required_adaptive_invariants() {
         "DISCOVER → VERIFY → DESIGN → RESEARCH → IMPLEMENT → INTEGRATE → OPTIMISE → TEST → DEPLOY → VALIDATE → REPEAT",
         "100% contract coverage",
         "100% mutation coverage",
+        // The owner made the Termux target a permanent priority on 2026-11-05.
+        "**PLATFORM — PERMANENT PRIORITY:** Optimise first for Termux on Android AArch64",
+        "a rootless userland install operated through its web UI",
+        "Judge every change by its effect there before any other platform",
     ] {
         assert!(
             text.contains(required),
