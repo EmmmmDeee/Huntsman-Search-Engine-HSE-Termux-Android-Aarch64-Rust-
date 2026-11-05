@@ -220,6 +220,7 @@ pub mod relation;
 pub mod research_route;
 pub mod resolve;
 pub mod retrieval_artifact;
+pub mod reverse_image;
 pub mod rf;
 pub mod rhinser_catalog;
 pub mod rhinser_native;

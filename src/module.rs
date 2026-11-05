@@ -732,6 +732,35 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         attack_techniques: &["T1589.003", "T1591.001", "T1592.002"],
         description: "author, creator tool, edit history, timestamps, document IDs, values a PDF edit superseded and embedded GPS read from a local file's XMP packets and PDF /Info dictionary, keyless and offline",
     },
+    // The reverse-image providers: each receives the operator's whole image, so each runs only
+    // when the operator names it, never from a scan or a lookup.
+    ReachableModule {
+        name: "google_vision",
+        command: "reverse-image IMAGE-FILE --live --provider google_vision",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Search,
+        attack_techniques: &["T1593.002"],
+        description: "Google Cloud Vision web detection of one local image the operator uploads: pages and images in Google's index holding the same or a similar picture, as leads",
+    },
+    ReachableModule {
+        name: "lenso",
+        command: "reverse-image IMAGE-FILE --live --provider lenso",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Search,
+        attack_techniques: &["T1593.002"],
+        description: "Lenso duplicate-image search of one local image the operator uploads: copies of the picture in Lenso's index and the pages holding them, as leads",
+    },
+    ReachableModule {
+        name: "saucenao",
+        command: "reverse-image IMAGE-FILE --live --provider saucenao",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Search,
+        attack_techniques: &["T1593.002"],
+        description: "SauceNAO image-index search of one local image the operator uploads: matching artwork and its source pages in SauceNAO's indexes, as leads",
+    },
     ReachableModule {
         name: crate::phone_intl::SOURCE,
         command: "phone NUMBER",

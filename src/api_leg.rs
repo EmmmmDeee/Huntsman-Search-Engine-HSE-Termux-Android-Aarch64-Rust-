@@ -1,7 +1,7 @@
 //! The one request path of the free and free-tier JSON API legs.
 //!
-//! A leg is one request (a `GET`, or a JSON `POST` with [`post_json`]) to one provider for one
-//! selector. [`Api`] declares everything that differs
+//! A leg is one request (a `GET`, or a `POST` with [`post_json`], [`post_form`] or [`post_body`])
+//! to one provider for one selector. [`Api`] declares everything that differs
 //! between providers: the source label, the only origin a key may be sent to, and how the key is
 //! carried. [`get`] does the rest the same way for each of them, through [`crate::fetch`]:
 //! redirects are not followed, so a key cannot leave its origin; a key is only built from an
@@ -308,6 +308,25 @@ pub fn post_form<T: Transport + ?Sized>(
         .join("&");
     let request = Request::post(url, body.into_bytes())
         .header("Content-Type", "application/x-www-form-urlencoded");
+    send(transport, api, keys, request, now_unix)
+}
+
+/// `POST url` with `body` sent as `content_type` for `api`, with its key from `keys` when it has
+/// one: a body that [`post_json`] and [`post_form`] do not build, such as a multipart file
+/// upload. The key goes where `api` places it, never into `body`.
+///
+/// # Errors
+/// As [`get`].
+pub fn post_body<T: Transport + ?Sized>(
+    transport: &T,
+    api: &Api,
+    keys: &Keys,
+    url: &str,
+    content_type: &str,
+    body: Vec<u8>,
+    now_unix: u64,
+) -> Result<Answer, LegError> {
+    let request = Request::post(url, body).header("Content-Type", content_type);
     send(transport, api, keys, request, now_unix)
 }
 
@@ -845,6 +864,41 @@ mod tests {
             sent[0].header_value("content-type"),
             Some("application/x-www-form-urlencoded")
         );
+    }
+
+    #[test]
+    fn a_body_post_carries_its_bytes_and_type_and_its_query_key_only_in_the_sent_url() {
+        const QUERY: Api = Api {
+            key: Some(KeyUse {
+                slot: SLOT,
+                place: KeyPlace::Query("api_key"),
+                required: true,
+            }),
+            ..KEYED
+        };
+        let transport = Recorder::new(200, "{}");
+        let body = b"--b\r\n\x00\xff binary part\r\n--b--\r\n".to_vec();
+        let url = format!("{URL}?output_type=2");
+        let sent = post_body(
+            &transport,
+            &QUERY,
+            &keys(),
+            &url,
+            "multipart/form-data; boundary=b",
+            body.clone(),
+            1,
+        );
+        assert!(sent.is_ok(), "{sent:?}");
+        let sent = transport.sent();
+        assert_eq!(sent[0].method, Method::Post);
+        assert_eq!(sent[0].body, body);
+        assert_eq!(
+            sent[0].header_value("content-type"),
+            Some("multipart/form-data; boundary=b")
+        );
+        assert_eq!(sent[0].url, format!("{url}&api_key={KEY}"));
+        assert!(!url.contains(KEY));
+        assert!(sent[0].headers.iter().all(|(_, v)| !v.contains(KEY)));
     }
 
     #[test]

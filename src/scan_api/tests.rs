@@ -1688,8 +1688,8 @@ fn event_types_and_settings_describe_the_catalogue_and_key_status_without_values
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The source label of every provider whose `API` constant in `src/` names a key slot, read
-/// from the source text, so a keyed provider that [`key_slots`] leaves out is still found.
+/// The source label of every provider whose public `Api` constant in `src/` names a key slot,
+/// read from the source text, so a keyed provider that [`key_slots`] leaves out is still found.
 fn keyed_api_sources() -> Vec<String> {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut sources = Vec::new();
@@ -1699,37 +1699,51 @@ fn keyed_api_sources() -> Vec<String> {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
-        let Some(start) = text.find("\npub const API: Api = Api {") else {
-            continue;
-        };
-        let constant = &text[start..];
-        let constant = &constant[..constant.find("\n};").unwrap()];
-        if !constant.contains("key: Some(") {
-            continue;
+        // Every public `Api` constant, whatever it is named: a module may hold several.
+        for (start, _) in text.match_indices("\npub const ") {
+            let constant = &text[start + 1..];
+            if !constant
+                .lines()
+                .next()
+                .is_some_and(|line| line.ends_with(": Api = Api {"))
+            {
+                continue;
+            }
+            let constant = &constant[..constant.find("\n};").unwrap()];
+            if !constant.contains("key: Some(") {
+                continue;
+            }
+            // Each one is labelled with a source constant of its own module.
+            let name = constant
+                .split("\n    source: ")
+                .nth(1)
+                .and_then(|rest| rest.split(',').next())
+                .unwrap_or_else(|| panic!("{}: a keyed Api names no source", path.display()));
+            let label = text
+                .split(&format!("pub const {name}: &str = \""))
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap_or_else(|| panic!("{}: no `pub const {name}: &str`", path.display()));
+            sources.push(label.to_owned());
         }
-        // Each one is labelled with its module's `SOURCE`.
-        assert!(constant.contains("source: SOURCE,"), "{}", path.display());
-        let label = text
-            .split("pub const SOURCE: &str = \"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .unwrap();
-        sources.push(label.to_owned());
     }
     sources
 }
 
 /// Every module that takes a key shows its slots and whether one is set: each one the module
-/// list marks as needing a key, and each whose provider's `API` constant names a key, required
-/// or optional.
+/// list marks as needing a key, and each whose provider's `Api` constant names a key, required
+/// or optional, whatever the constant is named.
 #[test]
 fn every_module_that_takes_a_key_shows_its_slots_and_whether_one_is_set() {
     let (api, dir) = api("keyed");
     let settings = body(&api.handle("GET", "/api/settings", ""));
     let modules = settings["modules"].as_array().unwrap();
     let from_source = keyed_api_sources();
+    // `certspotter::API` is the usual name; `reverse_image::SAUCENAO` is one of several in a module.
     assert!(
-        from_source.iter().any(|source| source == "certspotter") && from_source.len() > 15,
+        from_source.iter().any(|source| source == "certspotter")
+            && from_source.iter().any(|source| source == "saucenao")
+            && from_source.len() > 15,
         "the source text names the keyed providers: {from_source:?}"
     );
     let keyed: BTreeSet<String> = reachable_modules()

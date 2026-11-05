@@ -343,42 +343,55 @@ pub(crate) struct JpegSegment<'a> {
     pub(crate) payload: &'a [u8],
 }
 
+/// The JPEG marker at `at`, after any `0xFF` fill bytes before it, with its segment when it has
+/// one: the one step every JPEG walk takes, shared with [`crate::docmeta`] and the reverse-image
+/// metadata stripper. A standalone marker (`TEM`, `RSTn`) and the end of image (`EOI`) have an
+/// empty payload and a two-byte span; every other marker is followed by its length. `None` when no
+/// marker starts there or a segment runs past the end of the file. **Pure.**
+pub(crate) fn jpeg_marker_at(image: &[u8], mut at: usize) -> Option<JpegSegment<'_>> {
+    // Skip any 0xFF fill bytes before a marker.
+    while image.get(at) == Some(&0xFF) && image.get(at + 1) == Some(&0xFF) {
+        at += 1;
+    }
+    if *image.get(at)? != 0xFF {
+        return None;
+    }
+    let marker = *image.get(at + 1)?;
+    if matches!(marker, 0x01 | 0xD0..=0xD7 | 0xD9) {
+        return Some(JpegSegment {
+            marker,
+            span: at..at + 2,
+            payload: &[],
+        });
+    }
+    let length = usize::from(be_u16(image, at + 2)?);
+    if length < 2 {
+        return None;
+    }
+    let payload = image.get(at + 4..at + 2 + length)?;
+    Some(JpegSegment {
+        marker,
+        span: at..at + 2 + length,
+        payload,
+    })
+}
+
 /// Each marker segment of a JPEG after its SOI marker, up to the start of scan or end of image: the
 /// one JPEG segment walker, shared with [`crate::docmeta`]. Fill bytes are skipped and standalone
 /// markers carry no segment; a malformed segment ends the walk. **Pure.**
 pub(crate) fn jpeg_segments(image: &[u8]) -> impl Iterator<Item = JpegSegment<'_>> {
-    let mut i = 2; // past the SOI marker
+    let mut at = 2; // past the SOI marker
     std::iter::from_fn(move || {
         loop {
-            // Skip any 0xFF fill bytes before a marker.
-            while image.get(i) == Some(&0xFF) && image.get(i + 1) == Some(&0xFF) {
-                i += 1;
+            let segment = jpeg_marker_at(image, at)?;
+            at = segment.span.end;
+            match segment.marker {
+                // Start of scan or end of image: no metadata segment follows.
+                0xDA | 0xD9 => return None,
+                // Standalone markers carry no segment.
+                0x01 | 0xD0..=0xD7 => {}
+                _ => return Some(segment),
             }
-            if *image.get(i)? != 0xFF {
-                return None;
-            }
-            let start = i;
-            let marker = *image.get(i + 1)?;
-            i += 2;
-            // Start of scan or end of image: no metadata segment follows.
-            if marker == 0xDA || marker == 0xD9 {
-                return None;
-            }
-            // Standalone markers carry no length.
-            if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
-                continue;
-            }
-            let length = usize::from(be_u16(image, i)?);
-            if length < 2 {
-                return None;
-            }
-            let payload = image.get(i + 2..i + length)?;
-            i += length;
-            return Some(JpegSegment {
-                marker,
-                span: start..i,
-                payload,
-            });
         }
     })
     .fuse()
@@ -392,10 +405,21 @@ fn be_u16(buf: &[u8], offset: usize) -> Option<u16> {
 
 // ── WebP RIFF container ────────────────────────────────────────────────────────────────
 
-/// Read the EXIF payload in a bounded WebP RIFF chunk stream. An EXIF chunk contains the
-/// existing TIFF structure, sometimes preceded by the six-byte Exif signature.
-/// Malformed bounds are an error, never a clean absence of metadata.
-fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
+/// One chunk of a WebP's RIFF container: its four-character code, its payload, and its whole span
+/// (header, payload and the pad byte that follows an odd-sized payload).
+pub(crate) struct WebpChunk<'a> {
+    pub(crate) fourcc: &'a [u8],
+    pub(crate) payload: &'a [u8],
+    pub(crate) span: std::ops::Range<usize>,
+}
+
+/// Each chunk of a WebP's RIFF container, in order, up to the end its RIFF size declares: the one
+/// WebP chunk walker, shared with the reverse-image metadata stripper. A header, size or chunk
+/// bound that does not fit the file is an error, never a clean end; bytes past the declared end
+/// are not walked. **Pure.**
+pub(crate) fn webp_chunks(
+    image: &[u8],
+) -> Result<impl Iterator<Item = Result<WebpChunk<'_>, &'static str>>, &'static str> {
     if !image.starts_with(b"RIFF") || image.get(8..12) != Some(b"WEBP") {
         return Err("WebP: invalid RIFF header");
     }
@@ -411,31 +435,58 @@ fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
         return Err("WebP: truncated RIFF container");
     }
     let mut offset = 12usize;
-    while offset < end {
-        let header = image
-            .get(offset..offset + 8)
-            .filter(|_| offset + 8 <= end)
-            .ok_or("WebP: truncated chunk header")?;
-        let length = u32::from_le_bytes(
-            header[4..8]
-                .try_into()
-                .map_err(|_| "WebP: invalid chunk size")?,
-        );
-        let start = offset + 8;
-        let tail = usize::try_from(length)
-            .ok()
-            .and_then(|len| start.checked_add(len))
-            .ok_or("WebP: invalid chunk size")?;
-        let next = tail
-            .checked_add(usize::from(u8::from(length % 2 != 0)))
-            .ok_or("WebP: invalid chunk padding")?;
-        if next > end {
-            return Err("WebP: truncated chunk payload");
+    let mut failed = false;
+    Ok(std::iter::from_fn(move || {
+        if failed || offset >= end {
+            return None;
         }
-        if &header[..4] == b"EXIF" {
-            return Ok(Some(without_exif_signature(&image[start..tail])));
+        let chunk = webp_chunk_at(image, offset, end);
+        match &chunk {
+            Ok(chunk) => offset = chunk.span.end,
+            Err(_) => failed = true,
         }
-        offset = next;
+        Some(chunk)
+    }))
+}
+
+/// The WebP chunk at `offset`, within a container that ends at `end`. **Pure.**
+fn webp_chunk_at(image: &[u8], offset: usize, end: usize) -> Result<WebpChunk<'_>, &'static str> {
+    let header = image
+        .get(offset..offset + 8)
+        .filter(|_| offset + 8 <= end)
+        .ok_or("WebP: truncated chunk header")?;
+    let length = u32::from_le_bytes(
+        header[4..8]
+            .try_into()
+            .map_err(|_| "WebP: invalid chunk size")?,
+    );
+    let start = offset + 8;
+    let tail = usize::try_from(length)
+        .ok()
+        .and_then(|len| start.checked_add(len))
+        .ok_or("WebP: invalid chunk size")?;
+    let next = tail
+        .checked_add(usize::from(u8::from(length % 2 != 0)))
+        .ok_or("WebP: invalid chunk padding")?;
+    if next > end {
+        return Err("WebP: truncated chunk payload");
+    }
+    Ok(WebpChunk {
+        fourcc: &header[..4],
+        payload: &image[start..tail],
+        span: offset..next,
+    })
+}
+
+/// Read the EXIF payload in a bounded WebP RIFF chunk stream. An EXIF chunk contains the
+/// existing TIFF structure, sometimes preceded by the six-byte Exif signature.
+/// Malformed bounds are an error, never a clean absence of metadata.
+fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
+    for chunk in webp_chunks(image)? {
+        let chunk = chunk?;
+        if chunk.fourcc == b"EXIF" {
+            return Ok(Some(without_exif_signature(chunk.payload)));
+        }
     }
     Ok(None)
 }
@@ -445,21 +496,30 @@ fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
 /// The PNG file signature: the eight bytes every PNG begins with.
 pub(crate) const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-/// Each chunk of a PNG after its signature, as its four-byte type and its body, through `IEND`: the
-/// one chunk walker, shared with [`crate::docmeta`]. A chunk that runs past the end of the file is an
-/// `Err` item and ends the walk; a file that ends cleanly on a chunk boundary without `IEND` ends it
-/// too. Every chunk takes at least twelve bytes, so the walk is bounded by the file, never by a count
-/// that a large image's thousands of `IDAT` chunks would reach before a later `eXIf` or text chunk.
-/// **Pure.**
-pub(crate) fn png_chunks(
+/// One chunk of a PNG: its four-byte type, its body, and its whole span (length, type, body and
+/// CRC).
+pub(crate) struct PngChunk<'a> {
+    pub(crate) kind: &'a [u8],
+    pub(crate) body: &'a [u8],
+    pub(crate) span: std::ops::Range<usize>,
+}
+
+/// Each chunk of a PNG after its signature, with its span, through `IEND`: the one chunk walker,
+/// shared with [`crate::docmeta`] (through [`png_chunks`]) and the reverse-image metadata
+/// stripper. A chunk that runs past the end of the file is an `Err` item and ends the walk; a file
+/// that ends cleanly on a chunk boundary without `IEND` ends it too. Every chunk takes at least
+/// twelve bytes, so the walk is bounded by the file, never by a count that a large image's
+/// thousands of `IDAT` chunks would reach before a later `eXIf` or text chunk. **Pure.**
+pub(crate) fn png_chunk_spans(
     data: &[u8],
-) -> impl Iterator<Item = Result<(&[u8], &[u8]), &'static str>> {
+) -> impl Iterator<Item = Result<PngChunk<'_>, &'static str>> {
     let mut at = PNG_SIGNATURE.len();
     let mut done = false;
     std::iter::from_fn(move || {
         if done || at == data.len() {
             return None;
         }
+        let start = at;
         let chunk = data.get(at..at + 8).and_then(|header| {
             let length = usize::try_from(u32::from_be_bytes(header[..4].try_into().ok()?)).ok()?;
             let body_end = (at + 8).checked_add(length)?;
@@ -475,8 +535,20 @@ pub(crate) fn png_chunks(
         };
         at = next;
         done = kind == b"IEND";
-        Some(Ok((kind, body)))
+        Some(Ok(PngChunk {
+            kind,
+            body,
+            span: start..next,
+        }))
     })
+}
+
+/// Each chunk of a PNG after its signature, as its four-byte type and its body, through `IEND`:
+/// [`png_chunk_spans`] without the spans. **Pure.**
+pub(crate) fn png_chunks(
+    data: &[u8],
+) -> impl Iterator<Item = Result<(&[u8], &[u8]), &'static str>> {
+    png_chunk_spans(data).map(|chunk| chunk.map(|chunk| (chunk.kind, chunk.body)))
 }
 
 /// The payload of a PNG's `eXIf` chunk, a TIFF block. Truncated chunks before it are an error,

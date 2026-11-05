@@ -41,6 +41,25 @@ fair-access ceiling (currently 10 requests/second) and any stricter local pacing
 
 Primary policy: https://www.sec.gov/search-filings/edgar-search-assistance/accessing-edgar-data
 
+## Reverse-image search provider slots (opt-in)
+
+These slots are shown by `credential-status` and the provider settings page. None
+causes background requests. An image is transmitted only when explicitly searching
+with `reverse-image IMAGE --live --provider NAME` (CLI only; there is no web route).
+Only use API keys issued to your account, and confirm image-upload rights and any
+quota charges before enabling a service.
+
+| Provider | Runtime slot | Use |
+| --- | --- | --- |
+| Google Cloud Vision | `HUNTSMAN_GOOGLE_VISION_KEY` | web detection; the key goes only to `vision.googleapis.com`, in the `X-goog-api-key` header |
+| Lenso.ai | `HUNTSMAN_LENSO_KEY` | duplicate-image search; the token goes only to `api.lenso.ai`, as `Authorization: Bearer` |
+| SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | image-index search; the key goes only to `saucenao.com`, as the `api_key` query parameter SauceNAO's API takes, added as the request is sent and never inside the uploaded form |
+
+`huntsman-recon reverse-image IMAGE --live --provider google_vision --json`
+uploads the image, with its embedded metadata removed, to that one provider. `--live`
+without `--provider` is refused, so no run sends the image to more than one provider or
+spends more than one provider's quota.
+
 ## Recovered/owned provider slots
 
 | Provider | Runtime slot(s) | Integration state |
@@ -123,6 +142,9 @@ Copy only the slots you actually use into `$HOME/.huntsman.env` and set the
 file mode to 600.
 
 ```dotenv
+HUNTSMAN_GOOGLE_VISION_KEY=
+HUNTSMAN_LENSO_KEY=
+HUNTSMAN_SAUCENAO_KEY=
 HUNTSMAN_WIGLE_USER=
 HUNTSMAN_WIGLE_TOKEN=
 HUNTSMAN_BRAVE_KEY=
