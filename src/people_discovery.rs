@@ -16,7 +16,7 @@ use crate::http::{Transport, parse_http_uri};
 use crate::openlibrary_author;
 use crate::people_cli;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::web_query;
+use crate::web_query::{self, EngineSet};
 
 const MAX_PEOPLE_DISCOVERY_NAME_BYTES: usize = 120;
 const MAX_CANDIDATES: usize = 80;
@@ -160,7 +160,7 @@ pub fn discover<T: Transport + ?Sized>(
         // Owns the network requests and classification: no second search
         // parser, scraping workaround, or provider-availability guess.
         let (response, index_sightings) =
-            web_query::search_with_provenance(transport, &query, now_unix)?;
+            web_query::search_with_provenance(transport, &query, now_unix, EngineSet::Default)?;
         let mut discarded = 0;
         let index_hits = index_sightings.len();
         for hit in index_sightings {

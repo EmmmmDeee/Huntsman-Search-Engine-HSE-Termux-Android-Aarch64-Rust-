@@ -178,6 +178,7 @@ fn help_and_version_are_available() {
         ("modules", "modules [--json]"),
         ("attack", "attack status|coverage|gaps [--json]"),
         ("query", "query QUERY..."),
+        ("research", "research [--plan] [--all] TERM..."),
         ("sf", "sf [-M|-T|-V]"),
         ("serve", "serve [--bind ADDR] [--history DIR]"),
         ("fetch", "fetch URL [--body|--raw-body]"),
@@ -1504,6 +1505,35 @@ fn query_missing_terms_is_usage() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("query QUERY"));
 }
 
+/// `--all` is the one engine-set option. A repeated, unknown or misplaced option, or one with
+/// no query, is refused before any request, so a typo is never searched for as text.
+#[test]
+fn query_engine_options_are_checked_before_any_request() {
+    for args in [
+        &["query", "--all"][..],
+        &["query", "--adaptive", "--all"][..],
+        &["query", "--all", "--all", "topic"][..],
+        &["query", "--fast", "topic"][..],
+        &["query", "--adaptive", "--fast", "topic"][..],
+        &["query", "--all", "--exa", "topic"][..],
+    ] {
+        let out = bin().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(64), "{args:?}");
+        assert_eq!(out.stdout, Vec::<u8>::new(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("usage: huntsman-recon query [--adaptive] [--all] QUERY..."),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let help = bin().args(["query", "--help"]).output().unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("query --all QUERY..."), "{help}");
+    assert!(help.contains("110-second budget"), "{help}");
+}
+
 #[test]
 fn classify_reports_causal_outcome_and_action() {
     let run = |status: &str, body: &str| {
@@ -1949,6 +1979,22 @@ fn universal_research_preview_is_subject_neutral_and_offline() {
             &["research", "--plan", "-27.4705,153.0260"][..],
             "route=scan\tkind=geocode\n",
         ),
+        // `--all` widens only the adaptive web route, in either option order.
+        (
+            &[
+                "research",
+                "--plan",
+                "--all",
+                "unclassified",
+                "historical",
+                "term",
+            ][..],
+            "route=adaptive_web_search\tkeyless=true\tengines=all\n",
+        ),
+        (
+            &["research", "--all", "--plan", "example.org"][..],
+            "route=scan\tkind=domain\n",
+        ),
     ] {
         let out = bin().args(args).output().unwrap();
         assert!(
@@ -1964,6 +2010,9 @@ fn universal_research_preview_is_subject_neutral_and_offline() {
         &["research", "--plan", "127.0.0.1"][..],
         &["research", "--plan", "192.168.1.0/24"][..],
         &["research", "--plan", "1.1.1.1/33"][..],
+        &["research", "--plan", "--all"][..],
+        &["research", "--plan", "--all", "--all", "term"][..],
+        &["research", "--plan", "--fast", "term"][..],
     ] {
         let out = bin().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{args:?}");

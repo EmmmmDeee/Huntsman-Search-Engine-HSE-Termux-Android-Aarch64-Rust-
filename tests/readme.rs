@@ -90,6 +90,7 @@ fn usage_subcommands() -> BTreeSet<String> {
 
 /// Internet examples: a URL argument, any `email`/`exposure`/`username`/`query`/`domain`/`ip`/`netblock`/`asn`/`network`/`crypto`
 /// lookup (`network` queries `WiGLE` when its credentials are set; `crypto` queries blockchain.info), `serve`,
+/// a `research` run that is not a `--plan` preview (it scans or searches, with `--all` every keyless engine),
 /// or any `hibp` lookup (`hibp help` is offline). Provider-specific tests cover these separately.
 fn is_network(args: &[String]) -> bool {
     args.iter()
@@ -111,6 +112,7 @@ fn is_network(args: &[String]) -> bool {
         || args.first().is_some_and(|a| a == "geocode")
         || args.first().is_some_and(|a| a == "traffic-cameras")
         || args.first().is_some_and(|a| a == "serve")
+        || (args.first().is_some_and(|a| a == "research") && !args.iter().any(|a| a == "--plan"))
         || (args.first().is_some_and(|a| a == "hibp") && args.get(1).is_some_and(|a| a != "help"))
 }
 

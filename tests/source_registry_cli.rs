@@ -129,10 +129,24 @@ fn sources_routes_a_handle_as_written() {
             String::from_utf8_lossy(&out.stderr)
         );
         let stdout = String::from_utf8(out.stdout).unwrap();
+        // Three curated routes, then one link per default keyless engine, each for the
+        // handle as written.
         assert!(
-            stdout.starts_with("kind=username confidence=0.400 routes=3\n"),
+            stdout.starts_with("kind=username confidence=0.400 routes=6\n"),
             "{stdout}"
         );
+        for (engine, search) in [
+            ("bing", "https://www.bing.com/search"),
+            ("brave", "https://search.brave.com/search"),
+            ("mojeek", "https://www.mojeek.com/search"),
+        ] {
+            assert!(
+                stdout.contains(&format!(
+                    "source={engine} execution=search_url access=public url={search}?q={handle}\n"
+                )),
+                "{stdout}"
+            );
+        }
         assert!(
             stdout.contains(&format!(
                 "url=https://github.com/search?q={handle}&type=users\n"

@@ -2,28 +2,45 @@
 //!
 //! Restores a bounded subset of the legacy multi-engine scraper through the
 //! shared fetch boundary. Each engine runs independently; one blocked or broken
-//! provider never erases results from another.
+//! provider never erases results from another. A search asks the three default
+//! engines ([`ENGINES`]) unless its caller opts in to [`EngineSet::All`], which
+//! asks all thirteen in [`EXTENDED_ENGINES`] inside one shared [`Deadline`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::thread;
+use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::canonical::{canonical_url, canonical_whitespace};
 use crate::circuit::{BackoffPolicy, ResponseCache};
+use crate::deadline::{Clock, Deadline, SystemClock};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
-use crate::http::{Request, Response, Transport, append_query_param};
+use crate::http::{Request, Response, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 use crate::textnorm::{decode_html_entities, escape_controls};
-use crate::value_syntax::find_ascii_ci_bytes;
+use crate::value_syntax::{find_ascii_ci_bytes, percent_decode_strict};
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const MAX_SEARCH_QUERY_BYTES: usize = 512;
 const CACHE_TTL_SECS: u64 = 300;
-const CACHE_CAPACITY: usize = 256;
+/// Anonymous result pages kept for reuse: at most 64 pages of at most 512 KiB each, so
+/// the cache never holds more than 32 MiB of page bodies on a low-memory phone.
+const CACHE_CAPACITY: usize = 64;
+const MAX_CACHEABLE_BODY_BYTES: usize = 512 * 1024;
 const RETRY_POLICY: BackoffPolicy = BackoffPolicy::new(2, 100, 500, true);
+/// The one wall-clock budget of an [`EngineSet::All`] search: every round, engine,
+/// retry pause and request of it ends inside these seconds.
+const EXTENDED_BUDGET_SECS: u64 = 110;
+/// The most one [`EngineSet::All`] request may take, redirects included. Each request
+/// gets this or what is left of the shared budget, whichever is less.
+const EXTENDED_REQUEST_SECS: u64 = 6;
+/// The row of an engine a later adaptive round leaves out after it refused the baseline.
+const BLOCKED_IN_BASELINE: &str = "not queried: provider blocked in baseline round";
+/// The row of an engine the shared budget was spent before.
+const BUDGET_SPENT: &str = "not queried: shared search time budget exhausted";
 
 #[derive(Debug, Clone)]
 struct CachedResponse {
@@ -53,6 +70,125 @@ pub const ENGINES: [EngineSpec; 3] = [
         base_url: "https://www.mojeek.com/search",
     },
 ];
+
+/// Every keyless engine, asked only on an explicit opt-in ([`EngineSet::All`]). Each is
+/// a public web search page, not an API or a paid credential. Some require JavaScript or
+/// challenge automated clients: those come back as typed failures, never as silent zero
+/// results. Several engines may share an upstream index, so URL overlap is never
+/// independent corroboration of a document or of a personal identity.
+///
+/// An engine is listed only when a plain fetch of its result page carries the results.
+/// Qwant, Swisscows and Marginalia are not: on 2026-11-05 their pages, fetched this way,
+/// held only the sites' own social, app-store and footer links, which the generic parser
+/// would report as results.
+pub const EXTENDED_ENGINES: [EngineSpec; 13] = [
+    ENGINES[0],
+    ENGINES[1],
+    ENGINES[2],
+    EngineSpec {
+        name: "duckduckgo",
+        base_url: "https://html.duckduckgo.com/html/",
+    },
+    EngineSpec {
+        name: "google",
+        base_url: "https://www.google.com/search",
+    },
+    EngineSpec {
+        name: "yahoo",
+        base_url: "https://search.yahoo.com/search",
+    },
+    EngineSpec {
+        name: "ecosia",
+        base_url: "https://www.ecosia.org/search",
+    },
+    EngineSpec {
+        name: "startpage",
+        base_url: "https://www.startpage.com/sp/search",
+    },
+    EngineSpec {
+        name: "yandex",
+        base_url: "https://yandex.com/search/",
+    },
+    EngineSpec {
+        name: "yep",
+        base_url: "https://yep.com/web",
+    },
+    EngineSpec {
+        name: "lilo",
+        base_url: "https://search.lilo.org/",
+    },
+    EngineSpec {
+        name: "you",
+        base_url: "https://you.com/search",
+    },
+    EngineSpec {
+        name: "wiby",
+        base_url: "https://wiby.me/",
+    },
+];
+
+/// Which keyless engines one search asks: the one parameter every search path takes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EngineSet {
+    /// Bing, Brave and Mojeek ([`ENGINES`]): the default of every command and API. Each
+    /// request keeps the transport's own timeout, as it always has.
+    #[default]
+    Default,
+    /// All thirteen keyless engines ([`EXTENDED_ENGINES`]), asked only on an explicit
+    /// `--all`. The whole search shares one 110-second [`Deadline`], and each request is
+    /// capped at 6 seconds or what is left of it, whichever is less.
+    All,
+}
+
+impl EngineSet {
+    /// The engines this set asks, in the order their outcomes are reported.
+    #[must_use]
+    pub const fn engines(self) -> &'static [EngineSpec] {
+        match self {
+            Self::Default => &ENGINES,
+            Self::All => &EXTENDED_ENGINES,
+        }
+    }
+
+    /// The budget one search over this set shares, started now. The default set has
+    /// none, so its requests are timed exactly as before the larger set existed.
+    fn start_deadline(self, clock: &dyn Clock) -> Option<Deadline<'_>> {
+        match self {
+            Self::Default => None,
+            Self::All => Some(Deadline::start(
+                clock,
+                Duration::from_secs(EXTENDED_BUDGET_SECS),
+            )),
+        }
+    }
+}
+
+/// The search-page URL that asks `engine` for `query`: the one builder behind live
+/// search and the source registry's engine pivots. The query is RFC 3986 encoded, so a
+/// space is `%20` and a literal `+` stays `%2B`.
+#[must_use]
+pub fn search_url(engine: EngineSpec, query: &str) -> String {
+    let separator = if engine.base_url.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
+    format!(
+        "{}{separator}{}={}",
+        engine.base_url,
+        search_parameter(engine.name),
+        percent_encode_unreserved(query)
+    )
+}
+
+/// The query parameter of an engine's public search form.
+fn search_parameter(engine: &str) -> &'static str {
+    match engine {
+        "yahoo" => "p",
+        "yandex" => "text",
+        _ => "q",
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchHit {
@@ -97,7 +233,7 @@ impl SearchReport {
     }
 }
 
-/// Query the rebuilt keyless engine subset.
+/// Ask every engine in `engines` for `query`, each independently.
 ///
 /// # Errors
 /// Returns only network-boundary errors that prevent a request from being sent.
@@ -106,8 +242,9 @@ pub fn search<T: Transport + ?Sized>(
     transport: &T,
     query: &str,
     now_unix: u64,
+    engines: EngineSet,
 ) -> Result<SearchReport, Error> {
-    search_with_provenance(transport, query, now_unix).map(|(report, _)| report)
+    search_with_provenance(transport, query, now_unix, engines).map(|(report, _)| report)
 }
 
 /// A complete, typed search with both the legacy URL-deduplicated report and the
@@ -120,9 +257,16 @@ pub fn search_with_provenance<T: Transport + ?Sized>(
     transport: &T,
     query: &str,
     now_unix: u64,
+    engines: EngineSet,
 ) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let query = checked_query(query, "query")?;
-    search_with_observations(transport, &query, now_unix)
+    let deadline = engines.start_deadline(&SystemClock);
+    let round = Round {
+        engines: engines.engines(),
+        deadline: deadline.as_ref(),
+        skip: None,
+    };
+    search_with_observations(transport, &query, now_unix, round)
 }
 
 /// Validate before allocating provider URLs or sending any network request.
@@ -140,17 +284,35 @@ fn checked_query(input: &str, label: &str) -> Result<String, Error> {
     Ok(normalized)
 }
 
+/// What one round of a search asks: its engines, the search's shared budget when it has
+/// one, and the engines it leaves out because they refused the baseline round.
+#[derive(Clone, Copy)]
+struct Round<'a> {
+    engines: &'static [EngineSpec],
+    deadline: Option<&'a Deadline<'a>>,
+    skip: Option<&'a BTreeSet<String>>,
+}
+
 /// Keep every engine's URL observation before compatibility-preserving deduplication.
 /// An engine discovery is a lead, not independent corroboration of the page's claims.
+/// An engine the round leaves out keeps a typed row saying why; it is never dropped.
 fn search_with_observations<T: Transport + ?Sized>(
     transport: &T,
     query: &str,
     now_unix: u64,
+    round: Round<'_>,
 ) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
-    for engine in ENGINES {
-        let result = search_engine(transport, engine, query, now_unix)?;
+    for &engine in round.engines {
+        let result = if round
+            .skip
+            .is_some_and(|blocked| blocked.contains(engine.name))
+        {
+            not_queried(engine, now_unix, BLOCKED_IN_BASELINE)
+        } else {
+            search_engine(transport, engine, query, now_unix, round.deadline)?
+        };
         hits.extend(result.hits);
         outcomes.push(result.outcome);
     }
@@ -198,10 +360,11 @@ fn append_round<T: Transport + ?Sized>(
     query: &str,
     strategy: &'static str,
     now_unix: u64,
+    round: Round<'_>,
     reports: &mut Vec<AdaptiveRound>,
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
-    let (report, observations) = search_with_observations(transport, query, now_unix)?;
+    let (report, observations) = search_with_observations(transport, query, now_unix, round)?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
@@ -234,7 +397,8 @@ fn has_viable_provider(round: &AdaptiveRound) -> bool {
 }
 
 /// An opt-in, deterministic, outcome-adaptive multi-query search.
-/// Each of at most three rounds asks at most three guarded search engines.
+/// Each of at most three rounds asks every engine in `engines` once. An engine that
+/// refused the baseline round is not asked again in this run; its later rows say so.
 ///
 /// URL overlap between engines is discoverability metadata, NEVER proof that
 /// two independent primary documents agree. Query variants produce leads only.
@@ -246,8 +410,89 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     transport: &T,
     input: &str,
     now_unix: u64,
+    engines: EngineSet,
+) -> Result<AdaptiveSearchReport, Error> {
+    let deadline = engines.start_deadline(&SystemClock);
+    adaptive_search_within(
+        transport,
+        input,
+        now_unix,
+        engines.engines(),
+        deadline.as_ref(),
+    )
+}
+
+/// Finalise discovery provenance separately from bounded network scheduling.
+/// URLs remain leads even when seen by multiple indexes or query variants.
+fn finalize_adaptive_report(
+    input: String,
+    rounds: Vec<AdaptiveRound>,
+    discovery_index: BTreeMap<String, HitObservation>,
+    stop_reason: &'static str,
+) -> AdaptiveSearchReport {
+    let hits = discovery_index
+        .into_iter()
+        .map(|(url, observation)| AdaptiveHit {
+            url,
+            discovered_by_engines: observation.engines.into_iter().collect(),
+            found_in_queries: observation.queries.into_iter().collect(),
+            appearances: observation.appearances,
+            evidence_status: "search_discovery_only_not_independent_fact_verification",
+        })
+        .collect();
+    AdaptiveSearchReport {
+        input,
+        rounds,
+        hits,
+        stop_reason,
+        limitations: vec![
+            "search_results_are_leads_not_evidence_of_page_claims",
+            "engine_overlap_does_not_establish_independent_primary_sources",
+            "search_index_and_html_parser_coverage_are_incomplete",
+            "no_live_page_authenticity_or_claim_verification",
+            "no_cross_run_learning_or_persistent_adaptation",
+        ],
+    }
+}
+
+/// The engines that refused the baseline round. A quoted or broader query variant does
+/// not undo a block page, a rate limit or an authentication wall, so the later rounds of
+/// this one search do not ask them again; nothing is remembered across searches.
+fn blocked_provider_names(round: &AdaptiveRound) -> BTreeSet<String> {
+    round
+        .outcomes
+        .iter()
+        .filter(|outcome| {
+            matches!(
+                outcome.kind,
+                SourceOutcomeKind::BotWaf
+                    | SourceOutcomeKind::AuthRequired
+                    | SourceOutcomeKind::AuthRejected
+                    | SourceOutcomeKind::EntitlementDenied
+                    | SourceOutcomeKind::QuotaExhausted
+                    | SourceOutcomeKind::RateLimited
+                    | SourceOutcomeKind::ConfirmedDead
+                    | SourceOutcomeKind::RefusedBeforeSending
+            )
+        })
+        .map(|outcome| outcome.module.clone())
+        .collect()
+}
+
+/// [`adaptive_search`] over `engines`, every round inside `deadline` when there is one.
+fn adaptive_search_within<T: Transport + ?Sized>(
+    transport: &T,
+    input: &str,
+    now_unix: u64,
+    engines: &'static [EngineSpec],
+    deadline: Option<&Deadline<'_>>,
 ) -> Result<AdaptiveSearchReport, Error> {
     let normalized_query = checked_query(input, "adaptive query")?;
+    let baseline = Round {
+        engines,
+        deadline,
+        skip: None,
+    };
     let mut rounds = Vec::new();
     let mut discovery_index = BTreeMap::new();
     let baseline_gain = append_round(
@@ -255,9 +500,15 @@ pub fn adaptive_search<T: Transport + ?Sized>(
         &normalized_query,
         "baseline",
         now_unix,
+        baseline,
         &mut rounds,
         &mut discovery_index,
     )?;
+    let blocked = blocked_provider_names(&rounds[0]);
+    let later = Round {
+        skip: Some(&blocked),
+        ..baseline
+    };
 
     let stop_reason = if has_viable_provider(&rounds[0]) {
         let mut variant_exceeds_budget = false;
@@ -284,6 +535,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
                 &refined,
                 strategy,
                 now_unix,
+                later,
                 &mut rounds,
                 &mut discovery_index,
             )?;
@@ -299,6 +551,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
                     &broader,
                     "broader_low_confidence_recall",
                     now_unix,
+                    later,
                     &mut rounds,
                     &mut discovery_index,
                 )?;
@@ -314,29 +567,12 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     } else {
         "all_engines_unavailable_or_unparseable"
     };
-    let hits = discovery_index
-        .into_iter()
-        .map(|(url, observation)| AdaptiveHit {
-            url,
-            discovered_by_engines: observation.engines.into_iter().collect(),
-            found_in_queries: observation.queries.into_iter().collect(),
-            appearances: observation.appearances,
-            evidence_status: "search_discovery_only_not_independent_fact_verification",
-        })
-        .collect();
-    Ok(AdaptiveSearchReport {
-        input: normalized_query,
+    Ok(finalize_adaptive_report(
+        normalized_query,
         rounds,
-        hits,
+        discovery_index,
         stop_reason,
-        limitations: vec![
-            "search_results_are_leads_not_evidence_of_page_claims",
-            "engine_overlap_does_not_establish_independent_primary_sources",
-            "search_index_and_html_parser_coverage_are_incomplete",
-            "no_live_page_authenticity_or_claim_verification",
-            "no_cross_run_learning_or_persistent_adaptation",
-        ],
-    })
+    ))
 }
 
 struct EngineReport {
@@ -344,15 +580,37 @@ struct EngineReport {
     outcome: SourceExecutionOutcome,
 }
 
+/// An engine this search did not ask, and why: a typed row, never a silent zero.
+fn not_queried(engine: EngineSpec, now_unix: u64, why: &str) -> EngineReport {
+    EngineReport {
+        hits: Vec::new(),
+        outcome: outcome(
+            engine.name,
+            SourceOutcomeKind::Inconclusive,
+            now_unix,
+            None,
+            None,
+            why,
+        ),
+    }
+}
+
+/// Ask one engine. Inside a shared `deadline` an engine the budget was spent before is not
+/// asked, each attempt is capped at [`EXTENDED_REQUEST_SECS`] or what is left of the
+/// budget, whichever is less, and a retry is sent only when its pause fits in the budget.
 fn search_engine<T: Transport + ?Sized>(
     transport: &T,
     engine: EngineSpec,
     query: &str,
     now_unix: u64,
+    deadline: Option<&Deadline<'_>>,
 ) -> Result<EngineReport, Error> {
-    let url = append_query_param(engine.base_url, "q", query);
+    let url = search_url(engine, query);
     if let Some(cached) = cached_response(&url, now_unix) {
         return Ok(parse_engine_response(engine, &cached, now_unix));
+    }
+    if deadline.is_some_and(Deadline::expired) {
+        return Ok(not_queried(engine, now_unix, BUDGET_SPENT));
     }
 
     let request = Request::get(&url)
@@ -361,20 +619,30 @@ fn search_engine<T: Transport + ?Sized>(
     let mut attempt = 0u32;
 
     loop {
+        let mut sent = request.clone();
+        if let Some(deadline) = deadline {
+            sent = sent.with_timeout(
+                deadline
+                    .remaining()
+                    .min(Duration::from_secs(EXTENDED_REQUEST_SECS)),
+            );
+        }
         // The shared boundary paces per host: it suppresses while the circuit is
         // open and records the outcome's health. A suppressed fetch comes back as a
         // no-response `Inconclusive`, which is not retryable and falls through below.
         let fetched = fetch(
             transport,
-            request.clone(),
+            sent,
             None,
             &FetchOptions::default().paced(),
             engine.name,
             now_unix,
         )?;
 
-        if retryable_fetch(fetched.outcome.kind) && RETRY_POLICY.should_retry(attempt) {
-            thread::sleep(RETRY_POLICY.delay(attempt));
+        if retryable_fetch(fetched.outcome.kind)
+            && RETRY_POLICY.should_retry(attempt)
+            && pause_before_retry(deadline, RETRY_POLICY.delay(attempt))
+        {
             attempt = attempt.saturating_add(1);
             continue;
         }
@@ -403,6 +671,17 @@ fn search_engine<T: Transport + ?Sized>(
     }
 }
 
+/// Pause before a retry. Without a shared budget the pause is always taken; inside one
+/// it is taken only when time is left after it to send the retry.
+fn pause_before_retry(deadline: Option<&Deadline<'_>>, pause: Duration) -> bool {
+    if let Some(deadline) = deadline {
+        deadline.sleep_within(pause)
+    } else {
+        thread::sleep(pause);
+        true
+    }
+}
+
 fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
     let cached = RESPONSE_CACHE.get(url)?;
     // Never reuse a future-dated response after a clock rollback.
@@ -415,7 +694,9 @@ fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
 fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
     // Only a semantically successful search is reusable. HTTP success with
     // no external hits is explicitly a ZeroYieldAnomaly, not negative evidence.
+    // A page over the size cap is used once and not kept, which bounds the cache.
     if response.truncated
+        || response.body.len() > MAX_CACHEABLE_BODY_BYTES
         || !(200..300).contains(&response.status)
         || report.outcome.kind != SourceOutcomeKind::Success
         || report.hits.is_empty()
@@ -516,12 +797,10 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
     let mut seen = BTreeSet::new();
     let mut hits = Vec::new();
     for href in href_values(html) {
-        let decoded = decode_html_entities(href);
-        let decoded = bing_click_target(&decoded).unwrap_or(decoded);
-        let Some(url) = canonical_url(&decoded) else {
+        let Some(url) = extract_result_url(href, engine) else {
             continue;
         };
-        if is_engine_or_navigation_url(&url) {
+        if is_engine_or_navigation_url(&url, engine) {
             continue;
         }
         if seen.insert(url.clone()) {
@@ -558,6 +837,45 @@ fn bing_click_target(href: &str) -> Option<String> {
         .collect();
     let bytes = crate::base64::decode_standard(&standard)?;
     String::from_utf8(bytes).ok()
+}
+
+/// The result an anchor's `href` points at. Known result-link wrappers are unwrapped
+/// offline, never followed: the `uddg` redirect on a `duckduckgo` page, `/url` on a
+/// `google` page and `RU=` on a `yahoo` page, and Bing's click redirect on any page. A
+/// wrapper whose target is malformed percent-encoding or not an http(s) URL yields `None`,
+/// so an engine redirect never stands in for the document it points at.
+fn extract_result_url(href: &str, engine: &str) -> Option<String> {
+    let decoded = decode_html_entities(href);
+    let value = if engine == "duckduckgo"
+        && (decoded.starts_with("//duckduckgo.com/l/?")
+            || decoded.starts_with("/l/?")
+            || decoded.starts_with("https://duckduckgo.com/l/?"))
+    {
+        percent_decode_strict(wrapped_parameter(&decoded, &["uddg"])?)?
+    } else if engine == "google"
+        && (decoded.starts_with("/url?") || decoded.starts_with("https://www.google.com/url?"))
+    {
+        percent_decode_strict(wrapped_parameter(&decoded, &["q", "url"])?)?
+    } else if engine == "yahoo"
+        && decoded.starts_with("https://r.search.yahoo.com/")
+        && decoded.contains("/RU=")
+    {
+        let target = decoded.split_once("/RU=")?.1.split('/').next()?;
+        percent_decode_strict(target)?
+    } else {
+        bing_click_target(&decoded).unwrap_or(decoded)
+    };
+    canonical_url(&value)
+}
+
+/// The still-encoded value of the first of `keys` in a wrapper URL's query string.
+fn wrapped_parameter<'a>(url: &'a str, keys: &[&str]) -> Option<&'a str> {
+    url.split_once('?')?
+        .1
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| keys.contains(key))
+        .map(|(_, value)| value)
 }
 
 fn href_values(html: &str) -> Vec<&str> {
@@ -702,7 +1020,10 @@ fn anchor_href(html: &str, mut index: usize, end: usize) -> Option<&str> {
     None
 }
 
-fn is_engine_or_navigation_url(url: &str) -> bool {
+/// A link that is engine chrome, not a result. The default engines' hosts are chrome on
+/// every page, as they always were. Any other engine's hosts are chrome only on that
+/// engine's own page: a Bing result on `finance.yahoo.com` is a result.
+fn is_engine_or_navigation_url(url: &str, engine: &str) -> bool {
     let Some(host) = host_of(url) else {
         return true;
     };
@@ -713,12 +1034,31 @@ fn is_engine_or_navigation_url(url: &str) -> bool {
         "microsoft.com",
         "msn.com",
     ];
-    ENGINE_HOSTS.iter().any(|known| {
+    ENGINE_HOSTS.iter().chain(own_hosts(engine)).any(|known| {
         host == *known
             || host
                 .strip_suffix(known)
                 .is_some_and(|prefix| prefix.ends_with('.'))
     })
+}
+
+/// The domains of an engine beyond the default three, whose links on its own result
+/// page are its navigation, settings and redirect chrome.
+fn own_hosts(engine: &str) -> &'static [&'static str] {
+    match engine {
+        "duckduckgo" => &["duckduckgo.com"],
+        "google" => &["google.com"],
+        // Yahoo's result page links its own feedback forum on a third-party host.
+        "yahoo" => &["yahoo.com", "yahoo.uservoice.com"],
+        "ecosia" => &["ecosia.org"],
+        "startpage" => &["startpage.com"],
+        "yandex" => &["yandex.com"],
+        "yep" => &["yep.com"],
+        "lilo" => &["lilo.org"],
+        "you" => &["you.com"],
+        "wiby" => &["wiby.me"],
+        _ => &[],
+    }
 }
 
 fn host_of(url: &str) -> Option<String> {
@@ -744,6 +1084,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
+    use crate::deadline::FakeClock;
     use crate::http::{Response, TransportFailure};
 
     #[test]
@@ -779,8 +1120,13 @@ mod tests {
             Ok(response(200, html)),
             Ok(response(200, html)),
         ]);
-        let (deduped, sightings) =
-            search_with_provenance(&fake, "source-overlap-facet-example", 171).unwrap();
+        let (deduped, sightings) = search_with_provenance(
+            &fake,
+            "source-overlap-facet-example",
+            171,
+            EngineSet::Default,
+        )
+        .unwrap();
         assert_eq!(deduped.hits.len(), 1);
         assert_eq!(sightings.len(), 3);
         assert_eq!(
@@ -1009,7 +1355,7 @@ mod tests {
             Ok(response(200, "<html><body>no links</body></html>")),
             Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
-        let report = search(&fake, "alice citizen", 1).unwrap();
+        let report = search(&fake, "alice citizen", 1, EngineSet::Default).unwrap();
         assert_eq!(report.hits.len(), 2);
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
         assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ZeroYieldAnomaly);
@@ -1029,13 +1375,13 @@ mod tests {
                 r#"<a href="https://example.org/new-result">new</a>"#,
             )),
         ]);
-        let first = search_engine(&fake, engine, "rare-needle-unique", 300).unwrap();
+        let first = search_engine(&fake, engine, "rare-needle-unique", 300, None).unwrap();
         assert_eq!(first.outcome.kind, SourceOutcomeKind::ZeroYieldAnomaly);
         assert!(first.hits.is_empty());
 
         // Within the TTL: if the first page were cached, this call would
         // incorrectly return zero hits and leave the second fixture unused.
-        let second = search_engine(&fake, engine, "rare-needle-unique", 301).unwrap();
+        let second = search_engine(&fake, engine, "rare-needle-unique", 301, None).unwrap();
         assert_eq!(second.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(second.hits[0].url, "https://example.org/new-result");
     }
@@ -1056,9 +1402,9 @@ mod tests {
                 r#"<a href="https://example.net/real">real</a>"#,
             )),
         ]);
-        let first = search_engine(&fake, engine, "navigation-only-unique", 400).unwrap();
+        let first = search_engine(&fake, engine, "navigation-only-unique", 400, None).unwrap();
         assert_eq!(first.outcome.kind, SourceOutcomeKind::ZeroYieldAnomaly);
-        let second = search_engine(&fake, engine, "navigation-only-unique", 401).unwrap();
+        let second = search_engine(&fake, engine, "navigation-only-unique", 401, None).unwrap();
         assert_eq!(second.hits[0].url, "https://example.net/real");
     }
 
@@ -1070,7 +1416,7 @@ mod tests {
             Ok(response(200, body)),
             Ok(response(200, body)),
         ]);
-        let report = search(&fake, "alice duplicate-url-dedupe", 1).unwrap();
+        let report = search(&fake, "alice duplicate-url-dedupe", 1, EngineSet::Default).unwrap();
         assert_eq!(report.hits.len(), 1);
     }
 
@@ -1087,7 +1433,13 @@ mod tests {
             Ok(response(200, shared)),
             Ok(response(200, second)),
         ]);
-        let report = adaptive_search(&fake, "unique-adaptive-trial alpha", 123).unwrap();
+        let report = adaptive_search(
+            &fake,
+            "unique-adaptive-trial alpha",
+            123,
+            EngineSet::Default,
+        )
+        .unwrap();
         assert_eq!(report.rounds.len(), 2);
         assert_eq!(report.rounds[0].novel_url_count, 2);
         assert_eq!(report.rounds[1].novel_url_count, 1);
@@ -1123,7 +1475,8 @@ mod tests {
             Ok(empty.clone()),
             Ok(empty),
         ]);
-        let report = adaptive_search(&fake, "needle rare threeword", 456).unwrap();
+        let report =
+            adaptive_search(&fake, "needle rare threeword", 456, EngineSet::Default).unwrap();
         assert_eq!(report.rounds.len(), 3);
         assert_eq!(report.rounds[2].strategy, "broader_low_confidence_recall");
         assert_eq!(report.rounds[2].query, "needle rare");
@@ -1142,10 +1495,29 @@ mod tests {
     fn plain_search_rejects_oversized_and_control_queries_before_any_request() {
         let fake = Fake::new(vec![]);
         for query in ["", "   ", "line\nfeed", "nul\0byte", "carriage\rreturn"] {
-            assert!(search(&fake, query, 100).is_err(), "accepted {query:?}");
+            assert!(
+                search(&fake, query, 100, EngineSet::Default).is_err(),
+                "accepted {query:?}"
+            );
         }
-        assert!(search(&fake, &"a".repeat(MAX_SEARCH_QUERY_BYTES + 1), 100).is_err());
-        assert!(search(&fake, &"🙂".repeat(MAX_SEARCH_QUERY_BYTES / 4 + 1), 100).is_err());
+        assert!(
+            search(
+                &fake,
+                &"a".repeat(MAX_SEARCH_QUERY_BYTES + 1),
+                100,
+                EngineSet::Default
+            )
+            .is_err()
+        );
+        assert!(
+            search(
+                &fake,
+                &"🙂".repeat(MAX_SEARCH_QUERY_BYTES / 4 + 1),
+                100,
+                EngineSet::Default
+            )
+            .is_err()
+        );
         assert_eq!(
             checked_query(&"a".repeat(MAX_SEARCH_QUERY_BYTES), "query")
                 .unwrap()
@@ -1166,7 +1538,7 @@ mod tests {
         ]);
         let query = format!("{} b", "a".repeat(MAX_SEARCH_QUERY_BYTES - 2));
         assert_eq!(query.len(), MAX_SEARCH_QUERY_BYTES);
-        let report = adaptive_search(&fake, &query, 42).unwrap();
+        let report = adaptive_search(&fake, &query, 42, EngineSet::Default).unwrap();
         assert_eq!(report.rounds.len(), 1);
         assert_eq!(report.stop_reason, "query_variant_budget_exhausted");
         assert_eq!(report.hits.len(), 1);
@@ -1183,14 +1555,30 @@ mod tests {
             Ok(response(403, "<html>Cloudflare Just a moment</html>")),
             Ok(response(403, "<html>Cloudflare Just a moment</html>")),
         ]);
-        let report = adaptive_search(&fake, "unique-provider-block alpha", 789).unwrap();
+        let report = adaptive_search(
+            &fake,
+            "unique-provider-block alpha",
+            789,
+            EngineSet::Default,
+        )
+        .unwrap();
         assert_eq!(report.rounds.len(), 1);
         assert!(report.hits.is_empty());
         assert_eq!(report.stop_reason, "all_engines_unavailable_or_unparseable");
 
-        assert!(adaptive_search(&Fake::new(vec![]), "   ", 790).is_err());
-        assert!(adaptive_search(&Fake::new(vec![]), "bad\nquery", 790).is_err());
-        assert!(adaptive_search(&Fake::new(vec![]), &"a".repeat(513), 790).is_err());
+        assert!(adaptive_search(&Fake::new(vec![]), "   ", 790, EngineSet::Default).is_err());
+        assert!(
+            adaptive_search(&Fake::new(vec![]), "bad\nquery", 790, EngineSet::Default).is_err()
+        );
+        assert!(
+            adaptive_search(
+                &Fake::new(vec![]),
+                &"a".repeat(513),
+                790,
+                EngineSet::Default
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1204,8 +1592,8 @@ mod tests {
             r#"<a href="https://example.org/cached">cached</a>"#,
         ))]);
 
-        let first = search_engine(&fake, engine, "cache-key-unique", 100).unwrap();
-        let second = search_engine(&fake, engine, "cache-key-unique", 101).unwrap();
+        let first = search_engine(&fake, engine, "cache-key-unique", 100, None).unwrap();
+        let second = search_engine(&fake, engine, "cache-key-unique", 101, None).unwrap();
 
         assert_eq!(first.hits, second.hits);
         assert_eq!(first.outcome.kind, second.outcome.kind);
@@ -1229,9 +1617,15 @@ mod tests {
             )),
         ]);
 
-        let first = search_engine(&fake, engine, "ttl-key-unique", 100).unwrap();
-        let second =
-            search_engine(&fake, engine, "ttl-key-unique", 100 + CACHE_TTL_SECS + 1).unwrap();
+        let first = search_engine(&fake, engine, "ttl-key-unique", 100, None).unwrap();
+        let second = search_engine(
+            &fake,
+            engine,
+            "ttl-key-unique",
+            100 + CACHE_TTL_SECS + 1,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
@@ -1256,8 +1650,8 @@ mod tests {
             )),
         ]);
 
-        let first = search_engine(&fake, engine, "no-store-key-unique", 200).unwrap();
-        let second = search_engine(&fake, engine, "no-store-key-unique", 201).unwrap();
+        let first = search_engine(&fake, engine, "no-store-key-unique", 200, None).unwrap();
+        let second = search_engine(&fake, engine, "no-store-key-unique", 201, None).unwrap();
 
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
@@ -1281,8 +1675,8 @@ mod tests {
             )),
         ]);
 
-        let first = search_engine(&fake, engine, "no-cache-unique-query", 500).unwrap();
-        let second = search_engine(&fake, engine, "no-cache-unique-query", 501).unwrap();
+        let first = search_engine(&fake, engine, "no-cache-unique-query", 500, None).unwrap();
+        let second = search_engine(&fake, engine, "no-cache-unique-query", 501, None).unwrap();
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
 
@@ -1311,6 +1705,29 @@ mod tests {
     }
 
     #[test]
+    fn oversized_search_pages_are_not_retained_in_android_cache() {
+        let engine = EngineSpec {
+            name: "cache_size_test",
+            base_url: "https://cache-size-web-query.invalid/search",
+        };
+        let large = format!(
+            "<a href=\"https://example.org/big\">Big</a>{}",
+            " ".repeat(MAX_CACHEABLE_BODY_BYTES),
+        );
+        let fake = Fake::new(vec![
+            Ok(response(200, &large)),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/fresh">Fresh</a>"#,
+            )),
+        ]);
+        let first = search_engine(&fake, engine, "unique-cache-size", 400, None).unwrap();
+        let second = search_engine(&fake, engine, "unique-cache-size", 401, None).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/big");
+        assert_eq!(second.hits[0].url, "https://example.org/fresh");
+    }
+
+    #[test]
     fn a_future_dated_cache_entry_is_not_reused_after_clock_rollback() {
         let engine = EngineSpec {
             name: "cache_clock_rollback_test",
@@ -1327,8 +1744,9 @@ mod tests {
             )),
         ]);
 
-        let first = search_engine(&fake, engine, "clock-rollback-unique-query", 900).unwrap();
-        let second = search_engine(&fake, engine, "clock-rollback-unique-query", 899).unwrap();
+        let first = search_engine(&fake, engine, "clock-rollback-unique-query", 900, None).unwrap();
+        let second =
+            search_engine(&fake, engine, "clock-rollback-unique-query", 899, None).unwrap();
         assert_eq!(first.hits[0].url, "https://example.org/before");
         assert_eq!(second.hits[0].url, "https://example.org/after");
     }
@@ -1347,7 +1765,7 @@ mod tests {
             )),
         ]);
 
-        let report = search_engine(&fake, engine, "retry-key-unique", 300).unwrap();
+        let report = search_engine(&fake, engine, "retry-key-unique", 300, None).unwrap();
 
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(report.hits[0].url, "https://example.org/recovered");
@@ -1362,7 +1780,7 @@ mod tests {
         crate::circuit::record_rate_limited("circuit-web-query.invalid", 400, 60);
         let fake = Fake::new(Vec::new());
 
-        let report = search_engine(&fake, engine, "circuit-key-unique", 401).unwrap();
+        let report = search_engine(&fake, engine, "circuit-key-unique", 401, None).unwrap();
 
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
         assert!(
@@ -1383,10 +1801,410 @@ mod tests {
             Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
             Ok(response(200, r#"<a href="https://example.net/b">B</a>"#)),
         ]);
-        let report = search(&fake, "alice challenge-page", 1).unwrap();
+        let report = search(&fake, "alice challenge-page", 1, EngineSet::Default).unwrap();
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
     }
+
+    #[test]
+    fn search_routes_keep_rfc3986_space_and_literal_plus_distinct() {
+        let engine = EXTENDED_ENGINES
+            .iter()
+            .find(|engine| engine.name == "yahoo")
+            .copied()
+            .expect("yahoo engine");
+        assert_eq!(
+            search_url(engine, "Ada + Lovelace"),
+            "https://search.yahoo.com/search?p=Ada%20%2B%20Lovelace"
+        );
+        assert_eq!(
+            search_url(ENGINES[0], "Ada + Lovelace"),
+            "https://www.bing.com/search?q=Ada%20%2B%20Lovelace"
+        );
+    }
+
+    /// A transport that records every request it is sent and answers each through `reply`.
+    struct Recorder<F: Fn(&Request) -> Response> {
+        sent: RefCell<Vec<Request>>,
+        reply: F,
+    }
+
+    impl<F: Fn(&Request) -> Response> Transport for Recorder<F> {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            self.sent.borrow_mut().push(request.clone());
+            Ok((self.reply)(request))
+        }
+    }
+
+    fn recorder<F: Fn(&Request) -> Response>(reply: F) -> Recorder<F> {
+        Recorder {
+            sent: RefCell::new(Vec::new()),
+            reply,
+        }
+    }
+
+    #[test]
+    fn adaptive_skips_blocked_providers_after_baseline_without_hiding_outcomes() {
+        let fake = recorder(|request| {
+            if request.url.starts_with("https://www.mojeek.com/search") {
+                response(403, "Cloudflare Just a moment")
+            } else {
+                response(
+                    200,
+                    r#"<a href="https://example.org/adaptive-blocked-fixture">Hit</a>"#,
+                )
+            }
+        });
+        let report = adaptive_search(
+            &fake,
+            "unique-blocked-provider check",
+            4321,
+            EngineSet::Default,
+        )
+        .unwrap();
+        assert_eq!(report.rounds.len(), 2);
+        assert_eq!(report.rounds[0].outcomes.len(), ENGINES.len());
+        assert_eq!(report.rounds[1].outcomes.len(), ENGINES.len());
+        // Every engine in the baseline, then every engine but Mojeek.
+        assert_eq!(fake.sent.borrow().len(), 2 * ENGINES.len() - 1);
+        let refused = report.rounds[0]
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "mojeek")
+            .expect("mojeek baseline row");
+        assert_eq!(refused.kind, SourceOutcomeKind::BotWaf);
+        let suppressed = report.rounds[1]
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "mojeek")
+            .expect("mojeek must retain an outcome row");
+        assert_eq!(suppressed.kind, SourceOutcomeKind::Inconclusive);
+        assert_eq!(suppressed.detail.as_deref(), Some(BLOCKED_IN_BASELINE));
+        assert!(!report.hits.is_empty());
+    }
+
+    #[test]
+    fn exhaustive_registry_is_keyless_unique_and_has_thirteen_providers() {
+        assert_eq!(EXTENDED_ENGINES.len(), 13);
+        let mut names = BTreeSet::new();
+        for engine in EXTENDED_ENGINES {
+            assert!(
+                names.insert(engine.name),
+                "duplicate engine {}",
+                engine.name
+            );
+            assert!(engine.base_url.starts_with("https://"));
+            assert!(!engine.base_url.contains(['?', '#']));
+        }
+        for engine in ENGINES {
+            assert!(names.contains(engine.name));
+        }
+        assert_eq!(search_parameter("yahoo"), "p");
+        assert_eq!(search_parameter("yandex"), "text");
+    }
+
+    /// Three engines unless a caller opts in, and only the opt-in set shares a budget.
+    #[test]
+    fn the_default_set_is_the_original_three_without_a_shared_budget() {
+        assert_eq!(EngineSet::default(), EngineSet::Default);
+        assert_eq!(EngineSet::Default.engines(), ENGINES);
+        assert_eq!(EngineSet::All.engines(), EXTENDED_ENGINES);
+        assert!(EngineSet::Default.start_deadline(&SystemClock).is_none());
+        let deadline = EngineSet::All
+            .start_deadline(&SystemClock)
+            .expect("all engines share one budget");
+        assert_eq!(deadline.budget(), Duration::from_secs(EXTENDED_BUDGET_SECS));
+
+        // The default search asks each default engine once, at the transport's own timeout.
+        let fake =
+            recorder(|_| response(200, r#"<a href="https://example.org/default-set">hit</a>"#));
+        let report = search(&fake, "unique-default-set-query", 2100, EngineSet::Default).unwrap();
+        let sent = fake.sent.borrow();
+        assert_eq!(sent.len(), ENGINES.len());
+        assert!(sent.iter().all(|request| request.timeout.is_none()));
+        let engines: Vec<&str> = report
+            .outcomes
+            .iter()
+            .map(|outcome| outcome.module.as_str())
+            .collect();
+        assert_eq!(engines, ["bing", "brave", "mojeek"]);
+    }
+
+    #[test]
+    fn wrapped_search_results_decode_once_without_confusing_engine_navigation() {
+        let html = r#"
+            <a href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fnews%3Fx%3D1%26y%3D2">A</a>
+            <a href="/l/?uddg=javascript%3Aalert%281%29">not a URL</a>
+            <a href="https://duckduckgo.com/?q=another">navigation</a>
+        "#;
+        let hits = parse_hits(html, "duckduckgo");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://example.org/news?x=1&y=2");
+        assert_eq!(
+            parse_hits(
+                r#"<a href="/url?q=https%3A%2F%2Fexample.net%2Farticle&amp;sa=U">x</a>"#,
+                "google",
+            )[0]
+            .url,
+            "https://example.net/article"
+        );
+        assert_eq!(parse_hits(
+            r#"<a href="https://r.search.yahoo.com/_ylt=z/RU=https%3A%2F%2Fexample.com%2Fa/RK=1">x</a>"#,
+            "yahoo",
+        )[0].url, "https://example.com/a");
+    }
+
+    /// The wrapper unwrapping ends in the Bing click-redirect rule, on every engine's page:
+    /// an `href` no other wrapper matched goes through `bing_click_target` before it is
+    /// canonicalised, or the wrapper would be dropped as Bing chrome and the result lost.
+    #[test]
+    fn a_bing_click_redirect_is_unwrapped_after_the_other_wrappers_are_tried() {
+        let target = "https://example.org/merged?a=1&b=2";
+        let href = format!(
+            "https://www.bing.com/ck/a?!&amp;&amp;p=ab&amp;u=a1{}&amp;ntb=1",
+            crate::base64::url_unpadded(target.as_bytes())
+        );
+        for engine in ["bing", "duckduckgo", "google", "yahoo"] {
+            assert_eq!(
+                extract_result_url(&href, engine).as_deref(),
+                Some(target),
+                "{engine}"
+            );
+            let hits = parse_hits(&format!(r#"<a href="{href}">result</a>"#), engine);
+            let urls: Vec<&str> = hits.iter().map(|hit| hit.url.as_str()).collect();
+            assert_eq!(urls, [target], "{engine}");
+        }
+    }
+
+    /// Another engine's domain is a result; only that engine's own page treats it as chrome,
+    /// and the default engines' hosts stay chrome on every page.
+    #[test]
+    fn another_engines_domain_is_a_result_and_only_its_own_page_drops_it() {
+        let html = concat!(
+            "<a href=\"https://finance.yahoo.com/quote/ACME\">quote</a>",
+            "<a href=\"https://support.google.com/answer/1\">help</a>",
+            "<a href=\"https://www.bing.com/search?q=next\">chrome</a>",
+        );
+        let urls = |engine: &str| -> Vec<String> {
+            parse_hits(html, engine)
+                .into_iter()
+                .map(|hit| hit.url)
+                .collect()
+        };
+        assert_eq!(
+            urls("bing"),
+            [
+                "https://finance.yahoo.com/quote/ACME",
+                "https://support.google.com/answer/1",
+            ]
+        );
+        assert_eq!(urls("yahoo"), ["https://support.google.com/answer/1"]);
+        assert_eq!(urls("google"), ["https://finance.yahoo.com/quote/ACME"]);
+    }
+
+    /// Yahoo's live result page (checked 2026-11-05) links its own feedback forum on a
+    /// third-party host; on Yahoo's page that link is chrome, on any other engine's a result.
+    #[test]
+    fn yahoos_feedback_forum_is_chrome_only_on_yahoos_page() {
+        let html = concat!(
+            "<a href=\"https://yahoo.uservoice.com/forums/193847-search\">feedback</a>",
+            "<a href=\"https://en.wikipedia.org/wiki/Ada_Lovelace\">result</a>",
+        );
+        let urls = |engine: &str| -> Vec<String> {
+            parse_hits(html, engine)
+                .into_iter()
+                .map(|hit| hit.url)
+                .collect()
+        };
+        assert_eq!(
+            urls("yahoo"),
+            ["https://en.wikipedia.org/wiki/Ada_Lovelace"]
+        );
+        assert_eq!(urls("bing").len(), 2);
+    }
+
+    /// Engines whose result page a plain fetch sees only as the site's own chrome are not
+    /// asked: their social, app-store and footer links would be reported as results.
+    #[test]
+    fn engines_whose_results_need_javascript_are_not_registered() {
+        for absent in ["qwant", "swisscows", "marginalia"] {
+            assert!(
+                EXTENDED_ENGINES.iter().all(|engine| engine.name != absent),
+                "{absent}"
+            );
+        }
+    }
+
+    #[test]
+    fn expanded_search_uses_correct_parameters_and_isolates_failures() {
+        let fake =
+            recorder(|_| response(200, r#"<a href="https://example.org/article">Article</a>"#));
+        let report = search(&fake, "test all engines", 2000, EngineSet::All).unwrap();
+        assert_eq!(report.outcomes.len(), EXTENDED_ENGINES.len());
+        assert_eq!(report.hits.len(), 1);
+        let sent = fake.sent.borrow();
+        assert_eq!(sent.len(), EXTENDED_ENGINES.len());
+        let urls: Vec<&str> = sent.iter().map(|request| request.url.as_str()).collect();
+        assert!(
+            urls.iter()
+                .any(|url| url.starts_with("https://search.yahoo.com/search?p="))
+        );
+        assert!(
+            urls.iter()
+                .any(|url| url.starts_with("https://yandex.com/search/?text="))
+        );
+        // Every opt-in request is capped by the shared budget, never above the request limit.
+        assert!(sent.iter().all(|request| {
+            request
+                .timeout
+                .is_some_and(|cap| cap <= Duration::from_secs(EXTENDED_REQUEST_SECS))
+        }));
+    }
+
+    #[test]
+    fn expired_shared_budget_skips_all_engines_with_typed_outcomes() {
+        let clock = FakeClock::new();
+        let deadline = Deadline::start(&clock, Duration::ZERO);
+        let fake = Fake::new(vec![]);
+        let round = Round {
+            engines: &EXTENDED_ENGINES,
+            deadline: Some(&deadline),
+            skip: None,
+        };
+        let (report, observations) =
+            search_with_observations(&fake, "unique-expired-budget-query", 100, round).unwrap();
+        assert!(observations.is_empty());
+        assert!(report.hits.is_empty());
+        assert_eq!(report.outcomes.len(), EXTENDED_ENGINES.len());
+        assert!(report.outcomes.iter().all(|outcome| {
+            outcome.kind == SourceOutcomeKind::Inconclusive
+                && outcome.detail.as_deref() == Some(BUDGET_SPENT)
+        }));
+    }
+
+    /// One budget for the whole opt-in search: each request gets the request limit or what is
+    /// left of the budget, whichever is less, and an engine the budget is spent before is not
+    /// asked but keeps a typed row.
+    #[test]
+    fn the_shared_deadline_caps_each_request_and_skips_engines_after_it() {
+        let clock = FakeClock::new();
+        let deadline = Deadline::start(&clock, Duration::from_secs(EXTENDED_BUDGET_SECS));
+        let fake = recorder(|_| {
+            clock.advance(Duration::from_secs(27));
+            response(
+                200,
+                r#"<a href="https://example.org/shared-deadline">hit</a>"#,
+            )
+        });
+        let round = Round {
+            engines: &EXTENDED_ENGINES,
+            deadline: Some(&deadline),
+            skip: None,
+        };
+        let (report, _) =
+            search_with_observations(&fake, "unique-shared-deadline-query", 7000, round).unwrap();
+        // Sent at 0, 27, 54, 81 and 108 seconds; the sixth engine would start at 135.
+        let sent = fake.sent.borrow();
+        assert_eq!(sent.len(), 5);
+        for (request, limit) in sent.iter().zip([6, 6, 6, 6, 2]) {
+            let limit = Duration::from_secs(limit);
+            let cap = request.timeout.expect("every opt-in request is capped");
+            assert!(
+                limit
+                    .checked_sub(cap)
+                    .is_some_and(|slack| slack < Duration::from_secs(1)),
+                "{cap:?} for a {limit:?} cap"
+            );
+        }
+        assert_eq!(report.outcomes.len(), EXTENDED_ENGINES.len());
+        assert!(
+            report.outcomes[..5]
+                .iter()
+                .all(|outcome| outcome.kind == SourceOutcomeKind::Success)
+        );
+        assert!(report.outcomes[5..].iter().all(|outcome| {
+            outcome.kind == SourceOutcomeKind::Inconclusive
+                && outcome.detail.as_deref() == Some(BUDGET_SPENT)
+        }));
+    }
+
+    /// The budget spans every adaptive round: once it is spent, a later round sends nothing
+    /// and says why for each engine instead of starting a fresh budget.
+    #[test]
+    fn one_deadline_spans_every_adaptive_round() {
+        let clock = FakeClock::new();
+        let deadline = Deadline::start(&clock, Duration::from_secs(EXTENDED_BUDGET_SECS));
+        let fake = recorder(|_| {
+            clock.advance(Duration::from_secs(10));
+            response(
+                200,
+                r#"<a href="https://example.org/adaptive-deadline">hit</a>"#,
+            )
+        });
+        let report = adaptive_search_within(
+            &fake,
+            "unique-adaptive-deadline check",
+            8000,
+            &EXTENDED_ENGINES,
+            Some(&deadline),
+        )
+        .unwrap();
+        // Eleven requests start inside 110 seconds at ten seconds each; none after.
+        assert_eq!(fake.sent.borrow().len(), 11);
+        assert_eq!(report.rounds.len(), 2);
+        let spent = |round: &AdaptiveRound| {
+            round
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.detail.as_deref() == Some(BUDGET_SPENT))
+                .count()
+        };
+        // The engines the first round could not start before the budget ran out.
+        assert_eq!(spent(&report.rounds[0]), EXTENDED_ENGINES.len() - 11);
+        assert_eq!(spent(&report.rounds[1]), EXTENDED_ENGINES.len());
+        assert_eq!(report.stop_reason, "refinement_sources_unavailable");
+    }
+
+    /// Inside the shared budget a retry is sent only when its pause leaves time to send it,
+    /// and the pause is taken on the deadline's clock. An engine whose retry did not fit
+    /// reports the failure it saw, not a request it never made.
+    #[test]
+    fn a_retry_pause_that_would_outlast_the_budget_is_not_taken() {
+        let engine = EngineSpec {
+            name: "retry_budget_test",
+            base_url: "https://retry-budget-web-query.invalid/search",
+        };
+        let clock = FakeClock::new();
+        // Less than the shortest retry pause (75 ms) is left.
+        let tight = Deadline::start(&clock, Duration::from_millis(50));
+        let fake = Fake::new(vec![Err(transport_failure(
+            SourceOutcomeKind::ConnectFailure,
+        ))]);
+        let report =
+            search_engine(&fake, engine, "retry-budget-unique", 300, Some(&tight)).unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::ConnectFailure);
+        assert_eq!(clock.elapsed(), Duration::ZERO);
+
+        let roomy = Deadline::start(&clock, Duration::from_secs(EXTENDED_BUDGET_SECS));
+        let fake = Fake::new(vec![
+            Err(transport_failure(SourceOutcomeKind::ConnectFailure)),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/after-pause">recovered</a>"#,
+            )),
+        ]);
+        let report = search_engine(
+            &fake,
+            engine,
+            "retry-budget-roomy-unique",
+            301,
+            Some(&roomy),
+        )
+        .unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert!(clock.elapsed() >= Duration::from_millis(75));
+    }
+
     #[test]
     fn query_budget_and_canonicalization_are_enforced() {
         let valid = "A".repeat(MAX_SEARCH_QUERY_BYTES);

@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::fetch::{Credential, FetchOptions, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, append_query_param, parse_http_uri};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::web_query::{self, SearchHit};
+use crate::web_query::{self, EngineSet, SearchHit};
 
 pub use crate::environment::X_BEARER_TOKEN_ENV as X_BEARER_SLOT;
 
@@ -54,7 +54,12 @@ pub fn search_indexed_x<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<XDiscoveryReport, Error> {
     let query = checked_query(query)?;
-    let indexed = web_query::search(transport, &format!("site:x.com {query}"), now_unix)?;
+    let indexed = web_query::search(
+        transport,
+        &format!("site:x.com {query}"),
+        now_unix,
+        EngineSet::Default,
+    )?;
     let mut outcomes = indexed.outcomes;
     let mut hits = Vec::new();
     for hit in indexed.hits {
@@ -65,7 +70,12 @@ pub fn search_indexed_x<T: Transport + ?Sized>(
     // Legacy links can still be indexed under twitter.com. Search only when
     // the first pass yielded no X links and at least one index was reachable.
     if hits.is_empty() && outcomes.iter().any(|o| o.kind.is_accepted()) {
-        let legacy = web_query::search(transport, &format!("site:twitter.com {query}"), now_unix)?;
+        let legacy = web_query::search(
+            transport,
+            &format!("site:twitter.com {query}"),
+            now_unix,
+            EngineSet::Default,
+        )?;
         for hit in legacy.hits {
             if is_public_x_url(&hit.url)
                 && !hits.iter().any(|prior: &SearchHit| prior.url == hit.url)

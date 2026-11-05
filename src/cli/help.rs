@@ -95,7 +95,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Every query term must occur; an email address or domain must occur whole. Short HTML challenge pages and unsafe or oversized inputs are skipped."
         }
         "sources" => {
-            "sources QUERY...\nClassify an indicator and print curated public/browser search routes. The rest of the line is the query, so a name needs no quotes. Does not fetch those routes."
+            "sources QUERY...\nClassify an indicator and print curated public/browser search routes. The rest of the line is the query, so a name needs no quotes. A person, organisation, email, handle, domain, IP address or ABN/ACN also gets one link per default keyless engine (Bing, Brave, Mojeek), built as query builds its requests. Every route is an unverified lead. Does not fetch those routes."
         }
         "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
@@ -136,7 +136,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "plan [--session-dir DIR] SEED [SEED ...] | plan --load-session DIR ID\nRun the offline investigation spine on one or more seeds: normalise them into entities and relations, analyse that one state, and plan the external routes without fetching them. --session-dir DIR saves the run as a session, and --load-session DIR ID prints a saved one. Offline."
         }
         "query" => {
-            "query QUERY...\nOptional: query --adaptive QUERY... . Query the rebuilt keyless Bing, Brave, and Mojeek subset. --adaptive emits JSON with up to 3 feedback-directed query rounds, URL attribution by engine, typed outcomes and explicit limits (up to 9 engine executions, 18 HTTP attempts with retries)."
+            "query QUERY...\nOptional: query --adaptive QUERY..., query --all QUERY..., query --adaptive --all QUERY... . Query the rebuilt keyless Bing, Brave, and Mojeek subset. --adaptive emits JSON with up to 3 feedback-directed query rounds, URL attribution by engine, typed outcomes and explicit limits (up to 9 engine executions, 18 HTTP attempts with retries); an engine that refused the first round is not asked again in that run. --all asks all 13 keyless engines instead (adding DuckDuckGo, Google, Yahoo, Ecosia, Startpage, Yandex, Yep, Lilo, You.com and Wiby) inside one 110-second budget, each request capped at 6 seconds; an engine the budget leaves out is reported as not queried, never as a zero result."
         }
         "sf" => SF_USAGE,
         "scans" => SCANS_HELP,
