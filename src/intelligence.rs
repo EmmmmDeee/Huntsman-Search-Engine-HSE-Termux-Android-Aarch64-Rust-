@@ -12,6 +12,7 @@ use crate::geohash::haversine_km;
 use crate::graph::{EntityRelation, Graph};
 use crate::leads::{Lead, rank_leads};
 use crate::profiles::{EntityProfile, build_profiles};
+use crate::temporal_consistency::{self, TemporalConflict};
 use crate::timeline::{TimelineEvent, reconstruct};
 
 macro_rules! string_id {
@@ -725,6 +726,10 @@ pub struct IntelligenceReport {
     pub leads: Vec<Lead>,
     pub timeline: Vec<TimelineEvent>,
     pub exposures: Vec<ExposureFinding>,
+    /// Pairs of events one source dated in an impossible order for the same entity, such as a
+    /// first sighting after the last. Each is a lead to check, not a finding; omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub temporal_conflicts: Vec<TemporalConflict>,
 }
 
 #[must_use]
@@ -737,6 +742,7 @@ pub fn build_intelligence_report(
     // Each view is computed once and shared by the views built from it.
     let exposures = compute_exposure(entities);
     let timeline = reconstruct(entities);
+    let temporal_conflicts = temporal_consistency::detect(&timeline);
     IntelligenceReport {
         graph: GraphSummary {
             node_count: graph.node_count(),
@@ -748,6 +754,7 @@ pub fn build_intelligence_report(
         leads: rank_leads(entities, &exposures),
         timeline,
         exposures,
+        temporal_conflicts,
     }
 }
 
@@ -785,6 +792,42 @@ mod tests {
         assert_eq!(report.graph.node_count, 1);
         assert_eq!(report.profiles.len(), 1);
         assert_eq!(report.exposures.len(), 1);
+    }
+
+    /// One source dating an entity's first sighting after its last is surfaced on the report;
+    /// the same dates from two different sources are not compared.
+    #[test]
+    fn report_carries_one_sources_inverted_dates_as_temporal_conflicts() {
+        use crate::entity::{Evidence, EvidenceProvenance};
+
+        let inverted = Entity::builder(EntityKind::Domain, "example.org", 0.8, "scan")
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("otx"), "pulse")
+                    .with_attr("first_seen", "2024-03-02")
+                    .with_attr("last_seen", "2024-03-01"),
+            )
+            .build();
+        let report = build_intelligence_report(&[inverted], &[]);
+        assert_eq!(report.temporal_conflicts.len(), 1, "{report:?}");
+        assert_eq!(
+            report.temporal_conflicts[0].rule,
+            "first_seen_after_last_seen"
+        );
+
+        let split = Entity::builder(EntityKind::Domain, "example.net", 0.8, "scan")
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("otx"), "pulse")
+                    .with_attr("first_seen", "2024-03-02"),
+            )
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("urlscan"), "scan")
+                    .with_attr("last_seen", "2024-03-01"),
+            )
+            .build();
+        let report = build_intelligence_report(&[split], &[]);
+        assert!(report.temporal_conflicts.is_empty(), "{report:?}");
+        let json = serde_json::to_value(&report).expect("report serialises");
+        assert!(json.get("temporal_conflicts").is_none(), "{json}");
     }
 
     #[test]
