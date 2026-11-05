@@ -412,10 +412,18 @@ fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
         .header_value("cache-control")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    !cache_control
-        .split(',')
-        .map(str::trim)
-        .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
+    !cache_control.split(',').map(str::trim).any(|directive| {
+        matches!(directive, "no-store" | "no-cache")
+            || directive.split_once('=').is_some_and(|(key, value)| {
+                key.trim() == "max-age"
+                    && value
+                        .trim()
+                        .trim_matches('"')
+                        .bytes()
+                        .all(|byte| byte == b'0')
+                    && !value.trim().trim_matches('"').is_empty()
+            })
+    })
 }
 
 fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
@@ -1243,6 +1251,21 @@ mod tests {
         );
         let report = parse_engine_response(engine, &response, 502);
         assert!(!response_is_cacheable(&response, &report));
+        for directive in [
+            "max-age = 0",
+            "public, max-age= 0",
+            "MAX-AGE =0",
+            "max-age=000",
+            "max-age=\"0\"",
+        ] {
+            let response = response_with_headers(
+                200,
+                &[("cache-control", directive)],
+                r#"<a href="https://example.org/third">third</a>"#,
+            );
+            let report = parse_engine_response(engine, &response, 502);
+            assert!(!response_is_cacheable(&response, &report), "{directive}");
+        }
     }
 
     #[test]
