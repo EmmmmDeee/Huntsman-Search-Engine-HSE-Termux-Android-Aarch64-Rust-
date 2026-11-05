@@ -28,6 +28,9 @@ core	runtime	Stage 2 directory shim re-exporting L0/L3 leaves including network_
 eth_rpc	adapter	keyless Ethereum mainnet account observations through crypto_cli, scan and shared Web UI lookup over the shared evm_rpc core; provenance retained without ownership attribution
 evidence	runtime	Stage 2 directory shim re-exporting L1 evidence-contract leaves
 infrastructure	runtime	Stage 2 directory shim re-exporting L2 network-boundary leaves
+osint_synergy	runtime	source-join links between entities through shared DNS, IP and ASN attributes, each labelled not proven, reached through the analysis report, the offline analysis and /api/lookup
+security_toolkit	leaf	offline security-tool compatibility catalogue and single-digest SHA-256 audit reached through the security-tools catalog and sha256-audit CLI
+security_web	leaf	bounded anonymous HTTPS header inspection and operator-authorized path probes reached through the security-tools headers and paths CLI
 solana_rpc	adapter	keyless Solana mainnet-beta account observations through crypto_cli, scan and shared Web UI lookup: genesis-gated read-only batch, bounded SPL token, mint and multisig decode, recent transactions naming the address; provenance retained without ownership attribution
 evm_rpc	leaf	the one keyless EVM JSON-RPC account-observation core (batch request, fail-closed decode, exact-wei provenance) shared by base_rpc and eth_rpc
 bluesky_user	adapter	public Bluesky profile source client
@@ -188,6 +191,7 @@ profiles	runtime	entity profiles through intelligence report
 proof	leaf	bounded proof-environment bookkeeping
 provider_credentials	leaf	provider credential completeness manifest
 pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
+qld_traffic_cameras	adapter	Explicit QLDTraffic (keyed slot) and state-road GIS collectors reached only through the traffic-cameras CLI; nearby assets remain candidates
 radar	leaf	cross-sweep recurrence and follower detection over the private sweep log, reached through cli/radar.rs from radar track; its Bluetooth live tracker (BtRadarState) has no rootless Termux source and no caller yet
 recon	leaf	seed kinds the crtsh lookup and the domain recon front-ends share
 recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination

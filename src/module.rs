@@ -704,6 +704,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public aircraft observations: the transponders OpenSky Network receivers last reported within half a degree of a point, nearest first, with callsign, position time, altitude, speed and squawk; an airframe, not anyone aboard",
     },
     ReachableModule {
+        name: "qld_traffic_cameras",
+        command: "traffic-cameras [--district NAME] [--locality NAME] [--limit N] [--reconcile]",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1591.001"],
+        description: "Queensland's published traffic-camera catalogue, read once: each camera's location, direction and JPEG address, never the image; --reconcile compares it with TMR's state-road GIS layer by camera ID",
+    },
+    ReachableModule {
         name: "exif",
         command: "exif IMAGE-FILE",
         access: "keyless",

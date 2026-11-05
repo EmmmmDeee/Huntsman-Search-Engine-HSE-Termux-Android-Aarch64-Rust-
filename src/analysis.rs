@@ -16,6 +16,7 @@ use crate::graph::Graph;
 use crate::intelligence::{self, IntelligenceReport};
 use crate::metrics::{self, ScanMetrics};
 use crate::orthogonal_osint::{self, OrthogonalReport};
+use crate::osint_synergy::{self, SynergyReport};
 use crate::pipeline::{AnalysisSnapshot, PipelineLimits};
 use crate::pivot::{self, PivotScore};
 use crate::termination::{
@@ -35,6 +36,8 @@ pub struct InvestigationReport {
     pub correlations: Vec<Correlation>,
     pub cross_scan: Option<CrossScanCategory>,
     pub cross_scan_history: Vec<CrossScanRecord>,
+    /// Evidence-linked, cross-family investigation leads, never promoted to proof.
+    pub synergy: SynergyReport,
     pub coverage: CoverageVerdict,
     pub termination: TerminationReason,
     pub truncated: bool,
@@ -58,6 +61,8 @@ fn base_report(snapshot: &AnalysisSnapshot, expand_floor: f64) -> InvestigationR
         .entities
         .first()
         .map_or("analysis", |entity| entity.scan_id.as_str());
+    let mut synergy = osint_synergy::discover(&snapshot.entities);
+    synergy.truncated |= snapshot.truncated;
     InvestigationReport {
         attack: coverage_from_observations(&snapshot.entities, &snapshot.relations),
         intelligence: intelligence::build_intelligence_report(
@@ -74,6 +79,7 @@ fn base_report(snapshot: &AnalysisSnapshot, expand_floor: f64) -> InvestigationR
         correlations: evaluate_rules(&snapshot.entities, &[], scan_id),
         cross_scan: None,
         cross_scan_history: build_cross_scan_history(&snapshot.entities),
+        synergy,
         coverage: coverage_verdict(&snapshot.coverage),
         termination: termination_for(snapshot),
         truncated: snapshot.truncated,
@@ -157,6 +163,21 @@ mod tests {
             .map(|correlation| correlation.rule_id.as_str())
             .collect();
         assert!(fired.contains(&"AU-110"), "rules that fired: {fired:?}");
+    }
+
+    #[test]
+    fn upstream_truncation_is_preserved_in_synergy_investigative_leads() {
+        let snapshot = AnalysisSnapshot {
+            entities: vec![hosted_on("example.org", "192.0.2.10")],
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: EvidenceAncestryGraph::default(),
+            truncated: true,
+        };
+        let report = analyze_snapshot(&snapshot);
+        assert!(report.truncated);
+        assert!(report.synergy.truncated);
+        assert_eq!(report.synergy.examined_entities, 1);
     }
 
     /// An entity demoted to candidate is excluded before the rules run, so deriving relations

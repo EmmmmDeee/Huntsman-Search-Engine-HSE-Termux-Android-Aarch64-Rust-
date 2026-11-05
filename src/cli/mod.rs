@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION]|HASH | coarsen LAT,LON | case-check CASE-JSON ORIGINAL-ADVERT-TEXT | blueprint [--json] [--docx FILE|-] | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE] | crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS|sol:ADDRESS [--save FILE] | itunes KEYWORD | wikidata QUERY | gleif LEI|NAME | company NAME|ACN|ABN | geocode PLACE|LAT,LON [--save FILE] | exif IMAGE-FILE | docmeta FILE | apk FILE [--json] | apk diff OLD NEW [--json] | source-intel apk FILE --json | mitm audit [--file FILE] [--baseline FILE] [--json] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar survey-lte|survey-nr|survey-wifi|survey-bluetooth --file NETWORK_SURVEY_CSV [--json] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR] | investigate TEXT...|--file FILE | research [--plan] TERM... | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | osint SUBCOMMAND [ARGS] | privacy-audit PUBLIC-GRAPH.json | public-osint news|notices|web|dossier QUERY... | query [--adaptive|--exa] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION]|HASH | coarsen LAT,LON | case-check CASE-JSON ORIGINAL-ADVERT-TEXT | blueprint [--json] [--docx FILE|-] | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE] | crypto BITCOIN-ADDRESS|base:0xADDRESS|eth:0xADDRESS|sol:ADDRESS [--save FILE] | itunes KEYWORD | wikidata QUERY | gleif LEI|NAME | company NAME|ACN|ABN | geocode PLACE|LAT,LON [--save FILE] | traffic-cameras [--district NAME] [--locality NAME] [--limit N] [--reconcile] | exif IMAGE-FILE | docmeta FILE | apk FILE [--json] | apk diff OLD NEW [--json] | source-intel apk FILE --json | mitm audit [--file FILE] [--baseline FILE] [--json] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar survey-lte|survey-nr|survey-wifi|survey-bluetooth --file NETWORK_SURVEY_CSV [--json] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR] | investigate TEXT...|--file FILE | research [--plan] TERM... | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | osint SUBCOMMAND [ARGS] | privacy-audit PUBLIC-GRAPH.json | security-tools catalog|sha256-audit|headers|paths [ARGS] | public-osint news|notices|web|dossier QUERY... | query [--adaptive|--exa] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -46,12 +46,14 @@ Commands:
   asn                   Registration, holder, every announced prefix and BGP neighbour of one public AS
   network               WiFi network by BSSID, SSID or LAT,LON (OUI offline, WiGLE keyed)
   osint                 Native source-backed casework, discovery, area risk
+  security-tools        Canonical Rust coverage, SHA-256, HTTPS headers and path discovery
   crypto                Bitcoin account summary or read-only Base/Ethereum mainnet wallet or Solana account state (keyless; use base:0x…, eth:0x… or sol:…)
   itunes                Search the Apple App Store for one keyword (keyless, iTunes Search API)
   wikidata              Look up a Wikidata item and its structured record (keyless)
   gleif                 Look up a legal entity on the GLEIF LEI register (keyless)
   company               Look up an Australian organisation on ASIC registers and GLEIF (keyless)
   geocode               Geocode a place, address or lat,lon point (keyless, OpenStreetMap Nominatim)
+  traffic-cameras       Read-only QLDTraffic public webcam metadata (one-shot, not live imagery)
   exif                  Extract EXIF metadata and GPS coordinates from a local image (keyless, offline)
   docmeta               Extract XMP-packet and PDF /Info metadata, with embedded GPS, from a local file (keyless, offline)
   apk                   Inventory or compare two APK ZIP archives offline (keyless, no root)
@@ -105,9 +107,11 @@ mod radar;
 mod report;
 mod research;
 mod scans;
+mod security_tools;
 mod selfcheck;
 mod service;
 mod source_intel;
+mod traffic_cameras;
 mod utility;
 
 use report::{exit_on_output_failure, fail, terminal_json_pretty, usage_error};
@@ -177,6 +181,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("gleif") => lookup::gleif_cmd(&remaining.collect::<Vec<_>>()),
         Some("company") => lookup::company_cmd(&remaining.collect::<Vec<_>>()),
         Some("geocode") => lookup::geocode_cmd(&remaining.collect::<Vec<_>>()),
+        Some("traffic-cameras") => traffic_cameras::run(&remaining.collect::<Vec<_>>()),
         Some("exif") => lookup::exif_cmd(&remaining.collect::<Vec<_>>()),
         Some("docmeta") => lookup::docmeta_cmd(&remaining.collect::<Vec<_>>()),
         Some("apk") => apk::apk_cmd(&remaining.collect::<Vec<_>>()),
@@ -188,6 +193,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("plan") => lookup::plan_cmd(&remaining.collect::<Vec<_>>()),
         Some("research") => research::research_cmd(&remaining.collect::<Vec<_>>()),
         Some("osint") => osint::osint_cmd(&remaining.collect::<Vec<_>>()),
+        Some("security-tools") => security_tools::run(&remaining.collect::<Vec<_>>()),
         Some("query") => lookup::query_cmd(&remaining.collect::<Vec<_>>()),
         Some("sf") => lookup::sf_cmd(&remaining.collect::<Vec<_>>()),
         Some("scans") => scans::scans_cmd(&remaining.collect::<Vec<_>>()),

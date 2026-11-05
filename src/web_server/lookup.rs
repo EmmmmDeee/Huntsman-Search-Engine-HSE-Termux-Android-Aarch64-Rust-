@@ -2,6 +2,8 @@
 //! the authorization, same-site, body-bound and timeout gates of `web_server.rs`; behaviour is
 //! unchanged from the handlers that lived in `web_server.rs`.
 
+use serde::Serialize;
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
@@ -76,6 +78,22 @@ pub(super) fn sensor_response<T: serde::Serialize + Send + 'static>(
     }
 }
 
+/// One shared response contract for live and saved lookups. Deriving a lead
+/// does not mutate collected entities, so the original evidence remains intact.
+#[derive(Serialize)]
+struct LookupWithSynergy<'a> {
+    #[serde(flatten)]
+    report: &'a LookupReport,
+    synergy: crate::osint_synergy::SynergyReport,
+}
+
+fn serialize_lookup(report: &LookupReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&LookupWithSynergy {
+        report,
+        synergy: crate::osint_synergy::discover(&report.entities),
+    })
+}
+
 /// `GET /api/lookup`: one lookup, answered with its report. With saved scans on, the lookup runs
 /// as a saved scan, so it is kept, listed under Scans, can be stopped there, and reads `ABORTED`
 /// after a server that stopped mid-lookup starts again; the answer names it. Without them the
@@ -134,7 +152,7 @@ pub(super) fn lookup_response(
         return json_error(503, "could not start a lookup worker");
     }
     match receiver.recv_timeout(until.saturating_duration_since(Instant::now())) {
-        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
+        Ok(Ok(Ok(report))) => match serialize_lookup(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, "report could not be encoded"),
         },
@@ -211,7 +229,7 @@ fn saved_lookup(service: &Arc<ScanService>, query: &LookupQuery, until: Instant)
         scan: Some(record.id.clone()),
         status: Some(record.status.as_str()),
     };
-    match serde_json::to_string(&report) {
+    match serialize_lookup(&report) {
         Ok(body) => json_ok(&body, false),
         Err(_) => json_error(500, "report could not be encoded"),
     }
@@ -531,4 +549,67 @@ fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
         .filter(|k| !k.is_empty())
         .unwrap_or_else(|| "auto".into());
     Ok(LookupQuery { kind, selector })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+
+    #[test]
+    fn live_lookup_json_includes_canonical_source_join_without_mutating_evidence() {
+        let mut domain = Entity::new(EntityKind::Domain, "example.org", 0.8, "live-a");
+        domain.add_evidence(
+            Evidence::new(
+                EvidenceProvenance::for_scan("dns", "live-a"),
+                "DNS response",
+            )
+            .with_attr("ip", "192.0.2.9"),
+        );
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.9", 0.8, "live-b");
+        ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "live-b"),
+            "RDAP response",
+        ));
+        let before = vec![domain.clone(), ip.clone()];
+        let report = LookupReport {
+            route: "domain",
+            text: String::new(),
+            entities: vec![domain, ip],
+            outcomes: Vec::new(),
+            scan: None,
+            status: None,
+        };
+        let encoded = serialize_lookup(&report).expect("encode lookup");
+        let json: serde_json::Value = serde_json::from_str(&encoded).expect("JSON");
+        assert_eq!(
+            json["synergy"]["links"][0]["relation"],
+            "reported_dns_address"
+        );
+        assert_eq!(
+            json["synergy"]["links"][0]["status"],
+            "separately_observed_target"
+        );
+        assert_eq!(json["synergy"]["links"][0]["source_scan_id"], "live-a");
+        assert_eq!(json["synergy"]["links"][0]["target_scan_id"], "live-b");
+        assert_eq!(report.entities, before);
+        assert_eq!(json["route"], "domain");
+    }
+
+    #[test]
+    fn no_source_observations_means_no_live_synergy_claim() {
+        let report = LookupReport {
+            route: "domain",
+            text: String::new(),
+            entities: vec![Entity::new(EntityKind::Domain, "example.org", 0.8, "seed")],
+            outcomes: Vec::new(),
+            scan: Some("seed".to_owned()),
+            status: Some("FINISHED"),
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serialize_lookup(&report).expect("encode")).expect("JSON");
+        assert_eq!(json["synergy"]["links"], serde_json::json!([]));
+        assert_eq!(json["scan"], "seed");
+        assert_eq!(json["status"], "FINISHED");
+    }
 }
