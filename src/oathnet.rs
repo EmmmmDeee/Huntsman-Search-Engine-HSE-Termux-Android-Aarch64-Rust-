@@ -636,10 +636,7 @@ fn text<'a>(item: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
 }
 
 fn non_blank(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
+    crate::textnorm::nonblank(value).map(str::to_owned)
 }
 
 /// Replace `slot` with `candidate` when it is empty or `better(candidate, current)`. ISO 8601
