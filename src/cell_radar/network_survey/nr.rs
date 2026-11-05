@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::json;
 
-use super::{MAX_SURVEY_CSV_BYTES, cell_number, column, csv_rows};
+use super::{cell_number, column};
 use crate::cell_radar::{CellObservation, parse_cells};
 use crate::error::Error;
+use crate::rf::survey_csv::{Export, exact_columns, read_export};
 use crate::timefmt::parse_timestamp;
 
 pub const NR_CSV_VERSION: &str = "0.4.0";
@@ -224,44 +225,10 @@ fn optional_u32(
 /// # Errors
 /// Refuses oversized, invalid UTF-8, malformed CSV, unsupported versions and schema drift.
 pub fn parse_nr(bytes: &[u8]) -> Result<NrCsvReport, Error> {
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SURVEY_CSV_BYTES {
-        return Err(invalid("input exceeds 256 KiB"));
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| invalid("not UTF-8"))?;
-    let mut offset = 0;
-    let mut version = None;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if !trimmed.starts_with('#') {
-            break;
-        }
-        if let Some(value) = trimmed.strip_prefix("# CSV Version=") {
-            if version.replace(value.trim()).is_some() {
-                return Err(invalid("duplicate CSV version"));
-            }
-        }
-        offset += line.len();
-    }
-    if version != Some(NR_CSV_VERSION) {
-        return Err(invalid("missing or unsupported CSV version"));
-    }
-    let mut rows = csv_rows(&text[offset..])?.into_iter();
-    let header = rows.next().ok_or_else(|| invalid("missing header"))?;
-    if header.len() != HEADER.len()
-        || !header
-            .iter()
-            .zip(HEADER)
-            .all(|(actual, expected)| actual.as_str() == expected)
-    {
-        return Err(invalid(
-            "NR 0.4.0 requires the exact documented 28-column header",
-        ));
-    }
-    let columns: BTreeMap<&str, usize> = header
-        .iter()
-        .enumerate()
-        .map(|(index, name)| (name.as_str(), index))
-        .collect();
+    let Export { header, rows } =
+        read_export(bytes, NR_CSV_VERSION).map_err(|refusal| invalid(refusal.reason()))?;
+    let columns = exact_columns(&header, &HEADER)
+        .ok_or_else(|| invalid("NR 0.4.0 requires the exact documented 28-column header"))?;
     let mut observations = Vec::new();
     let mut rejected = 0;
     for row in rows {
