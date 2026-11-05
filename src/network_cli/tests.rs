@@ -161,6 +161,45 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configu
     assert!(text.contains(wigle::USER_SLOT), "{text}");
 }
 
+#[test]
+fn locally_administered_bssid_is_not_asserted_randomised_or_vendor_identified() {
+    let (text, report) = printed(run(
+        &crate::test_support::Refusing,
+        &Keys::default(),
+        "D6:92:5E:AF:76:C9",
+        7,
+    ));
+    assert_eq!(report.outcomes[0].module, OUI_SOURCE);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
+    assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::NotConfigured);
+    assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::NotConfigured);
+    assert_eq!(report.entities.len(), 1);
+    let evidence = report.entities[0]
+        .evidence
+        .iter()
+        .find(|e| e.provenance.source == OUI_SOURCE)
+        .expect("offline OUI evidence");
+    assert_eq!(
+        evidence
+            .attributes
+            .get("locally_administered")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        evidence
+            .attributes
+            .get("randomisation_status")
+            .map(String::as_str),
+        Some("unverified")
+    );
+    assert!(!evidence.attributes.contains_key("vendor"));
+    assert!(!evidence.attributes.contains_key("randomised"));
+    assert!(text.contains("unverified"), "{text}");
+    assert!(text.contains("wigle_networks=none"), "{text}");
+    assert!(text.contains("wigle_bluetooth_devices=none"), "{text}");
+}
+
 /// A BSSID `WiGLE` recorded is observed by `WiGLE` alone: the OUI registry's reading of its prefix is
 /// no second source of it.
 #[test]

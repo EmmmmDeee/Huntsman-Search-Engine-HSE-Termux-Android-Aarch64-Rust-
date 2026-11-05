@@ -44,7 +44,8 @@ jobs:
         run: |
           set -euo pipefail
           rustc --edition=2021 -O tools/branch_reconciliation.rs -o "$RUNNER_TEMP/branch-inventory"
-          "$RUNNER_TEMP/branch-inventory" "$RUNNER_TEMP/branch-reconciliation.tsv"
+          "$RUNNER_TEMP/branch-inventory" "$RUNNER_TEMP/branch-reconciliation.tsv" | tee "$RUNNER_TEMP/branch-review-queue.txt"
+          cat "$RUNNER_TEMP/branch-review-queue.txt" >> "$GITHUB_STEP_SUMMARY"
           test -s "$RUNNER_TEMP/branch-reconciliation.tsv"
           head -n 2 "$RUNNER_TEMP/branch-reconciliation.tsv"
       - name: Upload provenance-preserving branch inventory

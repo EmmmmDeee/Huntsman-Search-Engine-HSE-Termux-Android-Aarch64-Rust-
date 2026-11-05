@@ -19,6 +19,7 @@ pub enum DeviceClass {
     Router,
     Printer,
     Beacon,
+    /// Legacy name for locally administered addresses; the bit does not prove randomisation.
     Randomized,
     Unknown,
     Unregistered,
@@ -63,7 +64,7 @@ pub const SOURCE: &str = "oui";
 const IEEE_RA: &str = "IEEE Registration Authority";
 
 impl OuiInfo {
-    /// The manufacturer the IEEE MA-L registry names for the address: `None` for a randomised
+    /// The manufacturer the IEEE MA-L registry names for the address: `None` for a locally administered
     /// address, an unregistered prefix, or a block the IEEE Registration Authority sub-assigns.
     #[must_use]
     pub fn manufacturer(&self) -> Option<&'static str> {
@@ -91,7 +92,8 @@ fn octets(mac: &str) -> Option<[u8; 6]> {
     Some(out)
 }
 
-/// Whether the address is locally administered (randomised): the U/L bit of its first octet.
+/// Whether the address is locally administered: the U/L bit of its first octet.
+/// This bit alone does not establish that an address was randomly generated.
 #[must_use]
 pub fn is_locally_administered(mac: &str) -> Option<bool> {
     octets(mac).map(|octets| octets[0] & 0x02 != 0)
@@ -109,7 +111,7 @@ pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
     let octets = octets(mac)?;
     if octets[0] & 0x02 != 0 {
         return Some(OuiInfo {
-            vendor: "Randomized (private)",
+            vendor: "Locally administered (vendor unverified)",
             class: DeviceClass::Randomized,
         });
     }
@@ -301,15 +303,16 @@ mod tests {
     }
 
     #[test]
-    fn randomised_and_multicast_bits_are_read_directly() {
+    fn local_administration_and_multicast_bits_are_read_directly() {
         for mac in [
             "02:00:00:00:00:01",
             "06:11:22:33:44:55",
             "DA:A1:19:AB:CD:EF",
+            "D6:92:5E:AF:76:C9",
         ] {
             let info = classify_mac(mac).unwrap();
             assert_eq!(info.class, DeviceClass::Randomized);
-            assert_eq!(info.vendor, "Randomized (private)");
+            assert_eq!(info.vendor, "Locally administered (vendor unverified)");
             assert_eq!(info.manufacturer(), None);
         }
         assert_eq!(is_locally_administered("3C:07:54:AB:CD:EF"), Some(false));

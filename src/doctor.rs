@@ -1350,6 +1350,11 @@ fn clear_build_cache(path: &Path) -> Result<(), String> {
 
 /// Total size of the files under `dir`, without following symlinks.
 fn dir_size(dir: &Path) -> u64 {
+    // read_dir follows a symlink passed as the root, even when entries are checked
+    // with symlink_metadata. Refuse a linked root before beginning traversal.
+    if !fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir()) {
+        return 0;
+    }
     let mut total = 0_u64;
     let mut visited = 0_usize;
     let mut pending = vec![dir.to_path_buf()];
@@ -1362,12 +1367,14 @@ fn dir_size(dir: &Path) -> u64 {
             if visited > MAX_CACHE_ENTRIES {
                 return total;
             }
-            let Ok(meta) = entry.metadata() else {
+            // The link itself, never its target: a linked directory is not descended into, and
+            // only regular files count, so a symlink's own length is not added either.
+            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
                 continue;
             };
             if meta.is_dir() {
                 pending.push(entry.path());
-            } else {
+            } else if meta.is_file() {
                 total = total.saturating_add(meta.len());
             }
         }
