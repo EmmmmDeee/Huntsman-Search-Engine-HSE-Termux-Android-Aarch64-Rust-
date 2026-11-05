@@ -5,12 +5,12 @@
 use super::response::json_error;
 use super::{
     INSPECT_PATH, INVESTIGATE_PATH, KEYS_PATH, OSINT_CASE_PATH, OSINT_RISK_PATH, ParsedRequest,
-    RESEARCH_MISSION_PATH, ServeConfig, TRACK_PATH,
+    RESEARCH_MISSION_PATH, RHINSER_NATIVE_PATH, ServeConfig, TRACK_PATH,
 };
 use crate::scan_api::ScanApi;
 
-/// Only the scan API and the key save change state, so only they take POST, with the file
-/// inspection, whose upload is too large for a query string.
+/// Limit POST to routes that explicitly accept bodies or initiate state changes.
+/// Rhinser native inspection is read-only and bounded; it receives JSON in the body.
 pub(super) fn takes_post(path: &str) -> bool {
     ScanApi::handles(path)
         || path == KEYS_PATH
@@ -20,6 +20,7 @@ pub(super) fn takes_post(path: &str) -> bool {
         || path == RESEARCH_MISSION_PATH
         || path == OSINT_CASE_PATH
         || path == OSINT_RISK_PATH
+        || path == RHINSER_NATIVE_PATH
 }
 
 /// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another

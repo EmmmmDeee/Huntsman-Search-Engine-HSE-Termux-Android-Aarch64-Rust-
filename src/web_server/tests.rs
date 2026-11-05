@@ -128,6 +128,138 @@ fn rhinser_catalogue_http_contract_is_read_only_and_complete() {
 }
 
 #[test]
+fn rhinser_native_http_inspects_capture_without_exposing_input_or_claiming_radio_access() {
+    let fixture = r#"{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"ndef","hex":"D101055402656E4869"},{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}"#;
+    let request = format!(
+        "POST /api/rhinser/native HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nX-Huntsman-Lookup: 1\r\nContent-Length: {}\r\n\r\n{fixture}",
+        fixture.len()
+    );
+    let answer = response_for_request(&request, None, loopback_bind());
+    assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+    let body = answer.split_once("\r\n\r\n").unwrap().1;
+    let report: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(report["evidence_role"], "operator_submitted_unverified");
+    assert_eq!(report["radio_access"], false);
+    assert_eq!(report["transport_verified"], false);
+    assert_eq!(report["device_attested"], false);
+    assert_eq!(report["observations"][0]["kind"], "ndef");
+    assert_eq!(report["observations"][1]["signal_class"], "medium");
+    assert!(!body.contains("D101055402656E4869"));
+    assert!(!body.contains("1730000000000Z"));
+
+    // The same operator fixture has identical semantics in the CLI and HTTP paths.
+    let direct = crate::rhinser_native::inspect_capture_json(fixture.as_bytes()).unwrap();
+    let expected = serde_json::to_value(direct).unwrap();
+    assert_eq!(report, expected);
+}
+
+#[test]
+fn rhinser_native_http_refuses_unauthenticated_or_invalid_capture_requests() {
+    let fixture = r#"{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}"#;
+    let request = |method: &str, headers: &str, body: &str| {
+        format!(
+            "{method} /api/rhinser/native HTTP/1.1\r\nHost: public.example\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let loopback_request = |method: &str, headers: &str, body: &str| {
+        request(method, headers, body).replace("Host: public.example", "Host: 127.0.0.1:8080")
+    };
+    let denied = response_for_request(
+        &request("POST", "X-Huntsman-Lookup: 1\r\n", fixture),
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(denied.starts_with("HTTP/1.1 401"), "{denied}");
+    let missing_lookup = response_for_request(
+        &request("POST", "Authorization: Bearer secret\r\n", fixture),
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(
+        missing_lookup.starts_with("HTTP/1.1 403"),
+        "{missing_lookup}"
+    );
+    let cross_site = response_for_request(
+        &request(
+            "POST",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n",
+            fixture,
+        ),
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(cross_site.starts_with("HTTP/1.1 403"), "{cross_site}");
+    // A public HSE bind must never accept raw capture bytes, even with a valid token.
+    let public_upload = response_for_request(
+        &request(
+            "POST",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            fixture,
+        ),
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(public_upload.starts_with("HTTP/1.1 403"), "{public_upload}");
+    let get = response_for_request(
+        &request(
+            "GET",
+            "Authorization: Bearer secret\r\nX-Huntsman-Lookup: 1\r\n",
+            fixture,
+        ),
+        Some("secret"),
+        public_bind(),
+    );
+    assert!(get.starts_with("HTTP/1.1 405"), "{get}");
+    let unconsented = fixture.replace(
+        "\"operator_consented\":true",
+        "\"operator_consented\":false",
+    );
+    let invalid = response_for_request(
+        &loopback_request("POST", "X-Huntsman-Lookup: 1\r\n", &unconsented),
+        None,
+        loopback_bind(),
+    );
+    assert!(invalid.starts_with("HTTP/1.1 400"), "{invalid}");
+    let malformed = response_for_request(
+        &loopback_request("POST", "X-Huntsman-Lookup: 1\r\n", "not-json"),
+        None,
+        loopback_bind(),
+    );
+    assert!(malformed.starts_with("HTTP/1.1 400"), "{malformed}");
+}
+
+#[test]
+fn rhinser_native_browser_submission_matches_protected_http_contract() {
+    for marker in [
+        "id=\"rhinser-native-panel\"",
+        "id=\"rhinser-native-form\"",
+        "id=\"rhinser-native-input\"",
+        "id=\"rhinser-native-output\"",
+        "id=\"rhinser-native-file\"",
+        "id=\"rhinser-native-export\"",
+        "Export redacted report",
+        "Import authorized capture file (JSON, maximum 20 KB)",
+        "let rhinserNativeReport=null;",
+        "let rhinserNativeGeneration=0;",
+        "if(generation!==rhinserNativeGeneration)return;",
+        "function rhinserLoopbackOrigin(){",
+        "Capture inspection requires loopback HSE on this device. No capture was sent.",
+        "Capture file import requires loopback HSE on this device. No file was read or sent.",
+        "if(generation!==rhinserNativeGeneration||submitted!==",
+        "Capture changed during inspection. Inspect the current input again.",
+        "if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');",
+        "osintOffline('/api/rhinser/native'",
+        "This is not live NFC or Bluetooth scanning.",
+    ] {
+        assert!(
+            INDEX_HTML.contains(marker),
+            "missing native browser integration: {marker}"
+        );
+    }
+}
+
+#[test]
 fn local_evidence_cannot_be_read_from_a_public_bind_even_with_token() {
     for path in ["/evidence", "/api/evidence"] {
         let request = format!(

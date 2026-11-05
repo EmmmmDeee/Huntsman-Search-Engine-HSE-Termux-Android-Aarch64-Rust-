@@ -8,218 +8,8 @@
 <meta name="huntsman-page" content="">
 <title>Huntsman Search Engine</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<style>
-:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#7a879a;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e6736e;--badd:rgba(230,115,110,.15);--g0:#38bdf8;--g1:#4ade80;--g2:#fbbf24;--g3:#f87171;--g4:#a78bfa;--g5:#f472b6;--g6:#22d3ee;--g7:#fb923c;--g8:#94a3b8;--g9:#a3e635;--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}
-:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}
-@media (prefers-color-scheme:light){:root:not(.dark){--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}}
-*,*::before,*::after{box-sizing:border-box}
-[hidden]{display:none!important}
-html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
-svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.appbar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:10px;height:calc(52px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(8px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));background:var(--el);border-bottom:1px solid var(--line);box-shadow:var(--sh)}
-.brand{display:flex;align-items:center;gap:7px;min-width:0;min-height:44px;color:var(--fg);text-decoration:none}
-.brand svg.i{width:20px;height:20px;color:var(--acc)}
-.brand-text{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sep{color:var(--acc);margin:0 4px}
-.ver{font:10.5px var(--mono);color:var(--dim);white-space:nowrap}
-.bar-end{display:flex;align-items:center;gap:4px;margin-left:auto}
-.pill{font:600 10px/1 var(--sans);padding:5px 9px;border-radius:999px;background:var(--el2);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
-.pill.ok{background:var(--okd);color:var(--ok)}
-.pill.warn{background:var(--warnd);color:var(--warn)}
-.pill.bad{background:var(--badd);color:var(--bad)}
-.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border:0;border-radius:var(--r);background:none;color:var(--muted);cursor:pointer}
-.iconbtn:hover,.iconbtn[aria-current]{background:var(--hover);color:var(--fg)}
-.navbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;background:var(--el);border-top:1px solid var(--line);padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-shadow:0 -1px 2px rgba(0,0,0,.4)}
-.navlink{position:relative;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;color:var(--dim);font-size:11px;font-weight:500;text-decoration:none;-webkit-tap-highlight-color:transparent}
-.navlink svg.i{width:20px;height:20px}
-.navlink:hover{color:var(--muted)}
-.navlink.active{color:var(--acc)}
-.navlink.active::before{content:"";position:absolute;top:0;width:26px;height:2px;background:var(--acc);border-radius:0 0 2px 2px}
-main{max-width:1240px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
-h1{display:flex;align-items:center;gap:8px;min-width:0;font-size:17px;font-weight:600;margin:0 0 12px;overflow-wrap:anywhere}
-h1 svg.i{color:var(--acc)}
-.head{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;margin:0 0 12px}
-.head h1{margin:0}
-.panel{background:var(--el);border:1px solid var(--line);border-radius:var(--r);margin:0 0 14px;box-shadow:var(--sh);overflow:hidden}
-.panel-heading{display:flex;align-items:center;gap:8px;min-height:44px;padding:4px 4px 4px 14px;background:var(--el2);border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600}
-.panel-body{padding:14px}
-.badge{display:inline-block;min-width:20px;padding:1px 7px;border-radius:999px;background:var(--bg);color:var(--muted);font:600 10.5px/1.6 var(--mono);text-align:center}
-.help{margin:10px 0 0;color:var(--muted);font-size:12.5px}
-.grid2{display:grid;grid-template-columns:minmax(0,1fr);gap:0 14px}
-@media (min-width:768px){.grid2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
-form.row{display:grid;grid-template-columns:1fr;gap:8px}
-@media (min-width:640px){#analyze{grid-template-columns:1fr auto;align-items:start}}
-input,select,textarea{min-height:44px;width:100%;padding:8px 12px;border:1px solid var(--line2);border-radius:var(--r);background:var(--bg);color:var(--fg);font:15px var(--sans)}
-input[type=checkbox],input[type=radio]{width:18px;height:18px;min-height:0;margin:0;padding:0;accent-color:var(--acc);flex:none}
-.mono,#seeds,#token,#scq{font-family:var(--mono)}
-textarea{resize:vertical}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--accd)}
-::placeholder{color:var(--dim)}
-.fl{display:block;margin:12px 0 4px;color:var(--muted);font-size:12.5px;font-weight:600}
-.fl:first-child{margin-top:0}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:8px 14px;border:1px solid var(--line2);border-radius:var(--r);background:var(--el2);color:var(--fg);font:500 13.5px var(--sans);cursor:pointer;white-space:nowrap;text-decoration:none}
-.btn:hover{background:var(--hover)}
-.btn:disabled{opacity:.5;cursor:not-allowed}
-.btn[aria-pressed=true]{border-color:var(--acc);color:var(--acc);background:var(--accd)}
-.btn-primary{background:var(--acc);border-color:var(--acc);color:var(--acct);font-weight:600}
-.btn-primary:hover{background:var(--acc2);border-color:var(--acc2)}
-.btn-danger{color:var(--bad);border-color:var(--bad)}
-.btn-ghost{border-color:transparent;background:none;color:var(--acc);font-size:12.5px}
-.panel-heading .btn{margin-left:auto}
-.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px}
-.toolbar .grow{flex:1 1 12em;width:auto}
-.toolbar select{width:auto;flex:0 1 auto}
-.seg{display:inline-flex}
-.seg .btn:first-child{border-radius:var(--r) 0 0 var(--r)}
-.seg .btn+.btn{border-radius:0 var(--r) var(--r) 0;margin-left:-1px}
-.chk{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 6px;cursor:pointer;font-size:13px}
-.chk input{margin:13px}
-.cb{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;margin:-8px -6px -8px -12px;cursor:pointer;flex:none}
-.pick{display:flex;align-items:flex-start;gap:4px;min-width:0}
-.pick>details{flex:1 1 auto;min-width:0}
-.pick>.link{flex:0 1 auto;min-width:44px;overflow-wrap:anywhere}
-.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(15em,1fr));gap:0 12px}
-.link{display:inline-flex;align-items:center;min-height:44px;min-width:44px;color:var(--acc);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;cursor:pointer}
-.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:0 8px;margin:-8px 0 4px;color:var(--muted);font-size:13px}
-.tabs{display:flex;flex-wrap:wrap;gap:0 2px;margin:0 0 12px;border-bottom:1px solid var(--line)}
-.tab{flex:none;display:inline-flex;align-items:center;min-height:44px;padding:0 13px;border:0;border-bottom:2px solid transparent;background:none;color:var(--muted);font:500 13px var(--sans);text-decoration:none;cursor:pointer;white-space:nowrap}
-.tab:hover{color:var(--fg)}
-.tab[aria-current=page],.tab[aria-selected=true]{color:var(--acc);border-bottom-color:var(--acc)}
-.counters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px}
-@media (min-width:480px){.counters{grid-template-columns:repeat(4,minmax(0,1fr))}}
-.counter{min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r);background:var(--el2)}
-.lab{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
-.val{font:600 19px/1.35 var(--mono);color:var(--fg);overflow-wrap:anywhere}
-.val.ok,.counter.ok .val{color:var(--ok)}.val.bad,.counter.bad .val{color:var(--bad)}.val.warn,.counter.warn .val{color:var(--warn)}.counter.info .val{color:var(--acc)}
-#cstatus{font-size:14px}
-.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}
-@media (min-width:768px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
-.stat{min-width:0;padding:10px 14px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh)}
-.bars{padding:6px 0}
-.bar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 12px;min-height:44px;padding:6px 14px;color:var(--fg);text-decoration:none}
-.bar:hover{background:var(--hover)}
-.bar-l{font-size:12.5px;overflow-wrap:anywhere}
-.bar-n{font:600 12px var(--mono);color:var(--muted)}
-.bar-t{grid-column:1/-1;height:8px;border-radius:4px;background:var(--el2);overflow:hidden}
-.bar-f{display:block;height:100%;min-width:2px;border-radius:4px;background:var(--acc)}
-.alert{margin:0 0 14px;padding:10px 14px;border:1px solid var(--bad);border-radius:var(--r);background:var(--badd);color:var(--bad);font-size:13px;overflow-wrap:anywhere}
-.alert.warn{border-color:var(--warn);background:var(--warnd);color:var(--warn)}
-.alert.upgrade:not([hidden]){display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between}
-.when{margin:0 0 12px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
-th{padding:8px 12px;text-align:left;background:var(--el2);color:var(--dim);border-bottom:1px solid var(--line);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.sortable th{cursor:pointer}
-th[aria-sort=ascending]::after{content:" ▲"}th[aria-sort=descending]::after{content:" ▼"}
-td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
-tbody tr:nth-child(even){background:var(--el2)}
-tbody tr:last-child td{border-bottom:0}
-tr.err td{background:var(--badd)}
-td.none{color:var(--dim)}
-.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--hover);color:var(--muted);font:600 10.5px/1.5 var(--mono)}
-.label.ok{background:var(--okd);color:var(--ok)}.label.info{background:var(--accd);color:var(--acc)}.label.warn{background:var(--warnd);color:var(--warn)}.label.bad{background:var(--badd);color:var(--bad)}
-.risks{display:inline-flex;gap:3px}
-.acts{display:flex;flex-wrap:wrap;gap:4px}
-.nw,#log td:first-child{white-space:nowrap}
-.tree,.tree ul{margin:0;padding:0;list-style:none}
-.tree{padding:8px 14px;font-size:12.5px}
-.tree ul{margin-left:6px;padding-left:10px;border-left:1px solid var(--line)}
-.tree li{padding:3px 0}
-.tree .label{margin-right:2px}
-.tree .hit>.data{font-weight:700;color:var(--fg)}
-.acts .btn{min-width:44px;padding:6px 10px;font-size:12.5px}
-pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}
-.data{font:12.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
-.note{margin:0;padding:8px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}
-.note:empty,#cnote:empty{display:none}
-details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:12.5px;font-weight:600;background:var(--el2)}
-details[open] summary{border-bottom:1px solid var(--line)}
-.raw summary,.corr summary{gap:8px;padding:0;background:none;font-weight:400;list-style:none}
-.raw[open] summary,.corr[open] summary{border-bottom:0}
-.raw summary .data{min-width:0}
-.raw summary .label{flex:none}
-.raw summary::-webkit-details-marker,.corr summary::-webkit-details-marker,.menu summary::-webkit-details-marker{display:none}
-.raw summary::before,.corr summary::before{content:"";flex:none;width:7px;height:7px;margin:0 3px;border:solid var(--dim);border-width:0 2px 2px 0;transform:rotate(-45deg)}
-.raw[open] summary::before,.corr[open] summary::before{transform:rotate(45deg)}
-.corr summary{font-weight:600}
-.filter{padding:8px 14px;border-bottom:1px solid var(--line)}
-.ent-b{padding:4px 0 8px 15px;font-size:12.5px}
-.ent-b .pivot{margin-top:8px}
-.ent-m{margin:0 0 6px;color:var(--muted)}
-dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2px 10px;margin:4px 0 0;font-size:12px}
-dt{color:var(--dim);overflow-wrap:break-word}
-dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}
-dd dl{margin:0}
-.kv{gap:0;margin:0;font-size:12.5px;grid-template-columns:fit-content(45%) minmax(0,1fr)}
-.kv dt,.kv dd{padding:7px 14px;border-bottom:1px solid var(--line)}
-.kv dt{background:var(--el2);font-weight:600}
-.types{gap:1px 10px}
-.types dd{color:var(--muted)}
-.more{width:100%;border-width:1px 0 0;border-radius:0}
-.menu{position:relative}
-.menu summary{list-style:none}
-.menu-list.end{left:auto;right:0}
-.menu-list{position:absolute;top:100%;left:0;z-index:5;display:flex;flex-direction:column;min-width:10em;margin-top:4px;padding:4px;background:var(--el);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 4px 14px rgba(0,0,0,.35)}
-.menu-list button{min-height:44px;padding:0 12px;border:0;border-radius:4px;background:none;color:var(--fg);font:13.5px var(--sans);text-align:left;cursor:pointer}
-.menu-list button:hover{background:var(--hover)}
-.uc td{vertical-align:middle}
-.uc td:first-child{width:44px;padding-right:0}
-.uc .cb{margin:-8px 0}
-.uc td:only-child{width:auto;padding:7px 14px}
-.help.pad{margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
-.uc label{display:block;cursor:pointer}
-.uc b{display:block}
-.uc label .help{display:block;margin:4px 0 0}
-.spin{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.spin{animation:none}}
-.graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
-.graph svg{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
-#gedges path{fill:none;stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke}
-#gnodes path{fill:none;stroke:currentColor;stroke-width:10px;stroke-linecap:round;vector-effect:non-scaling-stroke}
-#gnodes .grim{color:var(--el);stroke-width:12px}
-#gnodes .groot{stroke-width:18px}
-#gnodes .gring{color:var(--fg);stroke-width:16px}
-#gnodes .gring.groot{stroke-width:24px}
-.groot{color:var(--fg)}
-.g0{color:var(--g0)}.g1{color:var(--g1)}.g2{color:var(--g2)}.g3{color:var(--g3)}.g4{color:var(--g4)}.g5{color:var(--g5)}.g6{color:var(--g6)}.g7{color:var(--g7)}.g8{color:var(--g8)}.g9{color:var(--g9)}
-.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 14px;font-size:12px;color:var(--muted)}
-.legend span{display:inline-flex;align-items:center;gap:6px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;background:currentColor}
-@media (max-width:420px){.brand-sub{display:none}}
-@media (max-width:767px){
-.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:auto}
-.table-wrap thead{display:none}
-.table-wrap tbody tr,.table-wrap tbody tr:nth-child(even){padding:4px 0;background:none;border-bottom:1px solid var(--line)}
-.table-wrap tbody tr:last-child{border-bottom:0}
-.table-wrap tbody tr.err{background:var(--badd)}
-.table-wrap tr.err td{background:none}
-.table-wrap td{display:flex;gap:4px 12px;padding:4px 14px;border:0}
-.table-wrap td::before{content:attr(data-label);flex:0 0 32%;padding-top:2px;color:var(--dim);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.table-wrap td:not([data-label])::before,.table-wrap td.none::before{display:none}
-.table-wrap td:empty{display:none}
-.table-wrap td>details{flex:1 1 auto;min-width:0}
-.table-wrap td.wide{flex-wrap:wrap}
-.table-wrap td.wide::before{flex-basis:100%}
-.table-wrap td.wide>.pick{flex:1 1 100%}
-.ent-b{padding-left:0}
-.ent-b dl{grid-template-columns:minmax(0,1fr);gap:0}
-.ent-b dd{padding:0 0 4px 10px;border-left:1px solid var(--line)}
-}
-@media (min-width:768px){
-.navbar{top:calc(52px + env(safe-area-inset-top));bottom:auto;gap:2px;padding:0 12px;border-top:0;border-bottom:1px solid var(--line);box-shadow:var(--sh)}
-.navlink{flex:0 0 auto;flex-direction:row;gap:7px;min-height:42px;padding:0 14px;font-size:13px}
-.navlink svg.i{width:15px;height:15px}
-.navlink.active{background:var(--accd)}
-.navlink.active::before{top:auto;bottom:0;width:100%;height:2px;border-radius:2px 2px 0 0}
-main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
-.acts{flex-wrap:nowrap}
-}
-.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}#kimp label{font:13px var(--sans)}
-.osint-report{white-space:pre-wrap;overflow-wrap:anywhere}
-</style>
+<style>:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#7a879a;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e6736e;--badd:rgba(230,115,110,.15);--g0:#38bdf8;--g1:#4ade80;--g2:#fbbf24;--g3:#f87171;--g4:#a78bfa;--g5:#f472b6;--g6:#22d3ee;--g7:#fb923c;--g8:#94a3b8;--g9:#a3e635;--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}@media (prefers-color-scheme:light){:root:not(.dark){--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}}*,*::before,*::after{box-sizing:border-box}[hidden]{display:none!important}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.appbar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:10px;height:calc(52px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(8px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));background:var(--el);border-bottom:1px solid var(--line);box-shadow:var(--sh)}.brand{display:flex;align-items:center;gap:7px;min-width:0;min-height:44px;color:var(--fg);text-decoration:none}.brand svg.i{width:20px;height:20px;color:var(--acc)}.brand-text{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sep{color:var(--acc);margin:0 4px}.ver{font:10.5px var(--mono);color:var(--dim);white-space:nowrap}.bar-end{display:flex;align-items:center;gap:4px;margin-left:auto}.pill{font:600 10px/1 var(--sans);padding:5px 9px;border-radius:999px;background:var(--el2);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}.pill.ok{background:var(--okd);color:var(--ok)}.pill.warn{background:var(--warnd);color:var(--warn)}.pill.bad{background:var(--badd);color:var(--bad)}.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border:0;border-radius:var(--r);background:none;color:var(--muted);cursor:pointer}.iconbtn:hover,.iconbtn[aria-current]{background:var(--hover);color:var(--fg)}.navbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;background:var(--el);border-top:1px solid var(--line);padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-shadow:0 -1px 2px rgba(0,0,0,.4)}.navlink{position:relative;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;color:var(--dim);font-size:11px;font-weight:500;text-decoration:none;-webkit-tap-highlight-color:transparent}.navlink svg.i{width:20px;height:20px}.navlink:hover{color:var(--muted)}.navlink.active{color:var(--acc)}.navlink.active::before{content:"";position:absolute;top:0;width:26px;height:2px;background:var(--acc);border-radius:0 0 2px 2px}main{max-width:1240px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}h1{display:flex;align-items:center;gap:8px;min-width:0;font-size:17px;font-weight:600;margin:0 0 12px;overflow-wrap:anywhere}h1 svg.i{color:var(--acc)}.head{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;margin:0 0 12px}.head h1{margin:0}.panel{background:var(--el);border:1px solid var(--line);border-radius:var(--r);margin:0 0 14px;box-shadow:var(--sh);overflow:hidden}.panel-heading{display:flex;align-items:center;gap:8px;min-height:44px;padding:4px 4px 4px 14px;background:var(--el2);border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600}.panel-body{padding:14px}.badge{display:inline-block;min-width:20px;padding:1px 7px;border-radius:999px;background:var(--bg);color:var(--muted);font:600 10.5px/1.6 var(--mono);text-align:center}.help{margin:10px 0 0;color:var(--muted);font-size:12.5px}.grid2{display:grid;grid-template-columns:minmax(0,1fr);gap:0 14px}@media (min-width:768px){.grid2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}form.row{display:grid;grid-template-columns:1fr;gap:8px}@media (min-width:640px){#analyze{grid-template-columns:1fr auto;align-items:start}}input,select,textarea{min-height:44px;width:100%;padding:8px 12px;border:1px solid var(--line2);border-radius:var(--r);background:var(--bg);color:var(--fg);font:15px var(--sans)}input[type=checkbox],input[type=radio]{width:18px;height:18px;min-height:0;margin:0;padding:0;accent-color:var(--acc);flex:none}.mono,#seeds,#token,#scq{font-family:var(--mono)}textarea{resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--accd)}::placeholder{color:var(--dim)}.fl{display:block;margin:12px 0 4px;color:var(--muted);font-size:12.5px;font-weight:600}.fl:first-child{margin-top:0}.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:8px 14px;border:1px solid var(--line2);border-radius:var(--r);background:var(--el2);color:var(--fg);font:500 13.5px var(--sans);cursor:pointer;white-space:nowrap;text-decoration:none}.btn:hover{background:var(--hover)}.btn:disabled{opacity:.5;cursor:not-allowed}.btn[aria-pressed=true]{border-color:var(--acc);color:var(--acc);background:var(--accd)}.btn-primary{background:var(--acc);border-color:var(--acc);color:var(--acct);font-weight:600}.btn-primary:hover{background:var(--acc2);border-color:var(--acc2)}.btn-danger{color:var(--bad);border-color:var(--bad)}.btn-ghost{border-color:transparent;background:none;color:var(--acc);font-size:12.5px}.panel-heading .btn{margin-left:auto}.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px}.toolbar .grow{flex:1 1 12em;width:auto}.toolbar select{width:auto;flex:0 1 auto}.seg{display:inline-flex}.seg .btn:first-child{border-radius:var(--r) 0 0 var(--r)}.seg .btn+.btn{border-radius:0 var(--r) var(--r) 0;margin-left:-1px}.chk{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 6px;cursor:pointer;font-size:13px}.chk input{margin:13px}.cb{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;margin:-8px -6px -8px -12px;cursor:pointer;flex:none}.pick{display:flex;align-items:flex-start;gap:4px;min-width:0}.pick>details{flex:1 1 auto;min-width:0}.pick>.link{flex:0 1 auto;min-width:44px;overflow-wrap:anywhere}.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(15em,1fr));gap:0 12px}.link{display:inline-flex;align-items:center;min-height:44px;min-width:44px;color:var(--acc);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;cursor:pointer}.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:0 8px;margin:-8px 0 4px;color:var(--muted);font-size:13px}.tabs{display:flex;flex-wrap:wrap;gap:0 2px;margin:0 0 12px;border-bottom:1px solid var(--line)}.tab{flex:none;display:inline-flex;align-items:center;min-height:44px;padding:0 13px;border:0;border-bottom:2px solid transparent;background:none;color:var(--muted);font:500 13px var(--sans);text-decoration:none;cursor:pointer;white-space:nowrap}.tab:hover{color:var(--fg)}.tab[aria-current=page],.tab[aria-selected=true]{color:var(--acc);border-bottom-color:var(--acc)}.counters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px}@media (min-width:480px){.counters{grid-template-columns:repeat(4,minmax(0,1fr))}}.counter{min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r);background:var(--el2)}.lab{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600}.val{font:600 19px/1.35 var(--mono);color:var(--fg);overflow-wrap:anywhere}.val.ok,.counter.ok .val{color:var(--ok)}.val.bad,.counter.bad .val{color:var(--bad)}.val.warn,.counter.warn .val{color:var(--warn)}.counter.info .val{color:var(--acc)}#cstatus{font-size:14px}.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}@media (min-width:768px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}.stat{min-width:0;padding:10px 14px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh)}.bars{padding:6px 0}.bar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 12px;min-height:44px;padding:6px 14px;color:var(--fg);text-decoration:none}.bar:hover{background:var(--hover)}.bar-l{font-size:12.5px;overflow-wrap:anywhere}.bar-n{font:600 12px var(--mono);color:var(--muted)}.bar-t{grid-column:1/-1;height:8px;border-radius:4px;background:var(--el2);overflow:hidden}.bar-f{display:block;height:100%;min-width:2px;border-radius:4px;background:var(--acc)}.alert{margin:0 0 14px;padding:10px 14px;border:1px solid var(--bad);border-radius:var(--r);background:var(--badd);color:var(--bad);font-size:13px;overflow-wrap:anywhere}.alert.warn{border-color:var(--warn);background:var(--warnd);color:var(--warn)}.alert.upgrade:not([hidden]){display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between}.when{margin:0 0 12px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12.5px}th{padding:8px 12px;text-align:left;background:var(--el2);color:var(--dim);border-bottom:1px solid var(--line);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.sortable th{cursor:pointer}th[aria-sort=ascending]::after{content:" ▲"}th[aria-sort=descending]::after{content:" ▼"}td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:var(--el2)}tbody tr:last-child td{border-bottom:0}tr.err td{background:var(--badd)}td.none{color:var(--dim)}.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--hover);color:var(--muted);font:600 10.5px/1.5 var(--mono)}.label.ok{background:var(--okd);color:var(--ok)}.label.info{background:var(--accd);color:var(--acc)}.label.warn{background:var(--warnd);color:var(--warn)}.label.bad{background:var(--badd);color:var(--bad)}.risks{display:inline-flex;gap:3px}.acts{display:flex;flex-wrap:wrap;gap:4px}.nw,#log td:first-child{white-space:nowrap}.tree,.tree ul{margin:0;padding:0;list-style:none}.tree{padding:8px 14px;font-size:12.5px}.tree ul{margin-left:6px;padding-left:10px;border-left:1px solid var(--line)}.tree li{padding:3px 0}.tree .label{margin-right:2px}.tree .hit>.data{font-weight:700;color:var(--fg)}.acts .btn{min-width:44px;padding:6px 10px;font-size:12.5px}pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}.data{font:12.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}.note{margin:0;padding:8px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}.note:empty,#cnote:empty{display:none}details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:12.5px;font-weight:600;background:var(--el2)}details[open] summary{border-bottom:1px solid var(--line)}.raw summary,.corr summary{gap:8px;padding:0;background:none;font-weight:400;list-style:none}.raw[open] summary,.corr[open] summary{border-bottom:0}.raw summary .data{min-width:0}.raw summary .label{flex:none}.raw summary::-webkit-details-marker,.corr summary::-webkit-details-marker,.menu summary::-webkit-details-marker{display:none}.raw summary::before,.corr summary::before{content:"";flex:none;width:7px;height:7px;margin:0 3px;border:solid var(--dim);border-width:0 2px 2px 0;transform:rotate(-45deg)}.raw[open] summary::before,.corr[open] summary::before{transform:rotate(45deg)}.corr summary{font-weight:600}.filter{padding:8px 14px;border-bottom:1px solid var(--line)}.ent-b{padding:4px 0 8px 15px;font-size:12.5px}.ent-b .pivot{margin-top:8px}.ent-m{margin:0 0 6px;color:var(--muted)}dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2px 10px;margin:4px 0 0;font-size:12px}dt{color:var(--dim);overflow-wrap:break-word}dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}dd dl{margin:0}.kv{gap:0;margin:0;font-size:12.5px;grid-template-columns:fit-content(45%) minmax(0,1fr)}.kv dt,.kv dd{padding:7px 14px;border-bottom:1px solid var(--line)}.kv dt{background:var(--el2);font-weight:600}.types{gap:1px 10px}.types dd{color:var(--muted)}.more{width:100%;border-width:1px 0 0;border-radius:0}.menu{position:relative}.menu summary{list-style:none}.menu-list.end{left:auto;right:0}.menu-list{position:absolute;top:100%;left:0;z-index:5;display:flex;flex-direction:column;min-width:10em;margin-top:4px;padding:4px;background:var(--el);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 4px 14px rgba(0,0,0,.35)}.menu-list button{min-height:44px;padding:0 12px;border:0;border-radius:4px;background:none;color:var(--fg);font:13.5px var(--sans);text-align:left;cursor:pointer}.menu-list button:hover{background:var(--hover)}.uc td{vertical-align:middle}.uc td:first-child{width:44px;padding-right:0}.uc .cb{margin:-8px 0}.uc td:only-child{width:auto;padding:7px 14px}.help.pad{margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}.uc label{display:block;cursor:pointer}.uc b{display:block}.uc label .help{display:block;margin:4px 0 0}.spin{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.spin{animation:none}}.graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}.graph svg{display:block;width:100%;height:100%;touch-action:none;cursor:grab}#gedges path{fill:none;stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke}#gnodes path{fill:none;stroke:currentColor;stroke-width:10px;stroke-linecap:round;vector-effect:non-scaling-stroke}#gnodes .grim{color:var(--el);stroke-width:12px}#gnodes .groot{stroke-width:18px}#gnodes .gring{color:var(--fg);stroke-width:16px}#gnodes .gring.groot{stroke-width:24px}.groot{color:var(--fg)}.g0{color:var(--g0)}.g1{color:var(--g1)}.g2{color:var(--g2)}.g3{color:var(--g3)}.g4{color:var(--g4)}.g5{color:var(--g5)}.g6{color:var(--g6)}.g7{color:var(--g7)}.g8{color:var(--g8)}.g9{color:var(--g9)}.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 14px;font-size:12px;color:var(--muted)}.legend span{display:inline-flex;align-items:center;gap:6px}.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;background:currentColor}@media (max-width:420px){.brand-sub{display:none}}@media (max-width:767px){.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:auto}.table-wrap thead{display:none}.table-wrap tbody tr,.table-wrap tbody tr:nth-child(even){padding:4px 0;background:none;border-bottom:1px solid var(--line)}.table-wrap tbody tr:last-child{border-bottom:0}.table-wrap tbody tr.err{background:var(--badd)}.table-wrap tr.err td{background:none}.table-wrap td{display:flex;gap:4px 12px;padding:4px 14px;border:0}.table-wrap td::before{content:attr(data-label);flex:0 0 32%;padding-top:2px;color:var(--dim);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.table-wrap td:not([data-label])::before,.table-wrap td.none::before{display:none}.table-wrap td:empty{display:none}.table-wrap td>details{flex:1 1 auto;min-width:0}.table-wrap td.wide{flex-wrap:wrap}.table-wrap td.wide::before{flex-basis:100%}.table-wrap td.wide>.pick{flex:1 1 100%}.ent-b{padding-left:0}.ent-b dl{grid-template-columns:minmax(0,1fr);gap:0}.ent-b dd{padding:0 0 4px 10px;border-left:1px solid var(--line)}}@media (min-width:768px){
+.navbar{top:calc(52px + env(safe-area-inset-top));bottom:auto;gap:2px;padding:0 12px;border-top:0;border-bottom:1px solid var(--line);box-shadow:var(--sh)}.navlink{flex:0 0 auto;flex-direction:row;gap:7px;min-height:42px;padding:0 14px;font-size:13px}.navlink svg.i{width:15px;height:15px}.navlink.active{background:var(--accd)}.navlink.active::before{top:auto;bottom:0;width:100%;height:2px;border-radius:2px 2px 0 0}main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}.acts{flex-wrap:nowrap}}.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}#kimp label{font:13px var(--sans)}.osint-report{white-space:pre-wrap;overflow-wrap:anywhere}</style>
 <header class="appbar">
 <a class="brand" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
 <div class="bar-end"><span class="pill" id="state">connecting</span><button class="iconbtn" id="theme" type="button" aria-label="Toggle dark mode"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z"/></svg></button><a class="iconbtn" id="nav-about" href="#/about" aria-label="About and server status"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></a></div>
@@ -452,6 +242,20 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="note" id="rhinser-source-status" role="status">Open this view to load the local catalogue.</p>
 <p class="alert" id="rhinser-source-error" role="alert" hidden></p>
 <div class="table-wrap"><table><thead><tr><th>Category</th><th>Source</th><th>Link</th><th>Evidence status</th></tr></thead><tbody id="rhinser-source-list"></tbody></table></div>
+</div></div>
+<div class="panel" id="rhinser-native-panel">
+<div class="panel-heading">Rhinser native capture inspector (operator import)</div>
+<div class="panel-body">
+<p class="help">Paste a capture JSON envelope exported with explicit permission by an Android companion. The Rust server checks structure and returns redacted observations only. Imported timestamps and consent are unverified operator claims. Raw input is cleared after a successful inspection. This is not live NFC or Bluetooth scanning.</p>
+<form id="rhinser-native-form">
+<label for="rhinser-native-file">Import authorized capture file (JSON, maximum 20 KB)</label>
+<input type="file" id="rhinser-native-file" accept=".json,application/json" aria-label="Import authorized Rhinser capture">
+<label for="rhinser-native-input">NDEF / APDU / Bluetooth capture JSON</label>
+<textarea id="rhinser-native-input" rows="4" maxlength="20000" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder='{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}' required></textarea>
+<button class="btn" id="rhinser-native-run" type="submit">Inspect local capture</button>
+<button class="btn btn-ghost" id="rhinser-native-export" type="button" disabled>Export redacted report</button>
+</form>
+<pre class="mono osint-report" id="rhinser-native-output" role="status">No capture submitted. No device radio accessed.</pre>
 </div></div>
 <div class="panel" id="osint-methods-panel"><div class="panel-heading">Source-backed OSINT methods</div>
 <div class="panel-body">
@@ -1068,7 +872,6 @@ $('rawdownload').onclick=async()=>{
   }
 };
 
-// Raw provider outcomes remain visible, but inconsistent counts cannot look verified.
 const sourceOutcomeState=o=>o.outcome_count_conflict?
   ['bad',o.outcome+' · count conflict']:[tone[o.outcome]||'bad',o.outcome];
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
@@ -1340,10 +1143,8 @@ function arrange(layout){
 }
 const push=(a,b,rep)=>{let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy;if(d2<.01){dx=Math.random()-.5;dy=Math.random()-.5;d2=.5}if(d2>90000)return;const f=rep/d2;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f};
 function repelAll(alpha){const ns=G.nodes,n=ns.length,rep=alpha*1200;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)push(ns[i],ns[j],rep)}
-// Past a few hundred elements, only neighbours within a cell or two repel each other.
 const cellKey=(x,y)=>x+','+y;
 function cells(ns){const cell=new Map();for(const p of ns){const k=cellKey(Math.floor(p.x/150),Math.floor(p.y/150));if(!cell.has(k))cell.set(k,[]);cell.get(k).push(p)}return cell}
-// Repel the elements from index `from` on until the frame's slice is spent; the index to go on from.
 function repelFrom(cell,alpha,from,t0){
   const ns=G.nodes,rep=alpha*1200;
   for(let i=from;i<ns.length;i++){
@@ -1353,7 +1154,6 @@ function repelFrom(cell,alpha,from,t0){
   }
   return ns.length;
 }
-// Links pull, the middle draws everything in a little, then every element moves.
 function settle(alpha){
   for(const [a,b] of G.edges){const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1,f=alpha*.15*(d-40)/d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}
   for(const p of G.nodes){if(p.fixed){p.vx=p.vy=0;continue}p.vx=(p.vx-p.x*alpha*.005)*.6;p.vy=(p.vy-p.y*alpha*.005)*.6;p.x+=Math.max(-25,Math.min(25,p.vx));p.y+=Math.max(-25,Math.min(25,p.vy))}
@@ -1368,12 +1168,10 @@ function render(){
   G.rim.setAttribute('d',rim);
   ring();
 }
-// The chosen element is drawn again on top, ringed.
 function ring(){
   const n=G.sel,[r,c]=G.ring,d=n?dot(n):'';
   r.setAttribute('class',n&&n.root?'gring groot':'gring');c.setAttribute('class',n?'gpick '+n.cls:'gpick');r.setAttribute('d',d);c.setAttribute('d',d);
 }
-// The element drawn under a point of the screen, the nearest if dots overlap there.
 function nodeAt(cx,cy){
   const r=svg.getBoundingClientRect(),x=(cx-r.left-G.tx)/G.k,y=(cy-r.top-G.ty)/G.k;
   let best=null,near=Infinity;
@@ -1420,12 +1218,10 @@ $('gsave').onclick=()=>{
   const copy=svg.cloneNode(true),r=svg.getBoundingClientRect(),bg=document.createElementNS(NS,'rect'),fills=new Map();
   copy.setAttribute('xmlns',NS);copy.setAttribute('width',Math.round(r.width));copy.setAttribute('height',Math.round(r.height));copy.removeAttribute('role');
   bg.setAttribute('width','100%');bg.setAttribute('height','100%');bg.setAttribute('fill',getComputedStyle(svg.parentNode).backgroundColor);copy.insertBefore(bg,copy.firstChild);
-  // The page's styles do not travel with the file, so each path carries how it is drawn.
   const was=[...svg.querySelectorAll('path')],drawn=['fill','stroke','stroke-width','stroke-linecap','vector-effect'];
   [...copy.querySelectorAll('path')].forEach((c,i)=>{const k=was[i].getAttribute('class')||'';if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,drawn.map(p=>s.getPropertyValue(p)))}fills.get(k).forEach((v,j)=>c.setAttribute(drawn[j],v));c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
-// Compare per-element additions, removals and correlations between scans.
 let cmp=[];
 const compareScans=(a,b)=>{location.hash='#/compare/'+enc(a)+'/'+enc(b)};
 async function openCompare(ids){
@@ -1450,14 +1246,12 @@ async function openCompare(ids){
   }catch(e){if(g===gen){fail('cmperror',e.message);$('cmpmeta').textContent=''}}
 }
 $('cmpswap').onclick=()=>compareScans(cmp[1],cmp[0]);
-// The alert history is read only when asked for, so a cold load stays at its four requests.
 $('alertsload').onclick=()=>api('/api/scans/alerts').then(h=>{$('alertswrap').hidden=false;fill('alerts',h.slice(-20).reverse(),x=>[when(x.at),x.raised?'yes':'no',x.earlier,x.later,x.reasons.map(r=>r.rule||r.count+' new values').join('; ')])},e=>fail('serror',e.message));
 $('cmpexport').addEventListener('click',async e=>{
   const b=e.target.closest('button[data-xformat]');if(!b)return;
   $('cmpexport').open=false;
   try{await fetchFile('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(','),format:b.dataset.xformat}),'huntsman-compare.'+b.dataset.xformat)}catch(err){fail('cmperror',err.message)}
 });
-// Why a scan stopped following what it found: the crawl's own reason, and what it means.
 const STOP={fixed_point:'nothing new was left to look up',resource_limit:'the lookup or entity budget ran out with findings left to follow',cancelled:'stop requested; the lookups still queued did not run',time_limit:'the time limit ran out',request_budget:'the request budget ran out',provider_budget:'a provider\'s request budget ran out',marginal_gain_limit:'new lookups had stopped finding anything new',fatal_error:'a lookup failed and the crawl could not go on'};
 function stopped(s){
   const t=s.termination,d=(s.options||{}).depth||0;
@@ -1465,7 +1259,6 @@ function stopped(s){
   const why=t==='max_depth'?(d?'depth '+d+' reached; a deeper scan would look up more of its findings':'depth 0 follows nothing it finds; a deeper scan would look up its findings in turn'):STOP[t];
   return why?t+': '+why:t;
 }
-// Prefill New Scan for review or pivot; never start it implicitly.
 async function prefill(f){
   const types=f.types||[],mods=(f.modules||[]).map(m=>String(m).toLowerCase());
   $('sname').value=f.name;$('starget').value=f.target;$('skind').value=f.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(f.depth||0);
@@ -1476,7 +1269,6 @@ async function prefill(f){
     for(const i of $('typelist').querySelectorAll('input'))i.checked=types.includes(i.value);
     ntab='types';
   }
-  // A SpiderFoot module alias may select multiple sources.
   if(mods.length){
     if(!loaded.modules)await loadMods();
     for(const i of $('modlist').querySelectorAll('input'))i.checked=(i.dataset.names||i.value).split(' ').some(n=>mods.includes(n));
@@ -1485,12 +1277,7 @@ async function prefill(f){
   $('nerror').hidden=true;location.hash='#/newscan';
 }
 const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
-// Launch a follow-up scan of an element with the lookup the server names for it (the row's
-// scan_kind), preserving depth/use case.
 const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.scan_kind,usecase:o.usecase,depth:o.depth})};
-// Spiderfoot has no offline analysis of a saved scan; this is Huntsman's /analyze over the saved
-// entities, shown whole: every count, every stated limitation, and the report as returned. Not
-// cached: a false-positive flag set since must turn it into the server's refusal.
 async function analysis(){
   const r=await api(base()+'/analyze');
   $('anote').textContent='Source: '+show(r.source)+' · scan '+show(r.scan&&r.scan.status);
@@ -1529,12 +1316,10 @@ function showLog(){
 $('llevel').onchange=showLog;$('lfilter').oninput=showLog;
 const csv=v=>{const s=v==null?'':String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 $('ldownload').onclick=()=>download(new Blob([['Date','Component','Type','Event'].join(',')+'\r\n'+logs.map(x=>[when(x.time),x.component,x.level,x.message].map(csv).join(',')).join('\r\n')],{type:'text/csv'}),'huntsman-'+sid+'-log.csv');
-// Exports come from the server, which writes every element whole; the page only saves them.
 async function exportFile(format){
   const p=new URLSearchParams({format}),type=tab==='browse'?btype:'';if(type)p.set('type',type);
   await fetchFile(base()+'/export?'+p,'huntsman-'+sid+(type?'-'+type:'')+'.'+format);
 }
-// An export is read as a file, under the name the server gives it.
 async function fetchFile(path,name){
   let r;
   try{r=await fetch(path,{headers:headers(LH),cache:'no-store'})}catch(e){throw new Failure(unreachable(e))}
@@ -1547,7 +1332,6 @@ $('scexport').addEventListener('click',async e=>{
   $('scexport').open=false;
   try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
 });
-// Saved-scan evidence, matrix and delta exports share the offline API.
 $('scevidence').addEventListener('click',async e=>{
   const button=e.target.closest('button[data-eformat]');if(!button)return;
   $('scevidence').open=false;
@@ -1566,7 +1350,6 @@ $('scevidence').addEventListener('click',async e=>{
     await fetchFile(base()+(isMatrix?'/matrix?':'/evidence?')+params,'huntsman-'+sid+'-'+mode+'.'+suffix);
   }catch(err){fail('scerror',err.message)}
 });
-// Keep dropdown menus on-screen on narrow phone viewports.
 const edge=()=>document.documentElement.clientWidth-8;
 document.addEventListener('click',e=>{
   const s=e.target.closest&&e.target.closest('details.menu>summary');if(!s||s.parentNode.open)return;
@@ -1579,17 +1362,13 @@ document.addEventListener('toggle',e=>{
 },true);
 document.addEventListener('click',e=>{for(const m of document.querySelectorAll('details.menu[open]'))if(!m.contains(e.target))m.open=false});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const m of document.querySelectorAll('details.menu[open]'))m.open=false});
-// Settings: every module, what it needs, and what this server knows of itself. Keys stay in the
-// environment and ~/.huntsman.env on the device; the page never sees one.
 const ACCESS={operator_key:['API key','warn'],keyless:['keyless','ok'],offline:['offline','info'],local:['local','info'],mixed:['mixed','info']};
 let settings=null,keyslots=null,keynote=null;
 async function loadSettings(){
   await started;
   const base=[['Server address',location.host],['Version',$('sversion').textContent],['Sign-in',$('sauth').textContent]];
   kv('gopts',base);$('gerror').hidden=true;
-  // The server's settings carry each module's key status; without saved scans, the module list.
   try{settings=await api('/api/settings')}catch(_){try{settings={modules:await moduleList(),global:[]}}catch(e){fail('gerror',e.message);return}}
-  // Which keys the page may save, and whether each is set; a server without a keys file answers none.
   try{keyslots=await api('/api/settings/keys')}catch(_){keyslots=null}
   kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)]),keyslots?[['Keys file',keyslots.file]]:[]));
   $('kimp').hidden=!keyslots;keyWarning();showMods();
@@ -1599,7 +1378,6 @@ function showRules(rules){
   const tb=$('rules');tb.replaceChildren();$('rules-p').hidden=false;$('rules-n').textContent=rules.filter(r=>!r.error).length;
   for(const r of rules){
     const tr=el('tr');
-    // A rule file that did not load runs over no scan: it is named here, with the reason, where its results would have been.
     if(r.error){put(tr,'',el('div','alert','Not loaded: '+(r.id||'')+' · '+r.error)).classList.add('wide');put(tr,'Risk','');put(tr,'Origin',r.origin||'not loaded');tb.append(tr);continue}
     const d=el('details','corr');
     d.append(el('summary','',r.name||r.id));
@@ -1624,7 +1402,6 @@ function showMods(){
     tr.cells[3].replaceChildren(k);
   });
 }
-// Keys are write-only in settings; only slot status returns to the UI.
 function keyEditor(m){
   const rows=keyslots?(m.key_env||[]).map(s=>keyslots.slots.find(k=>k.slot===s)).filter(Boolean):[];
   if(!rows.length)return null;
@@ -1657,7 +1434,6 @@ async function saveKey(m,slot,value){
   try{settings=await api('/api/settings')}catch(_){}
   keyWarning();showMods();return true;
 }
-// Import credential slots without returning their values.
 $('kimp-f').onsubmit=async e=>{
   e.preventDefault();
   const m=$('kimp-m'),t=$('kimp-text'),f=$('kimp-file').files[0],text=t.value.trim()?t.value:f?await f.text():'';
@@ -1673,7 +1449,6 @@ $('kimp-f').onsubmit=async e=>{
   keyWarning();showMods();
 };
 $('mfilter').oninput=showMods;
-// Table headers sort their rows, as Spiderfoot's tables do.
 document.addEventListener('click',e=>{
   const th=e.target.closest('table.sortable th');if(!th||!th.textContent.trim())return;
   const tb=th.closest('table').tBodies[0],i=th.cellIndex,dir=th.getAttribute('aria-sort')==='ascending'?-1:1;
@@ -1692,11 +1467,9 @@ function showAnalysis(saved){
   const who=uid=>names.get(uid)||uid;
   $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
   $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
-  // The server says when a bound cut the analysis short (a snapshot, report or export limit while bridging the saved scans); the summary must not read as complete then.
   $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination)+' · '+new Date(saved.at).toLocaleTimeString()+(body.truncated?' · TRUNCATED: a bound cut this analysis short, so these results are incomplete':'');
   $('astatus').classList.toggle('alert',!!body.truncated);
   fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
-  // Each link with how sure the spine is of it and what it rests on, so a weak inference never reads like a strong one.
   fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind)+(x.label?' · '+x.label:''),who(x.to_uid),Number(x.confidence).toFixed(2),(x.evidence||[]).map(e=>((e.provenance&&e.provenance.source)||'')+(e.summary?': '+e.summary:'')).join(' · ')||'none: derived from the seeds alone']);
   fill('ageo',body.geo_distances||[],p=>[p.left,p.right,Number(p.meters).toFixed(1)]);
   $('ageonote').textContent=body.geo_truncated?'Distances limited to the first 16 distinct coordinate seeds.':'';
@@ -1723,8 +1496,6 @@ $('analyze').onsubmit=async ev=>{
     showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
   }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
 };
-// Read-only Rhinser source directory: all filtering stays in the browser; external
-// sites are opened only on an explicit user click, never fetched or verified here.
 let rhinserCatalog=null,rhinserPending=null;
 function renderRhinserCatalog(){
   if(!rhinserCatalog)return;
@@ -1793,7 +1564,6 @@ async function loadRhinserCatalog(force=false){
 $('rhinser-source-category').onchange=renderRhinserCatalog;
 $('rhinser-source-search').oninput=renderRhinserCatalog;
 $('rhinser-source-reload').onclick=()=>loadRhinserCatalog(true);
-// Independent OSINT methods use the same guarded Rust library code as the CLI.
 async function osintOffline(method, source, output, button) {
   const submit=$(button); submit.disabled=true;
   $(output).textContent='Analyzing imported evidence…';
@@ -1802,10 +1572,77 @@ async function osintOffline(method, source, output, button) {
     if(new TextEncoder().encode(body).length>20000)throw new Error('Dataset exceeds browser limit; use Huntsman CLI');
     const result=await api(method,{method:'POST',body});
     $(output).textContent=JSON.stringify(result,null,2);
+    return result;
   }catch(e) {
     $(output).textContent='Review unavailable: '+e.message;
+    return null;
   }finally{submit.disabled=false}
 }
+let rhinserNativeReport=null;
+let rhinserNativeGeneration=0;
+function invalidateRhinserReport(){
+  rhinserNativeGeneration++;
+  rhinserNativeReport=null;
+  $('rhinser-native-export').disabled=true;
+}
+$('rhinser-native-input').oninput=invalidateRhinserReport;
+$('rhinser-native-file').onchange=async ev=>{
+  invalidateRhinserReport();
+  const generation=rhinserNativeGeneration;
+  const file=ev.target.files&&ev.target.files[0];
+  if(!file)return;
+  if(!rhinserLoopbackOrigin()){
+    $('rhinser-native-output').textContent='Capture file import requires loopback HSE on this device. No file was read or sent.';
+    ev.target.value='';
+    return;
+  }
+  $('rhinser-native-input').value='';
+  if(!file.size||file.size>20000){
+    $('rhinser-native-output').textContent='Import refused: capture file must be 1–20000 bytes. Use the CLI for larger captures.';
+    ev.target.value='';
+    return;
+  }
+  try{
+    const contents=await file.text();
+    if(generation!==rhinserNativeGeneration)return;
+    if(new TextEncoder().encode(contents).length>20000)throw new Error('capture exceeds browser limit');
+    $('rhinser-native-input').value=contents;
+    $('rhinser-native-output').textContent='Capture loaded locally. Choose Inspect local capture to validate it with Rust. No radio was accessed.';
+  }catch(e){
+    if(generation!==rhinserNativeGeneration)return;
+    $('rhinser-native-output').textContent='Import refused: '+e.message;
+  }
+  ev.target.value='';
+};
+function rhinserLoopbackOrigin(){
+  const host=location.hostname.toLowerCase();
+  return host==='localhost'||host==='127.0.0.1'||host==='[::1]'||host==='::1';
+}
+$('rhinser-native-form').onsubmit=async ev=>{
+  ev.preventDefault();
+  invalidateRhinserReport();
+  if(!rhinserLoopbackOrigin()){
+    $('rhinser-native-output').textContent='Capture inspection requires loopback HSE on this device. No capture was sent.';
+    return;
+  }
+  const generation=rhinserNativeGeneration;
+  const submitted=$('rhinser-native-input').value;
+  const result=await osintOffline('/api/rhinser/native','rhinser-native-input','rhinser-native-output','rhinser-native-run');
+  if(generation!==rhinserNativeGeneration||submitted!==$('rhinser-native-input').value){
+    $('rhinser-native-output').textContent='Capture changed during inspection. Inspect the current input again.';
+    return;
+  }
+  if(result&&result.evidence_role==='operator_submitted_unverified'&&result.radio_access===false&&Array.isArray(result.observations)){
+    $('rhinser-native-input').value='';
+    rhinserNativeReport=result;
+    $('rhinser-native-export').disabled=false;
+  }else if(result){
+    $('rhinser-native-output').textContent='Unexpected capture response. No report available for export.';
+  }
+};
+$('rhinser-native-export').onclick=()=>{
+  if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');
+};
 $('osint-case-form').onsubmit=ev=>{
   ev.preventDefault();
   osintOffline('/api/osint/case','osint-case-input','osint-case-output','osint-case-run');
@@ -1815,8 +1652,6 @@ $('osint-risk-form').onsubmit=ev=>{
   osintOffline('/api/osint/area-risk','osint-risk-input','osint-risk-output','osint-risk-run');
 };
 $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
-// Extract seeds from pasted text: the investigate command over the text, offline; what it finds
-// joins the seeds above, deduplicated, and is listed with the signal that found each.
 $('investigate').onsubmit=async ev=>{
   ev.preventDefault();$('txerror').hidden=true;
   const text=$('txtext').value;if(!text.trim())return;
@@ -1832,16 +1667,12 @@ $('investigate').onsubmit=async ev=>{
   }catch(e){$('txstatus').textContent='Not extracted.';fail('txerror',e.message)}
   finally{b.disabled=false}
 };
-// Recover last analysis after Android discards a background tab.
 {
   const raw=sess.get('hse-analysis');
   if(raw)try{const s=JSON.parse(raw);$('seeds').value=s.seeds;showAnalysis(s)}catch(_){sess.set('hse-analysis','');$('aresult').hidden=true}
 }
 $('refresh').onclick=()=>{health();details()};
 $('blueprint').onclick=()=>fetchFile('/api/blueprint?format=docx','OSINT_APK_BLUEPRINT.docx').then(()=>{$('berror').hidden=true},e=>fail('berror',e.message));
-// Live updates: the server pushes scan state and raised alerts over Server-Sent Events, so the
-// open view refreshes the instant something changes instead of only on the poll timer. The stream
-// is a nudge; the REST calls stay the source of truth and polling stays as the fallback.
 let stream=null,nudgeTimer=0;
 function nudge(){clearTimeout(nudgeTimer);nudgeTimer=setTimeout(()=>{if(document.hidden)return;if(view==='scans')loadScans();else if(view==='scan')loadScan(false)},250)}
 function liveStream(){
@@ -1850,7 +1681,6 @@ function liveStream(){
   stream.onmessage=nudge;stream.addEventListener('resync',nudge);
   stream.onerror=()=>{};// the browser reconnects on its own after the bounded stream closes
 }
-// Settings and About show the version and sign-in the first health answer carries.
 const started=health();route();liveStream();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
 </script>
