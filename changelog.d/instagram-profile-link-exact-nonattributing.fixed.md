@@ -1,0 +1,4 @@
+- Public Instagram profile URLs can now be connected to a matching observed or operator-supplied username in the existing relation graph. A query string such as `?dlrf=...` does not turn a profile URL into a different account.
+- Instagram profile parsing rejects reels, posts, stories, reserved navigation routes, malformed names and extra path segments. Names with `.` and `_` remain distinct, even though the generic username identity key collapses separators.
+- The resulting Instagram link is `associated_with`, not the identity-binding `same_identity`. A coincidentally matching handle does not establish a person's identity, ownership, phone number or contact details.
+- Existing non-Instagram profile-link behavior is preserved; focused regression tests cover valid/invalid URLs, exact spellings, and non-attribution. No network provider, API keys, runtime dependencies or storage schema added.
