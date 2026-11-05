@@ -567,14 +567,22 @@ fn dehashed_breaches_are_exposure_metadata_on_the_email_and_never_values() {
         "{text}"
     );
     let saved = serde_json::to_string(&report.entities).unwrap_or_default();
-    for secret in [
-        "hunter2-secret",
-        "deadbeef-hash",
-        "+15555550100",
-        "Ada Example",
+    // A failure names which withheld value leaked, never the value or the output that holds
+    // it, so a failing run cannot copy it into CI's logs.
+    for (withheld, value) in [
+        ("password", "hunter2-secret"),
+        ("hash", "deadbeef-hash"),
+        ("phone", "+15555550100"),
+        ("name", "Ada Example"),
     ] {
-        assert!(!text.contains(secret), "{secret} in text: {text}");
-        assert!(!saved.contains(secret), "{secret} in entities: {saved}");
+        assert!(
+            !text.contains(value),
+            "the {withheld} leaked into the printed text"
+        );
+        assert!(
+            !saved.contains(value),
+            "the {withheld} leaked into the saved entities"
+        );
     }
 }
 
@@ -707,8 +715,15 @@ fn a_silent_stolen_tax_path_is_no_response_not_inconclusive() {
     let ExposureRun::Failed(why) = run(sources, "ada.99", 7) else {
         panic!("expected no usable response");
     };
-    assert!(why.contains(STOLEN_TAX_SOURCE), "{why}");
-    assert!(why.contains("no response (DnsFailure)"), "{why}");
+    // The refusal holds the queried handle, so a failure says what it lacks, not what it says.
+    assert!(
+        why.contains(STOLEN_TAX_SOURCE),
+        "the refusal does not name {STOLEN_TAX_SOURCE}"
+    );
+    assert!(
+        why.contains("no response (DnsFailure)"),
+        "the refusal does not say there was no response"
+    );
 }
 
 /// A stolen.tax source that answered every path with an error was reached, so the lookup
