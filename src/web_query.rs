@@ -120,6 +120,11 @@ fn checked_query(input: &str, label: &str) -> Result<String, Error> {
         )));
     }
     let normalized = canonical_whitespace(input);
+    if normalized.len() > MAX_SEARCH_QUERY_BYTES {
+        return Err(Error::Invalid(format!(
+            "{label} is too long after normalization"
+        )));
+    }
     if normalized.is_empty() {
         return Err(Error::Invalid(format!("{label} must not be empty")));
     }
@@ -1345,6 +1350,23 @@ mod tests {
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
     }
+    #[test]
+    fn query_budget_and_canonicalization_are_enforced() {
+        let valid = "A".repeat(MAX_SEARCH_QUERY_BYTES);
+        assert_eq!(
+            checked_query(&valid, "query").unwrap(),
+            valid.to_ascii_lowercase()
+        );
+        let invalid = "A".repeat(MAX_SEARCH_QUERY_BYTES + 1);
+        assert!(checked_query(&invalid, "query").is_err());
+        assert_eq!(
+            checked_query("  ADA   LOVELACE  ", "query").unwrap(),
+            "ada lovelace"
+        );
+        assert!(checked_query("   ", "query").is_err());
+        assert!(checked_query("ada\n", "query").is_err());
+    }
+
     #[test]
     fn query_is_canonical_before_search_setup() {
         assert_eq!(canonical_whitespace("  Ada   Lovelace "), "ada lovelace");
