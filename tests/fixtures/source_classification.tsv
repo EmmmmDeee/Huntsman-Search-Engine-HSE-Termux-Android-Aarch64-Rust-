@@ -6,9 +6,9 @@
 abn_lookup	identity_registry	identity_registry
 abusech	other	other
 abuseipdb	infra	infra
- acnc 	other	identity_registry
-ACNC	other	identity_registry
-acnc	other	identity_registry
+ acnc 	identity_registry	identity_registry
+ACNC	identity_registry	identity_registry
+acnc	identity_registry	identity_registry
 acnc_charities	identity_registry	identity_registry
 adguard_dns	infra	infra
 ahpra	identity_registry	identity_registry
@@ -86,7 +86,7 @@ emailrep	email_intel	email_intel
 emergingthreats	other	other
 epieos	presence	presence
 eth_rpc	other	other
-exa	other	other
+exa	search	search
 exa_search	search	search
 exif	other	other
 fixture	other	other
@@ -231,8 +231,8 @@ wigle	rf	rf
 wigle_bluetooth	rf	rf
 WIKIDATA	other	knowledge_graph
 wikidata	other	knowledge_graph
-Wikipedia	infra	infra
-wikipedia	infra	infra
+Wikipedia	other	other
+wikipedia	other	other
 xposed_or_not	breach	breach
 xposedornot	other	breach
 yandexdns	infra	infra
