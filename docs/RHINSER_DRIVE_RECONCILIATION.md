@@ -5,7 +5,7 @@
 The user-provided Drive specification is `HSE_RHINSER_SCHEMA_INTEGRATION.md`,
 file ID `1XZIidvx5HnUV8ACo905rlFScBhxNHXhh`. Its Rust blocks are proposed
 pseudocode, not executable source or evidence of implemented capabilities.
-The Drive file `https://www.dro.txt` points to a Dropbox transfer that the
+A link in that specification points to a Dropbox transfer that the
 connector could not resolve. The three originals were recovered separately
 from the connected Dropbox account on 3 November 2026 (Australia/Brisbane).
 
