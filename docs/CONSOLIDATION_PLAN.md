@@ -36,7 +36,7 @@ A change made under this plan is accepted only when all five conditions hold.
    - saved-scan and saved-lookup JSON. This covers `provenance.source`, the stored `provenance.source_family` and the saved component paths;
    - evidence attribute names;
    - outcome kinds and reasons.
-2. **Results never shrink.** The differential comparator in `src/differential.rs` must pass. A rebuilt command may add results, but it may not lose or re-attribute one. Phase 0 extends the comparator from `phone` to every lookup command.
+2. **Results never shrink.** The differential comparator in `src/differential.rs` must pass. A rebuilt command may add results, but it may not lose or re-attribute one. Before a phase changes how a lookup collects, the comparator is extended from `phone` to that lookup.
 3. **Tests never shrink.**
    - The `#[test]` count never drops.
    - A pure move keeps every `cargo test -- --list` name.
@@ -148,17 +148,23 @@ collector that made it, not the shared lookup front-end".
 No test compares the result with `provider_credentials::PROVIDERS`. A new keyed leg can be missing
 from the Settings key slots without any test failing.
 
-**F4. Three mechanisms decide "no source answered".** The 15 CLIs that return a `SourceRun` finish
-in different ways.
+**F4. Three mechanisms decide "no source answered", and seven lookups end it without naming the
+module.** The 15 CLIs that return a `SourceRun` finish in different ways.
 
 | Mechanism | CLIs | When every source failed |
 |---|---|---|
 | `SourceReach::unanswered` | asn, domain, email, ip, netblock, username | refusal: exit 77; otherwise exit 69 with the transport reason, else the first configured reason |
 | `SourceReach::stopped` | exposure, network | refusal: exit 77; no response: exit 69; answered with errors: prints |
-| `source_outcome::none_accepted` | company, crypto, gleif, itunes, wikidata | always exit 69 with the first configured reason, **including a refusal** |
+| `source_outcome::none_accepted` | company, crypto, gleif, itunes, wikidata | exit 69 with the first configured reason, including for a refusal recorded as a row |
 | hand-rolled `is_accepted` check | nominatim, people | `nominatim`: exit 69 with no reason; `people`: its own refusal (77) and failure (69) messages |
 
-As a result, a proxy refusal exits with 77 from `ip` but with 69 from `company`.
+The refusal-contract harness in `src/lookup_modules/tests.rs` drives each module, chosen alone, over
+a refusing, a silent and a failing network. Measured with it:
+
+- **The eight `SourceReach` lookups keep the contract.** A refusal exits 77 naming the refused module, and no response exits 69 naming it.
+- **The other seven name no module on a refusal.** People, crypto, place, company, gleif, itunes and wikidata also exit 77 on a refusal, because their legs' guarded fetch returns an error that ends the lookup at once. The message is the bare egress reason, so the operator cannot tell which source was refused.
+- **People and place also end an unanswered lookup without the module or its reason.**
+- **`none_accepted` turns a refusal recorded as a row into exit 69.** Only `api_leg` legs record a refusal as a row. From the command line `company` runs its registers first, which end the lookup as a refusal, so this path is reached today only by choosing ABN Lookup alone.
 
 ### 4.2 Duplication
 
@@ -247,7 +253,7 @@ pub const LEGACY: &[SourceProfile] = &[/* the IDs no current collector writes */
 - **Consumers:**
   - `correlator::source_family` reads `PROFILES`, then `LEGACY`. It keeps the substring tests only for IDs in neither table, such as unknown IDs in old saved scans.
   - `acquisition_modality` reads the `modality` column.
-  - `lookup_save` reads `component`.
+  - `lookup_save` reads `component`, with B4. Each policy recognises only its own lookup's sources today, so deriving the pairs changes the attribution of the others; that is B4's declared change, not Phase 2's.
   - `scan_api::key_slots` reads `key_slot`.
 - **One username order.** A `collection`-home list fixes the username source order once. Both `username_cli::public_sources` and `lookup_modules` consume it. The fixed-order test stays.
 - **Rename.** The correlator function becomes `source_category`. This frees the word "family" for the persisted spelling family. The rename is internal; no output contains the name.
@@ -309,8 +315,8 @@ request.
 |---|---|---|
 | B1 | The correlator classifies `acnc` as `identity_registry` and `exa` as `search`, fixing the typo arms | The family counts in AU-001 and AU-021 messages, and `tagged_matching_sources`, for entities carrying that evidence |
 | B2 | `wikipedia` stops classifying as `infra` and becomes `other`, matching `wikidata` | The same counts drop by one where Wikipedia evidence was counted as infrastructure |
-| B3 | `company`, `crypto`, `gleif`, `itunes` and `wikidata` exit 77 on a proxy refusal, like every other lookup | Exit code 69 becomes 77 in that case only |
-| B4 | A collector with no attribution row stops being credited to the CLI file in a saved lookup. The fallback becomes a build failure (G2), and an explicit row is added | None for existing sources, which all have rows by then |
+| B3 | People, crypto, place, company, gleif, itunes and wikidata route their legs' failures into rows that `SourceReach` reads, as the other eight lookups do | A refusal or an unanswered lookup names its module (and, for people and place, its reason); a refusal recorded as a row exits 77, not 69; no other exit code changes |
+| B4 | Each policy credits every known source to its own file from the `component` column, and a collector with no profile row fails the build (G2) instead of being credited to the CLI file | Only rows a policy never saves change; the attribution snapshot lists each one |
 
 ## 7. Phases
 
@@ -318,10 +324,10 @@ Each phase lands as small pull requests. A pure-move pull request never also cha
 
 | Phase | Work | Exit condition |
 |---|---|---|
-| 0. Safety net | Extend the differential comparator to every lookup command, using recorded responses for public, non-personal selectors only. Commit a classification snapshot (source ID to family, modality and category, for every live and legacy ID) and an attribution snapshot (source ID to component, for every save policy). Add characterisation tests for the no-answer exit codes of all 15 CLIs. Add a `#[test]` count floor to `xtask gate`. | Snapshots committed; no `src/` change |
-| 1. Test-only consolidation | Move the inline tests of the six files above to `<module>/tests.rs`, one file per pull request. Point the in-crate fakes at `test_support`. Add `tests/support/transport.rs`. Replace `oathnet::non_blank`. | `cargo test -- --list` names unchanged; count never lower |
-| 2. Source profile table (T1) | Generate `PROFILES` and `LEGACY` from today's classifier output. Route the classifiers, `lookup_save` and `key_slots` through them. Add the single username order list and the rename. | Phase 0 snapshots byte-identical; G1 to G3 green |
-| 3. Declared fixes | B1, B2, B3 and B4, one pull request each | Each regression test fails before and passes after; snapshot diffs limited to the declared rows |
+| 0. Safety net | Commit a classification snapshot (source ID to family and modality, for every live, legacy and probe ID) and an attribution snapshot (every save policy's pair for every ID). Bring every lookup under the refusal-contract harness, listing today's breakages as reviewed entries. Add a `#[test]` count floor. Before the first phase that changes how a lookup collects (Phase 4), extend the differential comparator to that lookup, using recorded responses for public, non-personal selectors only. | Snapshots and contract entries committed; no production change |
+| 1. Test-only consolidation | Move the inline tests of the six files above to `<module>/tests.rs`, one commit per file. Point the in-crate fakes at `test_support`. Add `tests/support/transport.rs`. Replace `oathnet::non_blank`. | `cargo test -- --list` names unchanged; count never lower |
+| 2. Source profile table (T1) | Generate `PROFILES` and `LEGACY` from today's classifier output. Route the classifiers and `key_slots` through them. Add the single username order list and the rename. | Phase 0 snapshots byte-identical; G1 and G3 green |
+| 3. Declared fixes | B1, B2, B3 and B4, one pull request each. B4 routes `lookup_save` through the `component` column and adds G2. | Each regression test fails before and passes after; snapshot and contract diffs limited to the declared rows |
 | 4. Account-leg kernel (T2) | Move one leg per commit, with that leg's existing tests unchanged in the same commit; the divergent legs go last or stay bespoke | `username` differential output identical |
 | 5. One finish path (T3) | Move every `SourceRun` CLI to `SourceReach` plus `finish`, then delete `none_accepted` | Phase 0 exit-code tests unchanged (B3 rows updated in Phase 3); G6 green |
 | 6. Splits (T5) | Pure moves along the seams, with `ARCHITECTURE.md` rows updated in the same pull request; then hand over to Stages 3 to 10 | Paths still resolve; architecture tests green |

@@ -5,8 +5,8 @@
     classed as infrastructure because its name contains "ip".
   - **Saved attribution.** Saved lookups credit any collector without its own row to the CLI
     file.
-  - **"No source answered".** Three mechanisms decide it, so a proxy refusal exits with 77 from
-    `ip` but with 69 from `company`.
+  - **"No source answered".** Three mechanisms decide it, and seven lookups end a refusal with
+    the bare egress reason, naming no module.
   - **The fix.** One source profile table, an account-leg kernel, one CLI finish path and shared
     test transports.
   - **Safeguards.** A non-regression contract, phases with exit conditions, six guards, and the
