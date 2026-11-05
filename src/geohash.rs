@@ -125,10 +125,20 @@ pub fn parse_coords(value: &str) -> Option<(f64, f64)> {
     let (lat_raw, lon_raw) = value.split_once(',')?;
     let lat = lat_raw.trim().parse::<f64>().ok()?;
     let lon = lon_raw.trim().parse::<f64>().ok()?;
-    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+    if !valid_coordinate(lat, lon) {
         return None;
     }
     Some((lat, lon))
+}
+
+/// Whether `lat` and `lon` are finite degrees inside the WGS84 ranges: the one coordinate rule
+/// that parsing here and the bearings in [`crate::geoint`] both apply.
+#[must_use]
+pub fn valid_coordinate(lat: f64, lon: f64) -> bool {
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
 }
 
 /// Great-circle distance in kilometres on the sphere of radius [`EARTH_RADIUS_KM`]. The haversine

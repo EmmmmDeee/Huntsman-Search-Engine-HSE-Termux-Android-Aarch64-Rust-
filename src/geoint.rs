@@ -61,14 +61,7 @@ pub fn initial_bearing_deg(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> Option
     Some(y.atan2(x).to_degrees().rem_euclid(360.0))
 }
 
-/// Strict WGS84 latitude/longitude domain check, shared by GEOINT callers.
-#[must_use]
-pub fn valid_coordinate(lat: f64, lon: f64) -> bool {
-    lat.is_finite()
-        && lon.is_finite()
-        && (-90.0..=90.0).contains(&lat)
-        && (-180.0..=180.0).contains(&lon)
-}
+pub use crate::geohash::valid_coordinate;
 
 #[cfg(test)]
 mod tests {
