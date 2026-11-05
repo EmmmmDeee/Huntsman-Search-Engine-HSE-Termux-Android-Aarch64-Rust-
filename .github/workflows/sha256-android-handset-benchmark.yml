@@ -37,11 +37,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
-          cargo build --release --locked --target aarch64-linux-android --example sha256_arm64_bench
+          cargo build --profile dist --locked --target aarch64-linux-android --example sha256_arm64_bench
       - name: Validate Android ELF, metadata and SHA-256
         run: |
           set -euo pipefail
-          BIN="target/aarch64-linux-android/release/examples/sha256_arm64_bench"
+          BIN="target/aarch64-linux-android/dist/examples/sha256_arm64_bench"
           TOOLCHAIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           test -x "$BIN"
           "$TOOLCHAIN/llvm-readelf" -h "$BIN" > "$RUNNER_TEMP/sha256-arm64-elf-header.txt"
