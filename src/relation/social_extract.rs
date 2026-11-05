@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::canonical::{canonical_handle, canonical_url};
-use crate::entity::{Entity, EntityKind};
+use crate::entity::{Entity, EntityKind, Evidence};
 
 use super::types::{Relation, RelationKind, endpoint_confidence};
 
@@ -119,7 +119,7 @@ pub fn derive_profile_links(entities: &[Entity], scan_id: &str) -> Vec<Relation>
                     .observed_spellings()
                     .keys()
                     .any(|spelling| spelling.eq_ignore_ascii_case(exact));
-                let seeded = username.evidence.iter().any(|e| e.is_operator_seed())
+                let seeded = username.evidence.iter().any(Evidence::is_operator_seed)
                     && username
                         .raw_value
                         .trim()
