@@ -244,18 +244,29 @@
 <div class="table-wrap"><table><thead><tr><th>Category</th><th>Source</th><th>Link</th><th>Evidence status</th></tr></thead><tbody id="rhinser-source-list"></tbody></table></div>
 </div></div>
 <div class="panel" id="rhinser-native-panel">
-<div class="panel-heading">Rhinser native capture inspector (operator import)</div>
+<div class="panel-heading">Rhinser capture inspector (operator import)</div>
 <div class="panel-body">
-<p class="help">Paste a capture JSON envelope exported with explicit permission by an Android companion. The Rust server checks structure and returns redacted observations only. Imported timestamps and consent are unverified operator claims. Raw input is cleared after a successful inspection. This is not live NFC or Bluetooth scanning.</p>
+<p class="help">Paste capture JSON an Android companion exported with permission. Rust returns redacted observations only; timestamps and consent are unverified claims. Raw input is cleared once inspected. This is not live NFC or Bluetooth scanning.</p>
 <form id="rhinser-native-form">
 <label for="rhinser-native-file">Import authorized capture file (JSON, maximum 20 KB)</label>
-<input type="file" id="rhinser-native-file" accept=".json,application/json" aria-label="Import authorized Rhinser capture">
+<input type="file" id="rhinser-native-file" accept=".json,application/json">
 <label for="rhinser-native-input">NDEF / APDU / Bluetooth capture JSON</label>
-<textarea id="rhinser-native-input" rows="4" maxlength="20000" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder='{"schema_version":1,"captured_unix_ms":1730000000000,"operator_consented":true,"events":[{"kind":"bluetooth","transport":"ble","rssi_dbm":-66,"bonded":false,"randomized_address":true}]}' required></textarea>
+<textarea id="rhinser-native-input" rows="4" maxlength="20000" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder='{"schema_version":1,"captured_unix_ms":…,"operator_consented":true,"events":[…]}' required></textarea>
 <button class="btn" id="rhinser-native-run" type="submit">Inspect local capture</button>
 <button class="btn btn-ghost" id="rhinser-native-export" type="button" disabled>Export redacted report</button>
 </form>
-<pre class="mono osint-report" id="rhinser-native-output" role="status">No capture submitted. No device radio accessed.</pre>
+<pre class="mono osint-report" id="rhinser-native-output" role="status">No capture submitted; no radio accessed.</pre>
+</div></div>
+<div class="panel" id="rhinser-overlap-panel">
+<div class="panel-heading">Rhinser cross-case overlap</div>
+<div class="panel-body">
+<p class="help">Paste a Rhinser workspace export to find exact URLs reused across cases, offline. A shared URL is not independent evidence.</p>
+<form id="rhinser-overlap-form" class="row">
+<label for="rhinser-overlap-input">Workspace JSON</label>
+<textarea id="rhinser-overlap-input" rows="4" maxlength="20000" spellcheck="false" autocomplete="off" placeholder='{"schema_version":1,"cases":[…]}' required></textarea>
+<button class="btn" type="submit" id="rhinser-overlap-run">Find shared URLs</button>
+</form>
+<pre class="mono osint-report" id="rhinser-overlap-output" role="status"></pre>
 </div></div>
 <div class="panel" id="osint-methods-panel"><div class="panel-heading">Source-backed OSINT methods</div>
 <div class="panel-body">
@@ -1579,6 +1590,8 @@ async function osintOffline(method, source, output, button) {
   }finally{submit.disabled=false}
 }
 let rhinserNativeReport=null;
+const RHINSER_LOCAL_ONLY='Needs HSE on loopback on this device; nothing was read or sent.';
+const rhinserNativeSay=t=>{$('rhinser-native-output').textContent=t;};
 let rhinserNativeGeneration=0;
 function invalidateRhinserReport(){
   rhinserNativeGeneration++;
@@ -1592,13 +1605,13 @@ $('rhinser-native-file').onchange=async ev=>{
   const file=ev.target.files&&ev.target.files[0];
   if(!file)return;
   if(!rhinserLoopbackOrigin()){
-    $('rhinser-native-output').textContent='Capture file import requires loopback HSE on this device. No file was read or sent.';
+    rhinserNativeSay(RHINSER_LOCAL_ONLY);
     ev.target.value='';
     return;
   }
   $('rhinser-native-input').value='';
   if(!file.size||file.size>20000){
-    $('rhinser-native-output').textContent='Import refused: capture file must be 1–20000 bytes. Use the CLI for larger captures.';
+    rhinserNativeSay('Import refused: a capture file must be 1–20000 bytes; use the CLI for more.');
     ev.target.value='';
     return;
   }
@@ -1607,29 +1620,28 @@ $('rhinser-native-file').onchange=async ev=>{
     if(generation!==rhinserNativeGeneration)return;
     if(new TextEncoder().encode(contents).length>20000)throw new Error('capture exceeds browser limit');
     $('rhinser-native-input').value=contents;
-    $('rhinser-native-output').textContent='Capture loaded locally. Choose Inspect local capture to validate it with Rust. No radio was accessed.';
+    rhinserNativeSay('Capture loaded locally; Inspect checks it with Rust. No radio was accessed.');
   }catch(e){
     if(generation!==rhinserNativeGeneration)return;
-    $('rhinser-native-output').textContent='Import refused: '+e.message;
+    rhinserNativeSay('Import refused: '+e.message);
   }
   ev.target.value='';
 };
 function rhinserLoopbackOrigin(){
-  const host=location.hostname.toLowerCase();
-  return host==='localhost'||host==='127.0.0.1'||host==='[::1]'||host==='::1';
+  return ['localhost','127.0.0.1','[::1]','::1'].includes(location.hostname.toLowerCase());
 }
 $('rhinser-native-form').onsubmit=async ev=>{
   ev.preventDefault();
   invalidateRhinserReport();
   if(!rhinserLoopbackOrigin()){
-    $('rhinser-native-output').textContent='Capture inspection requires loopback HSE on this device. No capture was sent.';
+    rhinserNativeSay(RHINSER_LOCAL_ONLY);
     return;
   }
   const generation=rhinserNativeGeneration;
   const submitted=$('rhinser-native-input').value;
   const result=await osintOffline('/api/rhinser/native','rhinser-native-input','rhinser-native-output','rhinser-native-run');
   if(generation!==rhinserNativeGeneration||submitted!==$('rhinser-native-input').value){
-    $('rhinser-native-output').textContent='Capture changed during inspection. Inspect the current input again.';
+    rhinserNativeSay('Capture changed during inspection. Inspect the current input again.');
     return;
   }
   if(result&&result.evidence_role==='operator_submitted_unverified'&&result.radio_access===false&&Array.isArray(result.observations)){
@@ -1637,11 +1649,15 @@ $('rhinser-native-form').onsubmit=async ev=>{
     rhinserNativeReport=result;
     $('rhinser-native-export').disabled=false;
   }else if(result){
-    $('rhinser-native-output').textContent='Unexpected capture response. No report available for export.';
+    rhinserNativeSay('Unexpected capture response; nothing to export.');
   }
 };
 $('rhinser-native-export').onclick=()=>{
   if(rhinserNativeReport)save(rhinserNativeReport,'huntsman-rhinser-redacted');
+};
+$('rhinser-overlap-form').onsubmit=ev=>{
+  ev.preventDefault();
+  osintOffline('/api/rhinser/overlaps','rhinser-overlap-input','rhinser-overlap-output','rhinser-overlap-run');
 };
 $('osint-case-form').onsubmit=ev=>{
   ev.preventDefault();

@@ -294,6 +294,7 @@ docmeta	adapter	document XMP packet and PDF /Info metadata and embedded GPS sour
 docx	exporter	dependency-free Word document writer on xlsx's stored ZIP behind blueprint --docx and GET /api/blueprint?format=docx
 exa	adapter	Exa explicit query --exa source: fixed HTTPS origin, privately keyed, five lead-only web results
 federated_osint	adapter	indexed X recent-search clients reached through osint x and osint x-api; the bearer token is operator-owned and origin-bound
+osint_matrix	runtime	canonical compiled source-file ownership matrix reached through osint matrix CLI and protected GET /api/osint/matrix; read-only and not evidence of live provider availability
 osint_casework	leaf	source-linked casework model reached through osint case; receipts, chronology and conflicts without identity attribution
 osint_area_risk	leaf	bounded public-event pressure estimator reached through osint area-risk and area-compare; never a safety guarantee
 osint_blueprint	exporter	OSINT app blueprint registry reached through the blueprint command, GET /api/blueprint and the About view's .docx download
