@@ -34,30 +34,32 @@ SeekNow on this binary is `huntsman-recon seeknow search KIND VALUE --fast-only`
 
 No repository was deleted.
 
-## Native full-source rebuild and acceptance (Android AArch64)
+## Rebuild and upgrade on Android AArch64
 
-For an operator-controlled source rebuild on a **real rootless Termux handset**, use
-`bash scripts/termux-full-rebuild.sh` from a clone, or obtain this script from the
-canonical GitHub `main` after its PR has merged. The script always fetches a fresh,
-shallow `main` snapshot, pins its full commit SHA, verifies the Rust/Termux stdlib
-pair, runs rustfmt, warning-free Clippy, the locked complete Rust test suite and
-a native release build. It then runs `scripts/termux-runtime-acceptance.sh` on the
-candidate **before** atomically installing it at `$PREFIX/bin/huntsman-recon`.
-It does not reuse a prebuilt, touch saved investigations, install a runtime LLM,
-require root or silently substitute a host acceptance for a phone acceptance.
+`install.sh` is the one install, upgrade and rebuild path on a Termux handset;
+`HUNTSMAN_FROM_SOURCE=1` makes it compile the pinned commit on the phone instead
+of installing that commit's published build. There is no second rebuild script.
+Every run:
 
-Optional `HUNTSMAN_EXPECT_SHA=<full 40-character sha>` refuses to rebuild if the
-fetched main commit differs from the operator-selected version.
-`CARGO_BUILD_JOBS=1` is the default to bound phone compiler concurrency; an
-explicit override is respected. `CARGO_TARGET_DIR` and
-`HUNTSMAN_REBUILD_CACHE` may be set for persistent local compilation caches.
-A failed gate leaves the installed binary unchanged. The prior executable is
-retained at `$PREFIX/bin/.huntsman-recon.previous` on a successful replacement;
-if post-install verification fails, it is restored. A running `serve` process
-must be restarted separately to use the newly installed binary.
+- refuses to run as root, and holds `~/.huntsman/.install.lock` (under
+  `HUNTSMAN_HOME` when set), so a second run is refused until it ends;
+- pins `main` to one full commit SHA, or takes `HUNTSMAN_REV`, before fetching
+  anything;
+- for a source build, aligns Termux `rust` with `rust-std-<host>`, builds and
+  runs a native probe, and runs one compile job per GiB of available memory;
+- checks the candidate before it replaces anything: a published build must match
+  its release SHA-256, and Cargo installs a source build into a fresh staging
+  directory, never over the installed binary. Either must report the pinned
+  commit from `build-sha` and pass offline `check` and ledger verification;
+- copies the candidate beside `$PREFIX/bin/huntsman-recon`, re-checks its
+  SHA-256 there, keeps the current binary as `$PREFIX/bin/.huntsman-recon.previous`
+  and renames the copy into place, then puts the previous binary back if the
+  installed one does not report the commit;
+- refuses to replace a symlinked binary, refuses to report success while another
+  copy on `PATH` shadows the install, and restarts the web UI service, when it is
+  on, onto the new binary.
 
-The device acceptance validates the existing embedded web UI and several CLI/API
-paths with isolated test data. It does **not** establish that every external
-provider was live, paid credentials were configured, or radio APIs were granted
-by Android. Those checks need explicit independent receipts and are never
-implied by a successful source rebuild.
+A failed check leaves the installed binary as it was. Real-device acceptance of the
+web UI and API stays a separate, explicit step (`scripts/termux-runtime-acceptance.sh`,
+see `docs/INSTALL.md`). Neither it nor the installer's offline acceptance shows that
+external providers were reachable or keyed.
