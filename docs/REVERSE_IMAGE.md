@@ -1,8 +1,10 @@
-# Native reverse-image search (Rust / Termux)
+# Reverse-image search
 
-The command accepts a **local image file**. It computes a SHA-256 digest offline, and can
-optionally send the image to three independent reverse-image indexes. A returned visual
-match is evidence about **image reuse**, never proof that two profiles share an owner.
+`reverse-image` takes a **local image file**. Offline, it prints the file's SHA-256, size and
+format and sends nothing: no search runs, so the report holds no matches to read, rather than
+zero matches. With `--live --provider NAME` it uploads the whole image to that **one** provider
+and reports what the provider's own index returned. A returned match is evidence about **image
+reuse**, never proof that two profiles share an owner.
 
 ```sh
 huntsman-recon reverse-image /path/to/photo.jpg --json
@@ -11,65 +13,54 @@ huntsman-recon reverse-image /path/to/photo.jpg --live --provider lenso --json
 huntsman-recon reverse-image /path/to/photo.jpg --live --provider saucenao --json
 ```
 
-**No external requests are sent without `--live`.** With `--live`, all configured
-providers are requested once unless `--provider NAME` restricts the query. Requests may consume provider quotas or incur charges.
-Provider keys are read through Huntsman's existing `$HOME/.huntsman.env` and environment
-resolution; store the file with mode 600. Slots:
+**The operator picks the recipient.** `--live` without `--provider` is refused (exit 64), and so
+is `--provider` without `--live`. No run sends the image to more than one provider, and no scan,
+lookup or web route sends it at all: the command is CLI only. A live search may cost provider
+credits.
 
-| Provider | Credential slot | Search | Provenance |
-| --- | --- | --- | --- |
-| Google Cloud Vision | `HUNTSMAN_GOOGLE_VISION_KEY` | WEB_DETECTION | [Google documentation](https://docs.cloud.google.com/vision/docs/detecting-web) |
-| Lenso.ai | `HUNTSMAN_LENSO_KEY` | duplicates | [Lenso API](https://github.com/lenso-ai/reverse-image-search-api) |
-| SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | db 999 | [SauceNAO](https://saucenao.com/) |
+| Provider | `--provider` | Credential slot | Search | Where the key goes |
+| --- | --- | --- | --- | --- |
+| Google Cloud Vision | `google_vision` | `HUNTSMAN_GOOGLE_VISION_KEY` | `WEB_DETECTION` ([docs](https://docs.cloud.google.com/vision/docs/detecting-web)) | `X-goog-api-key` header, to `vision.googleapis.com` only ([API keys](https://docs.cloud.google.com/docs/authentication/api-keys-use)) |
+| Lenso.ai | `lenso` | `HUNTSMAN_LENSO_KEY` | `duplicates` ([docs](https://github.com/lenso-ai/reverse-image-search-api)) | `Authorization: Bearer`, to `api.lenso.ai` only |
+| SauceNAO | `saucenao` | `HUNTSMAN_SAUCENAO_KEY` | every index, `db=999` ([docs](https://saucenao.com/user.php?page=search-api)) | `api_key` query parameter, to `saucenao.com` only |
 
-Only configure services for which the operator has authorized API access and accepted
-applicable terms. Third-party providers receive image bytes when called. Do not submit
-personal or sensitive photographs without appropriate authorization. Credentials are
-never written to reports. Each key is read only from its slot and sent only to its
-provider's origin, added to the request as it is sent: Google Cloud Vision's in the
-`X-goog-api-key` header, Lenso's as `Authorization: Bearer`, and SauceNAO's as the
-`api_key` query parameter, which is how SauceNAO's API takes it, never inside the
-uploaded form. Recorded URLs drop their query, and redirects are not followed.
+Keys are read from `$HOME/.huntsman.env` (mode 600) or the environment, through the credential
+path every keyed source uses: a key goes only to its provider's origin, is added to the request
+only as it is sent, is never carried through a redirect, and is scrubbed from every diagnostic.
+SauceNAO's API takes its key as the `api_key` query parameter, which is how SauceNAO's own
+example client sends it beside the uploaded file; the URL Huntsman builds holds no key, recorded
+URLs drop their query, and the uploaded form never holds it. Configure only services you are
+authorised to use, and do not upload personal or sensitive photographs without authority to do
+so: the provider receives the image.
 
 ## Result states
 
-* `not_requested`: no external call because `--live` was omitted.
-* `unconfigured`: provider key missing; never interpret this as no matches.
-* `failed`: the provider returned a transport/HTTP/schema error; not a negative result.
-* `completed`: provider replied with valid JSON. `results=0` then means no matches
-  returned **by that provider**, not absence from the wider internet.
+- `"search": "not_run"`: nothing was sent. Either `--live` was not given, the provider's key is
+  not configured (`outcome.kind` is `not_configured`, exit 66), or the request was refused before
+  sending (exit 77). `matches` is `null`.
+- `"search": "failed"`: the image was sent and no answer could be read: a transport failure, an
+  HTTP or provider error, a rate limit, a challenge page, or an answer that is not the provider's
+  documented shape. `matches` is `null`, the `outcome` says why, and the exit is 69. It is never a
+  negative result.
+- `"search": "completed"`: the provider answered. `matches` lists what it returned from its own
+  index, at most 80, and `truncated` says when it returned more. An empty list means that
+  provider's index held no match, not that the picture is nowhere else.
 
-`image_sha256` identifies the exact image bytes uploaded. The response includes
-`observed_at_unix`, `truncated`, and `shared_image_urls` (the exact same image URL
-reported by more than one service; this is source-index agreement, not proof of identity).
-The CLI now uses Huntsman's bounded, symlink-refusing file reader, not an unbounded
-read between a file-stat and the subsequent open. No local perceptual
-hashing or face recognition is claimed by this release; providers perform their own
-matching. `match_type` and `provider_score` are provider-specific, **not identity
-probabilities**. Google results may be full, partial or visual. Lenso provides its
-duplicate category. SauceNAO predominantly covers its specialised indexed sources.
+`file_sha256`, `file_bytes` and `format` describe the file as read; `observed_at_unix` is when the
+command ran. `match_type` and `provider_score` are the provider's own, **never identity
+probabilities**. No local perceptual hashing or face recognition is done: the provider does its
+own matching.
 
-**Limits:** 4 MiB per file, at most 80 retained matches, 30 seconds per provider,
-no automatic retries or redirects. The file must be a local JPEG/PNG/GIF/WebP by
-magic bytes. The signature check is not a full decoder, so invalid/truncated images
-can still be rejected by the provider. The command is available from the Termux CLI
-only: there is no web route or Web UI panel.
+**Limits:** 4 MiB per file, read through Huntsman's bounded reader, which refuses a symbolic link
+and a file that changes during the read; at most 80 matches; one request per search, within the
+20-second API leg timeout, with no retries and no redirects. The file must be a JPEG, PNG, WebP
+or GIF by its first bytes. CLI only: there is no web route or Web UI panel.
 
-To verify:
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-huntsman-recon reverse-image ./known.jpg --json
-```
-
-The last offline command must show all three providers as `not_requested`.
-For a real external integration test, use a non-sensitive image known to occur on a
-public web page, configure exactly one provider key, run `--live` and verify both
-the API response and independent existence of its returned source URLs. Repeat for
-the other configured providers. A single provider failure cannot be treated as a
-clean negative.
+To check an install offline, `huntsman-recon reverse-image ./known.jpg --json` must print
+`"search": "not_run"` and `"matches": null`. For a real external check, use a non-sensitive image
+known to occur on a public web page, configure one provider's key, run
+`--live --provider NAME`, and verify the returned source URLs independently. A failed search is
+never a clean negative.
 
 ## Instagram QR and image provenance
 

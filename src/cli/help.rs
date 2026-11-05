@@ -119,7 +119,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "exif" => huntsman_recon::exif::EXIF_HELP,
         "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,
         "reverse-image" => {
-            "reverse-image IMAGE-FILE [--live] [--provider google_vision|lenso|saucenao] [--json]\nOffline SHA-256 evidence fingerprint by default. --live explicitly sends the image to configured image indexes and may use paid credits. --provider targets one configured service."
+            "reverse-image IMAGE-FILE [--live --provider google_vision|lenso|saucenao] [--json]\nPrint a local image's SHA-256, size and format, offline: nothing is sent and no search runs. With --live --provider NAME, upload the whole image to that one provider (Google Cloud Vision web detection, Lenso or SauceNAO) with the key from its slot and print what its own index returned; --live without --provider is refused, so no run asks more than one provider. A provider without a key is asked nothing (exit 66), and a failed search is never no matches (exit 69). Matches are leads about image reuse, never proof of identity. A live search may cost provider credits."
         }
         "apk" => huntsman_recon::apk_intel::APK_HELP,
         "source-intel" => super::source_intel::HELP,

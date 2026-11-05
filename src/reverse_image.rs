@@ -1,6 +1,11 @@
-//! Bounded, explicit reverse-image web search. These providers search their own indexes, not
-//! the whole internet. A visually similar image is never evidence of a person's identity.
-//! No provider is contacted unless the operator asks for --live and has configured its key.
+//! Opt-in reverse-image search of one local image by the one provider the operator names.
+//!
+//! Offline by default: [`fingerprint`] hashes the file and sends nothing, so no search runs and
+//! the report holds no matches, rather than zero matches. [`search_one`] uploads the whole image
+//! to the one provider the operator named with `--live --provider NAME`, Google Cloud Vision web
+//! detection, Lenso or `SauceNAO`, and to no other: nothing fans out to every configured provider.
+//! Each provider searches its own index, not the whole internet, and a visually similar image is
+//! never evidence of a person's identity.
 //!
 //! Each provider is an [`Api`] leg ([`crate::api_leg`]): its key comes only from its operator
 //! slot, goes only to the provider's own origin, is added to the request only as it is sent and
@@ -8,7 +13,7 @@
 //! header, Lenso as a bearer token and `SauceNAO` as the `api_key` query parameter, never inside
 //! the uploaded form.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -17,10 +22,14 @@ use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::sha256::{hex32, sha256};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
-/// Cap memory use for image bytes, Base64 encoding, request building and downstream providers.
+/// The largest image read and uploaded. It bounds the memory the Base64 and multipart copies of
+/// an upload take.
 pub const MAX_REVERSE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_MATCHES: usize = 80;
+/// The most matches one report keeps; a provider that returned more distinct ones is marked
+/// truncated.
+pub const MAX_MATCHES: usize = 80;
 
 /// The source label of Google Cloud Vision web detection.
 pub const GOOGLE_VISION_SOURCE: &str = "google_vision";
@@ -75,220 +84,200 @@ pub const SAUCENAO: Api = Api {
     }),
 };
 
-/// The providers, as `--provider` names them.
-const PROVIDERS: [&Api; 3] = [&GOOGLE_VISION, &LENSO, &SAUCENAO];
+/// Every provider, in the order `--provider` lists them.
+pub const PROVIDERS: [&Api; 3] = [&GOOGLE_VISION, &LENSO, &SAUCENAO];
 
-#[derive(Debug, Clone, Serialize)]
+/// The provider `--provider` names by its source label, or `None` for any other name. **Pure.**
+#[must_use]
+pub fn provider(name: &str) -> Option<&'static Api> {
+    PROVIDERS.into_iter().find(|api| api.source == name)
+}
+
+/// An image container the command reads, by its first bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Jpeg,
+    Png,
+    WebP,
+    Gif,
+}
+
+impl Format {
+    /// The container `image` starts as, or `None` for anything else. **Pure.**
+    fn of(image: &[u8]) -> Option<Self> {
+        if image.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            Some(Self::Jpeg)
+        } else if image.starts_with(crate::exif::PNG_SIGNATURE) {
+            Some(Self::Png)
+        } else if image.starts_with(b"RIFF") && image.get(8..12) == Some(b"WEBP") {
+            Some(Self::WebP)
+        } else if image.starts_with(b"GIF87a") || image.starts_with(b"GIF89a") {
+            Some(Self::Gif)
+        } else {
+            None
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Jpeg => "JPEG",
+            Self::Png => "PNG",
+            Self::WebP => "WebP",
+            Self::Gif => "GIF",
+        }
+    }
+}
+
+/// One match a provider returned: a page holding the picture, the picture's own address, or both.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ImageMatch {
-    pub provider: String,
-    pub match_type: String,
+    /// The provider's own kind of match, such as `full_image` or `visually_similar`.
+    pub match_type: &'static str,
     pub source_url: Option<String>,
     pub image_url: Option<String>,
     /// A provider-defined similarity value; never an identity probability.
     pub provider_score: Option<f64>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ProviderStatus {
-    pub provider: &'static str,
-    pub state: &'static str,
-    pub detail: String,
-    pub results: usize,
+/// Whether a search ran: what a report says first, so an offline run or a missing key is never
+/// read as a search that found nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Search {
+    /// Nothing was sent: no provider was named, its key is not configured, or the request was
+    /// refused before sending.
+    NotRun,
+    /// The image was sent and no answer could be read: not a negative result.
+    Failed,
+    /// The provider answered. `matches` holds what it returned from its own index, which may be
+    /// nothing.
+    Completed,
 }
 
+/// One `reverse-image` run.
 #[derive(Debug, Serialize)]
 pub struct ImageReport {
-    pub image_sha256: String,
-    pub bytes: usize,
-    pub live_requested: bool,
+    /// SHA-256 of the file as read.
+    pub file_sha256: String,
+    pub file_bytes: usize,
+    /// The container the file's first bytes name: JPEG, PNG, WebP or GIF.
+    pub format: &'static str,
+    /// The one provider the operator named; `None` offline.
+    pub provider: Option<&'static str>,
+    pub search: Search,
+    /// How the provider's request ended; `None` offline.
+    pub outcome: Option<SourceExecutionOutcome>,
     pub observed_at_unix: u64,
-    /// Matching image URLs returned independently by at least two provider indexes.
-    /// Same URL across providers does not by itself establish a real-world identity.
-    pub shared_image_urls: Vec<String>,
+    /// What the provider returned when the search completed; `None` when no search ran or it
+    /// failed, so an absent list is never read as no matches.
+    pub matches: Option<Vec<ImageMatch>>,
+    /// Whether the provider returned more distinct matches than the [`MAX_MATCHES`] kept.
     pub truncated: bool,
-    pub statuses: Vec<ProviderStatus>,
-    pub matches: Vec<ImageMatch>,
 }
 
-fn is_image(bytes: &[u8]) -> bool {
-    (bytes.len() >= 3 && bytes.starts_with(&[0xff, 0xd8, 0xff]))
-        || bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-        || (bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP")
-        || bytes.starts_with(b"GIF87a")
-        || bytes.starts_with(b"GIF89a")
+/// The offline report: the file's SHA-256, size and format. No provider is asked and nothing is
+/// sent, so the report says no search ran and holds no matches.
+///
+/// # Errors
+/// An empty file, one over [`MAX_REVERSE_IMAGE_BYTES`], or one that is not a JPEG, PNG, WebP or
+/// GIF image.
+pub fn fingerprint(image: &[u8], now_unix: u64) -> Result<ImageReport, &'static str> {
+    if image.is_empty() || image.len() > MAX_REVERSE_IMAGE_BYTES {
+        return Err("the image must be 1 byte to 4 MiB");
+    }
+    let format = Format::of(image).ok_or("not a JPEG, PNG, WebP or GIF image")?;
+    Ok(ImageReport {
+        file_sha256: hex32(&sha256(image)),
+        file_bytes: image.len(),
+        format: format.name(),
+        provider: None,
+        search: Search::NotRun,
+        outcome: None,
+        observed_at_unix: now_unix,
+        matches: None,
+        truncated: false,
+    })
 }
 
-fn web_url(value: &str) -> Option<String> {
-    if value.len() > 2048
-        || !value.is_ascii()
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() || byte == b'\\' || byte == b' ')
-    {
-        return None;
-    }
-    let authority = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))?
-        .split(['/', '?', '#'])
-        .next()?;
-    if authority.is_empty() || authority.contains('@') || authority.starts_with(':') {
-        return None;
-    }
-    crate::http::parse_http_uri(value).ok()?;
-    Some(value.to_owned())
-}
-
-fn insert(
-    matches: &mut Vec<ImageMatch>,
-    provider: &str,
-    kind: &str,
-    source: Option<&str>,
-    image: Option<&str>,
-    score: Option<f64>,
-) {
-    if matches.len() > MAX_MATCHES {
-        return;
-    }
-    let source_url = source.and_then(web_url);
-    let image_url = image.and_then(web_url);
-    if source_url.is_none() && image_url.is_none() {
-        return;
-    }
-    matches.push(ImageMatch {
-        provider: provider.to_owned(),
-        match_type: kind.to_owned(),
-        source_url,
-        image_url,
-        provider_score: score.filter(|v| v.is_finite()),
-    });
-}
-
-fn parse_google(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
-    let first = value
-        .get("responses")
-        .and_then(Value::as_array)
-        .and_then(|list| list.first())
-        .ok_or("google response is missing responses[0]")?;
-    if first.get("error").is_some() {
-        return Err("google reported a request error");
-    }
-    let data = first
-        .get("webDetection")
-        .and_then(Value::as_object)
-        .ok_or("google response is missing webDetection")?;
-    let mut matches = Vec::new();
-    for (field, kind) in [
-        ("fullMatchingImages", "full_image"),
-        ("partialMatchingImages", "partial_image"),
-        ("visuallySimilarImages", "visually_similar"),
-    ] {
-        if let Some(items) = data.get(field).and_then(Value::as_array) {
-            for item in items {
-                insert(
-                    &mut matches,
-                    "google_vision",
-                    kind,
-                    None,
-                    item.get("url").and_then(Value::as_str),
-                    None,
-                );
+/// One live search: `image` uploaded to the one provider `name` names, with its key from `keys`,
+/// and to no other provider. A provider whose key is not configured is asked nothing. A refusal,
+/// a failure and an answer that is not the provider's documented shape are reported as such,
+/// never as no matches.
+///
+/// # Errors
+/// An unknown provider name, or an image [`fingerprint`] refuses, before any request.
+pub fn search_one<T: Transport + ?Sized>(
+    transport: &T,
+    image: &[u8],
+    keys: &Keys,
+    name: &str,
+    now_unix: u64,
+) -> Result<ImageReport, &'static str> {
+    let api = provider(name).ok_or("unknown reverse-image provider")?;
+    let mut report = fingerprint(image, now_unix)?;
+    report.provider = Some(api.source);
+    let (search, outcome) = if api.wanted(keys) {
+        match perform(transport, api, image, keys, now_unix) {
+            Ok(found) => {
+                let outcome = if found.kept.is_empty() {
+                    SourceExecutionOutcome::valid_zero(api.source, now_unix)
+                } else {
+                    SourceExecutionOutcome::success(api.source, now_unix, found.kept.len())
+                };
+                report.truncated = found.truncated;
+                report.matches = Some(found.kept);
+                (Search::Completed, outcome)
             }
-        }
-    }
-    if let Some(pages) = data
-        .get("pagesWithMatchingImages")
-        .and_then(Value::as_array)
-    {
-        for page in pages {
-            let source = page.get("url").and_then(Value::as_str);
-            insert(
-                &mut matches,
-                "google_vision",
-                "page_with_match",
-                source,
-                None,
-                page.get("score").and_then(Value::as_f64),
-            );
-            for (field, kind) in [
-                ("fullMatchingImages", "full_image_on_page"),
-                ("partialMatchingImages", "partial_image_on_page"),
-            ] {
-                if let Some(items) = page.get(field).and_then(Value::as_array) {
-                    for item in items {
-                        insert(
-                            &mut matches,
-                            "google_vision",
-                            kind,
-                            source,
-                            item.get("url").and_then(Value::as_str),
-                            None,
-                        );
-                    }
-                }
+            // Nothing left the device: the guarded path refused the request before sending.
+            Err(error @ (LegError::Refused(_) | LegError::MissingKey(_))) => {
+                (Search::NotRun, error.outcome(api, now_unix))
             }
+            Err(error) => (Search::Failed, error.outcome(api, now_unix)),
         }
-    }
-    Ok(matches)
+    } else {
+        let slot = api.key.map_or("", |key| key.slot);
+        (
+            Search::NotRun,
+            LegError::MissingKey(slot).outcome(api, now_unix),
+        )
+    };
+    report.search = search;
+    report.outcome = Some(outcome);
+    Ok(report)
 }
 
-fn parse_lenso(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
-    let rows = value
-        .get("results")
-        .and_then(Value::as_array)
-        .ok_or("lenso response is missing results array")?;
-    let mut matches = Vec::new();
-    for row in rows {
-        let score = row.get("confidenceScore").and_then(Value::as_f64);
-        if let Some(urls) = row.get("urlList").and_then(Value::as_array) {
-            for item in urls {
-                insert(
-                    &mut matches,
-                    "lenso",
-                    "provider_duplicate",
-                    item.get("sourceUrl").and_then(Value::as_str),
-                    item.get("imageUrl").and_then(Value::as_str),
-                    score,
-                );
-            }
+/// One provider's search for `image`, through its [`Api`] leg. Redirects are not followed, a
+/// challenge page or a refusal is an error, and an answer that is not the provider's documented
+/// shape is an error, never an empty search.
+fn perform<T: Transport + ?Sized>(
+    transport: &T,
+    api: &Api,
+    image: &[u8],
+    keys: &Keys,
+    now: u64,
+) -> Result<Collected, LegError> {
+    let answer = match api.source {
+        GOOGLE_VISION_SOURCE => {
+            let request = json!({"requests": [{"image": {"content": crate::base64::standard(image)},
+                "features": [{"type": "WEB_DETECTION", "maxResults": 20}]}]});
+            api_leg::post_json(transport, api, keys, GOOGLE_VISION_URL, &request, now)?
         }
+        LENSO_SOURCE => {
+            let request = json!({"image": crate::base64::standard(image), "category": "duplicates",
+                "sortType": "QUALITY_DESCENDING", "page": 1});
+            api_leg::post_json(transport, api, keys, LENSO_URL, &request, now)?
+        }
+        _ => {
+            let (content_type, body) = multipart_upload(image)?;
+            api_leg::post_body(transport, api, keys, SAUCENAO_URL, &content_type, body, now)?
+        }
+    };
+    let json: Value = api_leg::decode(&answer.body_or_unexpected()?)?;
+    match api.source {
+        GOOGLE_VISION_SOURCE => parse_google(&json),
+        LENSO_SOURCE => parse_lenso(&json),
+        _ => parse_saucenao(&json),
     }
-    Ok(matches)
-}
-
-fn parse_saucenao(value: &Value) -> Result<Vec<ImageMatch>, &'static str> {
-    let header = value
-        .get("header")
-        .and_then(Value::as_object)
-        .ok_or("SauceNAO response is missing header")?;
-    if header.get("status").and_then(Value::as_i64) != Some(0) {
-        return Err("SauceNAO returned a non-success status");
-    }
-    let rows = value
-        .get("results")
-        .and_then(Value::as_array)
-        .ok_or("SauceNAO response is missing results array")?;
-    let mut matches = Vec::new();
-    for row in rows {
-        let score = row.pointer("/header/similarity").and_then(|v| {
-            v.as_str()
-                .and_then(|s| s.parse::<f64>().ok())
-                .or_else(|| v.as_f64())
-        });
-        let source = row
-            .pointer("/data/ext_urls/0")
-            .and_then(Value::as_str)
-            .or_else(|| row.pointer("/data/source").and_then(Value::as_str));
-        insert(
-            &mut matches,
-            "saucenao",
-            "provider_similar",
-            source,
-            row.pointer("/header/thumbnail").and_then(Value::as_str),
-            score,
-        );
-    }
-    Ok(matches)
 }
 
 /// The image as the one `file` part of a multipart form, under a boundary drawn from the image's
@@ -316,144 +305,289 @@ fn multipart_upload(image: &[u8]) -> Result<(String, Vec<u8>), LegError> {
     Ok((format!("multipart/form-data; boundary={boundary}"), body))
 }
 
-/// One provider's search for `image`, through its [`Api`] leg. Redirects are not followed, a
-/// challenge page or a refusal is an error, and an answer that is not the provider's documented
-/// shape is an error, never an empty search.
-fn perform<T: Transport + ?Sized>(
-    transport: &T,
-    api: &Api,
-    image: &[u8],
-    keys: &Keys,
-    now: u64,
-) -> Result<Vec<ImageMatch>, LegError> {
-    let answer = match api.source {
-        GOOGLE_VISION_SOURCE => {
-            let request = json!({"requests": [{"image": {"content": crate::base64::standard(image)},
-                "features": [{"type": "WEB_DETECTION", "maxResults": 20}]}]});
-            api_leg::post_json(transport, api, keys, GOOGLE_VISION_URL, &request, now)?
-        }
-        LENSO_SOURCE => {
-            let request = json!({"image": crate::base64::standard(image), "category": "duplicates",
-                "sortType": "QUALITY_DESCENDING", "page": 1});
-            api_leg::post_json(transport, api, keys, LENSO_URL, &request, now)?
-        }
-        _ => {
-            let (content_type, body) = multipart_upload(image)?;
-            api_leg::post_body(transport, api, keys, SAUCENAO_URL, &content_type, body, now)?
-        }
-    };
-    let json: Value = api_leg::decode(&answer.body_or_unexpected()?)?;
-    match api.source {
-        GOOGLE_VISION_SOURCE => parse_google(&json),
-        LENSO_SOURCE => parse_lenso(&json),
-        _ => parse_saucenao(&json),
-    }
-    .map_err(|reason| LegError::Decode(reason.to_owned()))
+/// The distinct matches of one answer, in the provider's order, at most [`MAX_MATCHES`], and
+/// whether more distinct ones were left out.
+#[derive(Debug, Default)]
+struct Collected {
+    kept: Vec<ImageMatch>,
+    seen: BTreeSet<(&'static str, Option<String>, Option<String>)>,
+    truncated: bool,
 }
 
-/// The same search, optionally restricted to one provider. This avoids unintentionally
-/// spending credits with all configured providers. Other providers are not contacted.
-///
-/// # Errors
-/// An unknown provider or invalid image is rejected before network activity.
-pub fn search_selected<T: Transport + ?Sized>(
-    transport: &T,
-    image: &[u8],
-    keys: &Keys,
-    now: u64,
-    live: bool,
-    selected: Option<&str>,
-) -> Result<ImageReport, &'static str> {
-    if selected.is_some_and(|name| !PROVIDERS.iter().any(|api| api.source == name)) {
-        return Err("unknown reverse-image provider");
+impl Collected {
+    /// Keeps one match that names at least one web address, unless the same one is kept already.
+    fn push(
+        &mut self,
+        match_type: &'static str,
+        source: Option<&str>,
+        image: Option<&str>,
+        score: Option<f64>,
+    ) {
+        let source_url = source.and_then(web_url);
+        let image_url = image.and_then(web_url);
+        if source_url.is_none() && image_url.is_none() {
+            return;
+        }
+        if !self
+            .seen
+            .insert((match_type, source_url.clone(), image_url.clone()))
+        {
+            return;
+        }
+        if self.kept.len() == MAX_MATCHES {
+            self.truncated = true;
+            return;
+        }
+        self.kept.push(ImageMatch {
+            match_type,
+            source_url,
+            image_url,
+            provider_score: score.filter(|value| value.is_finite()),
+        });
     }
-    if image.is_empty() || image.len() > MAX_REVERSE_IMAGE_BYTES || !is_image(image) {
-        return Err("expected a JPEG, PNG, GIF or WebP image of 1 byte to 4 MiB");
+}
+
+/// `value` when it is a plain `http` or `https` address to keep: ASCII, at most 2 KiB, no
+/// credentials, spaces, backslashes or control characters, and one the HTTP layer parses.
+/// **Pure.**
+fn web_url(value: &str) -> Option<String> {
+    if value.len() > 2048
+        || !value.is_ascii()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b'\\' || byte == b' ')
+    {
+        return None;
     }
-    let mut report = ImageReport {
-        image_sha256: hex32(&sha256(image)),
-        bytes: image.len(),
-        live_requested: live,
-        observed_at_unix: now,
-        shared_image_urls: Vec::new(),
-        truncated: false,
-        statuses: Vec::new(),
-        matches: Vec::new(),
+    let authority = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))?
+        .split(['/', '?', '#'])
+        .next()?;
+    if authority.is_empty() || authority.contains('@') || authority.starts_with(':') {
+        return None;
+    }
+    crate::http::parse_http_uri(value).ok()?;
+    Some(value.to_owned())
+}
+
+/// What a per-image `error` in a Google Cloud Vision answer means, by its `google.rpc.Code`, at
+/// the HTTP 200 the batch answer came with. **Pure.**
+fn google_error(error: &Value) -> LegError {
+    let kind = match error.get("code").and_then(Value::as_i64) {
+        // PERMISSION_DENIED, RESOURCE_EXHAUSTED, UNAUTHENTICATED.
+        Some(7) => SourceOutcomeKind::EntitlementDenied,
+        Some(8) => SourceOutcomeKind::QuotaExhausted,
+        Some(16) => SourceOutcomeKind::AuthRejected,
+        // DEADLINE_EXCEEDED, INTERNAL, UNAVAILABLE.
+        Some(4 | 13 | 14) => SourceOutcomeKind::Upstream5xx,
+        // INVALID_ARGUMENT and any other code: the image or the request was refused.
+        _ => SourceOutcomeKind::Upstream4xx,
     };
-    for api in PROVIDERS {
-        let name = api.source;
-        if selected.is_some_and(|chosen| chosen != name) {
-            continue;
-        }
-        let status = if !live {
-            ProviderStatus {
-                provider: name,
-                state: "not_requested",
-                detail: "offline only (pass --live to send image to providers)".into(),
-                results: 0,
-            }
-        } else if api.wanted(keys) {
-            match perform(transport, api, image, keys, now) {
-                Ok(mut matches) => {
-                    let count = matches.len();
-                    report.matches.append(&mut matches);
-                    ProviderStatus {
-                        provider: name,
-                        state: "completed",
-                        detail: "response parsed; matches are not proof of identity".into(),
-                        results: count,
-                    }
-                }
-                Err(error) => ProviderStatus {
-                    provider: name,
-                    state: "failed",
-                    detail: error.to_string(),
-                    results: 0,
-                },
-            }
-        } else {
-            ProviderStatus {
-                provider: name,
-                state: "unconfigured",
-                detail: api.key.map_or_else(String::new, |key| {
-                    format!("set {} in the private credentials file", key.slot)
-                }),
-                results: 0,
-            }
-        };
-        report.statuses.push(status);
+    LegError::NotAnAnswer(kind, 200)
+}
+
+fn parse_google(value: &Value) -> Result<Collected, LegError> {
+    let first = value
+        .get("responses")
+        .and_then(Value::as_array)
+        .and_then(|list| list.first())
+        .ok_or_else(|| LegError::Decode("Google Vision answer names no responses[0]".into()))?;
+    if let Some(error) = first.get("error") {
+        return Err(google_error(error));
     }
-    let mut seen = BTreeSet::new();
-    report.matches.retain(|m| {
-        seen.insert((
-            m.provider.clone(),
-            m.match_type.clone(),
-            m.source_url.clone(),
-            m.image_url.clone(),
-        ))
-    });
-    report.truncated = report.matches.len() > MAX_MATCHES;
-    report.matches.truncate(MAX_MATCHES);
-    let mut sources: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for item in &report.matches {
-        if let Some(url) = item.image_url.as_ref() {
-            sources
-                .entry(url.clone())
-                .or_default()
-                .insert(item.provider.clone());
+    let data = first
+        .get("webDetection")
+        .and_then(Value::as_object)
+        .ok_or_else(|| LegError::Decode("Google Vision answer has no webDetection".into()))?;
+    let mut found = Collected::default();
+    for (field, kind) in [
+        ("fullMatchingImages", "full_image"),
+        ("partialMatchingImages", "partial_image"),
+        ("visuallySimilarImages", "visually_similar"),
+    ] {
+        for item in data
+            .get(field)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            found.push(kind, None, item.get("url").and_then(Value::as_str), None);
         }
     }
-    report.shared_image_urls = sources
-        .into_iter()
-        .filter_map(|(url, providers)| (providers.len() > 1).then_some(url))
-        .collect();
-    Ok(report)
+    let pages = data
+        .get("pagesWithMatchingImages")
+        .and_then(Value::as_array);
+    for page in pages.into_iter().flatten() {
+        let source = page.get("url").and_then(Value::as_str);
+        let score = page.get("score").and_then(Value::as_f64);
+        found.push("page_with_match", source, None, score);
+        for (field, kind) in [
+            ("fullMatchingImages", "full_image_on_page"),
+            ("partialMatchingImages", "partial_image_on_page"),
+        ] {
+            for item in page
+                .get(field)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                found.push(kind, source, item.get("url").and_then(Value::as_str), None);
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn parse_lenso(value: &Value) -> Result<Collected, LegError> {
+    let rows = value
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| LegError::Decode("Lenso answer has no results array".into()))?;
+    let mut found = Collected::default();
+    for row in rows {
+        let score = row.get("confidenceScore").and_then(Value::as_f64);
+        for item in row
+            .get("urlList")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            found.push(
+                "provider_duplicate",
+                item.get("sourceUrl").and_then(Value::as_str),
+                item.get("imageUrl").and_then(Value::as_str),
+                score,
+            );
+        }
+    }
+    Ok(found)
+}
+
+/// A whole number written as a JSON number or as a string of digits, as `SauceNAO` writes its
+/// header fields. **Pure.**
+fn integer(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+}
+
+/// `SauceNAO`'s answer, read as its own example client reads it: a `user_id` above zero is its API
+/// answering (otherwise its ordinary site took over), status 0 is a search every index answered,
+/// a positive status is one or more of its indexes failing and a negative one a refused image or
+/// request. Only a status-0 answer is read for matches.
+fn parse_saucenao(value: &Value) -> Result<Collected, LegError> {
+    let header = value
+        .get("header")
+        .and_then(Value::as_object)
+        .ok_or_else(|| LegError::Decode("SauceNAO answer has no header".into()))?;
+    if integer(header.get("user_id")).is_none_or(|user| user <= 0) {
+        return Err(LegError::Decode(
+            "SauceNAO answered without its API (no user_id)".into(),
+        ));
+    }
+    match integer(header.get("status")) {
+        Some(0) => {}
+        Some(status) if status > 0 => {
+            return Err(LegError::NotAnAnswer(SourceOutcomeKind::Upstream5xx, 200));
+        }
+        Some(_) => return Err(LegError::NotAnAnswer(SourceOutcomeKind::Upstream4xx, 200)),
+        None => return Err(LegError::Decode("SauceNAO answer has no status".into())),
+    }
+    let rows = value
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| LegError::Decode("SauceNAO answer has no results array".into()))?;
+    let mut found = Collected::default();
+    for row in rows {
+        let score = row.pointer("/header/similarity").and_then(|value| {
+            value
+                .as_str()
+                .and_then(|text| text.parse::<f64>().ok())
+                .or_else(|| value.as_f64())
+        });
+        let source = row
+            .pointer("/data/ext_urls/0")
+            .and_then(Value::as_str)
+            .or_else(|| row.pointer("/data/source").and_then(Value::as_str));
+        found.push(
+            "provider_similar",
+            source,
+            row.pointer("/header/thumbnail").and_then(Value::as_str),
+            score,
+        );
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
-    use crate::http::Request;
+    use crate::http::{Method, Request, Response, TransportFailure};
+
+    /// A transport that must never be used.
+    struct NoNetwork;
+
+    impl Transport for NoNetwork {
+        fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+            panic!("this search must not access the network");
+        }
+    }
+
+    /// Answers every request with one `200` body and records each request.
+    struct Scripted {
+        requests: Mutex<Vec<Request>>,
+        body: Vec<u8>,
+    }
+
+    impl Scripted {
+        fn new(body: &Value) -> Self {
+            Self {
+                requests: Mutex::new(Vec::new()),
+                body: serde_json::to_vec(body).unwrap(),
+            }
+        }
+
+        fn sent(&self) -> Vec<Request> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Transport for Scripted {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            self.requests.lock().unwrap().push(request.clone());
+            Ok(Response {
+                status: 200,
+                headers: Vec::new(),
+                body: self.body.clone(),
+                truncated: false,
+            })
+        }
+    }
+
+    const IMAGE: &[u8] = b"GIF89a\x01\x00\x01\x00";
+
+    fn keys_with(slot: &str, secret: &str) -> Keys {
+        Keys::parse(&format!("{slot}={secret}")).unwrap()
+    }
+
+    /// A key in every provider's slot, so a search that asked the wrong one would be seen.
+    fn every_key() -> Keys {
+        Keys::parse(&format!(
+            "{}=google_secret_123\n{}=lenso_secret_123\n{}=sauce_secret_123\n",
+            crate::environment::GOOGLE_VISION_KEY_ENV,
+            crate::environment::LENSO_KEY_ENV,
+            crate::environment::SAUCENAO_KEY_ENV,
+        ))
+        .unwrap()
+    }
+
+    fn sauce_answer(status: i64, results: &Value) -> Value {
+        json!({"header": {"user_id": "4242", "status": status}, "results": results})
+    }
 
     #[test]
     fn parser_google_uses_actual_image_matches_not_web_entities() {
@@ -462,7 +596,7 @@ mod tests {
             "fullMatchingImages":[{"url":"https://images.example/a.jpg"}],
             "pagesWithMatchingImages":[{"url":"https://pages.example/p",
                 "partialMatchingImages":[{"url":"https://images.example/crop.jpg"}]}]}}]});
-        let results = parse_google(&v).unwrap();
+        let results = parse_google(&v).unwrap().kept;
         assert_eq!(results.len(), 3);
         assert!(results.iter().any(|m| m.match_type == "full_image"));
         assert!(
@@ -473,10 +607,28 @@ mod tests {
     }
 
     #[test]
+    fn a_google_error_for_the_image_is_typed_by_its_code_never_an_empty_search() {
+        for (code, kind) in [
+            (8, SourceOutcomeKind::QuotaExhausted),
+            (7, SourceOutcomeKind::EntitlementDenied),
+            (16, SourceOutcomeKind::AuthRejected),
+            (14, SourceOutcomeKind::Upstream5xx),
+            (3, SourceOutcomeKind::Upstream4xx),
+        ] {
+            let answer = json!({"responses":[{"error":{"code":code,"message":"refused"}}]});
+            assert_eq!(
+                parse_google(&answer).unwrap_err(),
+                LegError::NotAnAnswer(kind, 200)
+            );
+        }
+        assert!(parse_google(&json!({"responses":[{}]})).is_err());
+    }
+
+    #[test]
     fn parser_lenso_exposes_link_and_provider_score() {
         let v = json!({"results":[{"confidenceScore":92.0,"urlList":[
             {"sourceUrl":"https://source.example/p","imageUrl":"https://img.example/a"}]}]});
-        let result = parse_lenso(&v).unwrap();
+        let result = parse_lenso(&v).unwrap().kept;
         assert_eq!(result[0].provider_score, Some(92.0));
         assert_eq!(
             result[0].source_url.as_deref(),
@@ -485,119 +637,136 @@ mod tests {
     }
 
     #[test]
-    fn parser_saucenao_refuses_provider_status_errors() {
-        assert!(parse_saucenao(&json!({"header":{"status":-2},"results":[]})).is_err());
-        let result = parse_saucenao(&json!({"header":{"status":0},"results":[
-            {"header":{"similarity":"93.4","thumbnail":"https://img.example/t"},
-             "data":{"ext_urls":["https://source.example/a"]}}]}))
-        .unwrap();
-        assert_eq!(result[0].provider_score, Some(93.4));
-    }
-
-    struct NoNetwork;
-    impl Transport for NoNetwork {
-        fn send(
-            &self,
-            _: &Request,
-        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
-            panic!("offline image search must not access the network");
-        }
-    }
-
-    #[test]
-    fn offline_search_never_contacts_providers_or_misreports_zero_matches() {
-        let image = b"\xff\xd8\xff\xd9";
-        let keys = Keys::parse("").unwrap();
-        let report = search_selected(&NoNetwork, image, &keys, 1, false, None).unwrap();
-        assert_eq!(report.image_sha256.len(), 64);
-        assert!(report.matches.is_empty());
-        assert!(report.statuses.iter().all(|s| s.state == "not_requested"));
-    }
-
-    #[test]
-    fn live_without_keys_is_unconfigured_not_empty_and_does_not_call_network() {
-        let report = search_selected(
-            &NoNetwork,
-            b"GIF89a",
-            &Keys::parse("").unwrap(),
-            1,
-            true,
-            None,
-        )
-        .unwrap();
-        assert!(report.statuses.iter().all(|s| s.state == "unconfigured"));
-        assert!(report.matches.is_empty());
-    }
-
-    #[test]
-    fn malformed_and_oversized_input_rejected_before_network() {
-        let keys = Keys::parse("").unwrap();
-        assert!(search_selected(&NoNetwork, b"not image", &keys, 1, true, None).is_err());
-        assert!(
-            search_selected(
-                &NoNetwork,
-                &vec![0xff; MAX_REVERSE_IMAGE_BYTES + 1],
-                &keys,
-                1,
-                true,
-                None
-            )
-            .is_err()
+    fn parser_saucenao_reads_only_a_status_zero_answer_from_its_api() {
+        assert_eq!(
+            parse_saucenao(&sauce_answer(-2, &json!([]))).unwrap_err(),
+            LegError::NotAnAnswer(SourceOutcomeKind::Upstream4xx, 200)
         );
-    }
-    struct ScriptedTransport {
-        requests: std::sync::Mutex<Vec<Request>>,
-        body: Vec<u8>,
-    }
-
-    impl Transport for ScriptedTransport {
-        fn send(
-            &self,
-            request: &Request,
-        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
-            self.requests.lock().unwrap().push(request.clone());
-            Ok(crate::http::Response {
-                status: 200,
-                headers: Vec::new(),
-                body: self.body.clone(),
-                truncated: false,
-            })
-        }
-    }
-
-    #[test]
-    fn one_provider_is_called_once_and_its_key_is_not_in_the_url_or_debug() {
-        let network = ScriptedTransport {
-            requests: std::sync::Mutex::new(Vec::new()),
-            body: serde_json::to_vec(&json!({"responses":[{"webDetection":{
-                "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]}))
-            .unwrap(),
-        };
-        let keys = Keys::parse(&format!(
-            "{}=testing_provider_secret_123",
-            crate::environment::GOOGLE_VISION_KEY_ENV
+        assert_eq!(
+            parse_saucenao(&sauce_answer(3, &json!([]))).unwrap_err(),
+            LegError::NotAnAnswer(SourceOutcomeKind::Upstream5xx, 200)
+        );
+        let site = json!({"header":{"user_id":"0","status":0},"results":[]});
+        assert!(matches!(parse_saucenao(&site), Err(LegError::Decode(_))));
+        let result = parse_saucenao(&sauce_answer(
+            0,
+            &json!([{"header":{"similarity":"93.4","thumbnail":"https://img.example/t"},
+                     "data":{"ext_urls":["https://source.example/a"]}}]),
         ))
-        .unwrap();
-        let report =
-            search_selected(&network, b"GIF89a", &keys, 123, true, Some("google_vision")).unwrap();
+        .unwrap()
+        .kept;
+        assert_eq!(result[0].provider_score, Some(93.4));
+        assert_eq!(
+            result[0].source_url.as_deref(),
+            Some("https://source.example/a")
+        );
+    }
+
+    #[test]
+    fn offline_says_no_search_ran_and_holds_no_matches_rather_than_zero() {
+        let report = fingerprint(IMAGE, 7).unwrap();
+        assert_eq!(report.file_sha256, hex32(&sha256(IMAGE)));
+        assert_eq!(report.file_bytes, IMAGE.len());
+        assert_eq!(report.format, "GIF");
+        assert_eq!(report.search, Search::NotRun);
+        assert_eq!(report.provider, None);
+        assert!(report.outcome.is_none());
+        assert!(
+            report.matches.is_none(),
+            "offline must not read as no matches"
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["search"], "not_run");
+        assert_eq!(json["matches"], Value::Null);
+    }
+
+    #[test]
+    fn malformed_oversized_and_unknown_input_is_refused_before_any_request() {
+        let keys = every_key();
+        assert!(search_one(&NoNetwork, b"not image", &keys, LENSO_SOURCE, 1).is_err());
+        let oversized = vec![0xFF; MAX_REVERSE_IMAGE_BYTES + 1];
+        assert!(search_one(&NoNetwork, &oversized, &keys, LENSO_SOURCE, 1).is_err());
+        assert!(search_one(&NoNetwork, b"", &keys, LENSO_SOURCE, 1).is_err());
+        assert!(search_one(&NoNetwork, IMAGE, &keys, "other", 1).is_err());
+        assert!(search_one(&NoNetwork, IMAGE, &keys, "", 1).is_err());
+    }
+
+    #[test]
+    fn a_provider_without_a_key_is_asked_nothing_and_named_with_its_slot() {
+        for api in PROVIDERS {
+            let report = search_one(&NoNetwork, IMAGE, &Keys::default(), api.source, 1).unwrap();
+            assert_eq!(report.search, Search::NotRun, "{}", api.source);
+            assert!(report.matches.is_none());
+            let outcome = report.outcome.unwrap();
+            assert_eq!(outcome.kind, SourceOutcomeKind::NotConfigured);
+            let slot = api.key.unwrap().slot;
+            assert!(outcome.reason().contains(slot), "{}", outcome.reason());
+        }
+    }
+
+    #[test]
+    fn only_the_named_provider_receives_the_image_once() {
+        for (api, answer) in [
+            (
+                &GOOGLE_VISION,
+                json!({"responses":[{"webDetection":{"fullMatchingImages":[]}}]}),
+            ),
+            (&LENSO, json!({"results":[]})),
+            (&SAUCENAO, sauce_answer(0, &json!([]))),
+        ] {
+            let network = Scripted::new(&answer);
+            let report = search_one(&network, IMAGE, &every_key(), api.source, 9).unwrap();
+            assert_eq!(report.provider, Some(api.source));
+            assert_eq!(report.search, Search::Completed, "{}", api.source);
+            assert_eq!(report.matches, Some(Vec::new()));
+            assert_eq!(
+                report.outcome.map(|outcome| outcome.kind),
+                Some(SourceOutcomeKind::ValidZero),
+                "a completed search that found nothing is a valid zero"
+            );
+            let sent = network.sent();
+            assert_eq!(sent.len(), 1, "{}", api.source);
+            assert_eq!(sent[0].method, Method::Post);
+            assert_eq!(
+                crate::http::origin_of(&sent[0].url).as_deref(),
+                Some(api.origin),
+                "{} sent elsewhere",
+                api.source
+            );
+            // No other provider's key travelled with it.
+            let carried = format!("{} {:?}", sent[0].url, sent[0].headers);
+            for other in ["google", "lenso", "sauce"] {
+                if api.source.starts_with(other) {
+                    continue;
+                }
+                assert!(
+                    !carried.contains(&format!("{other}_secret_123")),
+                    "{carried}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn google_key_is_the_header_and_not_in_the_url_or_debug() {
+        let network = Scripted::new(&json!({"responses":[{"webDetection":{
+            "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]}));
+        let secret = "testing_provider_secret_123";
+        let keys = keys_with(crate::environment::GOOGLE_VISION_KEY_ENV, secret);
+        let report = search_one(&network, IMAGE, &keys, GOOGLE_VISION_SOURCE, 123).unwrap();
         assert_eq!(report.observed_at_unix, 123);
-        assert_eq!(report.statuses.len(), 1);
-        assert_eq!(report.statuses[0].state, "completed");
-        assert_eq!(report.matches.len(), 1);
-        let requests = network.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        let request = &requests[0];
-        assert_eq!(request.method, crate::http::Method::Post);
+        assert_eq!(report.search, Search::Completed);
+        assert_eq!(report.matches.as_ref().map(Vec::len), Some(1));
         assert_eq!(
-            request.url,
-            "https://vision.googleapis.com/v1/images:annotate"
+            report.outcome.as_ref().map(|outcome| outcome.kind),
+            Some(SourceOutcomeKind::Success)
         );
-        assert_eq!(
-            request.header_value("X-goog-api-key"),
-            Some("testing_provider_secret_123")
-        );
-        assert!(!format!("{request:?}").contains("testing_provider_secret_123"));
-        let payload: Value = serde_json::from_slice(&request.body).unwrap();
+        let sent = network.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].url, GOOGLE_VISION_URL);
+        assert_eq!(sent[0].header_value("X-goog-api-key"), Some(secret));
+        assert!(!format!("{:?}", sent[0]).contains(secret));
+        let payload: Value = serde_json::from_slice(&sent[0].body).unwrap();
         assert_eq!(
             payload
                 .pointer("/requests/0/features/0/type")
@@ -608,96 +777,92 @@ mod tests {
 
     #[test]
     fn saucenao_key_is_only_the_api_key_parameter_added_as_the_request_is_sent() {
-        let network = ScriptedTransport {
-            requests: std::sync::Mutex::new(Vec::new()),
-            body: serde_json::to_vec(&json!({"header":{"status":0},"results":[]})).unwrap(),
-        };
+        let network = Scripted::new(&sauce_answer(0, &json!([])));
         let secret = "testing_sauce_secret_123";
-        let keys = Keys::parse(&format!(
-            "{}={secret}",
-            crate::environment::SAUCENAO_KEY_ENV
-        ))
-        .unwrap();
-        let report =
-            search_selected(&network, b"GIF89a", &keys, 123, true, Some("saucenao")).unwrap();
-        assert_eq!(report.statuses.len(), 1);
-        assert_eq!(report.statuses[0].state, "completed");
-        let requests = network.requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
+        let keys = keys_with(crate::environment::SAUCENAO_KEY_ENV, secret);
+        let report = search_one(&network, IMAGE, &keys, SAUCENAO_SOURCE, 123).unwrap();
+        assert_eq!(report.search, Search::Completed);
+        let sent = network.sent();
+        assert_eq!(sent.len(), 1);
         // The URL the code builds holds no key; fetch adds it as `api_key` as it sends.
         assert!(!SAUCENAO_URL.contains(secret));
-        assert_eq!(requests[0].url, format!("{SAUCENAO_URL}&api_key={secret}"));
+        assert_eq!(sent[0].url, format!("{SAUCENAO_URL}&api_key={secret}"));
+        let body = &sent[0].body;
         assert!(
-            !requests[0]
-                .body
+            !body
                 .windows(secret.len())
                 .any(|part| part == secret.as_bytes()),
             "the key is in the uploaded form"
         );
-        assert!(!requests[0].body.windows(7).any(|part| part == b"api_key"));
-        assert!(requests[0].headers.iter().all(|(_, v)| !v.contains(secret)));
-        assert!(!format!("{:?}", requests[0]).contains(secret));
-        let content_type = requests[0].header_value("content-type").unwrap();
+        assert!(!body.windows(7).any(|part| part == b"api_key"));
+        assert!(sent[0].headers.iter().all(|(_, v)| !v.contains(secret)));
+        assert!(!format!("{:?}", sent[0]).contains(secret));
+        let content_type = sent[0].header_value("content-type").unwrap();
         let boundary = content_type
             .strip_prefix("multipart/form-data; boundary=")
             .unwrap();
-        assert!(
-            requests[0]
-                .body
-                .starts_with(format!("--{boundary}\r\n").as_bytes())
-        );
-        assert!(
-            requests[0]
-                .body
-                .ends_with(format!("\r\n--{boundary}--\r\n").as_bytes())
-        );
+        assert!(body.starts_with(format!("--{boundary}\r\n").as_bytes()));
+        assert!(body.ends_with(format!("\r\n--{boundary}--\r\n").as_bytes()));
+        assert!(body.windows(IMAGE.len()).any(|part| part == IMAGE));
     }
 
     #[test]
     fn lenso_token_is_a_bearer_header_bound_to_its_origin() {
-        let network = ScriptedTransport {
-            requests: std::sync::Mutex::new(Vec::new()),
-            body: serde_json::to_vec(&json!({"results":[]})).unwrap(),
-        };
+        let network = Scripted::new(&json!({"results":[]}));
         let secret = "testing_lenso_secret_123";
-        let keys = Keys::parse(&format!("{}={secret}", crate::environment::LENSO_KEY_ENV)).unwrap();
-        let report = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso")).unwrap();
-        assert_eq!(report.statuses[0].state, "completed");
-        let requests = network.requests.lock().unwrap();
-        assert_eq!(requests[0].url, LENSO_URL);
+        let keys = keys_with(crate::environment::LENSO_KEY_ENV, secret);
+        let report = search_one(&network, IMAGE, &keys, LENSO_SOURCE, 123).unwrap();
+        assert_eq!(report.search, Search::Completed);
+        let sent = network.sent();
+        assert_eq!(sent[0].url, LENSO_URL);
         assert_eq!(
-            requests[0].header_value("authorization"),
+            sent[0].header_value("authorization"),
             Some(format!("Bearer {secret}").as_str())
         );
-        assert!(!format!("{:?}", requests[0]).contains(secret));
+        assert!(!format!("{:?}", sent[0]).contains(secret));
     }
 
     #[test]
-    fn invalid_provider_and_private_embedded_urls_are_refused() {
-        let keys = Keys::parse("").unwrap();
-        assert!(search_selected(&NoNetwork, b"GIF89a", &keys, 1, true, Some("other")).is_err());
+    fn malformed_provider_json_is_a_failed_search_not_a_negative_result() {
+        let network = Scripted::new(&json!({"notResults": []}));
+        let report = search_one(&network, IMAGE, &every_key(), LENSO_SOURCE, 123).unwrap();
+        assert_eq!(report.search, Search::Failed);
+        assert!(report.matches.is_none());
+        assert!(!report.outcome.unwrap().kind.is_accepted());
+    }
+
+    #[test]
+    fn matches_are_distinct_and_truncation_counts_only_distinct_matches_left_out() {
+        let mut found = Collected::default();
+        for _ in 0..3 {
+            found.push("full_image", None, Some("https://img.example/same"), None);
+        }
+        assert_eq!(found.kept.len(), 1);
+        for n in 1..MAX_MATCHES {
+            let url = format!("https://img.example/{n}");
+            found.push("full_image", None, Some(&url), None);
+        }
+        assert_eq!(found.kept.len(), MAX_MATCHES);
+        assert!(
+            !found.truncated,
+            "a repeat of a kept match is no truncation"
+        );
+        found.push("full_image", None, Some("https://img.example/same"), None);
+        assert!(!found.truncated);
+        found.push("full_image", None, Some("https://img.example/new"), None);
+        assert!(found.truncated);
+        assert_eq!(found.kept.len(), MAX_MATCHES);
+    }
+
+    #[test]
+    fn private_embedded_and_malformed_urls_are_not_kept() {
         assert!(web_url("https://user:password@example.org/a").is_none());
         assert!(web_url("https://example.org/space here").is_none());
         assert!(web_url("javascript:alert(1)").is_none());
+        assert!(web_url("https://example.org/\u{1b}[2J").is_none());
         assert_eq!(
             web_url("https://example.org/x?a=1"),
             Some("https://example.org/x?a=1".into())
         );
-    }
-
-    #[test]
-    fn malformed_provider_json_does_not_look_like_a_negative_result() {
-        let network = ScriptedTransport {
-            requests: std::sync::Mutex::new(Vec::new()),
-            body: serde_json::to_vec(&json!({"notResults": []})).unwrap(),
-        };
-        let keys = Keys::parse(&format!(
-            "{}=testing_lenso_secret_123",
-            crate::environment::LENSO_KEY_ENV
-        ))
-        .unwrap();
-        let result = search_selected(&network, b"GIF89a", &keys, 123, true, Some("lenso")).unwrap();
-        assert_eq!(result.statuses[0].state, "failed");
-        assert!(result.matches.is_empty());
     }
 }
