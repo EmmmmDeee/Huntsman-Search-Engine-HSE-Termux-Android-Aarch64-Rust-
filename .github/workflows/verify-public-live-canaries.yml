@@ -7,8 +7,11 @@ on:
   pull_request:
     paths:
       - '.github/workflows/verify-public-live-canaries.yml'
+      - 'src/analysis.rs'
       - 'src/orthogonal_osint.rs'
+      - 'src/osint_synergy.rs'
       - 'src/stopforumspam.rs'
+      - 'src/web_server/lookup.rs'
       - 'src/web_ui.html'
       - 'tests/orthogonal_osint.rs'
   workflow_dispatch:

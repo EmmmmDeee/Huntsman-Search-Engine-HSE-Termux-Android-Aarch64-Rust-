@@ -17,6 +17,7 @@ use crate::gap::GapReport;
 use crate::graph::EntityRelation;
 use crate::ledger::LedgerEntry;
 use crate::meta_plan::MetaPlan;
+use crate::osint_synergy::SynergyReport;
 use crate::pipeline::{
     AnalysisSnapshot, InvestigationInput, InvestigationMode, NormalizedSeed, PipelineLimits,
     SeedNormalization, SeedRejection, normalize_observations, normalize_seeds,
@@ -143,12 +144,52 @@ pub fn investigate_offline_with_history(
     let plan = build_dispatch_plan(modules, &normalization.accepted, limits, policy);
     let snapshot = normalize_observations(seed_batch(&normalization, &input.scan_id), limits)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let report = match history {
+    let mut report = match history {
         Some(history) => {
             analyze_snapshot_with_cross_scan(&snapshot, &input.scan_id, history, limits)?
         }
         None => analyze_snapshot(&snapshot),
     };
+    // The offline input is only a set of seeds. When history is configured,
+    // use the real, saved source observations belonging to scans that share an
+    // exact entity UID with those seeds. Borrow before cloning and impose
+    // independent limits for Android userland. Do not turn any join into proof.
+    if let Some(history) = history {
+        const MAX_JOIN_SEEDS: usize = 32;
+        const MAX_JOIN_SCANS: usize = 8;
+        const MAX_JOIN_ENTITIES: usize = 512;
+        let mut combined: Vec<Entity> = snapshot
+            .entities
+            .iter()
+            .take(MAX_JOIN_ENTITIES)
+            .cloned()
+            .collect();
+        let mut incomplete =
+            snapshot.entities.len() > MAX_JOIN_ENTITIES || snapshot.entities.len() > MAX_JOIN_SEEDS;
+        let mut visited = std::collections::BTreeSet::new();
+        'seeds: for seed in snapshot.entities.iter().take(MAX_JOIN_SEEDS) {
+            for id in history.scan_ids_for_entity_ref(&seed.uid) {
+                if visited.contains(id) {
+                    continue;
+                }
+                if visited.len() >= MAX_JOIN_SCANS {
+                    incomplete = true;
+                    break 'seeds;
+                }
+                visited.insert(id.to_owned());
+                for seen in history.entities_for_scan_ref(id) {
+                    if combined.len() >= MAX_JOIN_ENTITIES {
+                        incomplete = true;
+                        break 'seeds;
+                    }
+                    combined.push(seen.clone());
+                }
+            }
+        }
+        crate::entity::merge_by_uid(&mut combined);
+        report.synergy = crate::osint_synergy::discover(&combined);
+        report.synergy.truncated |= incomplete;
+    }
     let artifacts = render_artifacts(&snapshot, &report, ledger, limits)?;
     Ok(PipelineOutcome {
         normalization,
@@ -294,6 +335,8 @@ pub struct AnalysisView<'a> {
     pub relations: &'a [EntityRelation],
     pub pivots: &'a [PivotScore],
     pub correlations: &'a [Correlation],
+    /// Candidate infrastructure joins from concrete collected attributes.
+    pub synergy: &'a SynergyReport,
     /// Bridges to the saved scans of a history. `null` when no history was given.
     pub cross_scan: Option<&'a CrossScanCategory>,
     pub gaps: &'a GapReport,
@@ -347,6 +390,7 @@ impl PipelineOutcome {
             relations: &self.snapshot.relations,
             pivots: &self.report.pivots,
             correlations: &self.report.correlations,
+            synergy: &self.report.synergy,
             cross_scan: self.report.cross_scan.as_ref(),
             gaps: &self.report.gaps,
             planned: self
