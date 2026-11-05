@@ -10,6 +10,8 @@ Status: **PROPOSED**. Unless marked *estimate*, every number here was measured o
 - The refusal-contract harness in `src/lookup_modules/tests.rs` covers every lookup but `phone`, whose run type has no refusal to end in. It lists today's 17 breakages as reviewed entries.
 - `tests/test_count_floor.rs` holds the test-count floor.
 
+- Phase 2 is in place. `src/source_profile.rs` is the one classification table, and `tests/source_profile.rs` holds G1. G3 is `every_key_slot_has_a_provider_row` in `src/scan_api.rs`.
+
 The later phases are not implemented yet.
 
 - **Process.** Work under this plan follows [CLAUDE_CODE_REFACTOR_EXECUTION.md](CLAUDE_CODE_REFACTOR_EXECUTION.md).

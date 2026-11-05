@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::correlator::source_family;
 use crate::entity::{Entity, EntityKind};
 use crate::evidence_ancestry::{
     DEFAULT_INDEPENDENCE_SEARCH_STATES, EvidenceAncestryGraph, EvidenceNodeId,
@@ -153,39 +152,15 @@ const RF: &[Probe] = &[Probe {
     check: "Compare consented radio observations with their acquisition and freshness evidence; never infer location from a cache.",
 }];
 
-/// A more granular *acquisition* modality than the corroborator's family.
-/// Keeping this adapter local avoids silently changing identity/correlation
-/// rules that consume `correlator::source_family` for different purposes.
-/// Exact IDs are the canonical live collector IDs, never user-supplied
-/// `provenance.source_family` labels. Neither a collector ID nor a modality
-/// proves that evidence is true or independent.
+/// A more granular *acquisition* modality than the corroborator's family, from the same
+/// classification table ([`crate::source_profile`]): the table keeps the two columns apart, so a
+/// finer modality never silently changes the identity and correlation rules that read
+/// `correlator::source_family`. IDs are the canonical live collector IDs, never user-supplied
+/// `provenance.source_family` labels. Neither a collector ID nor a modality proves that evidence
+/// is true or independent; registry sources' lineage, in particular, is not authenticated by
+/// their modality.
 fn acquisition_modality(source: &str) -> &'static str {
-    match source.trim().to_ascii_lowercase().as_str() {
-        // Official registries and regulatory filing clients are source
-        // modalities only; their lineage is NOT authenticated by this tag.
-        "acnc" | "sec_edgar" | "gleif" | "asic_persons" | "asic_orgs" | "abn_lookup" => {
-            "identity_registry"
-        }
-        // Wikidata is community-curated: never mislabel it as an official
-        // identity registry or an independent identity proof.
-        "wikidata" => "knowledge_graph",
-        // GEOINT and transport source categories are acquisition hints, never
-        // evidence of identity, co-presence or an operator's location.
-        "nominatim" | "stac" => "geoint",
-        "opensky" => "transport",
-        "peeringdb" | "rdap" | "rdap_legs" | "dns" | "crtsh" | "certspotter" | "bgpview"
-        | "dnsbl" => "infra",
-        "wayback_cdx" | "common_crawl" | "archived_page" | "web_query" | "public_osint"
-        | "bing" | "brave" | "mojeek" => "search",
-        "gitlab_user" | "github_repos" | "docker_hub_user" | "codeberg_user"
-        | "huggingface_user" | "codewars_user" => "code",
-        "bluesky_user" | "mastodon_user" | "atproto" | "tiktok_public_contact" | "keybase" => {
-            "social"
-        }
-        "wifi_radar" | "cell_radar" | "opencellid" => "rf",
-        "xposedornot" => "breach",
-        _ => source_family(source),
-    }
+    crate::source_profile::modality(source).as_str()
 }
 
 fn probes(kind: &EntityKind) -> &'static [Probe] {

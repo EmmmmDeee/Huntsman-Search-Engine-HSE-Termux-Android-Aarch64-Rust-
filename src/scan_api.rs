@@ -3270,4 +3270,29 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Every slot the Settings page lists for a module is a slot a provider declares (or that
+    /// slot's fallback alias), so the page can always say where the operator gets the key.
+    #[test]
+    fn every_key_slot_has_a_provider_row() {
+        let declared: BTreeSet<&str> = crate::provider_credentials::PROVIDERS
+            .iter()
+            .flat_map(|provider| provider.slots.iter().copied())
+            .chain(
+                crate::provider_credentials::SLOT_FALLBACKS
+                    .iter()
+                    .map(|(_, alias)| *alias),
+            )
+            .collect();
+        let orphans: Vec<(&str, &str)> = key_slots()
+            .into_iter()
+            .flat_map(|(module, slots)| slots.into_iter().map(move |slot| (module, slot)))
+            .filter(|(_, slot)| !declared.contains(slot))
+            .collect();
+        assert!(
+            orphans.is_empty(),
+            "these module key slots have no provider row to say where the key comes from: \
+             {orphans:?}"
+        );
+    }
 }
