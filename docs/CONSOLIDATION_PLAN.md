@@ -11,6 +11,7 @@ Status: **PROPOSED**. Unless marked *estimate*, every number here was measured o
 - `tests/test_count_floor.rs` holds the test-count floor.
 
 - Phase 2 is in place. `src/source_profile.rs` is the one classification table, and `tests/source_profile.rs` holds G1. G3 is `every_key_slot_has_a_provider_row` in `src/scan_api.rs`.
+- Phase 3 is in place: B1 to B4. The refusal-contract harness holds every lookup but `phone` with no exceptions, and G2 is `a_saved_lookup_credits_each_record_to_the_file_that_made_it`.
 
 The later phases are not implemented yet.
 
@@ -250,7 +251,6 @@ pub struct SourceProfile {
     pub id: &'static str,                    // provenance.source, exactly as written
     pub family: Family,                      // correlator class, today's value
     pub modality: Option<Modality>,          // None: same as family
-    pub component: &'static str,             // file credited in saved lookups (B4)
 }
 pub const PROFILES: &[SourceProfile] = &[/* generated from today's classifier output */];
 pub const LEGACY: &[SourceProfile] = &[/* the IDs no current collector writes */];
@@ -263,7 +263,7 @@ pub const LEGACY: &[SourceProfile] = &[/* the IDs no current collector writes */
 - **Consumers:**
   - `correlator::source_family` reads `PROFILES`, then `LEGACY`. It keeps the substring tests only for IDs in neither table, such as unknown IDs in old saved scans.
   - `acquisition_modality` reads the `modality` column.
-  - `lookup_save` reads `component`, with B4. Each policy recognises only its own lookup's sources today, so deriving the pairs changes the attribution of the others; that is B4's declared change, not Phase 2's.
+  - `lookup_save` keeps its per-policy maps. G2 ties them to what each lookup writes (B4). A `component` column was not adopted: every record a lookup writes but one already had an explicit attribution, so a guard is the smaller durable fix.
 - **Not adopted.** Merging the two username source lists: the refusal-contract harness already holds them to the same set, and only `username_cli` fixes the order. Renaming the correlator function: the churn buys only a clearer word.
 
 **T2. Account-leg kernel.** Create `src/account_leg.rs` in the `collection` home:
@@ -324,7 +324,7 @@ request.
 | B1 | The correlator classifies `acnc` as `identity_registry` and `exa` as `search`, fixing the typo arms | The family counts in AU-001 and AU-021 messages, and `tagged_matching_sources`, for entities carrying that evidence |
 | B2 | `wikipedia` stops classifying as `infra` and becomes `other`, matching `wikidata` | The same counts drop by one where Wikipedia evidence was counted as infrastructure |
 | B3 | People, crypto, place, company, gleif, itunes and wikidata route their legs' failures into rows that `SourceReach` reads, as the other eight lookups do | A refusal or an unanswered lookup names its module (and, for people and place, its reason); a refusal recorded as a row exits 77, not 69; no other exit code changes |
-| B4 | Each policy credits every known source to its own file from the `component` column, and a collector with no profile row fails the build (G2) instead of being credited to the CLI file | Only rows a policy never saves change; the attribution snapshot lists each one |
+| B4 | Saved phone lookups credit North American numbering-plan rows (`phone_nanp`) to `src/phone_intl.rs`, which writes them, not to `src/phone_cli.rs`. G2 holds every record each lookup writes to an explicit attribution | Two rows of the attribution snapshot: `phone_nanp`, outcome and entity |
 
 ## 7. Phases
 
@@ -335,7 +335,7 @@ Each phase lands as small pull requests. A pure-move pull request never also cha
 | 0. Safety net | Commit a classification snapshot (source ID to family and modality, for every live, legacy and probe ID) and an attribution snapshot (every save policy's pair for every ID). Bring every lookup under the refusal-contract harness, listing today's breakages as reviewed entries. Add a `#[test]` count floor. Before the first phase that changes how a lookup collects (Phase 4), extend the differential comparator to that lookup, using recorded responses for public, non-personal selectors only. | Snapshots and contract entries committed; no production change |
 | 1. Test-only consolidation | Move the inline tests of the six files above to `<module>/tests.rs`, one commit per file. Point the in-crate fakes at `test_support`. Add `tests/support/transport.rs`. Replace `oathnet::non_blank`. | `cargo test -- --list` names unchanged; count never lower |
 | 2. Source profile table (T1) | Generate `PROFILES` and `LEGACY` from today's classifier output and route both classifiers through them. Add G1 and G3. | Phase 0 snapshots byte-identical; G1 and G3 green |
-| 3. Declared fixes | B1, B2, B3 and B4, one pull request each. B4 routes `lookup_save` through the `component` column and adds G2. | Each regression test fails before and passes after; snapshot and contract diffs limited to the declared rows |
+| 3. Declared fixes | B1, B2, B3 and B4, one commit each. B4 fixes the one live misattribution and adds G2. | Each regression test fails before and passes after; snapshot and contract diffs limited to the declared rows |
 | 4. Account-leg kernel (T2) | Move one leg per commit, with that leg's existing tests unchanged in the same commit; the divergent legs go last or stay bespoke | `username` differential output identical |
 | 5. One finish path (T3) | Move every `SourceRun` CLI to `SourceReach` plus `finish`, then delete `none_accepted` | Phase 0 exit-code tests unchanged (B3 rows updated in Phase 3); G6 green |
 | 6. Splits (T5) | Pure moves along the seams, with `ARCHITECTURE.md` rows updated in the same pull request; then hand over to Stages 3 to 10 | Paths still resolve; architecture tests green |
@@ -348,7 +348,7 @@ self-test, or as plain tests where the rule needs runtime data.
 | Guard | Rule |
 |---|---|
 | G1 | Each source ID that a collector constant names (`SRC`, `SOURCE`, `COLLECTOR_ID`, `Api.source`) has exactly one `PROFILES` row. Each `PROFILES` row is named by a constant. Each `LEGACY` row is named by no constant. |
-| G2 | No attribution map in `lookup_save` has a fallback arm that names a CLI file. |
+| G2 | Every record each lookup writes, with every source answering, is credited by its save policy to the file that made it. Only the lookup front-end's own records (`MADE_BY_THE_LOOKUP` in `src/lookup_modules/tests.rs`) take the CLI file. |
 | G3 | Every slot `scan_api::key_slots` lists is declared by a `provider_credentials::PROVIDERS` row or is one's fallback alias. Key slots stay on each source's `Api` constant, so the profile table holds no copy of them. |
 | G4 | No new `impl Transport for` exists outside `src/test_support.rs`, `tests/support/` and an allow-list. |
 | G5 | The six oversized files may not grow past a committed line ceiling. This guard is optional and can be dropped once Phase 6 lands. |
@@ -360,7 +360,7 @@ The Phase 0 snapshots stay as regression locks after the phases finish.
 
 **Expected outcome.** All figures are *estimates* until each phase measures them.
 
-- **Registration.** After Phase 2 and B4, a keyless username source touches about 8 places, instead of 15 lines in 10 files. One `PROFILES` row replaces two classifier arms, and the attribution map and its test copy drop out. Every place left is checked by a test that names what is missing.
+- **Registration.** A keyless username source still touches about 9 places, but one `PROFILES` row replaces two classifier arms, and every place is now checked by a test that names what is missing: G1 the profile row, G2 the attribution row, the refusal-contract harness the lookup lists.
 - **Lines removed:**
   - about 650 to 750 lines of leg boilerplate;
   - about 280 lines of CLI tails;

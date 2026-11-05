@@ -78,6 +78,8 @@ fn username_provenance(source: &str) -> (&str, &'static str) {
 fn phone_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "phone_intl" => ("phone_intl", "src/phone_intl.rs"),
+        // The North American plan reading is phone_intl's, not the phone front-end's.
+        crate::phone_intl::NANP_SOURCE => (source, "src/phone_intl.rs"),
         "phone_au" => ("phone_au", "src/phone_cli.rs"),
         "numverify" => ("numverify", "src/numverify.rs"),
         other => indicator_provenance(other).unwrap_or((source, "src/phone_cli.rs")),
