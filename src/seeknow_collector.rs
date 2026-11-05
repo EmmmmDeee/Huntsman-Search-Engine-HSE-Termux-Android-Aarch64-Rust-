@@ -137,13 +137,13 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                 let fast_kind = fast.outcome.kind;
                 append_result(&mut batch, selector, &search, &fast, limits, now_unix);
 
-                // The fast search's own quota report gates the 2-credit stealer request: when
-                // the provider said nothing is left, escalating would only spend or be refused.
-                let quota_left = !batch
+                // Deep escalation costs two credits; preserve unknown-quota behavior.
+                let quota_left = batch
                     .receipts
                     .last()
                     .and_then(|receipt| receipt.quota.as_ref())
-                    .is_some_and(ProviderQuota::exhausted);
+                    .and_then(|quota| quota.remaining)
+                    .is_none_or(|remaining| remaining >= 2);
                 if fast_kind == SourceOutcomeKind::ValidZero
                     && search.query_type.supports_stealer()
                     && limits.max_requests >= 2

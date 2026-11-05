@@ -786,3 +786,58 @@ fn every_row_names_the_endpoint_query_and_response_it_came_from() {
         assert_eq!(attr("response_sha256"), Some(deep_digest.as_str()));
     }
 }
+
+#[test]
+fn one_remaining_credit_is_insufficient_for_two_credit_deep_search() {
+    let transport = ScriptedTransport::new(vec![response_with(
+        200,
+        r#"{"success":true,"data":[]}"#,
+        quota_headers(1),
+        false,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "alice"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        33,
+    )
+    .unwrap();
+    assert_eq!(transport.request_count(), 1);
+    assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
+    assert_eq!(batch.receipts.len(), 1);
+    assert_eq!(batch.receipts[0].quota.as_ref().unwrap().remaining, Some(1));
+}
+
+#[test]
+fn exactly_two_remaining_credits_allow_adaptive_deep_search() {
+    let transport = ScriptedTransport::new(vec![
+        response_with(
+            200,
+            r#"{"success":true,"data":[]}"#,
+            quota_headers(2),
+            false,
+        ),
+        response_with(
+            200,
+            r#"{"success":true,"data":[]}"#,
+            quota_headers(0),
+            false,
+        ),
+    ]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "alice"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        34,
+    )
+    .unwrap();
+    assert_eq!(transport.request_count(), 2);
+    assert_eq!(batch.receipts.len(), 2);
+    assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
+    assert_eq!(batch.receipts[0].quota.as_ref().unwrap().remaining, Some(2));
+    assert_eq!(batch.receipts[1].quota.as_ref().unwrap().remaining, Some(0));
+}
