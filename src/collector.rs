@@ -97,10 +97,11 @@ impl ProviderQuota {
         })
     }
 
-    /// Whether the provider said no request is left in the current window. **Pure.**
+    /// Whether the window has room for a request that costs `credits`: an unreported remaining
+    /// count is not taken as too few. **Pure.**
     #[must_use]
-    pub fn exhausted(&self) -> bool {
-        self.remaining == Some(0)
+    pub fn covers(&self, credits: u64) -> bool {
+        self.remaining.is_none_or(|remaining| remaining >= credits)
     }
 }
 
@@ -168,4 +169,22 @@ pub enum CollectorError {
     Refused(String),
     #[error("collector invariant failed: {0}")]
     Invariant(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderQuota;
+
+    #[test]
+    fn a_quota_covers_a_cost_only_when_enough_remains_or_none_was_reported() {
+        let left = |remaining| ProviderQuota::reported(Some(10), remaining, None).expect("quota");
+        assert!(
+            left(None).covers(2),
+            "an unreported remainder is not too few"
+        );
+        assert!(left(Some(2)).covers(2));
+        assert!(!left(Some(1)).covers(2));
+        assert!(!left(Some(0)).covers(1));
+        assert!(left(Some(0)).covers(0));
+    }
 }

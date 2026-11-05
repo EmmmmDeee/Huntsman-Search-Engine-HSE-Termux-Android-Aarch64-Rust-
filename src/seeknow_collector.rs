@@ -23,6 +23,8 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const COLLECTOR_ID: &str = "seeknow";
 const ENTITY_CONFIDENCE: f64 = 0.60;
+/// What one stealer (deep) search costs, in the account's credits.
+const STEALER_CREDITS: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekNowCollectionMode {
@@ -137,13 +139,13 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                 let fast_kind = fast.outcome.kind;
                 append_result(&mut batch, selector, &search, &fast, limits, now_unix);
 
-                // The fast search's own quota report gates the 2-credit stealer request: when
-                // the provider said nothing is left, escalating would only spend or be refused.
-                let quota_left = !batch
+                // The fast search's own quota report gates the stealer request: with fewer
+                // credits left than it costs, escalating would only spend them or be refused.
+                let quota_left = batch
                     .receipts
                     .last()
                     .and_then(|receipt| receipt.quota.as_ref())
-                    .is_some_and(ProviderQuota::exhausted);
+                    .is_none_or(|quota| quota.covers(STEALER_CREDITS));
                 if fast_kind == SourceOutcomeKind::ValidZero
                     && search.query_type.supports_stealer()
                     && limits.max_requests >= 2

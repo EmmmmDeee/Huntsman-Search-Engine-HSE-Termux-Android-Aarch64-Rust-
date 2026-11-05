@@ -1009,7 +1009,9 @@ fn read_request_with(
                     announced = whole;
                     continue;
                 }
-                announced = Some(head + announced_body_len(&bytes[..head]));
+                // A valid decimal length can fill usize. Keep the refusal/drain path bounded
+                // without overflowing when the request head is added to that untrusted value.
+                announced = Some(head.saturating_add(announced_body_len(&bytes[..head])));
                 whole = Some(head + form_body_len(&bytes[..head]));
             }
         }
@@ -1144,15 +1146,22 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
 
     // The head ends at the first blank line; anything after it is body, never a header.
     for line in lines.take_while(|line| !line.is_empty()) {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
+        // Every header line must contain the field-name/value delimiter.
+        // Ignoring a malformed line could disagree with another HTTP parser.
+        let (name, value) = line.split_once(':')?;
+        // RFC 9112 §5.1 requires HTTP servers to reject whitespace in
+        // field names (especially before ':') with 400 Bad Request.
+        // Silently ignoring "Content-Length : 1" creates parser ambiguity.
+        if name.is_empty() || name.bytes().any(|byte| matches!(byte, b' ' | b'\t')) {
+            return None;
+        }
         if name.eq_ignore_ascii_case("host") {
-            // First Host wins; a second one is malformed and is ignored rather than
-            // allowed to override the first.
-            if host.is_none() {
-                host = Some(value.trim());
+            // RFC 9112 Section 3.2 forbids multiple Host field lines,
+            // including duplicates with equal values. Do not choose a winner.
+            if host.is_some() {
+                return None;
             }
+            host = Some(value.trim());
         } else if name.eq_ignore_ascii_case("authorization") {
             authorization = Some(value.trim());
         } else if name.trim().eq_ignore_ascii_case(LOOKUP_HEADER) {
@@ -1160,8 +1169,19 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         } else if name.eq_ignore_ascii_case("sec-fetch-site") {
             sec_fetch_site = Some(value.trim());
         } else if name.eq_ignore_ascii_case("content-length") {
-            has_body |= value.trim() != "0";
-            content_length = value.trim().parse().ok();
+            // Reject ambiguous framing before either the reader or a route consumes it.
+            // RFC 9110 uses digits only; Rust's integer parser also accepts a leading '+'.
+            // Repeated fields (even identical ones) are refused rather than choosing a winner.
+            let value = value.trim_matches([' ', '\t']);
+            if content_length.is_some()
+                || value.is_empty()
+                || !value.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            let length = value.parse().ok()?;
+            has_body |= length != 0;
+            content_length = Some(length);
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             has_body = true;
             transfer_encoding = true;

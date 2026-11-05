@@ -138,7 +138,7 @@ Stage 2 notes: (1) `wifi_radar → cell_radar` couples two acquisitions; serving
 
 Every stage is one PR max, preserves the CAPABILITIES table and CURRENT/PLANNED labels in root `ARCHITECTURE.md`, keeps `tests/architecture_doc.rs` green, and claims no verification without a receipt at the exact commit. Facade `pub use` paths in `src/lib.rs` remain until a later explicit deprecation stage.
 
-These stages decide where a module lives. Removing duplicated logic and duplicated authority (one source profile table, one account-leg kernel, one CLI finish path, shared test transports) is planned in [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md), whose Phases 1 to 5 land before Stage 7.
+These stages decide where a module lives. Removing duplicated logic and duplicated authority (one source profile table, one account-leg kernel, one CLI finish path, shared test transports) follows [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md). Its Phases 0 to 5 are in place; its Phase 6 splits move with Stage 9.
 
 1. **Stage 1 (inventory in this document).** Inventory, proposed homes, edge/violation list, Wi-Fi/RF coupling notes. Documentation only — no code moves.
 2. **Stage 2 (shims on this branch).** Create `src/{core,infrastructure,evidence,application,web}/` with `mod.rs` re-export skeletons; keep every leaf at its current path. **Do not** create `analysis/` or `collection/` directories. Update root map rows only as needed so the five shim modules are placed; add runtime disposition rows for the shims.

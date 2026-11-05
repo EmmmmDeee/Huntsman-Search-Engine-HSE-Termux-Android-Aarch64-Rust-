@@ -119,6 +119,7 @@ fn checked_query(input: &str, label: &str) -> Result<String, Error> {
             "{label} is too long or contains control characters"
         )));
     }
+    // Normalising never lengthens the query, so the budget checked above still holds.
     let normalized = canonical_whitespace(input);
     if normalized.is_empty() {
         return Err(Error::Invalid(format!("{label} must not be empty")));
@@ -412,10 +413,18 @@ fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
         .header_value("cache-control")
         .unwrap_or_default()
         .to_ascii_lowercase();
-    !cache_control
-        .split(',')
-        .map(str::trim)
-        .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
+    !cache_control.split(',').map(str::trim).any(|directive| {
+        matches!(directive, "no-store" | "no-cache")
+            || directive.split_once('=').is_some_and(|(key, value)| {
+                key.trim() == "max-age"
+                    && value
+                        .trim()
+                        .trim_matches('"')
+                        .bytes()
+                        .all(|byte| byte == b'0')
+                    && !value.trim().trim_matches('"').is_empty()
+            })
+    })
 }
 
 fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
@@ -1243,6 +1252,21 @@ mod tests {
         );
         let report = parse_engine_response(engine, &response, 502);
         assert!(!response_is_cacheable(&response, &report));
+        for directive in [
+            "max-age = 0",
+            "public, max-age= 0",
+            "MAX-AGE =0",
+            "max-age=000",
+            "max-age=\"0\"",
+        ] {
+            let response = response_with_headers(
+                200,
+                &[("cache-control", directive)],
+                r#"<a href="https://example.org/third">third</a>"#,
+            );
+            let report = parse_engine_response(engine, &response, 502);
+            assert!(!response_is_cacheable(&response, &report), "{directive}");
+        }
     }
 
     #[test]
@@ -1322,6 +1346,23 @@ mod tests {
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
         assert_eq!(report.hits.len(), 2);
     }
+    #[test]
+    fn query_budget_and_canonicalization_are_enforced() {
+        let valid = "A".repeat(MAX_SEARCH_QUERY_BYTES);
+        assert_eq!(
+            checked_query(&valid, "query").unwrap(),
+            valid.to_ascii_lowercase()
+        );
+        let invalid = "A".repeat(MAX_SEARCH_QUERY_BYTES + 1);
+        assert!(checked_query(&invalid, "query").is_err());
+        assert_eq!(
+            checked_query("  ADA   LOVELACE  ", "query").unwrap(),
+            "ada lovelace"
+        );
+        assert!(checked_query("   ", "query").is_err());
+        assert!(checked_query("ada\n", "query").is_err());
+    }
+
     #[test]
     fn query_is_canonical_before_search_setup() {
         assert_eq!(canonical_whitespace("  Ada   Lovelace "), "ada lovelace");
