@@ -64,7 +64,7 @@ Commands:
   investigate           Extract actionable entities from local text or one bounded file
   plan                  Plan an offline investigation from seeds; save or reload it as a session
   research              Research any term using existing typed or keyless adaptive capabilities
-  query                 Keyless web search; --adaptive aggregates leads; --all asks 16 engines; --exa uses optional search credits
+  query                 Keyless web search; --adaptive aggregates leads; --all asks 13 engines; --exa uses optional search credits
   privacy-audit         Assess a source-backed public entity graph offline (no network)\n  public-osint          Independent GDELT news, FBI notices and multi-engine public dossiers
   sf                    SpiderFoot-compatible sf.py front end over saved scans
   scans                 Run, list, read, export, flag, rerun and delete saved Spiderfoot-style scans

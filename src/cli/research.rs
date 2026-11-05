@@ -10,7 +10,7 @@ use huntsman_recon::research_route::{self, ResearchAction};
 
 use super::{fail, lookup};
 
-pub(super) const RESEARCH_HELP: &str = "research [--plan] [--all] TERM...\nResearch arbitrary text using an existing Huntsman capability. Recognised exact identifiers use the established typed scan route; general phrases use the keyless adaptive web search over Bing, Brave and Mojeek. A coordinate point uses geocode rather than the older scan radio-area default. --plan selects and prints the route offline without fetching. --all asks all 16 keyless engines on the adaptive web route instead, inside one 110-second budget, as query --adaptive --all does; a typed scan route is unchanged. A typed scan can invoke existing configured source integrations; for guaranteed keyless research use query --adaptive. Does not require root or a runtime LLM.";
+pub(super) const RESEARCH_HELP: &str = "research [--plan] [--all] TERM...\nResearch arbitrary text using an existing Huntsman capability. Recognised exact identifiers use the established typed scan route; general phrases use the keyless adaptive web search over Bing, Brave and Mojeek. A coordinate point uses geocode rather than the older scan radio-area default. --plan selects and prints the route offline without fetching. --all asks all 13 keyless engines on the adaptive web route instead, inside one 110-second budget, as query --adaptive --all does; a typed scan route is unchanged. A typed scan can invoke existing configured source integrations; for guaranteed keyless research use query --adaptive. Does not require root or a runtime LLM.";
 
 pub(super) fn research_cmd(args: &[String]) -> ExitCode {
     let mut preview = false;

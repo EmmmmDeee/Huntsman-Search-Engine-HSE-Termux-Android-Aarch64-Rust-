@@ -4,7 +4,7 @@
 //! shared fetch boundary. Each engine runs independently; one blocked or broken
 //! provider never erases results from another. A search asks the three default
 //! engines ([`ENGINES`]) unless its caller opts in to [`EngineSet::All`], which
-//! asks all sixteen in [`EXTENDED_ENGINES`] inside one shared [`Deadline`].
+//! asks all thirteen in [`EXTENDED_ENGINES`] inside one shared [`Deadline`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -76,7 +76,12 @@ pub const ENGINES: [EngineSpec; 3] = [
 /// challenge automated clients: those come back as typed failures, never as silent zero
 /// results. Several engines may share an upstream index, so URL overlap is never
 /// independent corroboration of a document or of a personal identity.
-pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
+///
+/// An engine is listed only when a plain fetch of its result page carries the results.
+/// Qwant, Swisscows and Marginalia are not: on 2026-11-05 their pages, fetched this way,
+/// held only the sites' own social, app-store and footer links, which the generic parser
+/// would report as results.
+pub const EXTENDED_ENGINES: [EngineSpec; 13] = [
     ENGINES[0],
     ENGINES[1],
     ENGINES[2],
@@ -101,14 +106,6 @@ pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
         base_url: "https://www.startpage.com/sp/search",
     },
     EngineSpec {
-        name: "qwant",
-        base_url: "https://www.qwant.com/",
-    },
-    EngineSpec {
-        name: "swisscows",
-        base_url: "https://swisscows.com/en/web",
-    },
-    EngineSpec {
         name: "yandex",
         base_url: "https://yandex.com/search/",
     },
@@ -128,10 +125,6 @@ pub const EXTENDED_ENGINES: [EngineSpec; 16] = [
         name: "wiby",
         base_url: "https://wiby.me/",
     },
-    EngineSpec {
-        name: "marginalia",
-        base_url: "https://marginalia-search.com/search",
-    },
 ];
 
 /// Which keyless engines one search asks: the one parameter every search path takes.
@@ -141,7 +134,7 @@ pub enum EngineSet {
     /// request keeps the transport's own timeout, as it always has.
     #[default]
     Default,
-    /// All sixteen keyless engines ([`EXTENDED_ENGINES`]), asked only on an explicit
+    /// All thirteen keyless engines ([`EXTENDED_ENGINES`]), asked only on an explicit
     /// `--all`. The whole search shares one 110-second [`Deadline`], and each request is
     /// capped at 6 seconds or what is left of it, whichever is less.
     All,
@@ -192,7 +185,6 @@ pub fn search_url(engine: EngineSpec, query: &str) -> String {
 fn search_parameter(engine: &str) -> &'static str {
     match engine {
         "yahoo" => "p",
-        "swisscows" | "marginalia" => "query",
         "yandex" => "text",
         _ => "q",
     }
@@ -1056,17 +1048,15 @@ fn own_hosts(engine: &str) -> &'static [&'static str] {
     match engine {
         "duckduckgo" => &["duckduckgo.com"],
         "google" => &["google.com"],
-        "yahoo" => &["yahoo.com"],
+        // Yahoo's result page links its own feedback forum on a third-party host.
+        "yahoo" => &["yahoo.com", "yahoo.uservoice.com"],
         "ecosia" => &["ecosia.org"],
         "startpage" => &["startpage.com"],
-        "qwant" => &["qwant.com"],
-        "swisscows" => &["swisscows.com"],
         "yandex" => &["yandex.com"],
         "yep" => &["yep.com"],
         "lilo" => &["lilo.org"],
         "you" => &["you.com"],
         "wiby" => &["wiby.me"],
-        "marginalia" => &["marginalia.nu", "marginalia-search.com"],
         _ => &[],
     }
 }
@@ -1894,8 +1884,8 @@ mod tests {
     }
 
     #[test]
-    fn exhaustive_registry_is_keyless_unique_and_has_sixteen_providers() {
-        assert_eq!(EXTENDED_ENGINES.len(), 16);
+    fn exhaustive_registry_is_keyless_unique_and_has_thirteen_providers() {
+        assert_eq!(EXTENDED_ENGINES.len(), 13);
         let mut names = BTreeSet::new();
         for engine in EXTENDED_ENGINES {
             assert!(
@@ -1911,7 +1901,6 @@ mod tests {
         }
         assert_eq!(search_parameter("yahoo"), "p");
         assert_eq!(search_parameter("yandex"), "text");
-        assert_eq!(search_parameter("swisscows"), "query");
     }
 
     /// Three engines unless a caller opts in, and only the opt-in set shares a budget.
@@ -2013,15 +2002,48 @@ mod tests {
         assert_eq!(urls("google"), ["https://finance.yahoo.com/quote/ACME"]);
     }
 
+    /// Yahoo's live result page (checked 2026-11-05) links its own feedback forum on a
+    /// third-party host; on Yahoo's page that link is chrome, on any other engine's a result.
+    #[test]
+    fn yahoos_feedback_forum_is_chrome_only_on_yahoos_page() {
+        let html = concat!(
+            "<a href=\"https://yahoo.uservoice.com/forums/193847-search\">feedback</a>",
+            "<a href=\"https://en.wikipedia.org/wiki/Ada_Lovelace\">result</a>",
+        );
+        let urls = |engine: &str| -> Vec<String> {
+            parse_hits(html, engine)
+                .into_iter()
+                .map(|hit| hit.url)
+                .collect()
+        };
+        assert_eq!(
+            urls("yahoo"),
+            ["https://en.wikipedia.org/wiki/Ada_Lovelace"]
+        );
+        assert_eq!(urls("bing").len(), 2);
+    }
+
+    /// Engines whose result page a plain fetch sees only as the site's own chrome are not
+    /// asked: their social, app-store and footer links would be reported as results.
+    #[test]
+    fn engines_whose_results_need_javascript_are_not_registered() {
+        for absent in ["qwant", "swisscows", "marginalia"] {
+            assert!(
+                EXTENDED_ENGINES.iter().all(|engine| engine.name != absent),
+                "{absent}"
+            );
+        }
+    }
+
     #[test]
     fn expanded_search_uses_correct_parameters_and_isolates_failures() {
         let fake =
             recorder(|_| response(200, r#"<a href="https://example.org/article">Article</a>"#));
         let report = search(&fake, "test all engines", 2000, EngineSet::All).unwrap();
-        assert_eq!(report.outcomes.len(), 16);
+        assert_eq!(report.outcomes.len(), EXTENDED_ENGINES.len());
         assert_eq!(report.hits.len(), 1);
         let sent = fake.sent.borrow();
-        assert_eq!(sent.len(), 16);
+        assert_eq!(sent.len(), EXTENDED_ENGINES.len());
         let urls: Vec<&str> = sent.iter().map(|request| request.url.as_str()).collect();
         assert!(
             urls.iter()
@@ -2030,10 +2052,6 @@ mod tests {
         assert!(
             urls.iter()
                 .any(|url| url.starts_with("https://yandex.com/search/?text="))
-        );
-        assert!(
-            urls.iter()
-                .any(|url| url.starts_with("https://swisscows.com/en/web?query="))
         );
         // Every opt-in request is capped by the shared budget, never above the request limit.
         assert!(sent.iter().all(|request| {
@@ -2057,7 +2075,7 @@ mod tests {
             search_with_observations(&fake, "unique-expired-budget-query", 100, round).unwrap();
         assert!(observations.is_empty());
         assert!(report.hits.is_empty());
-        assert_eq!(report.outcomes.len(), 16);
+        assert_eq!(report.outcomes.len(), EXTENDED_ENGINES.len());
         assert!(report.outcomes.iter().all(|outcome| {
             outcome.kind == SourceOutcomeKind::Inconclusive
                 && outcome.detail.as_deref() == Some(BUDGET_SPENT)
@@ -2098,7 +2116,7 @@ mod tests {
                 "{cap:?} for a {limit:?} cap"
             );
         }
-        assert_eq!(report.outcomes.len(), 16);
+        assert_eq!(report.outcomes.len(), EXTENDED_ENGINES.len());
         assert!(
             report.outcomes[..5]
                 .iter()
@@ -2142,7 +2160,7 @@ mod tests {
                 .count()
         };
         assert_eq!(spent(&report.rounds[0]), 5);
-        assert_eq!(spent(&report.rounds[1]), 16);
+        assert_eq!(spent(&report.rounds[1]), EXTENDED_ENGINES.len());
         assert_eq!(report.stop_reason, "refinement_sources_unavailable");
     }
 
