@@ -210,6 +210,7 @@ cargo run -- investigate "mail ada@example.com visit https://example.org"  # off
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
 cargo run -- osint plan example.com  # offline osint planning graph; nothing fetched
 cargo run -- privacy-audit docs/privacy-audit-example.json  # offline, source-backed public exposure assessment; synthetic input only
+cargo run -- security-tools catalog  # offline: the nine security-tool compatibility contracts and their parity gaps
 cargo run -- public-osint --help  # independent GDELT news, FBI notices and public dossier help; no lookup performed
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
