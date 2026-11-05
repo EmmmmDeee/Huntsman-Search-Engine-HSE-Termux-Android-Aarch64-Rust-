@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::rf::survey_csv::{MAX_SURVEY_CSV_BYTES, csv_rows};
+use crate::rf::survey_csv::{Export, exact_columns, read_export};
 use crate::rf::{canonical_network_id, is_mac};
 use crate::textnorm::escape_controls;
 use crate::timefmt::parse_timestamp;
@@ -252,37 +252,9 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
 /// # Errors
 /// Oversized input, invalid UTF-8, malformed CSV or schema drift fail closed.
 pub fn parse_bluetooth(bytes: &[u8]) -> Result<BluetoothCsvReport, Error> {
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SURVEY_CSV_BYTES {
-        return Err(invalid("input exceeds 256 KiB"));
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| invalid("not UTF-8"))?;
-    let mut offset = 0;
-    let mut version = None;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if !trimmed.starts_with('#') {
-            break;
-        }
-        if let Some(value) = trimmed.strip_prefix("# CSV Version=") {
-            if version.replace(value.trim()).is_some() {
-                return Err(invalid("duplicate CSV version"));
-            }
-        }
-        offset += line.len();
-    }
-    if version != Some(CSV_VERSION) {
-        return Err(invalid("missing or unsupported CSV version"));
-    }
-    let mut rows = csv_rows(&text[offset..])
-        .map_err(|_| invalid("malformed CSV"))?
-        .into_iter();
-    let header = rows.next().ok_or_else(|| invalid("missing header"))?;
-    if header.len() != HEADER.len()
-        || !header
-            .iter()
-            .zip(HEADER)
-            .all(|(actual, expected)| actual.as_str() == expected)
-    {
+    let Export { header, rows } =
+        read_export(bytes, CSV_VERSION).map_err(|refusal| invalid(refusal.reason()))?;
+    if exact_columns(&header, &HEADER).is_none() {
         return Err(invalid(
             "Bluetooth 0.3.0 requires the exact documented 23-column header",
         ));

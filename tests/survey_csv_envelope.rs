@@ -1,7 +1,7 @@
 //! How each Network Survey CSV importer refuses a bad export, recorded before the four share one
 //! envelope reader: the size bound, UTF-8, the `# CSV Version=` comments, the CSV itself and the
-//! header. A refactor of the envelope must leave every row as it is. Each importer's own tests pin
-//! what it reads from a good export.
+//! header. They now share that reader (`rf::survey_csv::read_export`), and each words a refusal
+//! under its own label. Each importer's own tests pin what it reads from a good export.
 
 use huntsman_recon::cell_radar::network_survey::{self as lte, nr};
 use huntsman_recon::rf::network_survey as bluetooth;
@@ -68,7 +68,7 @@ bluetooth\tno_version\tinvalid input: Network Survey Bluetooth CSV: missing or u
 bluetooth\tduplicate_version\tinvalid input: Network Survey Bluetooth CSV: duplicate CSV version
 bluetooth\tother_version\tinvalid input: Network Survey Bluetooth CSV: missing or unsupported CSV version
 bluetooth\tbyte_order_mark\tinvalid input: Network Survey Bluetooth CSV: missing or unsupported CSV version
-bluetooth\tmalformed_csv\tinvalid input: Network Survey Bluetooth CSV: malformed CSV
+bluetooth\tmalformed_csv\tinvalid input: Network Survey Bluetooth CSV: text after quoted field
 bluetooth\tno_header\tinvalid input: Network Survey Bluetooth CSV: missing header
 bluetooth\twrong_header\tinvalid input: Network Survey Bluetooth CSV: Bluetooth 0.3.0 requires the exact documented 23-column header
 bluetooth\tcrlf_wrong_header\tinvalid input: Network Survey Bluetooth CSV: Bluetooth 0.3.0 requires the exact documented 23-column header
@@ -78,7 +78,7 @@ wifi\tno_version\tinvalid input: Network Survey Wi-Fi CSV: missing or unsupporte
 wifi\tduplicate_version\tinvalid input: Network Survey Wi-Fi CSV: duplicate CSV version
 wifi\tother_version\tinvalid input: Network Survey Wi-Fi CSV: missing or unsupported CSV version
 wifi\tbyte_order_mark\tinvalid input: Network Survey Wi-Fi CSV: missing or unsupported CSV version
-wifi\tmalformed_csv\tinvalid input: Network Survey Wi-Fi CSV: malformed CSV
+wifi\tmalformed_csv\tinvalid input: Network Survey Wi-Fi CSV: text after quoted field
 wifi\tno_header\tinvalid input: Network Survey Wi-Fi CSV: missing header
 wifi\twrong_header\tinvalid input: Network Survey Wi-Fi CSV: Wi-Fi 0.4.0 requires the exact documented 30-column header
 wifi\tcrlf_wrong_header\tinvalid input: Network Survey Wi-Fi CSV: Wi-Fi 0.4.0 requires the exact documented 30-column header
@@ -98,7 +98,7 @@ nr\tno_version\tinvalid input: Network Survey NR CSV: missing or unsupported CSV
 nr\tduplicate_version\tinvalid input: Network Survey NR CSV: duplicate CSV version
 nr\tother_version\tinvalid input: Network Survey NR CSV: missing or unsupported CSV version
 nr\tbyte_order_mark\tinvalid input: Network Survey NR CSV: missing or unsupported CSV version
-nr\tmalformed_csv\tinvalid input: Network Survey LTE CSV: text after quoted field
+nr\tmalformed_csv\tinvalid input: Network Survey NR CSV: text after quoted field
 nr\tno_header\tinvalid input: Network Survey NR CSV: missing header
 nr\twrong_header\tinvalid input: Network Survey NR CSV: NR 0.4.0 requires the exact documented 28-column header
 nr\tcrlf_wrong_header\tinvalid input: Network Survey NR CSV: NR 0.4.0 requires the exact documented 28-column header

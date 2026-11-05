@@ -16,6 +16,7 @@ use crate::textnorm::escape_controls;
 use crate::timefmt::parse_timestamp;
 
 pub use crate::rf::survey_csv::MAX_SURVEY_CSV_BYTES;
+use crate::rf::survey_csv::{Export, read_export};
 pub const CSV_VERSION: &str = "0.5.0";
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,8 +46,6 @@ pub struct LteCsvReport {
 fn invalid(message: &str) -> Error {
     Error::Invalid(format!("Network Survey LTE CSV: {message}"))
 }
-
-pub(crate) use crate::rf::survey_csv::csv_rows;
 
 fn cell_number(
     row: &[String],
@@ -159,29 +158,8 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<LteCs
 /// # Errors
 /// Malformed UTF-8/CSV, unsupported versions or missing/duplicate columns fail closed.
 pub fn parse_lte(bytes: &[u8]) -> Result<LteCsvReport, Error> {
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SURVEY_CSV_BYTES {
-        return Err(invalid("input exceeds 256 KiB"));
-    }
-    let text = std::str::from_utf8(bytes).map_err(|_| invalid("not UTF-8"))?;
-    let mut offset = 0;
-    let mut version = None;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if !trimmed.starts_with('#') {
-            break;
-        }
-        if let Some(value) = trimmed.strip_prefix("# CSV Version=") {
-            if version.replace(value.trim()).is_some() {
-                return Err(invalid("duplicate CSV version"));
-            }
-        }
-        offset += line.len();
-    }
-    if version != Some(CSV_VERSION) {
-        return Err(invalid("missing or unsupported CSV version"));
-    }
-    let mut rows = csv_rows(&text[offset..])?.into_iter();
-    let header = rows.next().ok_or_else(|| invalid("missing header"))?;
+    let Export { header, rows } =
+        read_export(bytes, CSV_VERSION).map_err(|refusal| invalid(refusal.reason()))?;
     if header.len() > 32 {
         return Err(invalid("too many columns"));
     }
