@@ -2159,7 +2159,8 @@ mod tests {
                 .filter(|outcome| outcome.detail.as_deref() == Some(BUDGET_SPENT))
                 .count()
         };
-        assert_eq!(spent(&report.rounds[0]), 5);
+        // The engines the first round could not start before the budget ran out.
+        assert_eq!(spent(&report.rounds[0]), EXTENDED_ENGINES.len() - 11);
         assert_eq!(spent(&report.rounds[1]), EXTENDED_ENGINES.len());
         assert_eq!(report.stop_reason, "refinement_sources_unavailable");
     }
