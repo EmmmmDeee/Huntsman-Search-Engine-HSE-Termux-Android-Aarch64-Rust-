@@ -48,6 +48,79 @@ fn self_hosted_container_has_executable_ci_acceptance() {
     );
 }
 
+/// Every workflow file, and every composite action's `action.yml`.
+fn workflow_and_action_files() -> Vec<std::path::PathBuf> {
+    let yaml = |path: &std::path::Path| {
+        path.extension()
+            .is_some_and(|ext| ext == "yml" || ext == "yaml")
+    };
+    let mut files: Vec<_> = fs::read_dir(WORKFLOWS)
+        .expect("workflow directory")
+        .map(|entry| entry.expect("workflow entry").path())
+        .filter(|path| yaml(path))
+        .collect();
+    for action in fs::read_dir(".github/actions").expect("actions directory") {
+        let dir = action.expect("action entry").path();
+        for name in ["action.yml", "action.yaml"] {
+            if dir.join(name).is_file() {
+                files.push(dir.join(name));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// One job of a workflow: from its `  <id>:` line to the next line indented two spaces that
+/// starts another key.
+fn job<'a>(workflow: &'a str, id: &str) -> &'a str {
+    let start = workflow
+        .find(&format!("\n  {id}:\n"))
+        .unwrap_or_else(|| panic!("no job {id}"))
+        + 1;
+    let body = &workflow[start..];
+    let end = body
+        .match_indices("\n  ")
+        .map(|(at, _)| at)
+        .find(|&at| body[at + 3..].starts_with(|c: char| c.is_ascii_alphanumeric()))
+        .unwrap_or(body.len());
+    &body[..end]
+}
+
+/// On 2026-11-05 a runner's Ubuntu mirror trickled for fourteen minutes inside one package
+/// install, and nothing bounded the step or its job, so the run waited for a person to cancel
+/// it. apt runs only through the installer that bounds and retries each attempt, and the job
+/// that runs it has a time limit.
+#[test]
+fn apt_runs_only_through_the_bounded_installer_in_a_job_with_a_time_limit() {
+    for path in workflow_and_action_files() {
+        let text = fs::read_to_string(&path).expect("workflow");
+        for line in text.lines() {
+            assert!(
+                !line.contains("apt-get") && !line.contains("apt install"),
+                "{}: install packages through scripts/apt-install-retry.sh, which bounds and \
+                 retries each attempt: {}",
+                path.display(),
+                line.trim()
+            );
+        }
+    }
+    let ci = fs::read_to_string(CI).expect("CI workflow");
+    let qemu = job(&ci, "aarch64-tests");
+    assert!(
+        qemu.contains(
+            "run: bash scripts/apt-install-retry.sh gcc-aarch64-linux-gnu \
+             libc6-dev-arm64-cross qemu-user"
+        ),
+        "the qemu job installs its toolchain through the bounded installer:\n{qemu}"
+    );
+    assert!(
+        qemu.lines()
+            .any(|line| line.starts_with("    timeout-minutes: ")),
+        "the qemu job has a time limit:\n{qemu}"
+    );
+}
+
 #[test]
 fn every_job_runs_on_the_pinned_runner_image() {
     let mut workflows: Vec<_> = fs::read_dir(WORKFLOWS)

@@ -178,6 +178,9 @@ jobs:
   aarch64-tests:
     name: Library tests on aarch64 under qemu
     runs-on: ubuntu-24.04
+    # At worst three bounded package attempts (about 21 minutes), then about seven minutes of
+    # emulated tests. Without a limit a stalled job holds this check for six hours.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
@@ -185,10 +188,7 @@ jobs:
           toolchain: "1.99"
           targets: aarch64-unknown-linux-gnu
       - name: Install the aarch64 linker and qemu-user
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+        run: bash scripts/apt-install-retry.sh gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
       - name: Run the library and xtask unit tests on aarch64
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
