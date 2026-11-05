@@ -246,7 +246,7 @@
 <div class="panel" id="rhinser-native-panel">
 <div class="panel-heading">Rhinser capture inspector (operator import)</div>
 <div class="panel-body">
-<p class="help">Paste a capture JSON an Android companion exported with permission. Rust checks it and returns redacted observations only; its timestamps and consent are unverified claims. Raw input is cleared once inspected. This is not live NFC or Bluetooth scanning.</p>
+<p class="help">Paste capture JSON an Android companion exported with permission. Rust returns redacted observations only; timestamps and consent are unverified claims. Raw input is cleared once inspected. This is not live NFC or Bluetooth scanning.</p>
 <form id="rhinser-native-form">
 <label for="rhinser-native-file">Import authorized capture file (JSON, maximum 20 KB)</label>
 <input type="file" id="rhinser-native-file" accept=".json,application/json">
@@ -258,13 +258,13 @@
 <pre class="mono osint-report" id="rhinser-native-output" role="status">No capture submitted; no radio accessed.</pre>
 </div></div>
 <div class="panel" id="rhinser-overlap-panel">
-<div class="panel-heading">Rhinser cross-case source overlap</div>
+<div class="panel-heading">Rhinser cross-case overlap</div>
 <div class="panel-body">
-<p class="help">Paste a Rhinser workspace JSON export to find exact URLs reused across cases. Rust compares them without contacting any source; a repeated reference is not independent evidence.</p>
+<p class="help">Paste a Rhinser workspace export to find exact URLs reused across cases, offline. A shared URL is not independent evidence.</p>
 <form id="rhinser-overlap-form" class="row">
 <label for="rhinser-overlap-input">Workspace JSON</label>
 <textarea id="rhinser-overlap-input" rows="4" maxlength="20000" spellcheck="false" autocomplete="off" placeholder='{"schema_version":1,"cases":[…]}' required></textarea>
-<button class="btn" type="submit" id="rhinser-overlap-run">Correlate source URLs</button>
+<button class="btn" type="submit" id="rhinser-overlap-run">Find shared URLs</button>
 </form>
 <pre class="mono osint-report" id="rhinser-overlap-output" role="status"></pre>
 </div></div>
@@ -1620,7 +1620,7 @@ $('rhinser-native-file').onchange=async ev=>{
     if(generation!==rhinserNativeGeneration)return;
     if(new TextEncoder().encode(contents).length>20000)throw new Error('capture exceeds browser limit');
     $('rhinser-native-input').value=contents;
-    rhinserNativeSay('Capture loaded locally; Inspect local capture checks it with Rust. No radio was accessed.');
+    rhinserNativeSay('Capture loaded locally; Inspect checks it with Rust. No radio was accessed.');
   }catch(e){
     if(generation!==rhinserNativeGeneration)return;
     rhinserNativeSay('Import refused: '+e.message);

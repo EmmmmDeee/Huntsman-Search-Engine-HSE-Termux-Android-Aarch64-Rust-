@@ -43,6 +43,19 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// 83 locally served catalogue references, on-page filtering, and explicit HTTPS link opening.
 /// Phone-browser runtime performance remains an independent acceptance gate.
 const PAGE_BUDGET: usize = 144 * 1024;
+/// The server fills the page's empty `huntsman-page` meta tag with a page id of this many hex
+/// digits (`src/web_server/page.rs`), so the page as served, which is what a phone downloads and
+/// the browser check weighs, is this much longer than the file.
+const SERVED_PAGE_ID_BYTES: usize = 16;
+
+/// The page's length as served: the file plus the page id the server writes into its slot.
+fn served_len() -> usize {
+    assert!(
+        PAGE.contains(r#"<meta name="huntsman-page" content="">"#),
+        "the page id slot moved; update served_len"
+    );
+    PAGE.len() + SERVED_PAGE_ID_BYTES
+}
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
@@ -1082,9 +1095,9 @@ fn the_scans_list_shows_each_scans_sources_and_unresolved_count() {
 #[test]
 fn the_page_stays_within_its_budget() {
     assert!(
-        PAGE.len() <= PAGE_BUDGET,
-        "the page is {} bytes; its budget is {PAGE_BUDGET}",
-        PAGE.len()
+        served_len() <= PAGE_BUDGET,
+        "the page is {} bytes as served; its budget is {PAGE_BUDGET}",
+        served_len()
     );
 }
 
@@ -1173,7 +1186,7 @@ fn universal_research_mobile_panel_uses_guarded_api_and_preserves_existing_scans
     assert!(PAGE.contains("link.rel='noopener noreferrer'"));
     assert!(!PAGE.contains("uresearch-hits').innerHTML"));
     assert!(
-        PAGE.len() <= PAGE_BUDGET,
+        served_len() <= PAGE_BUDGET,
         "phone page exceeds its size budget"
     );
 }
@@ -1188,7 +1201,7 @@ fn autonomous_research_controls_require_explicit_start_and_reuse_saved_scan_ui()
     assert!(PAGE.contains("location.hash='#/scan/'+enc(result.scan)+'/summary'"));
     assert!(PAGE.contains("id=\"newscan\""));
     assert!(PAGE.contains("id=\"sdepth\""));
-    assert!(PAGE.len() <= PAGE_BUDGET);
+    assert!(served_len() <= PAGE_BUDGET);
 }
 
 #[test]
@@ -1201,5 +1214,5 @@ fn research_input_changes_invalidate_old_responses_and_mission_controls() {
     assert!(PAGE.contains("if(missionSeed===q)"));
     assert!(PAGE.contains("$('uresearch-go').disabled=false"));
     assert!(PAGE.contains("$('uresearch-hits').replaceChildren()"));
-    assert!(PAGE.len() <= PAGE_BUDGET);
+    assert!(served_len() <= PAGE_BUDGET);
 }
