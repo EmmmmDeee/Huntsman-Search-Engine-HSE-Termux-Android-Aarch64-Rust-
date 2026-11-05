@@ -363,6 +363,9 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
 }
 
 #[cfg(test)]
+mod leg_snapshot;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

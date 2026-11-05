@@ -1,0 +1,92 @@
+# How each simple account leg ends in ten situations, recorded before the legs share a kernel.
+# Columns: source, scenario, then the outcome kind, HTTP status, reason and entity count, and one
+# column per entity (kind=value@confidence[tags]); or `error` and the error. Checked by
+# src/username_cli/leg_snapshot.rs; a refactor of the legs must leave every row as it is.
+lobsters	found	Success	200	lobsters: success	2	username=jcs@0.80[lobsters,forum,github,self-reported]	url=https://lobste.rs/~jcs@0.74[lobsters,forum]
+lobsters	shouted	Success	200	lobsters: success	2	username=jcs@0.80[lobsters,forum,github,self-reported]	url=https://lobste.rs/~jcs@0.74[lobsters,forum]
+lobsters	other	SemanticDrift	200	lobsters: Lobsters returned a different account than the queried handle	0
+lobsters	empty	SchemaDrift	200	lobsters: Lobsters payload carried no username	0
+lobsters	null	ParserDrift	200	lobsters: Lobsters user JSON: data error at line 1 column 4	0
+lobsters	not_json	ParserDrift	200	lobsters: Lobsters user JSON: syntax error at line 1 column 2	0
+lobsters	missing	ValidZero	404	lobsters: valid_zero	0
+lobsters	server	Upstream5xx	500	lobsters: Lobsters user answered with a refusal, a wall or an error, not a document	0
+lobsters	silent	DnsFailure	-	lobsters: no route to host	0
+lobsters	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+lobsters	invalid	Inconclusive	-	lobsters: selector is not a valid Lobsters handle	0
+chess_com	found	Success	200	chess_com: success	4	username=hikaru@0.80[chess_com,gaming]	url=https://www.chess.com/member/Hikaru@0.74[chess_com,gaming]	person=Hikaru Nakamura@0.55[chess_com,self-reported]	url=https://twitch.tv/gmhikaru@0.55[twitch,self-reported]
+chess_com	shouted	Success	200	chess_com: success	4	username=hikaru@0.80[chess_com,gaming]	url=https://www.chess.com/member/Hikaru@0.74[chess_com,gaming]	person=Hikaru Nakamura@0.55[chess_com,self-reported]	url=https://twitch.tv/gmhikaru@0.55[twitch,self-reported]
+chess_com	other	SemanticDrift	200	chess_com: Chess.com returned a different player than the queried handle	0
+chess_com	empty	SchemaDrift	200	chess_com: Chess.com payload carried no username	0
+chess_com	null	ParserDrift	200	chess_com: Chess.com player JSON: data error at line 1 column 4	0
+chess_com	not_json	ParserDrift	200	chess_com: Chess.com player JSON: syntax error at line 1 column 2	0
+chess_com	missing	ValidZero	404	chess_com: valid_zero	0
+chess_com	server	Upstream5xx	500	chess_com: Chess.com player answered with a refusal, a wall or an error, not a document	0
+chess_com	silent	DnsFailure	-	chess_com: no route to host	0
+chess_com	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+chess_com	invalid	Inconclusive	-	chess_com: selector is not a valid Chess.com username	0
+lichess	found	Success	200	lichess: success	4	username=thibault@0.80[lichess,gaming]	url=https://lichess.org/@/thibault@0.74[lichess,gaming]	person=Thibault Duplessis@0.55[lichess,self-reported]	url=https://mas.to/@thibault@0.55[lichess,self-reported]
+lichess	shouted	Success	200	lichess: success	4	username=thibault@0.80[lichess,gaming]	url=https://lichess.org/@/thibault@0.74[lichess,gaming]	person=Thibault Duplessis@0.55[lichess,self-reported]	url=https://mas.to/@thibault@0.55[lichess,self-reported]
+lichess	other	SemanticDrift	200	lichess: Lichess returned a different user than the queried handle	0
+lichess	empty	SchemaDrift	200	lichess: Lichess payload carried no user id	0
+lichess	null	ParserDrift	200	lichess: Lichess user JSON: data error at line 1 column 4	0
+lichess	not_json	ParserDrift	200	lichess: Lichess user JSON: syntax error at line 1 column 2	0
+lichess	missing	ValidZero	404	lichess: valid_zero	0
+lichess	server	Upstream5xx	500	lichess: Lichess user answered with a refusal, a wall or an error, not a document	0
+lichess	silent	DnsFailure	-	lichess: no route to host	0
+lichess	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+lichess	invalid	Inconclusive	-	lichess: selector is not a valid Lichess username	0
+codeberg_user	found	Success	200	codeberg_user: success	4	username=forgejo@0.80[codeberg,code]	url=https://codeberg.org/forgejo@0.74[codeberg,code]	url=https://forgejo.org@0.55[codeberg,self-reported]	domain=forgejo.org@0.50[codeberg,derived]
+codeberg_user	shouted	Success	200	codeberg_user: success	4	username=forgejo@0.80[codeberg,code]	url=https://codeberg.org/forgejo@0.74[codeberg,code]	url=https://forgejo.org@0.55[codeberg,self-reported]	domain=forgejo.org@0.50[codeberg,derived]
+codeberg_user	other	SemanticDrift	200	codeberg_user: Codeberg returned a different account than the queried handle	0
+codeberg_user	empty	SchemaDrift	200	codeberg_user: Codeberg payload carried no login	0
+codeberg_user	null	ParserDrift	200	codeberg_user: Codeberg user JSON: data error at line 1 column 4	0
+codeberg_user	not_json	ParserDrift	200	codeberg_user: Codeberg user JSON: syntax error at line 1 column 2	0
+codeberg_user	missing	ValidZero	404	codeberg_user: valid_zero	0
+codeberg_user	server	Upstream5xx	500	codeberg_user: Codeberg user answered with a refusal, a wall or an error, not a document	0
+codeberg_user	silent	DnsFailure	-	codeberg_user: no route to host	0
+codeberg_user	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+codeberg_user	invalid	Inconclusive	-	codeberg_user: selector is not a valid Codeberg handle	0
+devto_user	found	Success	200	devto_user: success	7	username=ben@0.80[devto,forum]	url=https://dev.to/ben@0.74[devto,forum]	person=Ben Halpern@0.55[devto,self-reported]	username=benhalpern@0.55[github,self-reported,linked-account]	username=bendhalpern@0.55[twitter,self-reported,linked-account]	url=http://benhalpern.com@0.55[devto,self-reported]	domain=benhalpern.com@0.50[devto,derived]
+devto_user	shouted	Success	200	devto_user: success	7	username=ben@0.80[devto,forum]	url=https://dev.to/ben@0.74[devto,forum]	person=Ben Halpern@0.55[devto,self-reported]	username=benhalpern@0.55[github,self-reported,linked-account]	username=bendhalpern@0.55[twitter,self-reported,linked-account]	url=http://benhalpern.com@0.55[devto,self-reported]	domain=benhalpern.com@0.50[devto,derived]
+devto_user	other	SemanticDrift	200	devto_user: DEV returned a different account than the queried handle	0
+devto_user	empty	SchemaDrift	200	devto_user: DEV payload carried no username	0
+devto_user	null	ParserDrift	200	devto_user: DEV user JSON: data error at line 1 column 4	0
+devto_user	not_json	ParserDrift	200	devto_user: DEV user JSON: syntax error at line 1 column 2	0
+devto_user	missing	ValidZero	404	devto_user: valid_zero	0
+devto_user	server	Upstream5xx	500	devto_user: DEV user answered with a refusal, a wall or an error, not a document	0
+devto_user	silent	DnsFailure	-	devto_user: no route to host	0
+devto_user	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+devto_user	invalid	Inconclusive	-	devto_user: selector is not a valid DEV Community handle	0
+codewars_user	found	Success	200	codewars_user: success	2	username=g964@0.80[codewars,code]	url=https://www.codewars.com/users/g964@0.74[codewars,code]
+codewars_user	shouted	SemanticDrift	200	codewars_user: Codewars returned a different account than the queried handle	0
+codewars_user	other	SemanticDrift	200	codewars_user: Codewars returned a different account than the queried handle	0
+codewars_user	empty	SchemaDrift	200	codewars_user: Codewars payload carried no username	0
+codewars_user	null	ParserDrift	200	codewars_user: Codewars user JSON: data error at line 1 column 4	0
+codewars_user	not_json	ParserDrift	200	codewars_user: Codewars user JSON: syntax error at line 1 column 2	0
+codewars_user	missing	ValidZero	404	codewars_user: valid_zero	0
+codewars_user	server	Upstream5xx	500	codewars_user: Codewars user answered with a refusal, a wall or an error, not a document	0
+codewars_user	silent	DnsFailure	-	codewars_user: no route to host	0
+codewars_user	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+codewars_user	invalid	Inconclusive	-	codewars_user: selector is not a valid Codewars handle	0
+huggingface_user	found	Success	200	huggingface_user: success	5	username=julien-c@0.80[huggingface,code]	url=https://huggingface.co/julien-c@0.74[huggingface,code]	person=Julien Chaumond@0.55[huggingface,self-reported]	organisation=Hugging Face@0.55[huggingface,membership]	organisation=ph-snps@0.55[huggingface,membership]
+huggingface_user	shouted	Success	200	huggingface_user: success	5	username=julien-c@0.80[huggingface,code]	url=https://huggingface.co/julien-c@0.74[huggingface,code]	person=Julien Chaumond@0.55[huggingface,self-reported]	organisation=Hugging Face@0.55[huggingface,membership]	organisation=ph-snps@0.55[huggingface,membership]
+huggingface_user	other	SemanticDrift	200	huggingface_user: Hugging Face returned a different account than the queried handle	0
+huggingface_user	empty	SchemaDrift	200	huggingface_user: Hugging Face payload carried no user	0
+huggingface_user	null	ParserDrift	200	huggingface_user: Hugging Face user JSON: data error at line 1 column 4	0
+huggingface_user	not_json	ParserDrift	200	huggingface_user: Hugging Face user JSON: syntax error at line 1 column 2	0
+huggingface_user	missing	ValidZero	404	huggingface_user: valid_zero	0
+huggingface_user	server	Upstream5xx	500	huggingface_user: Hugging Face user answered with a refusal, a wall or an error, not a document	0
+huggingface_user	silent	DnsFailure	-	huggingface_user: no route to host	0
+huggingface_user	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+huggingface_user	invalid	Inconclusive	-	huggingface_user: selector is not a valid Hugging Face handle	0
+hacker_news	found	Success	200	hacker_news: success	4	username=pg@0.80[hacker-news,forum]	url=https://news.ycombinator.com/user?id=pg@0.74[hacker-news,forum]	url=https://paulgraham.com@0.55[hacker-news,self-reported]	domain=paulgraham.com@0.55[hacker-news,derived]
+hacker_news	shouted	SemanticDrift	200	hacker_news: Hacker News returned a different account than the queried handle	0
+hacker_news	other	SemanticDrift	200	hacker_news: Hacker News returned a different account than the queried handle	0
+hacker_news	empty	SchemaDrift	200	hacker_news: Hacker News payload carried no id	0
+hacker_news	null	ValidZero	200	hacker_news: valid_zero	0
+hacker_news	not_json	ParserDrift	200	hacker_news: Hacker News user JSON: syntax error at line 1 column 2	0
+hacker_news	missing	Upstream4xx	404	hacker_news: Hacker News user answered with a refusal, a wall or an error, not a document	0
+hacker_news	server	Upstream5xx	500	hacker_news: Hacker News user answered with a refusal, a wall or an error, not a document	0
+hacker_news	silent	DnsFailure	-	hacker_news: no route to host	0
+hacker_news	refused	error	network: egress-policy: destination (0.0.0.0) is not publicly routable
+hacker_news	invalid	Inconclusive	-	hacker_news: selector is not a valid Hacker News handle	0
