@@ -126,13 +126,18 @@ fn termux_installer_is_arm64_userland_and_self_accepting() {
         "pkg install -y git rust clang curl coreutils",
         "rust-std-",
         "readonly INSTALL_ROOT=\"${HUNTSMAN_INSTALL_ROOT:-$TERMUX_PREFIX}\"",
-        "--root \"$INSTALL_ROOT\"",
+        "installed=\"$INSTALL_ROOT/bin/huntsman-recon\"",
+        // Cargo builds into a staging root; only a checked binary replaces the installed one.
+        "--root \"$build_root\"",
         "huntsman-recon",
         "sha256sum -c --quiet \"$ASSET.sha256\"",
         "timeout 30 \"$1\" check",
         "timeout 30 \"$1\" verify var/ledger.json",
         "accept_binary \"$release_dir/$ASSET\"",
-        "accept_binary \"$installed\"",
+        "accept_binary \"$built\"",
+        "replace_installed \"$release_dir/$ASSET\"",
+        "replace_installed \"$built\"",
+        "refusing to run as root",
         "chmod 0600 \"$ENV_FILE\"",
     ] {
         assert!(
