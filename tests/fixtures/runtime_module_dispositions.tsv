@@ -201,6 +201,7 @@ redact	leaf	secret and location redaction
 relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
 retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
+reverse_image	adapter	offline exact-byte image fingerprint and explicitly opted-in provider image-search clients reached only by the reverse-image CLI; no web route
 rf	leaf	radio-frequency model utility
 rhinser_catalog	leaf	offline source-labelled Rhinser tool directory reached by the shipped rhinser catalogue CLI and Web UI catalogue endpoint
 rhinser_native	leaf	bounded read-only operator-provided NFC and Bluetooth observation fixtures reached by osint native and the loopback-only POST /api/rhinser/native, plus explicitly simulated demo

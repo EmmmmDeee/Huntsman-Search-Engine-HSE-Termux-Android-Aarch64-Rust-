@@ -189,6 +189,24 @@ pub struct ProviderProbeStatus {
 
 pub const PROVIDERS: &[Provider] = &[
     Provider {
+        name: "Google Cloud Vision (Web Detection)",
+        get_key_url: "https://console.cloud.google.com/apis/credentials",
+        free_tier: "account and billing setup; opt-in reverse-image only; usage may incur charges",
+        slots: &[crate::environment::GOOGLE_VISION_KEY_ENV],
+    },
+    Provider {
+        name: "Lenso.ai Image Search",
+        get_key_url: "https://api.lenso.ai/en/page/api",
+        free_tier: "paid Developer API; opt-in reverse-image only",
+        slots: &[crate::environment::LENSO_KEY_ENV],
+    },
+    Provider {
+        name: "SauceNAO Image Search",
+        get_key_url: "https://saucenao.com/user.php?page=search-api",
+        free_tier: "account key and provider rate limits; opt-in reverse-image only",
+        slots: &[crate::environment::SAUCENAO_KEY_ENV],
+    },
+    Provider {
         name: "X Recent Search",
         get_key_url: "https://console.x.com/",
         free_tier: "operator-managed API; only osint x-api spends quota",

@@ -198,6 +198,7 @@ cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenS
 cargo run -- traffic-cameras --reconcile --limit 5  # two public TMR camera catalogues; needs HUNTSMAN_QLDTRAFFIC_KEY; network, no image downloads
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
+cargo run -- reverse-image --help         # offline help for SHA-256 image evidence and opt-in indexed-image provider search
 cargo run -- apk --help                   # offline Android APK archive intelligence: structural ZIP/DEX/ABI/signing indicators, exact-byte SHA-256
 cargo run -- source-intel --help          # offline APK-to-source-candidate projection; no public-access or network-contact claims
 # Example after creating two local archives: huntsman-recon apk diff old.apk new.apk --json
@@ -602,3 +603,15 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 ### Domain lifecycle analysis
 
 `domain-lifecycle analyze INPUT.json --as-of UNIX_SECONDS [--output REPORT.json]` compares imported domain observations entirely offline. It preserves source/upstream boundaries, rejects conflicting duplicate identifiers, records failed/truncated observations as coverage gaps, and emits only conservative observed changes. Ownership, causality, and registration availability remain explicitly unknown unless established elsewhere. See [docs/DOMAIN_LIFECYCLE.md](DOMAIN_LIFECYCLE.md).
+
+### Reverse-image search
+
+Run `huntsman-recon reverse-image photo.jpg --json` for an offline exact-file
+SHA-256 fingerprint. Add `--live --provider google_vision`,
+`--live --provider lenso` or `--live --provider saucenao` to search one
+configured provider index at a time. Omitting `--provider` with `--live`
+queries all configured providers and may consume multiple paid credits. Images
+are capped at 4 MiB; the file reader refuses symlinks and changed inodes.
+CLI only: there is no web route or Web UI panel. The returned image URLs are
+leads and require independent checking. See [REVERSE_IMAGE.md](REVERSE_IMAGE.md)
+for credential slots, response states, resource limits and validation.

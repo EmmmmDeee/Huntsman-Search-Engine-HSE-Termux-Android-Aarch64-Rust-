@@ -118,6 +118,9 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         }
         "exif" => huntsman_recon::exif::EXIF_HELP,
         "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,
+        "reverse-image" => {
+            "reverse-image IMAGE-FILE [--live] [--provider google_vision|lenso|saucenao] [--json]\nOffline SHA-256 evidence fingerprint by default. --live explicitly sends the image to configured image indexes and may use paid credits. --provider targets one configured service."
+        }
         "apk" => huntsman_recon::apk_intel::APK_HELP,
         "source-intel" => super::source_intel::HELP,
         "radar" => radar_help(),
