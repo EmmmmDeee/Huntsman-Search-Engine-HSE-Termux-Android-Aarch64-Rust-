@@ -140,7 +140,10 @@ mod tests {
         assert!(!output.relationships_inferred);
         assert!(!output.device_attested);
         assert!(!output.radio_access);
-        assert_eq!(output.entities[0].confidence, CANDIDATE_CONF);
+        assert_eq!(
+            output.entities[0].confidence.to_bits(),
+            CANDIDATE_CONF.to_bits()
+        );
         assert!(
             output
                 .entities
