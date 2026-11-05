@@ -18,7 +18,21 @@ Status: **PROPOSED**. Unless marked *estimate*, every number here was measured o
 
 - Phase 4 is in place for the eight legs whose path was identical. They are Lobsters, Chess.com, Lichess, Codeberg, DEV, Codewars, Hugging Face and Hacker News, and they now run on `src/account_leg.rs`. First, `tests/fixtures/account_leg_snapshot.tsv` recorded each leg's outcome and entities in eleven scenarios. All 88 rows are unchanged after the move. The legs that differ in rule, not just wording, stay bespoke, as section 4.3 lists. Those are GitHub, GitLab, Bluesky, Keybase, Mastodon, Docker Hub, crates.io, npm, TikTok and Wikipedia.
 
-Phase 6 is not implemented yet.
+- Phase 6 is deferred into Stage 9 of the stage plan.
+  - **Phase 1 already cut the files down.** It moved their inline tests out, and `scan_service`, `scan_api` and `graph_exec` now hold 2,018, 1,519 and 1,697 production lines.
+  - **Splitting now means moving the same code twice:** into submodules now, then into their `application` and `web` homes when Stages 3 to 9 move them.
+  - **It would not be a pure move.** Splitting `impl ScanService` across child modules turns its private helpers `pub(super)`.
+  - The split happens with the Stage 9 move instead.
+
+**Measured outcome.**
+- **Classification.** One table classifies every source, and G1 fails a build that adds an unclassified source. B1 and B2 fixed three wrongly classed sources.
+- **Refusals.** Every lookup but `phone` names the source it was refused by or got no answer from (B3); the harness holds all 15 of those lookups (11 scan kinds plus company, gleif, itunes and wikidata) with no exceptions.
+- **Attribution.** G2 found and fixed one live misattribution (B4), and fails a source added to a lookup without one.
+- **Code size:**
+  - Phase 1 moved 8,926 test lines out of production files.
+  - Phase 5 removed 78 net lines across 20 files.
+  - Phase 4 removed 139 net production lines across the eight legs and the kernel.
+- **Unchanged output.** Each refactor left the snapshots and contract unchanged, and the test count only rose.
 
 - **Process.** Work under this plan follows [CLAUDE_CODE_REFACTOR_EXECUTION.md](CLAUDE_CODE_REFACTOR_EXECUTION.md).
 - **Authority.** The root [`ARCHITECTURE.md`](../ARCHITECTURE.md) and its tests stay authoritative for the module map.
