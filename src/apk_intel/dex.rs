@@ -21,6 +21,9 @@ const MAX_STRINGS: usize = 2_000_000;
 const MAX_STRING_BYTES: usize = 16 * 1024;
 const MAX_URL_BYTES: usize = 2048;
 const MAX_LISTED: usize = 512;
+/// Upper bounds on distinct URL and host bookkeeping across all DEX files.
+const MAX_TRACKED_URLS: usize = 4096;
+const MAX_TRACKED_HOSTS: usize = 1024;
 /// XML namespace and schema identifiers: URLs by syntax that no app fetches.
 const NAMESPACE_HOSTS: [&str; 10] = [
     "schemas.android.com",
@@ -109,15 +112,24 @@ impl CodeUrls {
             };
             let url = url.trim_end_matches(['.', ',', ';', ')', ']']);
             let host = host_only(url).to_ascii_lowercase();
-            if !wanted_host(&host) || !self.seen.insert(url.to_owned()) {
+            if !wanted_host(&host) || self.seen.contains(url) {
                 continue;
             }
+            // Once bookkeeping reaches its bound, count further candidates as
+            // omitted without retaining them. Beyond the cap, duplicates may
+            // also be counted: the omission count is an upper bound, not an
+            // exact distinct-URL count.
+            if self.seen.len() == MAX_TRACKED_URLS {
+                self.urls_omitted = self.urls_omitted.saturating_add(1);
+                continue;
+            }
+            self.seen.insert(url.to_owned());
             if self.urls.len() < MAX_LISTED {
                 self.urls.push(url.to_owned());
             } else {
-                self.urls_omitted += 1;
+                self.urls_omitted = self.urls_omitted.saturating_add(1);
             }
-            if self.host_set.insert(host.clone()) {
+            if self.host_set.len() < MAX_TRACKED_HOSTS && self.host_set.insert(host.clone()) {
                 self.hosts.push(host);
             }
         }
@@ -198,6 +210,19 @@ pub(super) mod tests {
         }
         dex.extend_from_slice(&data);
         dex
+    }
+
+    #[test]
+    fn distinct_url_and_host_bookkeeping_is_bounded() {
+        let mut found = CodeUrls::default();
+        for i in 0..(MAX_TRACKED_URLS + 32) {
+            found.take(format!("https://host{i}.com/path/{i}").as_bytes());
+        }
+        assert_eq!(found.seen.len(), MAX_TRACKED_URLS);
+        assert_eq!(found.host_set.len(), MAX_TRACKED_HOSTS);
+        assert_eq!(found.urls.len(), MAX_LISTED);
+        assert_eq!(found.hosts.len(), MAX_TRACKED_HOSTS);
+        assert!(found.urls_omitted >= 32);
     }
 
     #[test]
