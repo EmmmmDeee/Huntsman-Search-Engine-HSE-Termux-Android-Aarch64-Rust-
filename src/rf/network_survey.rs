@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::error::Error;
 use crate::rf::survey_csv::{
     Export, InvalidField, exact_columns, optional_finite, optional_number, optional_text,
-    read_export,
+    read_export, reported_fix,
 };
 use crate::rf::{canonical_network_id, is_mac};
 use crate::textnorm::escape_controls;
@@ -168,21 +168,7 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
         return None;
     }
 
-    let location = match (
-        row[1].parse::<f64>().ok(),
-        row[2].parse::<f64>().ok(),
-        row[5].parse::<f64>().ok(),
-    ) {
-        (Some(lat), Some(lon), Some(accuracy))
-            if crate::geohash::valid_fix(lat, lon)
-                && accuracy.is_finite()
-                && accuracy > 0.0
-                && accuracy <= 100_000.0 =>
-        {
-            (Some(lat), Some(lon), Some(accuracy))
-        }
-        _ => (None, None, None),
-    };
+    let location = reported_fix(&row[1], &row[2], &row[5]);
 
     Some(BluetoothCsvRecord {
         address: canonical_network_id(address),
