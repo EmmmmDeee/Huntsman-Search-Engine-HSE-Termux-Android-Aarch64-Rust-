@@ -121,6 +121,34 @@ pub(crate) fn expose<'a>(
     }
 }
 
+/// Folds one record's exposed `fields` and `values` into a breach database's, within the same
+/// bounds [`expose`] keeps: at most [`MAX_FIELDS`] field names and [`MAX_VALUES_PER_FIELD`] values
+/// a field. A value is folded only under a field that is kept. **Pure.**
+pub(crate) fn merge(
+    fields: &BTreeSet<String>,
+    values: &BTreeMap<String, BTreeSet<String>>,
+    into_fields: &mut BTreeSet<String>,
+    into_values: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    for field in fields {
+        if into_fields.len() < MAX_FIELDS || into_fields.contains(field) {
+            into_fields.insert(field.clone());
+        }
+    }
+    for (field, held) in values {
+        if !into_fields.contains(field) {
+            continue;
+        }
+        let seen = into_values.entry(field.clone()).or_default();
+        for value in held {
+            if seen.len() >= MAX_VALUES_PER_FIELD {
+                break;
+            }
+            seen.insert(value.clone());
+        }
+    }
+}
+
 /// One record value as text for the report: a string as written, a number or boolean as shown, a
 /// list or object as compact JSON. `None` when it is blank or longer than [`MAX_VALUE_BYTES`], so
 /// an oversized value is dropped whole rather than cut and a surfaced value is exactly what the

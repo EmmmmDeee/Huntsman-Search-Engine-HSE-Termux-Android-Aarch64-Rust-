@@ -7,8 +7,9 @@
 //! ([`cli`]), and the `exposure` leg ([`exposure`]), which reuses the same
 //! client to add `DeHashed` to the keyed breach legs of `exposure ADDR`.
 //!
-//! The response schema in [`types`] is not verified against a live key. Read
-//! that file's header before relying on field names.
+//! The response schema in [`types`] follows `DeHashed`'s published v2
+//! documentation and live unauthenticated probes, not a live key; that file's
+//! header says which fields are first-party and which are reported by others.
 
 pub mod cli;
 pub mod client;

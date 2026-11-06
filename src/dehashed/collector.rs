@@ -8,8 +8,10 @@
 //! attribute, which `lineage` reads, so two collectors relaying one dataset
 //! share one root family.
 //!
-//! Passwords and hashes are not copied into entities or evidence. Evidence
-//! records only that they exist.
+//! Each record's evidence carries every non-credential value it holds
+//! (`value_<field>`) and the fields it exposes. Passwords, hashes and salts are
+//! not copied into entities or evidence: evidence records only that they
+//! exist. The receipt carries the account's credits left as its quota.
 //!
 //! Local failures (an unsupported selector, an identifier that fails validation,
 //! a zero request budget) return `Err`, because nothing was sent. Network and
@@ -158,7 +160,8 @@ fn receipt(
         outcome: execution,
         parsed_rows: found,
         truncated,
-        quota: None,
+        // DeHashed reports the account's credits left on every answer ("1 search = 1 credit").
+        quota: crate::collector::ProviderQuota::reported(None, outcome.balance, None),
     }
 }
 
@@ -265,7 +268,29 @@ fn evidence_for(
         .with_attr(
             "has_hashed_password",
             entry.has_hashed_password().to_string(),
+        )
+        .with_attr("password_exposed", entry.password_exposed().to_string())
+        .with_attr(
+            "exposed_fields",
+            entry
+                .fields
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
         );
+    if entry.raw.unstructured {
+        evidence = evidence.with_attr("unstructured", "true");
+    }
+    if entry.raw.le_only {
+        evidence = evidence.with_attr("le_only", "true");
+    }
+    // Every non-credential value the record holds, keyed `value_<field>` as `OathNet`'s evidence
+    // is, so it cannot clobber the attributes above.
+    for (field, values) in &entry.values {
+        let joined = values.iter().cloned().collect::<Vec<_>>().join(", ");
+        evidence = evidence.with_attr(format!("value_{field}"), joined);
+    }
     if let Some(database) = entry
         .database_name
         .as_deref()

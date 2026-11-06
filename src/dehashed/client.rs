@@ -236,6 +236,10 @@ pub struct SearchOutcome {
     pub page: u32,
     pub size: u32,
     pub total: Option<u64>,
+    /// The account's search credits left after this search, as `DeHashed` reported them.
+    pub balance: Option<u64>,
+    /// How long `DeHashed` says the search took, as it wrote it.
+    pub took: Option<String>,
     /// SHA-256 of the raw response body, for the audit receipt.
     pub response_sha256: String,
     pub entries: Vec<Entry>,
@@ -248,6 +252,8 @@ impl fmt::Debug for SearchOutcome {
             .field("page", &self.page)
             .field("size", &self.size)
             .field("total", &self.total)
+            .field("balance", &self.balance)
+            .field("took", &self.took)
             .field("entries", &self.entries.len())
             .finish_non_exhaustive()
     }
@@ -345,6 +351,8 @@ impl DehashedClient {
             page: request.page,
             size: request.size,
             total: parsed.total,
+            balance: parsed.balance,
+            took: parsed.took,
             response_sha256,
             entries: parsed.entries,
         })

@@ -11,9 +11,13 @@
 //! never touches the network.
 //!
 //! Output is `key=value` lines: `source=DeHashed`, the purpose and query as
-//! sent, `results=N`, `total=` when the API reports it, then one block per
-//! entry with the database name, emails, usernames, and whether a password or
-//! hash exists. Passwords and hashes are never printed.
+//! sent, `results=N`, `total=`, the account's `balance=` of search credits and
+//! `took=` as the API reports them, then one block per entry: the database
+//! name, emails, usernames, every other value the record holds as
+//! `FIELD=VALUE`, the fields it exposes, whether a password or hash exists, and
+//! whether `DeHashed` marks it unstructured or law-enforcement only. Passwords,
+//! hashes and salts are never printed: the decoder keeps only that one was
+//! exposed.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -170,6 +174,17 @@ pub fn render(outcome: &SearchOutcome) -> String {
             let _ = writeln!(out, "total=<none>");
         }
     }
+    match outcome.balance {
+        Some(balance) => {
+            let _ = writeln!(out, "balance={balance}");
+        }
+        None => {
+            let _ = writeln!(out, "balance=<none>");
+        }
+    }
+    if let Some(took) = &outcome.took {
+        let _ = writeln!(out, "took={}", escape_controls(took));
+    }
     for (index, entry) in outcome.entries.iter().enumerate() {
         let _ = writeln!(out, "entry={}", index + 1);
         let database = entry.database_name.as_deref().unwrap_or("<none>");
@@ -180,8 +195,20 @@ pub fn render(outcome: &SearchOutcome) -> String {
         for username in &entry.username {
             let _ = writeln!(out, "username={}", escape_controls(username));
         }
+        for (field, value) in entry.other_values() {
+            let _ = writeln!(out, "{}={}", escape_controls(field), escape_controls(value));
+        }
+        let fields: Vec<&str> = entry.fields.iter().map(String::as_str).collect();
+        let _ = writeln!(out, "exposed_fields={}", escape_controls(&fields.join(",")));
         let _ = writeln!(out, "has_password={}", entry.has_password());
         let _ = writeln!(out, "has_hashed_password={}", entry.has_hashed_password());
+        let _ = writeln!(out, "password_exposed={}", entry.password_exposed());
+        if entry.raw.unstructured {
+            let _ = writeln!(out, "unstructured=true");
+        }
+        if entry.raw.le_only {
+            let _ = writeln!(out, "le_only=true");
+        }
     }
     out
 }
@@ -458,6 +485,7 @@ mod tests {
             // its test), so render can only ever observe a boolean here.
             password: true,
             hashed_password: false,
+            ..super::super::types::Entry::default()
         };
         let outcome = SearchOutcome {
             query: "email:\"a@example.com\"".into(),
@@ -465,6 +493,8 @@ mod tests {
             page: 1,
             size: 10,
             total: Some(1),
+            balance: None,
+            took: None,
             response_sha256: String::new(),
             entries: vec![entry],
         };

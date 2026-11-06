@@ -426,6 +426,56 @@ fn repeated_server_failures_hold_back_the_next_search() {
     );
 }
 
+/// The answer `DeHashed` documents for one record: the record, its count, the credits left.
+fn documented_answer() -> String {
+    format!(
+        r#"{{"balance": 4321, "took": "179µs", "total": 1, "entries": [{}]}}"#,
+        super::types::tests::V2_RECORD
+    )
+}
+
+/// `dehashed search` prints the account's credits left and every value a record holds, as
+/// `FIELD=VALUE` lines, but never a credential.
+#[test]
+fn the_cli_prints_the_credits_left_and_every_value_but_no_credential() {
+    let fake = Fake::with(200, &documented_answer(), &[]);
+    let outcome = client(&fake)
+        .search(&email_request(Purpose::OwnAccount))
+        .unwrap();
+    let text = cli::render(&outcome);
+    for line in [
+        "balance=4321\n",
+        "took=179µs\n",
+        "database=ExampleBreach\n",
+        "email=ada@example.com\n",
+        "name=Ada Example\n",
+        "phone=+61 7 5555 0100\n",
+        "address=1 Example St, Brisbane QLD\n",
+        "ip_address=198.51.100.7\n",
+        "cryptocurrency_address=bc1qexampleaddress\n",
+        "has_password=true\n",
+        "password_exposed=true\n",
+        "unstructured=true\n",
+    ] {
+        assert!(text.contains(line), "{line:?} missing");
+    }
+    assert!(
+        text.contains("exposed_fields=address,"),
+        "no exposed fields"
+    );
+    assert!(
+        !text.contains("le_only="),
+        "a flag DeHashed did not set was printed"
+    );
+    for (what, value) in [
+        ("password", "hunter2-cleartext"),
+        ("hash", "live-hash"),
+        ("hash type", "bcrypt-type"),
+    ] {
+        assert!(!text.contains(value), "the {what} was printed");
+    }
+}
+
 /// A Cloudflare interstitial served with 200 in place of the API's answer.
 const CHALLENGE: &str = "<html><title>Just a moment...</title>\
     <script src=\"https://challenges.cloudflare.com/x\"></script></html>";
@@ -929,6 +979,51 @@ mod collector_tests {
         .unwrap();
         assert_eq!(batch.outcome, CollectionOutcome::Partial);
         assert!(batch.receipts[0].truncated);
+    }
+
+    /// A saved artifact keeps what the record says: every non-credential value as `value_<field>`
+    /// evidence and the fields it exposes, and its receipt carries the credits `DeHashed` says are
+    /// left. No credential reaches an entity or its evidence.
+    #[test]
+    fn evidence_keeps_every_value_and_the_receipt_the_credits_left() {
+        let fake = Fake::with(200, &super::documented_answer(), &[]);
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "ada@example.com"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        let receipt = &batch.receipts[0];
+        assert_eq!(
+            receipt.quota.as_ref().and_then(|quota| quota.remaining),
+            Some(4321)
+        );
+        let username = batch
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Username && entity.value == "ada99")
+            .expect("the username entity");
+        let evidence = &username.evidence[0];
+        let attr = |name: &str| evidence.attributes.get(name).map(String::as_str);
+        assert_eq!(attr("value_name"), Some("Ada Example"));
+        assert_eq!(attr("value_phone"), Some("+61 7 5555 0100"));
+        assert_eq!(attr("password_exposed"), Some("true"));
+        assert_eq!(attr("unstructured"), Some("true"));
+        assert!(
+            attr("exposed_fields").is_some_and(|fields| fields.contains("hashed_password")),
+            "{:?}",
+            attr("exposed_fields")
+        );
+        let saved = serde_json::to_string(&batch.entities).unwrap_or_default();
+        for (what, value) in [
+            ("password", "hunter2-cleartext"),
+            ("hash", "live-hash"),
+            ("hash type", "bcrypt-type"),
+        ] {
+            assert!(!saved.contains(value), "the {what} reached the entities");
+        }
     }
 
     #[test]

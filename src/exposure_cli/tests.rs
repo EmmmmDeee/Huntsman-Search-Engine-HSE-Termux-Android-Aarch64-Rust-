@@ -485,8 +485,34 @@ fn oathnet_breaches_surface_values_but_not_cleartext_credentials() {
     );
 }
 
+/// Every non-credential value the `DeHashed` records hold is shown, as `OathNet`'s section shows it,
+/// and kept as evidence on the queried address.
+fn dehashed_values_are_shown_and_kept(text: &str, email: &Entity) {
+    for row in [
+        "dehashed_value\tLinkedIn\tname=Ada Example\n",
+        "dehashed_value\tLinkedIn\tphone=+15555550100\n",
+        "dehashed_value\tLinkedIn\temail=alt@example.com\n",
+        "dehashed_value\tLinkedIn\tusername=ada99\n",
+    ] {
+        assert!(text.contains(row), "{row:?} missing: {text}");
+    }
+    let linkedin = email
+        .evidence
+        .iter()
+        .find(|e| e.attributes.get("database_name").map(String::as_str) == Some("LinkedIn"))
+        .unwrap_or_else(|| panic!("no LinkedIn evidence: {text}"));
+    assert_eq!(
+        linkedin.attributes.get("value_name").map(String::as_str),
+        Some("Ada Example")
+    );
+    assert_eq!(
+        linkedin.attributes.get("value_phone").map(String::as_str),
+        Some("+15555550100")
+    );
+}
+
 #[test]
-fn dehashed_breaches_are_exposure_metadata_on_the_email_and_never_values() {
+fn dehashed_breaches_show_every_value_on_the_email_but_never_a_credential() {
     let body = serde_json::json!({
         "entries": [
             {"database_name": "LinkedIn", "email": ["ada@example.com"],
@@ -559,22 +585,23 @@ fn dehashed_breaches_are_exposure_metadata_on_the_email_and_never_values() {
 
     assert!(text.contains("\ndehashed_breaches=2\n"), "{text}");
     assert!(
-        text.contains("dehashed_breach\tAcmeForum\trecords=1\tpassword_exposed=false\n"),
+        text.contains(
+            "dehashed_breach\tAcmeForum\trecords=1\tpassword_exposed=false\tfields=email\n"
+        ),
         "{text}"
     );
     assert!(
-        text.contains("dehashed_breach\tLinkedIn\trecords=2\tpassword_exposed=true\n"),
+        text.contains(
+            "dehashed_breach\tLinkedIn\trecords=2\tpassword_exposed=true\t\
+             fields=email,hashed_password,name,password,phone,username\n"
+        ),
         "{text}"
     );
+    dehashed_values_are_shown_and_kept(&text, email);
     let saved = serde_json::to_string(&report.entities).unwrap_or_default();
-    // A failure names which withheld value leaked, never the value or the output that holds
-    // it, so a failing run cannot copy it into CI's logs.
-    for (withheld, value) in [
-        ("password", "hunter2-secret"),
-        ("hash", "deadbeef-hash"),
-        ("phone", "+15555550100"),
-        ("name", "Ada Example"),
-    ] {
+    // A failure names which credential leaked, never the value or the output that holds it, so a
+    // failing run cannot copy it into CI's logs.
+    for (withheld, value) in [("password", "hunter2-secret"), ("hash", "deadbeef-hash")] {
         assert!(
             !text.contains(value),
             "the {withheld} leaked into the printed text"
