@@ -49,11 +49,13 @@ wiring repairs may precede that final acceptance without completing the broader
 task. Avoid duplicate implementation where coverage overlaps; record receipts
 against the precise scope they prove. An authored VERIFIED label is not fresh proof.
 
-Missing registered paths are explicit. The existing TikTok task remains visible
-as unmapped broad work even though none of the ten detailed tasks claims its full
-scope. Its module is present in the committed tree; presence alone does not prove
-provider reachability, correct attribution or complete integration. Inspect actual
-call paths and never infer a contact association from a handle alone.
+Missing registered paths are explicit. Every broad task now has at least one
+detailed task, but a mapping is partial coverage: broad task 10 (TikTok), for
+example, is mapped by failure-mode tests and an expansion gate, while its live
+reachability remains an operator receipt. A module's presence in the committed
+tree does not prove provider reachability, correct attribution or complete
+integration. Inspect actual call paths and never infer a contact association
+from a handle alone.
 
 ## Read in this order
 
@@ -120,9 +122,11 @@ dependency, daemon, LLM, paid API or persistent analysis cache is added.
 ## Implementation sequence and integration rules
 
 Run the ordered queue against the actual checkout. Establish baseline receipts
-before altering behaviour. Prioritise aggregate export memory, credential authority
-and expensive-request admission. Shared provider pacing follows authority migration.
-Reconcile executable wiring and source independence before increasing capability.
+before altering behaviour. Prioritise the bounds on untrusted uploads, then
+expensive-request admission, credential status, lineage attribution and the
+other verified defects. Shared provider pacing builds on the completed credential
+authority migration. Reconcile executable wiring and source independence before
+increasing capability.
 Legacy parity closes in individual measured increments. Physical handset acceptance
 is an explicit external gate, not something a code-generating agent can fabricate.
 
@@ -197,7 +201,10 @@ proves build compatibility only. `scripts/termux-runtime-acceptance.sh` must act
 produce `TERMUX_RUNTIME_ACCEPTANCE` on the device for a handset claim; its host
 mode deliberately produces `HOST_RUNTIME_ACCEPTANCE` instead.
 
-The immediate next repair in the seeded queue is aggregate scan-export budgeting,
-after baseline verification. Do not interpret this handoff's implementation as
-completion of that repair. Continue through evidence-backed, finite acceptance
+After baseline verification, the immediate next repairs are the two priority-0
+upload bounds (`bound-apk-inflation-attempts` and `bound-dex-url-collections`),
+then the priority-1 defects in queue order. Owner decisions D1 to D13 (broad task
+`21-owner-decisions`) and the physical handset run are external gates: a task
+that cites one waits for its recorded answer. Do not interpret this handoff as
+completion of any repair. Continue through evidence-backed, finite acceptance
 criteria; absolute design completion cannot be established for a changing system.
