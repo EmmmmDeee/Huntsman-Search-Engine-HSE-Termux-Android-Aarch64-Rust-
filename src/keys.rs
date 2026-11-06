@@ -1601,12 +1601,10 @@ mod tests {
             .warning
             .expect("two warnings");
         let lines: Vec<&str> = warning.lines().collect();
-        assert_eq!(lines.len(), 2, "{warning}");
-        assert!(lines[0].contains("chmod 600 ~/.huntsman.env"), "{warning}");
-        assert!(
-            lines[1].contains("chmod 600 ~/.config/dehashed/api_key"),
-            "{warning}"
-        );
+        // The failure messages leave the warning out: it can name uids (a foreign owner's).
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("chmod 600 ~/.huntsman.env"));
+        assert!(lines[1].contains("chmod 600 ~/.config/dehashed/api_key"));
         assert!(!warning.contains(GATE_SECRET));
 
         // A symlink is refused as the keys file's would be, never followed.
@@ -1626,9 +1624,7 @@ mod tests {
             resolved
                 .warning
                 .as_deref()
-                .is_some_and(|warning| warning.contains("symlink")),
-            "{:?}",
-            resolved.warning
+                .is_some_and(|warning| warning.contains("symlink"))
         );
         std::fs::remove_dir_all(&home).expect("cleanup");
     }
@@ -1651,7 +1647,7 @@ mod tests {
             GATE_SECRET
         );
         let warning = resolved.warning.expect("the keys file is named");
-        assert!(warning.contains(DEFAULT_KEYS_FILE), "{warning}");
+        assert!(warning.contains(DEFAULT_KEYS_FILE));
         assert!(!warning.contains(GATE_SECRET));
         std::fs::remove_dir_all(&home).expect("cleanup");
     }
