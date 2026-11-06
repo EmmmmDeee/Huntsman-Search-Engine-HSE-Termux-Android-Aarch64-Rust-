@@ -46,21 +46,7 @@ pub type ItunesRun = SourceRun<Report>;
 /// # Errors
 /// [`Error::InvalidValue`] for a keyword that is empty, too long, or holds a control character.
 pub fn canonical_keyword(raw: &str) -> Result<String, Error> {
-    let keyword = raw.trim();
-    if keyword.is_empty() {
-        return Err(Error::invalid_value("the keyword is empty"));
-    }
-    if keyword.len() > MAX_KEYWORD_BYTES {
-        return Err(Error::invalid_value(format!(
-            "the keyword is longer than {MAX_KEYWORD_BYTES} bytes"
-        )));
-    }
-    if keyword.chars().any(char::is_control) {
-        return Err(Error::invalid_value(
-            "the keyword holds a control character",
-        ));
-    }
-    Ok(keyword.to_owned())
+    crate::textnorm::bounded_query(raw, MAX_KEYWORD_BYTES, "keyword")
 }
 
 /// Search the App Store for `keyword`, the iTunes leg only when the transport's lookup asks its

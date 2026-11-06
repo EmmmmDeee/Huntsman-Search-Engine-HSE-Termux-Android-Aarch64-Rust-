@@ -2,6 +2,8 @@
 
 use std::fmt::Write as _;
 
+use crate::error::Error;
+
 /// `raw` as HTML text or a double-quoted attribute value: `&`, `<`, `>`, `"` and `'` become
 /// their character references; everything else is kept. **Pure.**
 #[must_use]
@@ -26,6 +28,39 @@ pub fn escape_html(raw: &str) -> String {
 #[must_use]
 pub fn is_bounded_text(value: &str, max: usize) -> bool {
     !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+}
+
+/// A free-text selector as a lookup sends it: `raw` trimmed, non-empty, at most `max_bytes` bytes
+/// and free of control characters. `noun` names it in a refusal ("query", "keyword"). **Pure.**
+///
+/// # Errors
+/// [`Error::InvalidValue`] for one that is empty, too long, or holds a control character.
+pub fn bounded_query(raw: &str, max_bytes: usize, noun: &str) -> Result<String, Error> {
+    let query = raw.trim();
+    if query.is_empty() {
+        return Err(Error::invalid_value(format!("the {noun} is empty")));
+    }
+    within_query_bound(query, max_bytes, noun)?;
+    Ok(query.to_owned())
+}
+
+/// The length and control-character checks of [`bounded_query`], for text taken as it is.
+/// **Pure.**
+///
+/// # Errors
+/// [`Error::InvalidValue`] for text over `max_bytes` bytes, or holding a control character.
+pub fn within_query_bound(text: &str, max_bytes: usize, noun: &str) -> Result<(), Error> {
+    if text.len() > max_bytes {
+        return Err(Error::invalid_value(format!(
+            "the {noun} is longer than {max_bytes} bytes"
+        )));
+    }
+    if text.chars().any(char::is_control) {
+        return Err(Error::invalid_value(format!(
+            "the {noun} holds a control character"
+        )));
+    }
+    Ok(())
 }
 
 /// Whether [`escape_controls`] writes `c` escaped: a control character, a line or paragraph
@@ -710,6 +745,36 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The free-text selector rule `gleif`, `wikidata`, `geocode`, `itunes` and `company` share,
+    /// with each refusal worded for the noun its command uses.
+    #[test]
+    fn a_bounded_query_is_trimmed_nonblank_within_its_bound_and_free_of_controls() {
+        use crate::error::Error;
+        assert_eq!(
+            super::bounded_query("  Emirates Retakaful  ", 30, "query").unwrap(),
+            "Emirates Retakaful"
+        );
+        assert_eq!(super::bounded_query("abc", 3, "query").unwrap(), "abc");
+        for (raw, noun, reason) in [
+            ("   ", "query", "the query is empty"),
+            ("abcd", "query", "the query is longer than 3 bytes"),
+            ("a\u{7}b", "query", "the query holds a control character"),
+            ("", "keyword", "the keyword is empty"),
+            ("a\nb", "keyword", "the keyword holds a control character"),
+        ] {
+            assert!(
+                matches!(super::bounded_query(raw, 3, noun), Err(Error::InvalidValue(why)) if why == reason),
+                "{raw:?}"
+            );
+        }
+        // The length and control checks alone read the text as it is, untrimmed.
+        assert!(super::within_query_bound("  a  ", 5, "query").is_ok());
+        assert!(matches!(
+            super::within_query_bound("  a   ", 5, "query"),
+            Err(Error::InvalidValue(why)) if why == "the query is longer than 5 bytes"
+        ));
+    }
+
     #[test]
     fn bounded_text_is_nonblank_within_the_byte_limit_and_free_of_controls() {
         assert!(super::is_bounded_text("abc", 3));

@@ -79,19 +79,7 @@ impl GleifArgs {
 /// # Errors
 /// [`Error::InvalidValue`] for a query that is empty, too long, or holds a control character.
 pub fn canonical_query(raw: &str) -> Result<String, Error> {
-    let query = raw.trim();
-    if query.is_empty() {
-        return Err(Error::invalid_value("the query is empty"));
-    }
-    if query.len() > MAX_GLEIF_QUERY_BYTES {
-        return Err(Error::invalid_value(format!(
-            "the query is longer than {MAX_GLEIF_QUERY_BYTES} bytes"
-        )));
-    }
-    if query.chars().any(char::is_control) {
-        return Err(Error::invalid_value("the query holds a control character"));
-    }
-    Ok(query.to_owned())
+    crate::textnorm::bounded_query(raw, MAX_GLEIF_QUERY_BYTES, "query")
 }
 
 /// What the lookup found: its entities and each source's row.
