@@ -14,8 +14,6 @@
 //! the crawl date, not a claim that it is still true; an empty index is not proof that a site
 //! never existed.
 
-use std::fmt::Write as _;
-
 use crate::archived_page::{self, Admission, Archive, Capture};
 use crate::canonical::{canonical_domain, canonical_url};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -447,44 +445,11 @@ fn read_contents<T: Transport + ?Sized>(
     if records.is_empty() {
         return;
     }
-    let mut read = 0usize;
-    let mut found = Vec::new();
-    let mut unread = Vec::new();
-    for (capture, record) in &records {
-        match read_record(transport, capture, record, crawl, scan_id, now_unix) {
-            Ok(entities) => {
-                read += 1;
-                found.extend(entities);
-            }
-            Err(reason) => unread.push(reason),
-        }
-    }
-    let contacts = found
+    let reads = records
         .iter()
-        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
-        .count();
-    let technologies = found.len() - contacts;
-    report.entities.extend(found);
-    merge_by_uid(&mut report.entities);
-    report.outcome.found = Some(report.entities.len());
-    let mut detail = format!(
-        "crawled content: {read} of {} page(s) read, {contacts} contact detail(s) found",
-        records.len()
-    );
-    if technologies > 0 {
-        let _ = write!(
-            detail,
-            "; {technologies} archived technology signal(s) found"
-        );
-    }
-    if !unread.is_empty() {
-        detail.push_str("; not read: ");
-        detail.push_str(&unread.join(", "));
-    }
-    report.outcome.detail = Some(match report.outcome.detail.take() {
-        Some(existing) => format!("{existing}; {detail}"),
-        None => detail,
-    });
+        .map(|(capture, record)| read_record(transport, capture, record, crawl, scan_id, now_unix))
+        .collect();
+    archived_page::record_reads(report, "crawled content", reads, None);
 }
 
 /// The contacts one crawled page published, or why it was not read.
