@@ -1708,7 +1708,6 @@ fn parse_iptc_datasets(data: &[u8], fields: &mut Fields) {
     let declared_utf8 = datasets
         .iter()
         .any(|&(record, dataset, value)| record == 1 && dataset == 90 && value == b"\x1b%G");
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     for (record, dataset, value) in datasets {
         let Some(name) = iptc_field_name(record, dataset) else {
             continue;
@@ -1725,11 +1724,7 @@ fn parse_iptc_datasets(data: &[u8], fields: &mut Fields) {
             // Never replace unknown legacy bytes with U+FFFD and call that exact evidence.
             // Keep a bounded hex preview plus a digest and length for full-byte provenance.
             let shown = value.len().min(512);
-            let mut hex = String::with_capacity(shown * 2);
-            for &byte in &value[..shown] {
-                hex.push(char::from(HEX[usize::from(byte >> 4)]));
-                hex.push(char::from(HEX[usize::from(byte & 0x0f)]));
-            }
+            let hex = crate::base64::base16_lower(&value[..shown]);
             let suffix = if shown < value.len() {
                 "; hex prefix only; original bytes retained in source file"
             } else {

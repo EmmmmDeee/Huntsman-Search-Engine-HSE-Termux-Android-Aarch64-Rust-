@@ -141,6 +141,13 @@ pub fn valid_coordinate(lat: f64, lon: f64) -> bool {
         && (-180.0..=180.0).contains(&lon)
 }
 
+/// Whether a device's position fix is usable: a [`valid_coordinate`] other than (0, 0), the null
+/// island a receiver writes when it has no fix.
+#[must_use]
+pub fn valid_fix(lat: f64, lon: f64) -> bool {
+    valid_coordinate(lat, lon) && !(lat == 0.0 && lon == 0.0)
+}
+
 /// Great-circle distance in kilometres on the sphere of radius [`EARTH_RADIUS_KM`]. The haversine
 /// term is clamped to [0, 1] before the arc is taken, so rounding at a near-antipodal pair gives
 /// pi times the radius rather than NaN. The result is finite for every pair of in-range coordinates.

@@ -205,11 +205,7 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
         row[5].parse::<f64>().ok(),
     ) {
         (Some(lat), Some(lon), Some(accuracy))
-            if lat.is_finite()
-                && lon.is_finite()
-                && (-90.0..=90.0).contains(&lat)
-                && (-180.0..=180.0).contains(&lon)
-                && !(lat == 0.0 && lon == 0.0)
+            if crate::geohash::valid_fix(lat, lon)
                 && accuracy.is_finite()
                 && accuracy > 0.0
                 && accuracy <= 100_000.0 =>

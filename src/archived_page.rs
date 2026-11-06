@@ -10,7 +10,7 @@
 
 use crate::canonical::canonical_url;
 use crate::classifier;
-use crate::domains::host_only;
+use crate::domains::{host_only, is_or_subdomain_of};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::html_text::{Markup, Piece, attribute, html_to_text};
 use crate::source_outcome::SourceExecutionOutcome;
@@ -378,11 +378,7 @@ pub fn admit(original: &str, domain: &str) -> Result<Admission, &'static str> {
         return Err("an invalid HTTP(S) URL");
     };
     let host = host_only(&url).trim_end_matches('.').to_ascii_lowercase();
-    if host != domain
-        && !host
-            .strip_suffix(domain)
-            .is_some_and(|prefix| prefix.ends_with('.'))
-    {
+    if !is_or_subdomain_of(&host, domain) {
         return Err("a URL outside the requested domain");
     }
     if original
@@ -415,13 +411,11 @@ pub fn valid_timestamp(raw: &str) -> bool {
     if year == 0 || hour > 23 || minute > 59 || second > 59 {
         return false;
     }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return false,
+    let Some(days) = i32::try_from(year)
+        .ok()
+        .and_then(|year| crate::timefmt::month_days(year, month))
+    else {
+        return false;
     };
     (1..=days).contains(&day)
 }

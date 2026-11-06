@@ -71,13 +71,7 @@ fn inspect_values(data: &[u8], depth: usize, out: &mut TlvInspection) -> Result<
             return Err("BER-TLV record truncated".to_owned());
         }
         out.fields += 1;
-        const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
-        let mut tag_name = String::with_capacity(tag.len() * 2);
-        for byte in tag {
-            tag_name.push(char::from(DIGITS[usize::from(byte >> 4)]));
-            tag_name.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-        }
-        out.tag_names_hex.push(tag_name);
+        out.tag_names_hex.push(crate::base64::base16_upper(&tag));
         if first & 0x20 != 0 {
             out.constructed_fields += 1;
             inspect_values(&data[pos..pos + count], depth + 1, out)?;

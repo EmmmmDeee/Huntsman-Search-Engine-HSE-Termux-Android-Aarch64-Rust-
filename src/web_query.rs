@@ -1034,12 +1034,10 @@ fn is_engine_or_navigation_url(url: &str, engine: &str) -> bool {
         "microsoft.com",
         "msn.com",
     ];
-    ENGINE_HOSTS.iter().chain(own_hosts(engine)).any(|known| {
-        host == *known
-            || host
-                .strip_suffix(known)
-                .is_some_and(|prefix| prefix.ends_with('.'))
-    })
+    ENGINE_HOSTS
+        .iter()
+        .chain(own_hosts(engine))
+        .any(|known| crate::domains::is_or_subdomain_of(&host, known))
 }
 
 /// The domains of an engine beyond the default three, whose links on its own result

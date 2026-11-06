@@ -277,8 +277,9 @@ fn string_value(tag: u8, value: &[u8]) -> String {
     }
 }
 
-/// An OBJECT IDENTIFIER in dotted form. **Pure.**
-fn oid_text(octets: &[u8]) -> String {
+/// An OBJECT IDENTIFIER in dotted form, as the certificate readers here and in
+/// [`crate::apk_intel`] print one. **Pure.**
+pub(crate) fn oid_text(octets: &[u8]) -> String {
     let mut arcs = Vec::new();
     let mut arc = 0_u64;
     for &octet in octets {

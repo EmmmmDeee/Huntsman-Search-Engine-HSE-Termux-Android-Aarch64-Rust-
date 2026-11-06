@@ -96,8 +96,7 @@ fn failed(now: u64, kind: SourceOutcomeKind, reason: &str) -> SourceExecutionOut
 /// A trimmed, non-empty publisher string of at most `bound` bytes with no control character.
 fn short_text(value: Option<&Value>, bound: usize) -> Option<String> {
     let text = value?.as_str()?.trim();
-    (!text.is_empty() && text.len() <= bound && !text.chars().any(char::is_control))
-        .then(|| text.to_owned())
+    crate::textnorm::is_bounded_text(text, bound).then(|| text.to_owned())
 }
 
 /// A `GeoJSON` `Point` feature's position as (latitude, longitude), only when it is a valid

@@ -84,12 +84,6 @@ pub fn lookup(
     decode(&body)
 }
 
-/// A position is evidence only when both coordinates lie inside their geographic bounds.
-/// No clamping: an out-of-range provider value must not become a real location. **Pure.**
-fn valid_position(lat: f64, lon: f64) -> bool {
-    (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
-}
-
 /// Classify provider-declared errors without copying the error message into diagnostics:
 /// `OpenCelliD`'s invalid-key response may echo the caller's credential. **Pure.**
 ///
@@ -140,7 +134,8 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
             "OpenCelliD response has no position".into(),
         ));
     };
-    if !valid_position(lat, lon) {
+    // No clamping: an out-of-range provider value must not become a real location.
+    if !crate::geohash::valid_coordinate(lat, lon) {
         return Err(LegError::Decode("OpenCelliD position out of range".into()));
     }
     let mut finding = Finding::new(format!("OpenCelliD: {lat:.4},{lon:.4}"))
@@ -231,7 +226,7 @@ pub fn area<T: Transport + ?Sized>(
     lon: f64,
     now_unix: u64,
 ) -> Result<Area, LegError> {
-    if !valid_position(lat, lon) {
+    if !crate::geohash::valid_coordinate(lat, lon) {
         return Err(LegError::Decode(
             "OpenCelliD area coordinates out of range".into(),
         ));
@@ -276,7 +271,7 @@ pub fn decode_area(body: &[u8]) -> Result<Area, LegError> {
         .filter_map(|cell| {
             let lat = cell.get("lat").and_then(Value::as_f64)?;
             let lon = cell.get("lon").and_then(Value::as_f64)?;
-            if !valid_position(lat, lon) {
+            if !crate::geohash::valid_coordinate(lat, lon) {
                 return None;
             }
             Some(AreaCell {
@@ -332,10 +327,10 @@ mod tests {
             let body = format!(r#"{{"lat":{lat},"lon":{lon},"range":500}}"#);
             assert!(matches!(decode(body.as_bytes()), Err(LegError::Decode(_))));
         }
-        assert!(valid_position(-90.0, -180.0));
-        assert!(valid_position(90.0, 180.0));
-        assert!(!valid_position(f64::NAN, 0.0));
-        assert!(!valid_position(0.0, f64::INFINITY));
+        assert!(crate::geohash::valid_coordinate(-90.0, -180.0));
+        assert!(crate::geohash::valid_coordinate(90.0, 180.0));
+        assert!(!crate::geohash::valid_coordinate(f64::NAN, 0.0));
+        assert!(!crate::geohash::valid_coordinate(0.0, f64::INFINITY));
     }
 
     #[test]

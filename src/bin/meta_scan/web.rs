@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
+use huntsman_recon::base64::base16_lower;
 use huntsman_recon::clock::unix_now;
 use huntsman_recon::textnorm::escape_html;
 use serde_json::Value;
@@ -200,11 +201,7 @@ struct WebState {
 fn secret_token() -> std::io::Result<String> {
     let mut entropy = [0_u8; 16];
     File::open("/dev/urandom")?.read_exact(&mut entropy)?;
-    let mut token = String::with_capacity(32);
-    for byte in entropy {
-        let _ = write!(token, "{byte:02x}");
-    }
-    Ok(token)
+    Ok(base16_lower(&entropy))
 }
 
 fn hex_digit(value: u8) -> Option<u8> {

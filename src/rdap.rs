@@ -325,7 +325,7 @@ fn service_for_domain(bootstrap: &Bootstrap, domain: &str) -> Option<String> {
     for (tlds, urls) in &bootstrap.services {
         for tld in tlds {
             let tld = tld.trim_matches('.');
-            let matches = domain == tld || domain.ends_with(&format!(".{tld}"));
+            let matches = crate::domains::is_or_subdomain_of(domain, tld);
             if matches && best.is_none_or(|(current, _)| tld.len() > current.len()) {
                 best = Some((tld, urls));
             }

@@ -125,9 +125,8 @@ fn cell(raw: &str) -> Option<NetworkSelector> {
 
 fn ssid(name: &str) -> Option<NetworkSelector> {
     let name = name.trim();
-    let ok =
-        !name.is_empty() && name.len() <= MAX_SSID_BYTES && !name.chars().any(char::is_control);
-    ok.then(|| NetworkSelector::Ssid(name.to_owned()))
+    crate::textnorm::is_bounded_text(name, MAX_SSID_BYTES)
+        .then(|| NetworkSelector::Ssid(name.to_owned()))
 }
 
 /// The canonical network selector string for `raw`, or `None` when it is not one.
