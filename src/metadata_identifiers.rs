@@ -31,7 +31,7 @@ pub const TAG: &str = "embedded-metadata";
 pub const MAX_METADATA_IDENTIFIERS: usize = 256;
 
 /// The longest text read as one name.
-const MAX_NAME_BYTES: usize = 128;
+const MAX_METADATA_NAME_BYTES: usize = 128;
 
 /// Who writes a metadata field, which decides what its value can yield.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,10 +155,10 @@ fn names(value: &str) -> impl Iterator<Item = Classified> + '_ {
 }
 
 /// Whether `item` is written as a name is: letters, spaces and the punctuation of initials,
-/// surnames and company names, within [`MAX_NAME_BYTES`]. **Pure.**
+/// surnames and company names, within [`MAX_METADATA_NAME_BYTES`]. **Pure.**
 fn is_name_text(item: &str) -> bool {
     !item.is_empty()
-        && item.len() <= MAX_NAME_BYTES
+        && item.len() <= MAX_METADATA_NAME_BYTES
         && item.chars().all(|c| {
             c.is_alphabetic() || matches!(c, ' ' | '.' | '\'' | '\u{2019}' | '-' | ',' | '&')
         })
