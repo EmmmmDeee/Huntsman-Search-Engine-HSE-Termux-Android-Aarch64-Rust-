@@ -224,6 +224,89 @@ fn status_codes_map_to_named_errors() {
     ));
 }
 
+/// `DeHashed` says why it refused in its error body, and one status can mean two things: a 403 is
+/// a rejected key ("Issue with API Key", seen live) or an account out of credits ("Insufficient
+/// Credits", documented), and a 401 is no subscription (documented) or no key at all (seen live).
+/// Each reads as what `DeHashed` meant, so the operator is told to fix the key or buy credits,
+/// never the wrong one. The provider's own words are never echoed.
+#[test]
+fn each_documented_refusal_reads_as_what_dehashed_meant() {
+    let cases: [(u16, &str, &str, SourceOutcomeKind); 8] = [
+        (
+            400,
+            r#"{"error": "issue with authentication"}"#,
+            "KeyRejected",
+            SourceOutcomeKind::AuthRejected,
+        ),
+        (
+            400,
+            r#"{"error": "bad query"}"#,
+            "BadRequest",
+            SourceOutcomeKind::Upstream4xx,
+        ),
+        (
+            401,
+            r#"{"error": "You need a search subscription and API credits to use the API, please purchase a search subscription."}"#,
+            "NoSubscription",
+            SourceOutcomeKind::EntitlementDenied,
+        ),
+        (
+            401,
+            r#"{"error": "No Authorization header present"}"#,
+            "Unauthorized",
+            SourceOutcomeKind::AuthRejected,
+        ),
+        (
+            403,
+            r#"{"error": "Insufficient Credits"}"#,
+            "OutOfCredits",
+            SourceOutcomeKind::EntitlementDenied,
+        ),
+        (
+            403,
+            r#"{"error": "Issue with API Key"}"#,
+            "KeyRejected",
+            SourceOutcomeKind::AuthRejected,
+        ),
+        (403, "", "Forbidden", SourceOutcomeKind::EntitlementDenied),
+        (
+            403,
+            "not json",
+            "Forbidden",
+            SourceOutcomeKind::EntitlementDenied,
+        ),
+    ];
+    for (status, body, name, kind) in cases {
+        let error = crate::test_support::on_fresh_breakers(|| {
+            // DeHashed sends its error bodies as text/plain; they are read as JSON all the same.
+            let fake = Fake::with(
+                status,
+                body,
+                &[("content-type", "text/plain; charset=utf-8")],
+            );
+            client(&fake)
+                .search(&email_request(Purpose::OwnAccount))
+                .unwrap_err()
+        });
+        assert!(
+            format!("{error:?}").starts_with(name),
+            "{status} {body}: {error:?}"
+        );
+        let outcome = error.outcome("dehashed", 1);
+        assert_eq!(outcome.kind, kind, "{status} {body}");
+        assert_eq!(outcome.http_status, Some(status), "{status} {body}");
+        let said = error.to_string();
+        for words in [
+            "please purchase",
+            "Issue with API Key",
+            "Insufficient Credits",
+            "issue with",
+        ] {
+            assert!(!said.contains(words), "{said:?} echoes the body");
+        }
+    }
+}
+
 #[test]
 fn rate_limit_reports_retry_after_without_retrying() {
     let fake = Fake::with(429, "", &[("retry-after", "42")]);
@@ -373,10 +456,10 @@ fn no_response_keeps_the_cause_and_a_challenge_page_is_not_an_answer() {
     );
 }
 
-#[test]
-fn every_error_names_one_outcome() {
+/// Every error, with the outcome kind and HTTP status it must record.
+fn every_error() -> Vec<(DehashedError, SourceOutcomeKind, Option<u16>)> {
     let pause = Some(std::time::Duration::from_secs(42));
-    let cases = [
+    vec![
         (
             DehashedError::Query(QueryError::Invalid("empty")),
             SourceOutcomeKind::Inconclusive,
@@ -447,8 +530,28 @@ fn every_error_names_one_outcome() {
             SourceOutcomeKind::SchemaDrift,
             None,
         ),
-    ];
-    for (error, kind, status) in cases {
+        (
+            DehashedError::KeyRejected(403),
+            SourceOutcomeKind::AuthRejected,
+            Some(403),
+        ),
+        (
+            DehashedError::NoSubscription,
+            SourceOutcomeKind::EntitlementDenied,
+            Some(401),
+        ),
+        (
+            DehashedError::OutOfCredits,
+            SourceOutcomeKind::EntitlementDenied,
+            Some(403),
+        ),
+        (DehashedError::Paused, SourceOutcomeKind::Inconclusive, None),
+    ]
+}
+
+#[test]
+fn every_error_names_one_outcome() {
+    for (error, kind, status) in every_error() {
         assert_eq!(error.outcome_kind(), kind, "{error:?}");
         assert_eq!(error.http_status(), status, "{error:?}");
         let outcome = error.outcome("dehashed", 7);

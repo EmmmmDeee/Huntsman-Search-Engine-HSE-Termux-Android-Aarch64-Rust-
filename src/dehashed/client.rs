@@ -82,8 +82,21 @@ pub enum DehashedError {
     InvalidPage(u32),
     #[error("dehashed: unauthorised (HTTP 401): the key was rejected")]
     Unauthorized,
-    #[error("dehashed: forbidden (HTTP 403): the key's plan does not allow this search")]
+    /// A 403 whose body names neither a bad key nor spent credits.
+    #[error(
+        "dehashed: forbidden (HTTP 403): the key, its subscription or its credits do not allow this search"
+    )]
     Forbidden,
+    /// `DeHashed` said the key itself is wrong: a 403 "Issue with API Key" (seen live) or a 400
+    /// "issue with authentication" (documented).
+    #[error("dehashed: the key was rejected (HTTP {0})")]
+    KeyRejected(u16),
+    /// The account has no search subscription or no API credits: `DeHashed`'s documented 401.
+    #[error("dehashed: the account has no search subscription or API credits (HTTP 401)")]
+    NoSubscription,
+    /// The account's search credits are spent: `DeHashed`'s documented 403 "Insufficient Credits".
+    #[error("dehashed: the account is out of search credits (HTTP 403)")]
+    OutOfCredits,
     #[error("dehashed: bad request (HTTP 400)")]
     BadRequest,
     #[error("dehashed: rate limited (HTTP 429), retry after {}", describe_retry(*.retry_after))]
@@ -122,8 +135,10 @@ impl DehashedError {
     pub const fn outcome_kind(&self) -> SourceOutcomeKind {
         match self {
             Self::MissingKey => SourceOutcomeKind::NotConfigured,
-            Self::Unauthorized => SourceOutcomeKind::AuthRejected,
-            Self::Forbidden => SourceOutcomeKind::EntitlementDenied,
+            Self::Unauthorized | Self::KeyRejected(_) => SourceOutcomeKind::AuthRejected,
+            Self::Forbidden | Self::NoSubscription | Self::OutOfCredits => {
+                SourceOutcomeKind::EntitlementDenied
+            }
             Self::RateLimited { .. } => SourceOutcomeKind::RateLimited,
             Self::BadRequest => SourceOutcomeKind::Upstream4xx,
             Self::Server(_) => SourceOutcomeKind::Upstream5xx,
@@ -145,11 +160,13 @@ impl DehashedError {
     #[must_use]
     pub const fn http_status(&self) -> Option<u16> {
         match self {
-            Self::Unauthorized => Some(401),
-            Self::Forbidden => Some(403),
+            Self::Unauthorized | Self::NoSubscription => Some(401),
+            Self::Forbidden | Self::OutOfCredits => Some(403),
             Self::BadRequest => Some(400),
             Self::RateLimited { .. } => Some(429),
-            Self::Server(status) | Self::Unexpected(status) => Some(*status),
+            Self::KeyRejected(status) | Self::Server(status) | Self::Unexpected(status) => {
+                Some(*status)
+            }
             _ => None,
         }
     }
@@ -401,14 +418,48 @@ fn decode(
             // The body is deliberately not echoed: it holds personal data.
             DehashedError::Decode("unexpected response shape".into())
         }),
-        400 => Err(DehashedError::BadRequest),
-        401 => Err(DehashedError::Unauthorized),
-        403 => Err(DehashedError::Forbidden),
+        400 | 401 | 403 => Err(refusal(response.status, &response.body)),
         429 => Err(DehashedError::RateLimited {
             retry_after: fetched.retry_after_secs.map(Duration::from_secs),
         }),
         500..=599 => Err(DehashedError::Server(response.status)),
         other => Err(DehashedError::Unexpected(other)),
+    }
+}
+
+/// What a 400, 401 or 403 means, read from the words `DeHashed` puts in its `error` field (sent as
+/// JSON under `text/plain`, so the body is read whatever its type). Its documented and observed
+/// refusals:
+///
+/// | Status | `error` | Meaning |
+/// | --- | --- | --- |
+/// | 400 | `issue with authentication` | the key is wrong ([`DehashedError::KeyRejected`]) |
+/// | 401 | `You need a search subscription and API credits …` | [`DehashedError::NoSubscription`] |
+/// | 401 | `No Authorization header present` (seen live) | [`DehashedError::Unauthorized`] |
+/// | 403 | `Insufficient Credits` | [`DehashedError::OutOfCredits`] |
+/// | 403 | `Issue with API Key` (seen live) | the key is wrong ([`DehashedError::KeyRejected`]) |
+///
+/// Any other body keeps the status's general reading. The words are matched, never kept: no
+/// error carries what the provider wrote. **Pure.**
+fn refusal(status: u16, body: &[u8]) -> DehashedError {
+    let said = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .or_else(|| value.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        })
+        .unwrap_or_default();
+    match status {
+        400 if said.contains("authentication") => DehashedError::KeyRejected(400),
+        400 => DehashedError::BadRequest,
+        401 if said.contains("subscription") => DehashedError::NoSubscription,
+        401 => DehashedError::Unauthorized,
+        403 if said.contains("insufficient credits") => DehashedError::OutOfCredits,
+        403 if said.contains("api key") => DehashedError::KeyRejected(403),
+        _ => DehashedError::Forbidden,
     }
 }
 

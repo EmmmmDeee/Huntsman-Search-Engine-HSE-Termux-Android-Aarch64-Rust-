@@ -55,7 +55,11 @@ impl From<DehashedError> for Failure {
             | DehashedError::InvalidSize(_)
             | DehashedError::InvalidPage(_) => EX_DATAERR,
             DehashedError::MissingKey | DehashedError::KeyFilePermissions => EX_NOINPUT,
-            DehashedError::Unauthorized | DehashedError::Forbidden => EX_NOPERM,
+            DehashedError::Unauthorized
+            | DehashedError::Forbidden
+            | DehashedError::KeyRejected(_)
+            | DehashedError::NoSubscription
+            | DehashedError::OutOfCredits => EX_NOPERM,
             DehashedError::BadRequest
             | DehashedError::RateLimited { .. }
             | DehashedError::Server(_)
