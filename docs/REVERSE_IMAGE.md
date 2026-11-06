@@ -53,7 +53,14 @@ Every report, offline or live, also reads that metadata through the same reader 
   write (an author, rights, contact, comment or description field) as an entity of its own,
   attributed to the file and to the field that holds it. A value the camera or a program writes
   for itself (a serial number, an identifier, a version, a time) is read only for an email
-  address or a link, so its digits are never taken for a phone number.
+  address or a link, so its digits are never taken for a phone number;
+- each person or organisation named in a field that names someone (the artist, author, creator,
+  camera owner, rights owner, caption writer or a person shown), except a placeholder a program
+  writes for an unknown user such as "Microsoft Office User".
+
+At most 256 such entities are taken from one file per reader; the document entity says how many
+more the file held (`metadata_identifiers_omitted`), so a file crafted to hold hundreds of
+thousands of addresses costs a phone no more than an ordinary one.
 
 The JSON report holds them under `metadata` (`entities` and the two readers' `outcomes`), and the
 text report prints them as the `exif` and `docmeta` commands do.

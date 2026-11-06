@@ -11,7 +11,8 @@
 //! into an address. The text people write -- the description, artist, copyright, camera owner and
 //! user comment, and Windows' title, comment, author, keywords and subject, stored as UCS-2 -- is
 //! read as text, and an email address, link, domain, IP address or phone number written there
-//! becomes an entity of its own ([`crate::metadata_identifiers`]). Nothing is inferred beyond what the
+//! becomes an entity of its own, as does a person or organisation named in a tag that names
+//! someone ([`crate::metadata_identifiers`]). Nothing is inferred beyond what the
 //! tags state; EXIF can be edited, so the position is the file's embedded claim, not an
 //! independently verified location.
 //!
@@ -27,6 +28,7 @@ use crate::entity::{
 };
 use crate::error::Error;
 use crate::lookup_report;
+use crate::metadata_identifiers::Field;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 use crate::textnorm;
 
@@ -37,7 +39,7 @@ pub const EXIF_USAGE: &str = "usage: huntsman-recon exif IMAGE-FILE";
 
 pub const EXIF_HELP: &str = "\
 exif IMAGE-FILE
-Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved, up to 512 fields shared between the directories so none crowds out another (a file holding more says how many were not kept), each value shown up to 8 KiB (a longer text ends with a marker naming its whole length) and a long list of numbers as whole numbers with its count. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. The text people write -- the description, artist, copyright, camera owner and user comment, and the Windows title, comment, author, keywords and subject -- is shown as text, and an email address, link, domain, IP address or phone number written there becomes an entity of its own, attributed to its tag; a serial number, identifier, time or setting the camera writes is read only for an email address or a link. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
+Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved, up to 512 fields shared between the directories so none crowds out another (a file holding more says how many were not kept), each value shown up to 8 KiB (a longer text ends with a marker naming its whole length) and a long list of numbers as whole numbers with its count. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. The text people write -- the description, artist, copyright, camera owner and user comment, and the Windows title, comment, author, keywords and subject -- is shown as text, and an email address, link, domain, IP address or phone number written there becomes an entity of its own, attributed to its tag, as does a person or organisation named in the artist, author, camera owner, photographer or editor tag (not a placeholder such as Microsoft Office User); a serial number, identifier, time or setting the camera writes is read only for an email address or a link. At most 256 such entities are taken from one file, and the document says how many more it held (metadata_identifiers_omitted). EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
 
 /// The largest image read, in bytes. EXIF sits at the head of the file, but the whole file is read
 /// so a TIFF whose directories point deep into it still parses; a larger file is refused by name.
@@ -237,17 +239,19 @@ pub fn run(image: &[u8], label: &str, now_unix: u64) -> ExifRun {
         Err(why) => return ExifRun::Failed(format!("{label}: {why}")),
     };
     let sid = scan_id(SOURCE, label);
-    let mut entities = Vec::new();
-    document_entity(&mut entities, &parsed, label, &sid);
-    gps_entity(&mut entities, parsed.gps.as_ref(), label, &sid);
-    crate::metadata_identifiers::identifiers(
-        &mut entities,
+    let mut found = Vec::new();
+    let identifiers_omitted = crate::metadata_identifiers::identifiers(
+        &mut found,
         SOURCE,
         label,
         &sid,
         &parsed.fields,
-        written_by_people,
+        field,
     );
+    let mut entities = Vec::new();
+    document_entity(&mut entities, &parsed, label, &sid, identifiers_omitted);
+    gps_entity(&mut entities, parsed.gps.as_ref(), label, &sid);
+    entities.extend(found);
     merge_by_uid(&mut entities);
 
     let outcome = SourceExecutionOutcome::success(SOURCE, now_unix, entities.len());
@@ -261,8 +265,15 @@ pub fn run(image: &[u8], label: &str, now_unix: u64) -> ExifRun {
     }
 }
 
-/// The document entity for the file, carrying its format and every decoded tag as evidence.
-fn document_entity(entities: &mut Vec<Entity>, parsed: &Parsed, label: &str, sid: &str) {
+/// The document entity for the file, carrying its format and every decoded tag as evidence, and
+/// how many identifiers its values held past [`crate::metadata_identifiers::MAX_METADATA_IDENTIFIERS`].
+fn document_entity(
+    entities: &mut Vec<Entity>,
+    parsed: &Parsed,
+    label: &str,
+    sid: &str,
+    identifiers_omitted: usize,
+) {
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, sid),
         exif_summary(parsed, label),
@@ -271,6 +282,12 @@ fn document_entity(entities: &mut Vec<Entity>, parsed: &Parsed, label: &str, sid
     .with_attr("exif_field_count", parsed.fields.len().to_string());
     if parsed.omitted > 0 {
         evidence = evidence.with_attr("exif_fields_omitted", parsed.omitted.to_string());
+    }
+    if identifiers_omitted > 0 {
+        evidence = evidence.with_attr(
+            "metadata_identifiers_omitted",
+            identifiers_omitted.to_string(),
+        );
     }
     for (name, value) in &parsed.fields {
         evidence = evidence.with_attr(format!("exif_{name}"), value.as_str());
@@ -1102,10 +1119,27 @@ const PEOPLE_TAGS: [&str; 14] = [
     "XPTitle",
 ];
 
-/// Whether people write the tag `name`, rather than the camera or the program that made the file:
-/// only those yield a number-shaped identifier ([`crate::metadata_identifiers`]). **Pure.**
-pub(crate) fn written_by_people(name: &str) -> bool {
-    PEOPLE_TAGS.contains(&name)
+/// The tags among [`PEOPLE_TAGS`] that name someone: who made, owns or edited the picture.
+const NAME_TAGS: [&str; 6] = [
+    "Artist",
+    "CameraOwnerName",
+    "ImageEditor",
+    "OwnerName",
+    "Photographer",
+    "XPAuthor",
+];
+
+/// Who writes the tag `name` ([`crate::metadata_identifiers`]): a name tag names someone, the other
+/// [`PEOPLE_TAGS`] are people's text, and every other tag is the camera's or the program's own.
+/// **Pure.**
+pub(crate) fn field(name: &str) -> Field {
+    if NAME_TAGS.contains(&name) {
+        Field::Name
+    } else if PEOPLE_TAGS.contains(&name) {
+        Field::People
+    } else {
+        Field::Program
+    }
 }
 
 /// The IFD0 tag name, or a hex fallback for an unnamed tag. **Pure.**
