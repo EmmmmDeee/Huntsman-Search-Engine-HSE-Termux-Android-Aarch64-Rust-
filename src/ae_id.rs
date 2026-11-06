@@ -72,7 +72,7 @@ fn luhn_ok(digits: &[u8]) -> bool {
             }
         })
         .sum();
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 /// The fifteen digits of an Emirates ID number written as `784199012345676`, or grouped

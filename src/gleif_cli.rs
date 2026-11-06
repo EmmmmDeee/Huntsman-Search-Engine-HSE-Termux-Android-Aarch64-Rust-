@@ -19,6 +19,9 @@ Look up one legal entity on GLEIF for LEI|NAME: a 20-character Legal Entity Iden
 /// The longest query taken, in bytes. A longer one is neither an LEI nor a name a register matches.
 const MAX_GLEIF_QUERY_BYTES: usize = 300;
 
+/// A scope flag: the part of the scope it fills and the parser of its ISO code.
+type CodeFlag<'a> = (&'a mut Option<String>, fn(&str) -> Option<String>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GleifArgs {
     pub query: String,
@@ -36,8 +39,7 @@ impl GleifArgs {
         let mut words = Vec::new();
         let mut args = args.iter();
         while let Some(arg) = args.next() {
-            let (slot, read): (&mut Option<String>, fn(&str) -> Option<String>) = match arg.as_str()
-            {
+            let (slot, read): CodeFlag<'_> = match arg.as_str() {
                 "--country" => (&mut scope.country, gleif::country_code),
                 "--jurisdiction" => (&mut scope.jurisdiction, gleif::jurisdiction_code),
                 _ => {
