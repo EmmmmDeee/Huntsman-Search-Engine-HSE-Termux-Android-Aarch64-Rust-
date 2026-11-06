@@ -824,7 +824,7 @@ fn tag_cache(dir: &Path) {
     fs::create_dir_all(dir.join("release")).expect("cache");
     fs::write(
         dir.join("CACHEDIR.TAG"),
-        format!("{CACHEDIR_SIGNATURE}\n# cargo\n"),
+        format!("{}\n# cargo\n", cachedir_signature()),
     )
     .expect("tag");
     fs::write(dir.join("release/blob"), vec![0_u8; 4096]).expect("blob");
@@ -1097,7 +1097,7 @@ fn a_cache_tag_symlink_is_rejected_even_if_target_has_signature() {
     let cache = scratch.home.join("cache");
     fs::create_dir_all(&cache).expect("cache");
     let target = scratch.home.join("other-tag");
-    fs::write(&target, CACHEDIR_SIGNATURE).expect("target");
+    fs::write(&target, cachedir_signature()).expect("target");
     std::os::unix::fs::symlink(&target, cache.join("CACHEDIR.TAG")).expect("symlink");
     assert!(!tagged_cache(&cache));
 }
@@ -1138,7 +1138,7 @@ fn a_cache_tag_swapped_after_the_check_is_rejected() {
         },
         |tag, _| {
             let replacement = tag.with_file_name("replacement");
-            fs::write(&replacement, CACHEDIR_SIGNATURE).expect("replacement");
+            fs::write(&replacement, cachedir_signature()).expect("replacement");
             fs::rename(&replacement, tag).expect("rename over the tag");
         },
         |tag, _| {
@@ -1152,7 +1152,7 @@ fn a_cache_tag_swapped_after_the_check_is_rejected() {
         },
     ];
     for swap in swaps {
-        fs::write(&tag, CACHEDIR_SIGNATURE).expect("tag");
+        fs::write(&tag, cachedir_signature()).expect("tag");
         let alias = scratch.home.join("tag-alias");
         let _ = fs::remove_file(&alias);
         assert!(tagged_cache(&cache), "the checked tag itself is accepted");
@@ -1177,7 +1177,7 @@ fn a_regular_cache_tag_with_signature_is_accepted() {
     let scratch = Scratch::new("tag-regular");
     let cache = scratch.home.join("cache");
     fs::create_dir_all(&cache).expect("cache");
-    fs::write(cache.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).expect("tag");
+    fs::write(cache.join("CACHEDIR.TAG"), cachedir_signature()).expect("tag");
     assert!(tagged_cache(&cache));
 }
 
@@ -1197,4 +1197,14 @@ fn the_install_record_keeps_the_state_dir_the_installer_chose() {
         render_provenance(&record)
     );
     assert_eq!(parse_provenance("revision=abc\n").state_dir, None);
+}
+
+/// The derived `CACHEDIR.TAG` signature is the one the Cache Directory Tagging specification
+/// publishes, and Cargo writes, byte for byte.
+#[test]
+fn the_cachedir_signature_is_the_specification_s() {
+    assert_eq!(
+        cachedir_signature(),
+        "Signature: 8a477f597d28d172789f06886806bc55"
+    );
 }

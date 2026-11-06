@@ -62,8 +62,12 @@ pub fn resolve_state_dir(home: Option<&Path>, override_dir: Option<&Path>) -> Op
 /// Where `install.sh` keeps Cargo's build cache when `CARGO_TARGET_DIR` is not set.
 pub const BUILD_CACHE: &str = ".cache/huntsman-recon-target";
 /// The first line of the `CACHEDIR.TAG` Cargo writes into a target directory. A directory
-/// without it is not removed, whatever the install record says.
-const CACHEDIR_SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
+/// without it is not removed, whatever the install record says. The Cache Directory Tagging
+/// specification defines its hex as the MD5 of `.IsCacheDirectory`. It is worked out here, never
+/// written as a literal: the release key scan refuses a binary holding 32 hex characters in a row.
+fn cachedir_signature() -> String {
+    format!("Signature: {}", crate::md5::hex(b".IsCacheDirectory"))
+}
 /// Below this much free space a build or a saved scan can fail part way.
 pub const DISK_FAIL_BYTES: u64 = 256 * 1024 * 1024;
 /// Below this much free space a source rebuild under Termux may not fit.
@@ -1060,11 +1064,12 @@ fn tagged_cache_with(dir: &Path, after_check: impl FnOnce()) -> bool {
     {
         return false;
     }
-    let mut prefix = Vec::with_capacity(CACHEDIR_SIGNATURE.len());
-    file.take(CACHEDIR_SIGNATURE.len() as u64)
+    let signature = cachedir_signature();
+    let mut prefix = Vec::with_capacity(signature.len());
+    file.take(signature.len() as u64)
         .read_to_end(&mut prefix)
         .is_ok()
-        && prefix == CACHEDIR_SIGNATURE.as_bytes()
+        && prefix == signature.as_bytes()
 }
 
 fn disk(ctx: &Context<'_>, host: &dyn Host, provenance: &ProvenanceRead) -> Check {

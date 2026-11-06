@@ -450,6 +450,7 @@ self-test, or as plain tests where the rule needs runtime data.
 | G7 | No `pub struct Report` or `pub struct Leg` with exactly `SourceReport`'s, `LookupReport`'s or `Leg`'s fields exists outside `src/lookup_report.rs` (C1). |
 | G8 | No `fn host_of` or `fn url_host` exists outside `src/circuit.rs`, whose `host_of` is the one URL-host reader (C2). |
 | G9 | One DER reader: no `struct Tlv`, `fn tlv(` or `struct Der` exists outside it (C3). |
+| G10 | No production string literal of any kind holds a run the release key scan reports. Such a run is 32 lowercase hex with a letter and five different digits in a window, and the release refuses a binary holding one. Only the two values the scan strips are known: the directive digest and the AU register's digest. A digest the code needs is worked out at run time. In place: `no_production_literal_holds_a_key_shaped_hex_run`, after the DeHashed probe's SHA-256 literal failed the pre-release key scan. |
 
 The Phase 0 snapshots stay as regression locks after the phases finish.
 

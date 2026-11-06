@@ -8,17 +8,31 @@ use std::fmt::Write as _;
 /// `mod` line or `crate::` path inside `/* … */`, `//` or a (raw) string is not code.
 /// Same scanner as `tests/dispositions.rs` on #675 (`bd363d0d`).
 pub fn strip_non_code(text: &str) -> String {
-    scan_code(text, false).0
+    scan_code(text, Keep::Nothing).0
 }
 
 /// `text` as `strip_non_code` reads it, except that each ordinary string literal becomes the
 /// identifier `__strN`. The second value holds the text of each literal, in order, so a test can
 /// check what a literal says while the token stream still shows where it sits.
 pub fn code_with_string_literals(text: &str) -> (String, Vec<String>) {
-    scan_code(text, true)
+    scan_code(text, Keep::Ordinary)
 }
 
-fn scan_code(text: &str, keep_strings: bool) -> (String, Vec<String>) {
+/// [`code_with_string_literals`] with raw string literals (`r"…"`, `br#"…"#`, …) kept too, each
+/// as the text between its quotes: for a rule on what any literal puts in the binary.
+pub fn code_with_every_string_literal(text: &str) -> (String, Vec<String>) {
+    scan_code(text, Keep::Every)
+}
+
+/// Which string literals [`scan_code`] keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    Nothing,
+    Ordinary,
+    Every,
+}
+
+fn scan_code(text: &str, keep: Keep) -> (String, Vec<String>) {
     let src: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut literals = Vec::new();
@@ -52,7 +66,17 @@ fn scan_code(text: &str, keep_strings: bool) -> (String, Vec<String>) {
             }
             j
         } else if rest[0] == 'r' && !ident_before && raw_string_len(rest).is_some() {
-            raw_string_len(rest).unwrap()
+            let end = raw_string_len(rest).unwrap();
+            if keep == Keep::Every {
+                let hashes = rest[1..].iter().take_while(|&&c| c == '#').count();
+                let body = 2 + hashes;
+                let close = end.saturating_sub(1 + hashes).max(body);
+                literals.push(rest[body..close.min(rest.len())].iter().collect());
+                let _ = write!(out, " __str{} ", literals.len() - 1);
+                i += end;
+                continue;
+            }
+            end
         } else if rest[0] == '"' {
             let mut j = 1;
             while j < rest.len() && rest[j] != '"' {
@@ -71,7 +95,7 @@ fn scan_code(text: &str, keep_strings: bool) -> (String, Vec<String>) {
             i += 1;
             continue;
         };
-        if keep_strings && rest[0] == '"' {
+        if keep != Keep::Nothing && rest[0] == '"' {
             // The literal's text, without its quotes. An unterminated literal runs to the end.
             let close = if end >= 2 && rest[end - 1] == '"' {
                 end - 1

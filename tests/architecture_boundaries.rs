@@ -9,9 +9,11 @@
 mod rust_code;
 
 use rust_code::{
-    code_with_string_literals, skip_group, strip_non_code, tok, tokens, without_test_items,
+    code_with_every_string_literal, code_with_string_literals, skip_group, strip_non_code, tok,
+    tokens, without_test_items,
 };
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -374,6 +376,133 @@ fn only_the_environment_module_names_a_credential_slot() {
         "production code writes a credential slot as a string literal; name it in \
          `src/environment.rs` and refer to the constant: {found:?}"
     );
+}
+
+/// Every string literal of production code, raw and byte strings included, as written between its
+/// quotes: what each puts in the binary.
+fn production_literals_of_every_kind(text: &str) -> Vec<String> {
+    let (code, literals) = code_with_every_string_literal(text);
+    without_test_items(&tokens(&code))
+        .0
+        .iter()
+        .filter_map(|token| {
+            let index = token.strip_prefix("__str")?.parse::<usize>().ok()?;
+            literals.get(index).cloned()
+        })
+        .collect()
+}
+
+/// How many hex characters in a row the release key scan refuses in a binary: its `hibp-key-hex`
+/// rule (`.github/scripts/scan-for-keys.sh`), since an HIBP key is 32 hex.
+const KEY_SHAPED_HEX_RUN: usize = 32;
+
+/// The production literals the release key scan strips as known values, so they never fail it:
+/// - the directive digest, which `release.yml` passes as `HUNTSMAN_DIRECTIVE_SHA256` once it has
+///   proved it equals this literal;
+/// - the AU mobile register's provenance digest, which no run-time path reads, so the binary
+///   does not hold it. A path that comes to read it fails the release scan, which this does not
+///   replace.
+fn known_hex_literals() -> [&'static str; 2] {
+    [
+        huntsman_recon::directive_lock::EXPECTED_SHA256,
+        huntsman_recon::address_au::AU_MOBILE_REGISTER_SHA256,
+    ]
+}
+
+/// Whether `literal` holds a run the release key scan reports: 32 lowercase hex characters in a
+/// row, with a letter (all-digit runs are std's decimal tables), at least five different digits
+/// in some 32-character window (fewer is the layout of zero-filled or repeated constants), and
+/// not part of the `00`..`ff` byte table. These are `hex_runs` and `varied_window` in the scan.
+fn holds_a_key_shaped_hex_run(literal: &str) -> bool {
+    let byte_table = (0..=255_u8).fold(String::new(), |mut table, byte| {
+        let _ = write!(table, "{byte:02x}");
+        table
+    });
+    literal
+        .split(|c: char| !matches!(c, '0'..='9' | 'a'..='f'))
+        .filter(|run| run.len() >= KEY_SHAPED_HEX_RUN)
+        .any(|run| {
+            run.bytes().any(|b| b.is_ascii_alphabetic())
+                && !byte_table.contains(run)
+                && run
+                    .as_bytes()
+                    .windows(KEY_SHAPED_HEX_RUN)
+                    .any(|window| window.iter().collect::<BTreeSet<_>>().len() >= 5)
+        })
+}
+
+/// G10. No production literal holds a key-shaped hex run, so the release key scan never finds one
+/// in the binary and fails the release: a digest the code needs is worked out at run time (as
+/// `service_defs::ProbeBody::Sha256Hex` and `doctor`'s `CACHEDIR.TAG` signature are). This catches
+/// one at `cargo test`.
+#[test]
+fn no_production_literal_holds_a_key_shaped_hex_run() {
+    let known = known_hex_literals();
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .flat_map(|source| {
+            production_literals_of_every_kind(&source.text)
+                .into_iter()
+                .filter(|literal| !known.contains(&literal.as_str()))
+                .filter(|literal| holds_a_key_shaped_hex_run(literal))
+                .map(move |literal| format!("{}: {} characters", source.path, literal.len()))
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "a production literal holds {KEY_SHAPED_HEX_RUN} hex characters in a row, which the \
+         release key scan refuses in the binary; work the value out at run time instead: {found:?}"
+    );
+}
+
+#[test]
+fn the_hex_run_rule_sees_every_literal_kind_and_only_production_code() {
+    let digest = "99128459e698abba6e5fac40cf12b4c8e2c5d7f8e3ae1d7e4138aead2b3f80b8";
+    for code in [
+        format!("const D: &str = \"{digest}\";"),
+        format!("const D: &[u8] = b\"{digest}\";"),
+        format!("const D: &str = r\"{digest}\";"),
+        format!("const D: &[u8] = br#\"{{\"h\":\"{digest}\"}}\"#;"),
+    ] {
+        let literals = production_literals_of_every_kind(&code);
+        assert!(
+            literals
+                .iter()
+                .any(|literal| holds_a_key_shaped_hex_run(literal)),
+            "{code}: {literals:?}"
+        );
+    }
+    for code in [
+        format!("// const D: &str = \"{digest}\";"),
+        format!("#[cfg(test)] mod t {{ const D: &str = \"{digest}\"; }}"),
+    ] {
+        assert!(
+            production_literals_of_every_kind(&code).is_empty(),
+            "{code}"
+        );
+    }
+    // What the scan lets through is let through here: 31 in a row, all digits, uppercase, a
+    // run broken by another character, too few different digits (a Solana program address), or
+    // the byte table.
+    assert!(holds_a_key_shaped_hex_run(&digest[..32]));
+    assert!(!holds_a_key_shaped_hex_run(&digest[..31]));
+    assert!(!holds_a_key_shaped_hex_run(&"0123456789".repeat(4)));
+    assert!(!holds_a_key_shaped_hex_run(&digest.to_ascii_uppercase()));
+    assert!(!holds_a_key_shaped_hex_run(&format!(
+        "{}-{}",
+        &digest[..20],
+        &digest[20..40]
+    )));
+    assert!(!holds_a_key_shaped_hex_run(
+        "Stake11111111111111111111111111111111111111"
+    ));
+    assert!(!holds_a_key_shaped_hex_run(
+        "000102030405060708090a0b0c0d0e0f101112131415"
+    ));
+    // The known values are what the release workflow strips, and each still reads as a key.
+    for known in known_hex_literals() {
+        assert!(holds_a_key_shaped_hex_run(known), "{known}");
+    }
 }
 
 /// The formats of the two rows a report gives an entity, as the literals read in the source: the
