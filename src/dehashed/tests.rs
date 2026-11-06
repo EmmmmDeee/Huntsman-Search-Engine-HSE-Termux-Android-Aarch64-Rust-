@@ -476,6 +476,40 @@ fn the_cli_prints_the_credits_left_and_every_value_but_no_credential() {
     }
 }
 
+/// `DeHashed` documents a "maximum pagination depth" of 10,000 results ("page:3 and size:5000 would
+/// be invalid") and pages of up to 10,000. A request past the depth is refused before it is sent,
+/// so no request is spent on an answer `DeHashed` will refuse; a page as large as `DeHashed` allows
+/// is sent.
+#[test]
+fn a_page_past_dehashed_s_depth_is_refused_before_it_is_sent() {
+    let request = |page: u32, size: u32| SearchRequest {
+        size,
+        page,
+        ..email_request(Purpose::OwnAccount)
+    };
+    for (page, size) in [(101, 100), (3, 5_000), (2, 10_000), (5_001, 2)] {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let refused = client(&fake).search(&request(page, size)).unwrap_err();
+        assert!(
+            matches!(refused, DehashedError::BeyondDepth { .. }),
+            "{page}x{size}: {refused:?}"
+        );
+        assert_eq!(fake.calls(), 0, "{page}x{size} was sent");
+        assert_eq!(refused.outcome_kind(), SourceOutcomeKind::Inconclusive);
+    }
+    for (page, size) in [(100, 100), (1, 10_000), (2, 5_000), (10_000, 1)] {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let sent = client(&fake).search(&request(page, size));
+        assert!(sent.is_ok(), "{page}x{size}: {sent:?}");
+        assert_eq!(fake.calls(), 1);
+    }
+    let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+    assert!(matches!(
+        client(&fake).search(&request(1, 10_001)),
+        Err(DehashedError::InvalidSize(10_001))
+    ));
+}
+
 /// A Cloudflare interstitial served with 200 in place of the API's answer.
 const CHALLENGE: &str = "<html><title>Just a moment...</title>\
     <script src=\"https://challenges.cloudflare.com/x\"></script></html>";
@@ -666,10 +700,19 @@ fn invalid_bounds_are_rejected_before_any_request() {
         Err(DehashedError::InvalidSize(0))
     ));
     request.size = 10;
+    request.page = 0;
+    assert!(matches!(
+        client(&fake).search(&request),
+        Err(DehashedError::InvalidPage(0))
+    ));
+    // DeHashed's documented depth: page x size may be at most 10,000.
     request.page = 1_001;
     assert!(matches!(
         client(&fake).search(&request),
-        Err(DehashedError::InvalidPage(1_001))
+        Err(DehashedError::BeyondDepth {
+            page: 1_001,
+            size: 10
+        })
     ));
     assert_eq!(fake.calls(), 0);
 }
@@ -703,6 +746,39 @@ fn cli_refuses_bad_arguments_before_loading_a_key_or_sending() {
     assert_eq!(code, 65);
     assert!(!key_loaded.get());
     assert_eq!(fake.calls(), 0);
+}
+
+/// Past `DeHashed`'s pagination depth the command exits 65 naming the depth, after the key loads
+/// but before any request: no request is spent on an answer `DeHashed` would refuse.
+#[test]
+fn cli_refuses_a_page_past_the_depth_without_sending() {
+    let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+    let args: Vec<String> = [
+        "search",
+        "--email",
+        "a@example.com",
+        "--purpose",
+        "own-account",
+        "--page",
+        "2",
+        "--size",
+        "6000",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = cli::run(
+        &args,
+        || Ok(Secret::new(KEY).unwrap()),
+        fake.clone(),
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 65);
+    assert_eq!(fake.calls(), 0);
+    let said = String::from_utf8(err).unwrap_or_default();
+    assert!(said.contains("10000-result depth"), "{said}");
 }
 
 #[test]
@@ -1023,6 +1099,47 @@ mod collector_tests {
             ("hash type", "bcrypt-type"),
         ] {
             assert!(!saved.contains(value), "the {what} reached the entities");
+        }
+    }
+
+    /// `total` counts every page. A later page that holds the last records is complete; only
+    /// records past this page make it partial.
+    #[test]
+    fn a_complete_later_page_is_not_partial() {
+        let body = |entries: usize, total: usize| {
+            let rows: Vec<String> = (0..entries)
+                .map(|i| format!(r#"{{"database_name": "db", "email": ["u{i}@example.com"]}}"#))
+                .collect();
+            format!(r#"{{"total": {total}, "entries": [{}]}}"#, rows.join(","))
+        };
+        let limits = CollectionLimits {
+            max_records_per_response: 100,
+            max_entities: 1_000,
+            max_pivots: 1_000,
+            ..CollectionLimits::default()
+        };
+        for (page, entries, total, outcome) in [
+            (2, 3, 103, CollectionOutcome::Success),
+            (2, 100, 250, CollectionOutcome::Partial),
+            (1, 100, 100, CollectionOutcome::Success),
+            (1, 100, 101, CollectionOutcome::Partial),
+        ] {
+            let fake = Fake::with(200, &body(entries, total), &[]);
+            let batch = super::super::collector::collect_page(
+                &client(&fake),
+                &selector(EntityKind::Email, "a@example.com"),
+                purpose(),
+                page,
+                &limits,
+                1,
+            )
+            .unwrap();
+            assert_eq!(batch.outcome, outcome, "page {page}: {entries} of {total}");
+            assert_eq!(
+                batch.receipts[0].truncated,
+                outcome == CollectionOutcome::Partial,
+                "page {page}: {entries} of {total}"
+            );
         }
     }
 

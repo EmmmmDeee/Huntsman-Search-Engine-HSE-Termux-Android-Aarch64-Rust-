@@ -99,9 +99,11 @@ pub fn collect_page(
     let mut batch = CollectionBatch::empty(COLLECTOR_ID, &selector.uid, CollectionOutcome::Failed);
     match client.search(&request) {
         Ok(outcome) => {
-            let response_truncated = outcome
-                .total
-                .is_some_and(|total| total > outcome.entries.len() as u64);
+            // `total` counts every page: records past this page are what make it partial, not
+            // the pages before it.
+            let through_this_page = u64::from(page.saturating_sub(1)) * u64::from(request.size)
+                + outcome.entries.len() as u64;
+            let response_truncated = outcome.total.is_some_and(|total| total > through_this_page);
             let kind = if outcome.entries.is_empty() {
                 SourceOutcomeKind::ValidZero
             } else {
@@ -125,6 +127,7 @@ pub fn collect_page(
             error @ (DehashedError::Query(_)
             | DehashedError::InvalidSize(_)
             | DehashedError::InvalidPage(_)
+            | DehashedError::BeyondDepth { .. }
             | DehashedError::MissingKey
             | DehashedError::KeyFilePermissions),
         ) => {

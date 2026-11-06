@@ -357,7 +357,7 @@ fn exposure_legs(
     let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
     // DeHashed reuses the opt-in client; its key comes from the same lookup keys.
     let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
-        let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
+        let transport = Arc::new(UreqTransport::new(&dehashed::client::transport_config()));
         DehashedClient::new(transport, secret)
     });
     let sources = Sources {

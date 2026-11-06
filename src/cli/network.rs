@@ -54,7 +54,7 @@ pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
 pub(super) fn dehashed_cmd(args: &[String]) -> ExitCode {
     use huntsman_recon::dehashed::{cli, client};
     let http: std::sync::Arc<dyn huntsman_recon::http::Transport + Send + Sync> =
-        std::sync::Arc::new(UreqTransport::new(&TransportConfig::default()));
+        std::sync::Arc::new(UreqTransport::new(&client::transport_config()));
     ExitCode::from(cli::run(
         args,
         || {

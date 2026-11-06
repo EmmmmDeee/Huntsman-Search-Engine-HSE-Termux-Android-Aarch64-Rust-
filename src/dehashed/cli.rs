@@ -57,7 +57,8 @@ impl From<DehashedError> for Failure {
         let code = match &error {
             DehashedError::Query(_)
             | DehashedError::InvalidSize(_)
-            | DehashedError::InvalidPage(_) => EX_DATAERR,
+            | DehashedError::InvalidPage(_)
+            | DehashedError::BeyondDepth { .. } => EX_DATAERR,
             DehashedError::MissingKey | DehashedError::KeyFilePermissions => EX_NOINPUT,
             DehashedError::Unauthorized
             | DehashedError::Forbidden
@@ -457,7 +458,7 @@ mod tests {
             "--purpose",
             "own-account",
             "--size",
-            "101",
+            "10001",
         ]))
         .unwrap_err();
         assert_eq!(size.code, EX_DATAERR);

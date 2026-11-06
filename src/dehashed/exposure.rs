@@ -16,12 +16,12 @@
 //! or salt never leaves: the decoder keeps only that one was exposed. Usernames
 //! and other addresses also become pivots.
 //!
-//! The search reads one page of [`MAX_PAGE_SIZE`] records. When `DeHashed`
+//! The search reads one page of [`EXPOSURE_PAGE_SIZE`] records. When `DeHashed`
 //! reports more matches than the page holds, the answer is marked partial.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::client::{DehashedClient, DehashedError, MAX_PAGE_SIZE, SearchRequest};
+use super::client::{DehashedClient, DehashedError, SearchRequest};
 use super::query::{Field, Purpose, Selector};
 
 /// Why the automated `exposure` leg searches `DeHashed`. The standalone
@@ -31,6 +31,11 @@ use super::query::{Field, Purpose, Selector};
 /// [`Purpose::AuthorizedEngagement`]. It travels with every request and is
 /// recorded in the audit receipt, exactly as a typed `--purpose` would be.
 pub const EXPOSURE_PURPOSE: Purpose = Purpose::AuthorizedEngagement;
+
+/// Records one exposure search reads. A search costs one credit whatever its size, so the leg
+/// reads a thousand at once: ten times the hundred it read before, for the same credit, and
+/// about a megabyte of answer.
+pub const EXPOSURE_PAGE_SIZE: u32 = 1_000;
 
 /// What the records of one breach database say about the address.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -91,7 +96,7 @@ pub fn search_email(client: &DehashedClient, email: &str) -> Result<ExposureSear
     let request = SearchRequest {
         selector,
         purpose: EXPOSURE_PURPOSE,
-        size: MAX_PAGE_SIZE,
+        size: EXPOSURE_PAGE_SIZE,
         page: 1,
     };
     let outcome = client.search(&request)?;
@@ -100,7 +105,8 @@ pub fn search_email(client: &DehashedClient, email: &str) -> Result<ExposureSear
         records: outcome.entries.len(),
         total: outcome.total,
         balance: outcome.balance,
-        has_more: outcome.entries.len() >= usize::try_from(MAX_PAGE_SIZE).unwrap_or(usize::MAX),
+        has_more: outcome.entries.len()
+            >= usize::try_from(EXPOSURE_PAGE_SIZE).unwrap_or(usize::MAX),
         ..ExposureSearch::default()
     };
     let mut breaches: BTreeMap<String, ExposureBreach> = BTreeMap::new();
@@ -288,9 +294,25 @@ mod tests {
         );
     }
 
+    /// One search costs one credit whatever its size, so the leg reads a thousand records in one:
+    /// ten times what it read before, for the same credit, and still about a megabyte.
+    #[test]
+    fn the_leg_reads_a_thousand_records_for_one_credit() {
+        let (client, recorder) = client_for(r#"{"entries": []}"#);
+        search_email(&client, "ada@example.com").unwrap_or_default();
+        let sent = recorder
+            .sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap_or_default();
+        assert_eq!(body["size"], 1_000);
+        assert_eq!(body["page"], 1);
+    }
+
     #[test]
     fn a_full_page_is_partial_even_without_a_total() {
-        let entries: Vec<String> = (0..MAX_PAGE_SIZE)
+        let entries: Vec<String> = (0..EXPOSURE_PAGE_SIZE)
             .map(|i| format!(r#"{{"database_name": "db", "email": ["u{i}@example.com"]}}"#))
             .collect();
         let body = format!(r#"{{"entries": [{}]}}"#, entries.join(","));

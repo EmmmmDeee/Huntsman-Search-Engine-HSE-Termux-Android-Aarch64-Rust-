@@ -43,16 +43,31 @@ pub const API_KEY_HEADER: &str = "Dehashed-Api-Key";
 pub const API_KEY_ENV: &str = crate::environment::DEHASHED_KEY_ENV;
 /// Results per page used when the caller does not choose.
 pub const DEFAULT_PAGE_SIZE: u32 = 10;
-/// Largest page this client will request. Bounds one call's output.
-pub const MAX_PAGE_SIZE: u32 = 100;
-/// Largest page number this client will request.
-pub const MAX_PAGE: u32 = 1_000;
+/// Largest page this client will request: `DeHashed`'s documented maximum `size`. One search costs
+/// one credit whatever its size.
+pub const MAX_PAGE_SIZE: u32 = 10_000;
+/// Largest page number this client will request: a one-record page at [`MAX_RESULT_DEPTH`].
+pub const MAX_PAGE: u32 = 10_000;
+/// `DeHashed`'s documented "maximum pagination depth": `page` x `size` may be at most this.
+pub const MAX_RESULT_DEPTH: u64 = 10_000;
 /// Searches per [`RATE_WINDOW`] every `DeHashed` client in this process shares: `DeHashed`'s
 /// documented limit, "a maximum of 10 requests per second from a single IP and API credential",
 /// enforced by a sliding window, past which it answers 429 and may suspend the account.
 pub const REQUESTS_PER_WINDOW: u32 = 10;
 /// The window [`REQUESTS_PER_WINDOW`] is counted over.
 pub const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// The transport `DeHashed` searches go through: the default, with room for the largest page
+/// `DeHashed` serves ([`MAX_PAGE_SIZE`] records, a few megabytes) and the time it takes to send
+/// one, so a large page is read whole rather than cut and lost as a decode error.
+#[must_use]
+pub fn transport_config() -> crate::http::TransportConfig {
+    crate::http::TransportConfig {
+        timeout: Duration::from_secs(60),
+        max_body: 16 * 1024 * 1024,
+        ..crate::http::TransportConfig::default()
+    }
+}
 
 /// The one budget every `DeHashed` client in this process spends: the exposure legs of concurrent
 /// lookups, a batch scan, a recursive crawl and the web UI each build a client, and they share it.
@@ -80,6 +95,12 @@ pub enum DehashedError {
     InvalidSize(u32),
     #[error("dehashed: page must be between 1 and {MAX_PAGE}, got {0}")]
     InvalidPage(u32),
+    /// The page reaches past `DeHashed`'s documented pagination depth: `page` x `size` may be at
+    /// most [`MAX_RESULT_DEPTH`].
+    #[error(
+        "dehashed: page {page} of size {size} reaches past DeHashed's {MAX_RESULT_DEPTH}-result depth"
+    )]
+    BeyondDepth { page: u32, size: u32 },
     #[error("dehashed: unauthorised (HTTP 401): the key was rejected")]
     Unauthorized,
     /// A 403 whose body names neither a bad key nor spent credits.
@@ -149,6 +170,7 @@ impl DehashedError {
             // A held-back request, like a local refusal of the arguments, says nothing about
             // the identifier.
             Self::Paused
+            | Self::BeyondDepth { .. }
             | Self::Query(_)
             | Self::KeyFilePermissions
             | Self::InvalidSize(_)
@@ -213,16 +235,24 @@ impl SearchRequest {
         }
     }
 
-    /// Check bounds that the request body depends on.
+    /// Check bounds that the request body depends on, `DeHashed`'s pagination depth included, so
+    /// no request is spent on an answer it would refuse.
     ///
     /// # Errors
-    /// [`DehashedError::InvalidSize`] or [`DehashedError::InvalidPage`].
+    /// [`DehashedError::InvalidSize`], [`DehashedError::InvalidPage`] or
+    /// [`DehashedError::BeyondDepth`].
     pub fn validate(&self) -> Result<(), DehashedError> {
         if !(1..=MAX_PAGE_SIZE).contains(&self.size) {
             return Err(DehashedError::InvalidSize(self.size));
         }
         if !(1..=MAX_PAGE).contains(&self.page) {
             return Err(DehashedError::InvalidPage(self.page));
+        }
+        if u64::from(self.page) * u64::from(self.size) > MAX_RESULT_DEPTH {
+            return Err(DehashedError::BeyondDepth {
+                page: self.page,
+                size: self.size,
+            });
         }
         Ok(())
     }
