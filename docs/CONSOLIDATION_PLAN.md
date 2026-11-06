@@ -410,6 +410,13 @@ same files.
 | B7 | Network Survey LTE and NR rows check their reported location with `geohash::valid_fix`, as RF sightings do (C6) | A row reporting latitude 0 and longitude 0 keeps no reported location, instead of placing the device at 0°, 0° |
 | B8 | `keys::store_slots` takes the cross-process write lock (C5) | A CLI `keys` save and a Web UI Settings save made at once both keep their change; a save that finds the lock held past its wait fails with an explicit busy-or-stale-lock error and writes nothing |
 | B9 | `run_history` opens its history through the shared checked opener (C4), which refuses a path that is not a regular file before opening it | A history path holding a FIFO is refused at once as not a regular file, where the open used to wait for a reader |
+| B10 | `DeHashed` searches share one process-wide budget at its documented 10 a second, and go through `fetch`'s per-host breaker | A 429 or a run of failures pauses `DeHashed` for the process: a held-back search sends nothing and reads `Paused` |
+| B11 | A `DeHashed` 400, 401 or 403 is read by its body's documented words | A rejected key, no subscription and no credits each read as what they are, instead of the status's one reading |
+| B12 | `DeHashed` records are read through `breach_record`, as `OathNet`'s are | Every non-credential value a record holds is shown and kept as evidence; the credits left are shown; credentials stay by name only |
+| B13 | `DeHashed`'s documented paging: size up to 10,000, page × size at most 10,000 | A page past the depth is refused before sending; the exposure leg reads 1,000 records a search; a complete later page is not partial |
+| B14 | Every `DeHashed` path resolves the key one way | A key only in `~/.config/dehashed/api_key` now reaches the lookups too |
+
+B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 
 ## 7. Phases
 
@@ -659,6 +666,7 @@ files. Every line reference is to that commit.
   - DeHashed builds a fresh `RateLimiter::per_minute(DEFAULT_REQUESTS_PER_MINUTE)` per client (`src/dehashed/client.rs:248`). That budget is HIBP's ten a minute, and it is borrowed from `crate::hibp::rate_limit`.
   - HIBP shares one process-wide limiter (`RateLimiter::shared`).
   - The queue task gives DeHashed a process-wide budget and one failure-pacing rule. When it lands, move `RateLimiter` out of `hibp` to a neutral module, so no collector reaches into another's.
+  - **DeHashed's part is in place** (B10, `1066873b5`): one process-wide budget at DeHashed's documented rate, the per-host breaker, and `RateLimiter` moved to `src/rate_limit.rs`. HIBP's and stolen.tax's failure pacing remain.
 - **queue `build-parity-capture-tooling`.** It adds `tests/support/replay.rs`: the integration-test half of T4, which Phase 1 never added (`tests/support/` has no `transport.rs`).
 - **queue `bound-apk-inflation-attempts`.** The owner's draft #1781 carries it, and it does not touch `src/apk_intel/signer.rs`. C3 rebases over it if it lands first.
 
