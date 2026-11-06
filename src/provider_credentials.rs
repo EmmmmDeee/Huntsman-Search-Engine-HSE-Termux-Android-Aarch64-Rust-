@@ -7,7 +7,7 @@ use crate::clock;
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Transport};
-use crate::keys::{Keys, Secret};
+use crate::keys::{Keys, PROVIDER_KEY_FILES, ProviderKeyFile, Secret};
 use crate::service_defs::{ProbeVerdict, probe_service, service_for_env};
 
 /// The only origin `WiGLE` credentials are ever sent to.
@@ -461,16 +461,57 @@ const UNWIRED_SLOTS: &[&str] = &[
 ];
 
 /// The secret `keys` holds for `slot`: the one rule from a slot to its key, which
-/// `credential-status` reports with and a lookup must use. `HUNTSMAN_HIBP_KEY` falls back to a
-/// `HIBP_API_KEY` entry, HIBP's own name for the same key.
+/// `credential-status` reports with, the web UI shows and a lookup must use. In order: the slot
+/// itself (the keys file, then the environment); the slot holding the same key (the abuse.ch
+/// pair, or `HIBP_API_KEY`, HIBP's own name for `HUNTSMAN_HIBP_KEY`); then the provider's own
+/// key file ([`crate::keys::PROVIDER_KEY_FILES`]).
 #[must_use]
 pub fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
-    keys.provider_key(slot).or_else(|| {
-        SLOT_FALLBACKS
-            .iter()
-            .find(|(fallback, _)| *fallback == slot)
-            .and_then(|(_, alias)| keys.get(alias))
-    })
+    key_for_slot(keys, slot).map(|(secret, _)| secret)
+}
+
+/// Where [`secret_for_slot`] found a slot's key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySource {
+    /// The slot itself: the keys file, or the environment when the file does not set it.
+    Slot,
+    /// Another slot that holds the same key.
+    Shared(&'static str),
+    /// The provider's own key file.
+    ProviderFile(&'static ProviderKeyFile),
+}
+
+impl KeySource {
+    /// Where the key is, for a slot the keys file does not set: "in the environment", "by
+    /// `SLOT`" or "in `~/FILE`".
+    #[must_use]
+    pub fn unsaved_place(self) -> String {
+        match self {
+            Self::Slot => "in the environment".to_owned(),
+            Self::Shared(other) => format!("by {other}"),
+            Self::ProviderFile(file) => format!("in {}", file.shown()),
+        }
+    }
+}
+
+/// [`secret_for_slot`] with where it found the key.
+#[must_use]
+pub fn key_for_slot(keys: &Keys, slot: &str) -> Option<(Secret, KeySource)> {
+    if let Some(secret) = keys.get(slot) {
+        return Some((secret, KeySource::Slot));
+    }
+    let alias = SLOT_FALLBACKS
+        .iter()
+        .find(|(fallback, _)| *fallback == slot)
+        .map(|&(_, alias)| alias);
+    for other in crate::keys::paired_slot(slot).into_iter().chain(alias) {
+        if let Some(secret) = keys.get(other) {
+            return Some((secret, KeySource::Shared(other)));
+        }
+    }
+    let file = PROVIDER_KEY_FILES.iter().find(|file| file.slot == slot)?;
+    keys.provider_file(slot)
+        .map(|secret| (secret, KeySource::ProviderFile(file)))
 }
 
 #[must_use]
@@ -947,6 +988,68 @@ mod tests {
         let secret = secret_for_slot(&keys, crate::environment::HUNTSMAN_HIBP_KEY_ENV)
             .expect("HIBP_API_KEY entry fills the HUNTSMAN_HIBP_KEY slot");
         assert_eq!(secret.expose(), "0123456789abcdef0123456789abcdef");
+    }
+
+    /// The slot rule's order and what it says about each source: the slot itself, a slot holding
+    /// the same key (the abuse.ch pair, HIBP's own name), then the provider's own key file, which
+    /// `credential-status` then reports as configured.
+    #[test]
+    fn the_slot_rule_reads_a_provider_key_file_last_and_names_every_source() {
+        use crate::environment::{
+            ABUSECH_KEY_ENV, DEHASHED_KEY_ENV, HIBP_API_KEY_ENV, HUNTSMAN_HIBP_KEY_ENV,
+            THREATFOX_KEY_ENV,
+        };
+        let keys = Keys::parse(&format!(
+            "{THREATFOX_KEY_ENV}=abusech-key-0123456789\n{HIBP_API_KEY_ENV}=hibp-key-0123456789\n"
+        ))
+        .expect("keys")
+        .with_provider_file(DEHASHED_KEY_ENV, "dehashed-file-key-0123456789");
+        let place = |slot: &str| {
+            let (secret, source) = key_for_slot(&keys, slot).expect("found");
+            (secret.expose().to_owned(), source.unsaved_place())
+        };
+        assert!(matches!(
+            key_for_slot(&keys, THREATFOX_KEY_ENV),
+            Some((secret, KeySource::Slot)) if secret.expose() == "abusech-key-0123456789"
+        ));
+        assert_eq!(
+            place(ABUSECH_KEY_ENV),
+            (
+                "abusech-key-0123456789".into(),
+                format!("by {THREATFOX_KEY_ENV}")
+            )
+        );
+        assert_eq!(
+            place(HUNTSMAN_HIBP_KEY_ENV),
+            (
+                "hibp-key-0123456789".into(),
+                format!("by {HIBP_API_KEY_ENV}")
+            )
+        );
+        assert_eq!(
+            place(DEHASHED_KEY_ENV),
+            (
+                "dehashed-file-key-0123456789".into(),
+                "in ~/.config/dehashed/api_key".into()
+            )
+        );
+        let rendered = render(&keys);
+        assert!(
+            rendered.contains("provider=DeHashed\tstate=configured\tHUNTSMAN_DEHASHED_KEY=set"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("dehashed-file-key-0123456789"));
+
+        // A saved slot wins over its provider key file.
+        let saved = Keys::parse(&format!("{DEHASHED_KEY_ENV}=saved-key-0123456789\n"))
+            .expect("keys")
+            .with_provider_file(DEHASHED_KEY_ENV, "dehashed-file-key-0123456789");
+        assert!(matches!(
+            key_for_slot(&saved, DEHASHED_KEY_ENV),
+            Some((secret, KeySource::Slot)) if secret.expose() == "saved-key-0123456789"
+        ));
+        // A provider key file sets only its own slot.
+        assert!(key_for_slot(&keys, crate::environment::SHODAN_KEY_ENV).is_none());
     }
 
     #[test]

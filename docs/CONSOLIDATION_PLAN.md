@@ -415,6 +415,7 @@ same files.
 | B12 | `DeHashed` records are read through `breach_record`, as `OathNet`'s are | Every non-credential value a record holds is shown and kept as evidence; the credits left are shown; credentials stay by name only |
 | B13 | `DeHashed`'s documented paging: size up to 10,000, page × size at most 10,000 | A page past the depth is refused before sending; the exposure leg reads 1,000 records a search; a complete later page is not partial |
 | B14 | Every `DeHashed` path resolves the key one way | A key only in `~/.config/dehashed/api_key` now reaches the lookups too |
+| B15 | `credential-status`, its probe and the web UI's key settings read each slot by the lookups' rule | A key only in `~/.config/dehashed/api_key` shows as set and is probed; a refused one is named with its own fix. The web UI also shows the shared abuse.ch key on URLhaus and ThreatFox, and HIBP's `HIBP_API_KEY`, as set, with where each key is |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 

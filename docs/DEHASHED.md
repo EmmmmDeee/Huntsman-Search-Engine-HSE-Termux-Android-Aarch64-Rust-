@@ -13,12 +13,18 @@ declared purpose, and reports what each breach record holds except its credentia
 | `exposure ADDR`, `email ADDR`, `scan -k exposure`, the web UI | Run the DeHashed leg beside HIBP, stolen.tax and OathNet, for addresses only. |
 | `credential-status --probe` | Checks the key without spending a search credit (see **Credential probe**). |
 
-**Key resolution.** Every path resolves the key one way, `dehashed::client::key_from_sources`:
+**Key resolution.** Every path reads the key by one rule, the slot rule
+`provider_credentials::secret_for_slot`. That covers `dehashed search`, the lookup legs,
+`credential-status` and its probe, and the web UI's key settings and module list. It reads:
 
 1. the `HUNTSMAN_DEHASHED_KEY` slot of `~/.huntsman.env`;
 2. the process environment;
-3. the legacy private file `~/.config/dehashed/api_key`, used only while it is a regular file,
-   owned by the user, and not readable by group or others.
+3. DeHashed's legacy private file `~/.config/dehashed/api_key` (`keys::PROVIDER_KEY_FILES`).
+
+The file is read only while it is a regular file, owned by the user, and not readable by group or
+others: the gate `~/.huntsman.env` passes. A refused file is named with its fix in the keys'
+warning, on stderr and on the web UI's settings page, and its key is not used. The web UI shows a
+key it did not save as set, and where it is.
 
 The key is sent only to `https://api.dehashed.com:443`, and redirects are not followed.
 
@@ -139,7 +145,8 @@ Each risk has a test that fails when the behaviour it guards breaks. Test names 
 | A request is spent past the depth | `a_page_past_dehashed_s_depth_is_refused_before_it_is_sent`, `cli_refuses_a_page_past_the_depth_without_sending` |
 | A complete later page reads partial | `collector_tests::a_complete_later_page_is_not_partial` |
 | The exposure leg under-reads per credit | `exposure::the_leg_reads_a_thousand_records_for_one_credit` |
-| A key one path finds is missed by another | `every_path_resolves_the_key_one_way`, `a_lookup_client_searches_with_the_resolved_key` |
+| A key one path finds is missed by another | `every_path_reads_the_key_by_the_slot_rule`, `a_lookup_client_searches_with_the_resolved_key`, `provider_credentials::tests::the_slot_rule_reads_a_provider_key_file_last_and_names_every_source`, `web_server::tests::the_key_settings_show_every_key_a_lookup_would_use_and_where_it_is`, `credential_status_reports_the_key_dehashed_s_own_file_gives_every_search` (`tests/provider_credentials_cli.rs`) |
+| The key file is read past its gate, or its refusal is silent | `keys::tests::a_provider_key_file_sets_its_slot_beside_the_keys_file`, `keys::tests::a_refused_provider_key_file_is_named_with_its_own_fix_and_never_read`, `keys::tests::a_provider_key_file_is_read_when_the_keys_file_cannot_be` |
 | The probe spends a credit or misreads an answer | `service_defs::tests::the_dehashed_probe_spends_no_search_credit_and_reads_only_its_own_answer` |
 | The key leaks into a request's `Debug` or the output | `debug_output_of_the_request_redacts_the_key`, `dehashed_uses_configured_shared_key_without_leaking_it` |
 

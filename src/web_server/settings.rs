@@ -7,7 +7,7 @@ use std::path::Path;
 use crate::error::Error;
 use crate::key_import;
 use crate::keys::{self, Keys};
-use crate::provider_credentials::PROVIDERS;
+use crate::provider_credentials::{PROVIDERS, key_for_slot};
 use crate::value_syntax::form_pairs;
 
 use super::{MAX_FORM_BYTES, Method, ParsedRequest, json_error, json_ok, page_refusal};
@@ -147,9 +147,10 @@ fn store_refusal(error: Error) -> String {
 }
 
 /// Every provider key slot in the credential catalogue: its provider, whether a lookup would find
-/// it set (in the keys file or the environment), and whether the keys file sets it. With the file,
-/// and the warning a lookup would print when it cannot read the file. After an import, what it
-/// saved and left out.
+/// it set (by [`key_for_slot`], the rule `credential-status` reports with), whether the keys file
+/// sets it, and for a key the file does not set, where it is (`from`). With the file, and the
+/// warning a lookup would print when it cannot read the file or a provider key file. After an
+/// import, what it saved and left out.
 fn key_slots(home: &Path, head: bool, imported: Option<&Imported>) -> String {
     let resolved = Keys::for_lookup(Some(home.as_os_str()));
     let saved: BTreeSet<&str> = resolved.keys.slots().into_iter().collect();
@@ -157,11 +158,16 @@ fn key_slots(home: &Path, head: bool, imported: Option<&Imported>) -> String {
         .iter()
         .flat_map(|provider| {
             provider.slots.iter().map(|slot| {
+                let found = key_for_slot(&resolved.keys, slot);
+                let saved = saved.contains(slot);
                 serde_json::json!({
                     "provider": provider.name,
                     "slot": slot,
-                    "set": resolved.keys.get(slot).is_some(),
-                    "saved": saved.contains(slot),
+                    "set": found.is_some(),
+                    "saved": saved,
+                    "from": found
+                        .filter(|_| !saved)
+                        .map(|(_, source)| source.unsaved_place()),
                 })
             })
         })

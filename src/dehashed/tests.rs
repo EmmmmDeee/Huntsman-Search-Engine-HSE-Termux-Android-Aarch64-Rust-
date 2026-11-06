@@ -116,75 +116,66 @@ fn a_result_that_cannot_be_written_is_an_io_failure_not_success() {
     assert_eq!(fake.calls(), 1);
 }
 
-/// Every `DeHashed` path resolves its key one way: the shared lookup keys, then the environment
-/// variable, then the legacy private `~/.config/dehashed/api_key` file. That file is honoured only
-/// when it is private, so a key it holds is found by `exposure` as it is by `dehashed search`.
-#[cfg(unix)]
+/// Every `DeHashed` path reads its key by the slot rule `credential-status` reports with and the
+/// web UI shows (`secret_for_slot`): the `HUNTSMAN_DEHASHED_KEY` slot, then `DeHashed`'s own key
+/// file. The file is read, through the private-file gate, by `Keys::resolve` (see
+/// `keys::tests::a_provider_key_file_sets_its_slot_beside_the_keys_file`), so a key it holds is
+/// found by `exposure` as it is by `dehashed search`, and reported as set by `credential-status`.
 #[test]
-fn every_path_resolves_the_key_one_way() {
-    use super::client::{API_KEY_ENV, key_from};
-    use std::os::unix::fs::PermissionsExt;
-    let home = std::env::temp_dir().join(format!("hse-dehashed-key-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    let dir = home.join(".config").join("dehashed");
-    std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("api_key");
-    std::fs::write(&file, "file-key-0123456789abcdef\n").unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let none = crate::keys::Keys::parse("").unwrap();
-    let slot =
-        crate::keys::Keys::parse(&format!("{API_KEY_ENV}=slot-key-0123456789abcdef")).unwrap();
-    let found =
-        |keys: &crate::keys::Keys, environment: Option<&str>, home: Option<&std::path::Path>| {
-            key_from(keys, environment.map(str::to_owned), home).map(|key| key.expose().to_owned())
-        };
+fn every_path_reads_the_key_by_the_slot_rule() {
+    use super::client::{API_KEY_ENV, key};
+    use crate::keys::Keys;
+    use crate::provider_credentials::{KeySource, key_for_slot, secret_for_slot, status};
+    let none = Keys::parse("").unwrap();
+    let file = Keys::parse("")
+        .unwrap()
+        .with_provider_file(API_KEY_ENV, "file-key-0123456789abcdef");
+    let slot_and_file = Keys::parse(&format!("{API_KEY_ENV}=slot-key-0123456789abcdef"))
+        .unwrap()
+        .with_provider_file(API_KEY_ENV, "file-key-0123456789abcdef");
+    assert!(matches!(key(&none), Err(DehashedError::MissingKey)));
+    assert_eq!(key(&file).unwrap().expose(), "file-key-0123456789abcdef");
     assert_eq!(
-        found(&none, None, Some(&home)).unwrap(),
-        "file-key-0123456789abcdef"
-    );
-    assert_eq!(
-        found(&none, Some("env-key-0123456789abcdef"), Some(&home)).unwrap(),
-        "env-key-0123456789abcdef"
-    );
-    assert_eq!(
-        found(&slot, Some("env-key-0123456789abcdef"), Some(&home)).unwrap(),
+        key(&slot_and_file).unwrap().expose(),
         "slot-key-0123456789abcdef"
     );
-    // A blank environment value is no key: the file still answers.
-    assert_eq!(
-        found(&none, Some("   "), Some(&home)).unwrap(),
-        "file-key-0123456789abcdef"
-    );
     assert!(matches!(
-        found(&none, None, None),
-        Err(DehashedError::MissingKey)
+        key_for_slot(&file, API_KEY_ENV),
+        Some((_, KeySource::ProviderFile(_)))
     ));
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(matches!(
-        found(&none, None, Some(&home)),
-        Err(DehashedError::KeyFilePermissions)
-    ));
-    std::fs::remove_file(&file).unwrap();
-    assert!(matches!(
-        found(&none, None, Some(&home)),
-        Err(DehashedError::MissingKey)
-    ));
-    let _ = std::fs::remove_dir_all(&home);
+    for keys in [&none, &file, &slot_and_file] {
+        // The search's key is the slot rule's, and `credential-status` says so.
+        assert_eq!(
+            key(keys).ok().map(|key| key.expose().to_owned()),
+            secret_for_slot(keys, API_KEY_ENV).map(|key| key.expose().to_owned())
+        );
+        let dehashed = status(keys)
+            .into_iter()
+            .find(|provider| provider.name == "DeHashed")
+            .unwrap();
+        assert_eq!(dehashed.configured, key(keys).is_ok());
+    }
 }
 
-/// The lookup legs build their client through the same resolution: a key in the shared slot gives
-/// a client that searches with it. (No key gives none, but that half depends on the machine's own
-/// environment and key file, which `every_path_resolves_the_key_one_way` covers with a given one.)
+/// The lookup legs build their client through the same resolution: a key in the shared slot, or
+/// in `DeHashed`'s own key file, gives a client that searches with it. (No key gives none, but that
+/// half depends on the machine's own environment, which `every_path_reads_the_key_by_the_slot_rule`
+/// leaves out.)
 #[test]
 fn a_lookup_client_searches_with_the_resolved_key() {
     let slot = crate::keys::Keys::parse(&format!("{}={KEY}", super::client::API_KEY_ENV)).unwrap();
-    let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
-    let client = super::client::client_for_lookup(&slot, fake.clone()).expect("a client");
-    client.search(&email_request(Purpose::OwnAccount)).unwrap();
-    assert_eq!(
-        fake.requests.lock().unwrap()[0].header_value(API_KEY_HEADER),
-        Some(KEY)
-    );
+    let file = crate::keys::Keys::parse("")
+        .unwrap()
+        .with_provider_file(super::client::API_KEY_ENV, KEY);
+    for keys in [&slot, &file] {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let client = super::client::client_for_lookup(keys, fake.clone()).expect("a client");
+        client.search(&email_request(Purpose::OwnAccount)).unwrap();
+        assert_eq!(
+            fake.requests.lock().unwrap()[0].header_value(API_KEY_HEADER),
+            Some(KEY)
+        );
+    }
 }
 
 #[test]
@@ -204,7 +195,7 @@ fn dehashed_uses_configured_shared_key_without_leaking_it() {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = cli::run(
         &args,
-        || super::client::key_from_sources(&keys),
+        || super::client::key(&keys),
         fake.clone(),
         &mut out,
         &mut err,
@@ -623,11 +614,6 @@ fn every_error() -> Vec<(DehashedError, SourceOutcomeKind, Option<u16>)> {
         (
             DehashedError::MissingKey,
             SourceOutcomeKind::NotConfigured,
-            None,
-        ),
-        (
-            DehashedError::KeyFilePermissions,
-            SourceOutcomeKind::Inconclusive,
             None,
         ),
         (

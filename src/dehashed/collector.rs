@@ -128,8 +128,7 @@ pub fn collect_page(
             | DehashedError::InvalidSize(_)
             | DehashedError::InvalidPage(_)
             | DehashedError::BeyondDepth { .. }
-            | DehashedError::MissingKey
-            | DehashedError::KeyFilePermissions),
+            | DehashedError::MissingKey),
         ) => {
             return Err(CollectorError::InvalidSelector(error.to_string()));
         }

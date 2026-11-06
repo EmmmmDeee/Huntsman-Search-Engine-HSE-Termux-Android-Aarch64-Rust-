@@ -59,7 +59,7 @@ pub(super) fn dehashed_cmd(args: &[String]) -> ExitCode {
         args,
         || {
             let keys = crate::cli::credentials::lookup_keys();
-            client::key_from_sources(&keys)
+            client::key(&keys)
         },
         http,
         &mut std::io::stdout().lock(),

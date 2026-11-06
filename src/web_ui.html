@@ -1422,7 +1422,7 @@ function keyEditor(m){
   for(const k of rows){
     const i=el('input'),l=el('label','',k.slot);
     i.id=l.htmlFor='key-'+m.name+'-'+k.slot;i.type='password';i.autocomplete='off';i.spellcheck=false;i.dataset.slot=k.slot;
-    i.placeholder=k.saved?'saved; type a new key to replace it':k.set?'set in the environment; a saved key replaces it':'';
+    i.placeholder=k.saved?'saved; type a new key to replace it':k.set?'set '+(k.from||'in the environment')+'; a saved key replaces it':'';
     f.append(l,i);
     if(k.saved)f.append(button('Remove '+k.slot,()=>saveKey(m,k.slot,''),'btn-ghost'));
   }

@@ -59,7 +59,7 @@ impl From<DehashedError> for Failure {
             | DehashedError::InvalidSize(_)
             | DehashedError::InvalidPage(_)
             | DehashedError::BeyondDepth { .. } => EX_DATAERR,
-            DehashedError::MissingKey | DehashedError::KeyFilePermissions => EX_NOINPUT,
+            DehashedError::MissingKey => EX_NOINPUT,
             DehashedError::Unauthorized
             | DehashedError::Forbidden
             | DehashedError::KeyRejected(_)

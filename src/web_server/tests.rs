@@ -2740,6 +2740,72 @@ fn slot_state(answer: &serde_json::Value, slot: &str) -> (bool, bool) {
     )
 }
 
+/// The settings page reports each slot by the rule every lookup reads it with: a key a lookup
+/// would use shows as set, whether the slot itself, the slot holding the same key or the
+/// provider's own key file holds it, and the page says where a key it did not save is.
+#[cfg(unix)]
+#[test]
+fn the_key_settings_show_every_key_a_lookup_would_use_and_where_it_is() {
+    use std::os::unix::fs::PermissionsExt;
+    let private = |path: &Path, text: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    let home = key_home("sources");
+    private(
+        &home.join(".config").join("dehashed").join("api_key"),
+        format!("{TEST_KEY}\n"),
+    );
+    private(
+        &home.join(keys::DEFAULT_KEYS_FILE),
+        format!("HUNTSMAN_THREATFOX_KEY={TEST_KEY}\n"),
+    );
+    let listed = scans_request(
+        &key_routes(&home),
+        None,
+        &format!("GET /api/settings/keys HTTP/1.1\r\n{HEADER}\r\n"),
+    );
+    assert!(!listed.contains(TEST_KEY), "an answer never carries a key");
+    let listed = answer_json(&listed);
+    let row = |slot: &str| {
+        let row = listed["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["slot"] == slot)
+            .unwrap();
+        (
+            row["set"].clone(),
+            row["saved"].clone(),
+            row["from"].clone(),
+        )
+    };
+    // A slot the environment of the machine running this sets is found there first, as a
+    // lookup's would be.
+    let unsaved = |slot: &str, place: &str| {
+        let place = if crate::environment::variable(slot).is_some() {
+            "in the environment"
+        } else {
+            place
+        };
+        (true.into(), false.into(), place.into())
+    };
+    assert_eq!(
+        row("HUNTSMAN_DEHASHED_KEY"),
+        unsaved("HUNTSMAN_DEHASHED_KEY", "in ~/.config/dehashed/api_key")
+    );
+    assert_eq!(
+        row("HUNTSMAN_ABUSECH_KEY"),
+        unsaved("HUNTSMAN_ABUSECH_KEY", "by HUNTSMAN_THREATFOX_KEY")
+    );
+    assert_eq!(
+        row("HUNTSMAN_THREATFOX_KEY"),
+        (true.into(), true.into(), serde_json::Value::Null)
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn the_key_settings_list_every_catalogue_slot_and_a_save_reaches_the_keys_file_only() {
     let home = key_home("save");

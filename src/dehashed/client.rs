@@ -15,7 +15,6 @@
 //! `exposure` leg and the collector's receipt.
 
 use std::fmt;
-use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -88,10 +87,6 @@ pub enum DehashedError {
         "dehashed: no API key (set {API_KEY_ENV} in ~/.huntsman.env or the environment, or ~/.config/dehashed/api_key)"
     )]
     MissingKey,
-    #[error(
-        "dehashed: the key file was refused: it must be a regular file (not a symlink) owned by you with mode 0600"
-    )]
-    KeyFilePermissions,
     #[error("dehashed: size must be between 1 and {MAX_PAGE_SIZE}, got {0}")]
     InvalidSize(u32),
     #[error("dehashed: page must be between 1 and {MAX_PAGE}, got {0}")]
@@ -173,7 +168,6 @@ impl DehashedError {
             Self::Paused
             | Self::BeyondDepth { .. }
             | Self::Query(_)
-            | Self::KeyFilePermissions
             | Self::InvalidSize(_)
             | Self::InvalidPage(_) => SourceOutcomeKind::Inconclusive,
         }
@@ -502,63 +496,26 @@ fn refusal(status: u16, body: &[u8]) -> DehashedError {
     }
 }
 
-/// The key every `DeHashed` path uses, `dehashed search` and the lookup legs alike, resolved one
-/// way: the shared lookup keys (`~/.huntsman.env`, then the process environment, as `keys` holds
-/// them), then [`API_KEY_ENV`] in the process environment, then `DeHashed`'s legacy private key
-/// file, `~/.config/dehashed/api_key`. No secret is printed or exposed in diagnostics.
+/// The key every `DeHashed` path uses, `dehashed search` and the lookup legs alike: the
+/// [`API_KEY_ENV`] slot by the rule `credential-status` reports with and the web UI shows
+/// ([`crate::provider_credentials::secret_for_slot`]). That is the slot in `~/.huntsman.env`, then
+/// in the process environment, then `DeHashed`'s own private key file,
+/// `~/.config/dehashed/api_key` ([`crate::keys::PROVIDER_KEY_FILES`]). A key file the private-file
+/// gate refuses is named in the keys' warning, and its key is not used.
 ///
 /// # Errors
-/// As [`key_from`].
-pub fn key_from_sources(keys: &Keys) -> Result<Secret, DehashedError> {
-    let home = crate::environment::home();
-    key_from(
-        keys,
-        crate::environment::variable(API_KEY_ENV),
-        home.as_deref().map(Path::new),
-    )
-}
-
-/// [`key_from_sources`] with the process environment given rather than read: `environment` is
-/// [`API_KEY_ENV`]'s value and `home` the home directory. The key file must be private (no group
-/// or other permission bits, owned by the user, not a link) on Unix: a file that exists but is
-/// readable by others is refused, not used.
-///
-/// # Errors
-/// [`DehashedError::MissingKey`] when no source holds a valid key, or
-/// [`DehashedError::KeyFilePermissions`] when the key file is too open.
-pub fn key_from(
-    keys: &Keys,
-    environment: Option<String>,
-    home: Option<&Path>,
-) -> Result<Secret, DehashedError> {
-    if let Some(secret) = keys.get(API_KEY_ENV) {
-        return Ok(secret);
-    }
-    if let Some(secret) = environment.and_then(|raw| Secret::new(raw).ok()) {
-        return Ok(secret);
-    }
-    let Some(home) = home else {
-        return Err(DehashedError::MissingKey);
-    };
-    let path = home.join(".config").join("dehashed").join("api_key");
-    let bytes = match crate::keys::read_private_file(&path, 4096) {
-        Ok(Some(Ok(bytes))) => bytes,
-        Ok(Some(Err(_refusal))) => return Err(DehashedError::KeyFilePermissions),
-        Ok(None) | Err(_) => return Err(DehashedError::MissingKey),
-    };
-    let raw = String::from_utf8(bytes).map_err(|_| DehashedError::MissingKey)?;
-    Secret::new(raw).map_err(|_| DehashedError::MissingKey)
+/// [`DehashedError::MissingKey`] when none of them holds a key.
+pub fn key(keys: &Keys) -> Result<Secret, DehashedError> {
+    crate::provider_credentials::secret_for_slot(keys, API_KEY_ENV).ok_or(DehashedError::MissingKey)
 }
 
 /// The client a lookup's `DeHashed` leg searches with, or `None` when no source holds a key: the
 /// leg then sends nothing and records `NotConfigured`. The key is resolved as every `DeHashed` path
-/// resolves it ([`key_from_sources`]), so a key `dehashed search` finds is one the lookups find.
+/// resolves it ([`key`]), so a key `dehashed search` finds is one the lookups find.
 #[must_use]
 pub fn client_for_lookup(
     keys: &Keys,
     http: Arc<dyn Transport + Send + Sync>,
 ) -> Option<DehashedClient> {
-    key_from_sources(keys)
-        .ok()
-        .map(|key| DehashedClient::new(http, key))
+    key(keys).ok().map(|key| DehashedClient::new(http, key))
 }
