@@ -2,7 +2,7 @@
 
 Status: **IN PLACE** through Phase 5. Phase 6 moves with Stage 9, as **Progress** below records.
 **Section 10 is the open REFACTOR and CONSOLIDATE list**, measured on `main` at `094504310`
-(2026-11-06). Sections 1 to 9 keep the figures the phases were planned against, measured on `main`
+(2026-11-06). Its items C1, C2, C5 to C8, C10 and R3 are in place; each is marked there. Sections 1 to 9 keep the figures the phases were planned against, measured on `main`
 at `e7301b4c6` (2026-11-05); section 3 sets the two side by side. Unless marked *estimate*, every
 number here was measured.
 
@@ -33,6 +33,21 @@ number here was measured.
   - #1774 (`0913febab`): duplicated coordinate, OID, calendar, bounded-text, subdomain and hex checks each go through one existing helper, across 27 files. It also stopped a crafted APK certificate time from panicking the signer reader. The 98-command CLI snapshot stayed byte-identical.
   - #1775 (`1184b70ae`): one set of Network Survey field readers in `src/rf/survey_csv.rs` serves the four importers. 4,140 edited copies of accepted rows read byte-identically before and after.
   - #1776 (`358c84cc0`): each metadata reader yields at most 256 identifier entities per file and counts the rest.
+
+- **Section 10, first batch.** Eight items are in place, one commit each. Each declared change carries a test that failed before it:
+  - C1 (`277542315`): one type per report shape.
+  - R3 (`89d4870bf`): `au_id` uses `is_multiple_of`.
+  - C6 (`a5963b1ca`): one reported-fix reader for the four Network Survey importers (B7).
+  - C5 (`f38a2db07`): one cross-process write lock, for the keys file and the track log (B8).
+  - C7 (`d5ac78bd0`): one bounded free-text query rule.
+  - C8 (`d864513d0`): one archived-page read summary.
+  - C10 (`cff12bff0`): the auth-failure phrases moved to `source_outcome`.
+  - C2 (`28149b5a7`): one URL-host reader (B5).
+  - **Measured on the branch head after the batch:**
+    - duplicated 10-line windows: 143, against 178 on `main` at `094504310`;
+    - files declaring `pub struct Report`: 12, against 46;
+    - files with a local `fn miss(`: 2, against 21.
+  - **New guards.** G7 and G8 are in `tests/architecture_boundaries.rs`, and G7 found five more copies under other names.
 
 **Measured outcome.**
 - **Classification.** One table classifies every source, and G1 fails a build that adds an unclassified source. B1 and B2 fixed three wrongly classed sources.
@@ -380,8 +395,9 @@ pub struct AccountContract {
 
 ## 6. Declared behaviour changes
 
-These are the only changes allowed to alter output. Each one lands as its own pull request: B1 to B4
-after Phase 2, B5 to B8 after the pure items of section 10 that touch the same files.
+These are the only changes allowed to alter output. Each one lands on its own: B1 to B4 after
+Phase 2 as pull requests, B5 to B9 as commits after the pure items of section 10 that touch the
+same files.
 
 | ID | Change | Visible effect |
 |---|---|---|
@@ -389,10 +405,11 @@ after Phase 2, B5 to B8 after the pure items of section 10 that touch the same f
 | B2 | `wikipedia` stops classifying as `infra` and becomes `other`, matching `wikidata` | The same counts drop by one where Wikipedia evidence was counted as infrastructure |
 | B3 | People, crypto, place, company, gleif, itunes and wikidata route their legs' failures into rows that `SourceReach` reads, as the other eight lookups do | A refusal or an unanswered lookup names its module (and, for people and place, its reason); a refusal recorded as a row exits 77, not 69; no other exit code changes |
 | B4 | Saved phone lookups credit North American numbering-plan rows (`phone_nanp`) to `src/phone_intl.rs`, which writes them, not to `src/phone_cli.rs`. G2 holds every record each lookup writes to an explicit attribution | Two rows of the attribution snapshot: `phone_nanp`, outcome and entity |
-| B5 | `sf_elements` reads a URL's host through the one URL-host reader (C2), which drops one trailing root dot | A URL on the target's domain written with a trailing root dot, such as `http://example.com./`, is typed `LINKED_URL_INTERNAL`, not `LINKED_URL_EXTERNAL` |
+| B5 | `sf_elements` reads a URL's host through the one URL-host reader (C2), which drops one trailing root dot | A link on the target's domain written with a trailing root dot, which canonical form cannot read (not `http` or `https`, such as `ftp://example.com./pub`), is typed `LINKED_URL_INTERNAL`, not `LINKED_URL_EXTERNAL`. An `http` or `https` link already lost the dot to canonical form |
 | B6 | The APK signer reads certificate validity through the shared DER reader and `x509`'s calendar rule (C3) | A validity time that is not a calendar date, such as UTCTime `991340256161Z`, reads as empty instead of `1999-13-40T25:61:61Z`. A certificate with any unreadable validity time is kept with that time empty, where today it is dropped |
 | B7 | Network Survey LTE and NR rows check their reported location with `geohash::valid_fix`, as RF sightings do (C6) | A row reporting latitude 0 and longitude 0 keeps no reported location, instead of placing the device at 0°, 0° |
 | B8 | `keys::store_slots` takes the cross-process write lock (C5) | A CLI `keys` save and a Web UI Settings save made at once both keep their change; a save that finds the lock held past its wait fails with an explicit busy-or-stale-lock error and writes nothing |
+| B9 | `run_history` opens its history through the shared checked opener (C4), which refuses a path that is not a regular file before opening it | A history path holding a FIFO is refused at once as not a regular file, where the open used to wait for a reader |
 
 ## 7. Phases
 
@@ -407,7 +424,7 @@ Each phase lands as small pull requests. A pure-move pull request never also cha
 | 4. Account-leg kernel (T2) | Move one leg per commit, with that leg's existing tests unchanged in the same commit; the divergent legs go last or stay bespoke | `username` differential output identical |
 | 5. One finish path (T3) | Move every `SourceRun` CLI to `SourceReach` plus `finish`, then delete `none_accepted` | Phase 0 exit-code tests unchanged (B3 rows updated in Phase 3); G6 green |
 | 6. Splits (T5) | Pure moves along the seams, with `ARCHITECTURE.md` rows updated in the same pull request; then hand over to Stages 3 to 10 | Paths still resolve; architecture tests green |
-| 7. Remaining list (section 10) | The pure items C1, C4, C7 to C11 and R3 first, each its own pull request; then the declared items C2 (B5), C3 (B6), C6 (B7) and C5 (B8), one pull request each; R1 and R2 with Stage 9 | Each item's acceptance in section 10; G7 to G9 green; the duplicated-window count of section 3 only falls |
+| 7. Remaining list (section 10) | The pure items C1, C7 to C11 and R3 first, each its own commit; then the declared items C2 (B5), C3 (B6), C4 (B9), C6 (B7) and C5 (B8), one commit each; R1 and R2 with Stage 9 | Each item's acceptance in section 10; G7 to G9 green; the duplicated-window count of section 3 only falls |
 
 ## 8. Guards
 
@@ -423,7 +440,7 @@ self-test, or as plain tests where the rule needs runtime data.
 | G5 | The six oversized files may not grow past a committed line ceiling. This guard is optional and can be dropped once Phase 6 lands. |
 | G6 | No `*_cli.rs` decides "no source answered" except through `SourceReach`. |
 | G7 | No `pub struct Report` or `pub struct Leg` with exactly `SourceReport`'s, `LookupReport`'s or `Leg`'s fields exists outside `src/lookup_report.rs` (C1). |
-| G8 | No `fn host_of` or `fn url_host` exists outside `src/value_syntax.rs`; `circuit::host_of` is a re-export (C2). |
+| G8 | No `fn host_of` or `fn url_host` exists outside `src/circuit.rs`, whose `host_of` is the one URL-host reader (C2). |
 | G9 | One DER reader: no `struct Tlv`, `fn tlv(` or `struct Der` exists outside it (C3). |
 
 The Phase 0 snapshots stay as regression locks after the phases finish.
@@ -466,7 +483,12 @@ files. Every line reference is to that commit.
 
 ### 10.1 CONSOLIDATE: one authority per rule
 
-**C1. One per-source report type.** Pure.
+**C1. One per-source report type.** Pure. **In place** (`277542315`).
+- **What landed.**
+  - The 34 copies listed below are aliases.
+  - G7 (`report_shapes_have_one_definition`) then found five more under other names, and they are aliases too: `embedded_metadata::Inspected`, `indicator_legs::Legs`, `recursion::Step`, `seeknow_collector::LookupLeg` and `netblock_cli::Swept`.
+  - `LookupReport` gained `Serialize` for the inspect view, whose JSON is unchanged, and `asked`, the SeekNow leg's only method.
+  - `account_leg`'s inherent `miss` and `found` moved to `SourceReport`.
 - **Duplication.** Twenty-nine modules declare the same `pub struct Report { pub entities: Vec<Entity>, pub outcome: SourceExecutionOutcome }` with the same derives (`Debug, Clone, PartialEq`):
   - `account_leg`, `acnc`, `archived_page`, `blockchain`, `bluesky_user`, `certspotter`, `crates_io`, `docker_hub_user`, `duolingo`, `evm_rpc`;
   - `github_repos`, `github_user`, `gitlab_user`, `gleif`, `gravatar`, `itunes`, `keybase`, `mastodon_user`, `nominatim`, `npm_author`;
@@ -486,7 +508,7 @@ files. Every line reference is to that commit.
 - **Guard.** G7.
 - **Acceptance.** Every test passes unchanged, and so do the `cargo test -- --list` names. Files declaring `pub struct Report` fall from 46 to 12.
 
-**C2. One URL-host reader.** Declared change B5.
+**C2. One URL-host reader.** Declared change B5. **In place** (`28149b5a7`), with G8. `topology` reads the canonical form through `canonical_url_host`.
 - **Duplication.** Five functions answer "which host does this URL name", by different rules:
 
 | Function | Schemes | IPv6 literal | Trailing root dot | Used by |
@@ -498,12 +520,13 @@ files. Every line reference is to that commit.
 | `relation::builders::topology::url_host` (`src/relation/builders/topology.rs:19`) | `http` and `https`, through `canonical_url` | refused: `canonical_url` gives no host | every one dropped | hosted-on relations |
 
   All five drop the port and lower-case the host. Four drop the userinfo; `canonical_url` refuses a URL that has one.
-  Today the cut IPv6 literal changes no output: `web_query` only tests the host against engine
-  domains, and `sf_elements` only against the target's domain. The trailing dot does: `sf_elements`
-  types `http://example.com./` as external to `example.com`.
+  The cut IPv6 literal changed no output: `web_query` only tests the host against engine domains,
+  and `sf_elements` only against the target's domain. The trailing dot did, for a link canonical
+  form cannot read: `sf_elements` typed `ftp://example.com./pub` as external to `example.com`.
+  An `http` or `https` URL entity is already canonical, so it has no root dot by then.
 - **Change.**
-  - Add `value_syntax::url_host(url) -> Option<String>` with `circuit::host_of`'s rule: any scheme, userinfo and port dropped, an IPv6 literal kept in brackets, one trailing root dot dropped, ASCII lower case, empty gives `None`.
-  - `circuit::host_of` becomes `pub use crate::value_syntax::url_host as host_of`.
+  - `circuit::host_of` stays the one reader, with its rule: any scheme, userinfo and port dropped, an IPv6 literal kept in brackets, one trailing root dot dropped, ASCII lower case, empty gives `None`.
+  - It stays in `circuit` (L0): the breakers key on it, and L0 can depend on nothing above it. A first placement in `value_syntax` (L3) made the layering test in `tests/architecture_doc.rs` find a new upward edge, `circuit` -> `value_syntax`.
   - `sf_elements` calls it.
   - `topology` calls it after `canonical_url`, as now, so its refusals stay.
   - `web_query` calls it and keeps its own trim of dots at both ends.
@@ -529,7 +552,11 @@ files. Every line reference is to that commit.
   - Every `apk_intel`, `apk_set_cli`, `x509` and `certspotter` test passes unchanged.
   - A new test, `a_certificate_time_outside_the_calendar_is_not_printed_as_a_date`, fails before and passes after.
 
-**C4. One checked open for in-place writes.** Pure.
+**C4. One checked open for in-place writes.** Declared change B9, because of the defect below.
+- **Defect found while preparing it.**
+  - `run_history`'s check refuses only a symbolic link. It learns the file type after the open, so a FIFO at the history path blocks the open, waiting for a reader.
+  - `scan_store` refuses anything but a regular file before it opens.
+  - The shared opener takes `scan_store`'s order. A new `run_history` test with a FIFO at the path must fail before (it hangs) and pass after: it is refused at once.
 - **Duplication.** Two functions implement the same rule on top of `fsio::check_not_symlink` (`src/fsio.rs:44`) and `fsio::same_inode` (`:86`):
   - `run_history::open_checked` (`src/run_history.rs:57`), with its `require_opened` (`:73`);
   - `scan_store::checked_open_for_append_with` (`src/scan_store.rs:933`).
@@ -539,7 +566,8 @@ files. Every line reference is to that commit.
   - Both callers map each refusal to their existing error and wording: `run_history` keeps `fsio::CHANGED_WHILE_OPENING` and `NOT_REGULAR_FILE`, and `scan_store` keeps its own.
 - **Acceptance.** Every `run_history` and `scan_store` test passes unchanged, including their refusal messages.
 
-**C5. One cross-process write lock.** Declared change B8.
+**C5. One cross-process write lock.** Declared change B8. **In place** (`f38a2db07`).
+- **A sharper holder check.** The lock now holds "pid sequence", and a holder removes it only while it is the same inode and still holds that name. A new `fsio` test showed that the inode check alone removes a lock deleted and created again by another writer, because the filesystem reuses the inode.
 - **The one lock today.** `radar::TrackWriteGuard` (`src/radar.rs:770`) is the only cross-process lock:
   - an exclusively created, mode-600 `<file>.lock` holding the PID;
   - a 5-second wait;
@@ -560,7 +588,8 @@ files. Every line reference is to that commit.
     - It requires the busy-or-stale-lock error, a failing exit and an unchanged file. Today the save goes through, ignoring the other writer.
   - Without the lock file, `keys set SLOT --stdin` and `keys remove SLOT` behave as now.
 
-**C6. One reported-location rule for Network Survey cells.** Declared change B7.
+**C6. One reported-location rule for Network Survey cells.** Declared change B7. **In place** (`a5963b1ca`).
+- **Four copies, not two.** The Wi-Fi (`src/wifi_radar/network_survey.rs`) and Bluetooth (`src/rf/network_survey.rs`) importers held the same block, with `valid_fix`. All four now call `reported_fix(latitude, longitude, accuracy)`, which takes the three fields' text.
 - **Duplication.** The LTE and NR importers read the same latitude, longitude and accuracy triple with the same bounds:
   - `src/cell_radar/network_survey.rs:119` to `:132`;
   - `src/cell_radar/network_survey/nr.rs:143` to `:156`.
@@ -572,7 +601,7 @@ files. Every line reference is to that commit.
   - Every LTE and NR importer test passes unchanged.
   - A new test, with a row reporting 0, 0 and an accuracy, fails before and passes after.
 
-**C7. One bounded free-text query rule.** Pure.
+**C7. One bounded free-text query rule.** Pure. **In place** (`d5ac78bd0`), as `textnorm::bounded_query` and `textnorm::within_query_bound`.
 - **Duplication.** Four functions apply the same rule with different bounds and nouns:
   - `wikidata_cli::canonical_query` (`src/wikidata_cli.rs:46`): 300 bytes;
   - `gleif_cli::canonical_query` (`src/gleif_cli.rs:45`): 300 bytes;
@@ -586,7 +615,7 @@ files. Every line reference is to that commit.
   - `company_cli` calls only the shared length and control-character check.
 - **Acceptance.** Every CLI test passes unchanged, including the refusal messages.
 
-**C8. One archived-page read summary.** Pure.
+**C8. One archived-page read summary.** Pure. **In place** (`d864513d0`), as `archived_page::record_reads`.
 - **Duplication.** `common_crawl` (`src/common_crawl.rs:457` to `:494`) and `wayback_cdx` (`src/wayback_cdx.rs:170` to `:213`) share the same tail:
   - read each chosen capture, and count contacts against technology signals;
   - merge by UID;
@@ -607,7 +636,7 @@ files. Every line reference is to that commit.
   - Lift the body of `AccountLeg::handle` into a free `account_leg::checked_handle(source, invalid, case, username, valid, now_unix)`. `AccountLeg::handle` calls it, and so do `mastodon_user` and `tiktok_public_contact`, with their own messages.
 - **Acceptance.** `tests/fixtures/account_leg_snapshot.tsv` (88 rows) and every leg's tests pass unchanged.
 
-**C10. Auth-failure phrases at the outcome layer.** Pure.
+**C10. Auth-failure phrases at the outcome layer.** Pure. **In place** (`cff12bff0`). `service_defs` re-exports it, so its old path still resolves.
 - **Placement.** `service_defs::looks_like_auth_failure_text` (`src/service_defs.rs:171`) sits in L4, the keyed service registry. `stolen_tax` (`src/stolen_tax.rs:472`) calls it to classify a collector's own response.
 - **Change.** Move the phrase list to `source_outcome` (L2), beside the other outcome rules. `service_defs` and `stolen_tax` call it there.
 - **Acceptance.** Every `service_defs`, `provider_credentials` and `stolen_tax` test passes unchanged.
@@ -645,7 +674,7 @@ files. Every line reference is to that commit.
 - An in-crate test moves to a `test_support` double only when it is edited for another reason and the double reproduces it exactly.
 - The integration replay double is the queue task above.
 
-**R3. A stale MSRV note in `au_id`.**
+**R3. A stale MSRV note in `au_id`.** **In place** (`89d4870bf`).
 - `src/au_id.rs:61` allows `clippy::manual_is_multiple_of`, saying that `is_multiple_of` needs Rust 1.90.
 - It is stable from 1.87: `main` already calls it in `src/rf/network_survey.rs:115` and `src/rhinser_nfc.rs:33`, and the MSRV job builds both.
 - Write `sum.is_multiple_of(89)` and drop the allow and the note.
