@@ -2299,7 +2299,7 @@ mod tests {
 
     #[test]
     fn failed_member_read_consumes_attempt_budget() {
-        let (mut bytes, ..) = field_apk(8);
+        let (bytes, ..) = field_apk(8);
         let (_, archive) = walk(&bytes).expect("archive");
         let manifest = archive.manifest.as_ref().expect("manifest");
         let size = manifest.size;
@@ -2307,11 +2307,12 @@ mod tests {
         let len = manifest.payload_len;
         assert!(len > 0);
         // A corrupted compressed payload must not receive a free retry.
-        bytes[start..start + len].fill(0xff);
+        let mut corrupted = bytes.clone();
+        corrupted[start..start + len].fill(0xff);
         let mut budget = size;
-        assert!(read_member(&bytes, manifest, MAX_APK_MANIFEST_BYTES, &mut budget).is_err());
+        assert!(read_member(&corrupted, manifest, MAX_APK_MANIFEST_BYTES, &mut budget).is_err());
         assert_eq!(budget, 0, "failed inflation consumes its reserved budget");
-        let refused = read_member(&bytes, manifest, MAX_APK_MANIFEST_BYTES, &mut budget)
+        let refused = read_member(&corrupted, manifest, MAX_APK_MANIFEST_BYTES, &mut budget)
             .expect_err("no budget remains");
         assert!(refused.contains("budget"), "{refused}");
     }
