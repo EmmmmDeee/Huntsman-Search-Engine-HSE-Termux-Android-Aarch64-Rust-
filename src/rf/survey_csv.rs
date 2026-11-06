@@ -90,6 +90,59 @@ pub(crate) fn exact_columns(
     })
 }
 
+/// A field whose text is present but is not a value its column allows. The importers refuse the
+/// row that holds one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvalidField;
+
+/// The text of the column `name` in `row`, or `""` when the export has no such column or the row
+/// stops short of it. **Pure.**
+pub(crate) fn column<'a>(
+    row: &'a [String],
+    columns: &BTreeMap<&str, usize>,
+    name: &str,
+) -> &'a str {
+    columns
+        .get(name)
+        .and_then(|index| row.get(*index))
+        .map_or("", String::as_str)
+}
+
+/// An optional whole number of at most `max`: `None` when `raw` is empty, refused unless it is
+/// ASCII digits alone (no sign, space or point) that fit. **Pure.**
+pub(crate) fn optional_number(raw: &str, max: u64) -> Result<Option<u64>, InvalidField> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(InvalidField);
+    }
+    raw.parse::<u64>()
+        .ok()
+        .filter(|value| *value <= max)
+        .map(Some)
+        .ok_or(InvalidField)
+}
+
+/// An optional finite measurement within `low..=high`: `None` when `raw` is empty. **Pure.**
+pub(crate) fn optional_finite(raw: &str, low: f64, high: f64) -> Result<Option<f64>, InvalidField> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let value = raw.parse::<f64>().map_err(|_| InvalidField)?;
+    (value.is_finite() && (low..=high).contains(&value))
+        .then_some(Some(value))
+        .ok_or(InvalidField)
+}
+
+/// Optional text of at most `max_bytes`: `None` when `raw` is empty. **Pure.**
+pub(crate) fn optional_text(raw: &str, max_bytes: usize) -> Result<Option<String>, InvalidField> {
+    if raw.len() > max_bytes {
+        return Err(InvalidField);
+    }
+    Ok((!raw.is_empty()).then(|| raw.to_owned()))
+}
+
 /// RFC4180-style records, including quoted commas, escaped quotes and newlines.
 /// Input, field, row and column counts are all bounded.
 ///
@@ -151,4 +204,68 @@ pub(crate) fn csv_rows(input: &str) -> Result<Vec<Vec<String>>, &'static str> {
         rows.push(row);
     }
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The field readers every importer shares: an empty field is absent, and a present one is
+    /// read exactly or refused, never coerced.
+    #[test]
+    fn a_number_is_digits_alone_within_its_bound() {
+        assert_eq!(optional_number("", 9), Ok(None));
+        assert_eq!(optional_number("0", 9), Ok(Some(0)));
+        assert_eq!(optional_number("009", 9), Ok(Some(9)));
+        assert_eq!(
+            optional_number("18446744073709551615", u64::MAX),
+            Ok(Some(u64::MAX))
+        );
+        for refused in [
+            "10",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e3",
+            "0x1",
+            "18446744073709551616",
+        ] {
+            assert_eq!(optional_number(refused, 9), Err(InvalidField), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_measurement_is_finite_and_within_its_range() {
+        assert_eq!(optional_finite("", -1.0, 1.0), Ok(None));
+        assert_eq!(optional_finite("-1", -1.0, 1.0), Ok(Some(-1.0)));
+        assert_eq!(optional_finite("0.5", -1.0, 1.0), Ok(Some(0.5)));
+        for refused in ["1.01", "-1.5", "NaN", "inf", "-inf", "x", " 0"] {
+            assert_eq!(
+                optional_finite(refused, -1.0, 1.0),
+                Err(InvalidField),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_is_absent_when_empty_and_refused_past_its_bound() {
+        assert_eq!(optional_text("", 3), Ok(None));
+        assert_eq!(optional_text("abc", 3), Ok(Some("abc".to_owned())));
+        assert_eq!(optional_text("abcd", 3), Err(InvalidField));
+        // The bound counts bytes, so a multi-byte character counts in full.
+        assert_eq!(optional_text("\u{e9}\u{e9}", 3), Err(InvalidField));
+    }
+
+    #[test]
+    fn a_missing_column_or_a_short_row_reads_as_empty() {
+        let columns: BTreeMap<&str, usize> = [("a", 0), ("b", 1), ("c", 5)].into_iter().collect();
+        let row = vec!["1".to_owned(), "two".to_owned()];
+        assert_eq!(column(&row, &columns, "a"), "1");
+        assert_eq!(column(&row, &columns, "b"), "two");
+        assert_eq!(column(&row, &columns, "c"), "");
+        assert_eq!(column(&row, &columns, "absent"), "");
+    }
 }

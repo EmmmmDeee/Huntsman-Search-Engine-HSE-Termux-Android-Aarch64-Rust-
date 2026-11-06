@@ -16,7 +16,7 @@ use crate::textnorm::escape_controls;
 use crate::timefmt::parse_timestamp;
 
 pub use crate::rf::survey_csv::MAX_SURVEY_CSV_BYTES;
-use crate::rf::survey_csv::{Export, read_export};
+use crate::rf::survey_csv::{Export, column, optional_number, read_export};
 pub const CSV_VERSION: &str = "0.5.0";
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,24 +47,17 @@ fn invalid(message: &str) -> Error {
     Error::Invalid(format!("Network Survey LTE CSV: {message}"))
 }
 
+/// The whole number of at most `max` in the column `name`, or `None` when it is empty, missing or
+/// anything else. **Pure.**
 fn cell_number(
     row: &[String],
     columns: &BTreeMap<&str, usize>,
     name: &str,
     max: u64,
 ) -> Option<u64> {
-    let value = columns.get(name).and_then(|index| row.get(*index))?;
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    value.parse::<u64>().ok().filter(|n| *n <= max)
-}
-
-fn column<'a>(row: &'a [String], columns: &BTreeMap<&str, usize>, name: &str) -> &'a str {
-    columns
-        .get(name)
-        .and_then(|index| row.get(*index))
-        .map_or("", String::as_str)
+    optional_number(column(row, columns, name), max)
+        .ok()
+        .flatten()
 }
 
 fn optional_u64(row: &[String], columns: &BTreeMap<&str, usize>, name: &str) -> Option<u64> {

@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::json;
 
-use super::{cell_number, column};
+use super::cell_number;
 use crate::cell_radar::{CellObservation, parse_cells};
 use crate::error::Error;
-use crate::rf::survey_csv::{Export, exact_columns, read_export};
+use crate::rf::survey_csv::{
+    Export, InvalidField, column, exact_columns, optional_finite, optional_number, read_export,
+};
 use crate::timefmt::parse_timestamp;
 
 pub const NR_CSV_VERSION: &str = "0.4.0";
@@ -78,42 +80,6 @@ fn invalid(reason: &str) -> Error {
     Error::Invalid(format!("Network Survey NR CSV: {reason}"))
 }
 
-fn optional_number(
-    row: &[String],
-    columns: &BTreeMap<&str, usize>,
-    name: &str,
-    max: u64,
-) -> Result<Option<u64>, &'static str> {
-    if column(row, columns, name).is_empty() {
-        Ok(None)
-    } else {
-        cell_number(row, columns, name, max)
-            .map(Some)
-            .ok_or("invalid optional number")
-    }
-}
-
-fn optional_measurement(
-    row: &[String],
-    columns: &BTreeMap<&str, usize>,
-    name: &str,
-    low: f64,
-    high: f64,
-) -> Result<Option<f64>, &'static str> {
-    let raw = column(row, columns, name);
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    let value = raw
-        .parse::<f64>()
-        .map_err(|_| "invalid optional measurement")?;
-    if value.is_finite() && (low..=high).contains(&value) {
-        Ok(Some(value))
-    } else {
-        Err("out-of-range optional measurement")
-    }
-}
-
 fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsvRecord> {
     let (mcc, mnc) = column(row, columns, "plmn").split_once('-')?;
     if mcc.len() != 3
@@ -133,19 +99,20 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     }
     let tac = cell_number(row, columns, "tac", 16_777_215)?;
     let nci = cell_number(row, columns, "nci", 68_719_476_735)?;
-    let narfcn = optional_u32(row, columns, "narfcn", 3_279_165).ok()?;
-    let pci = optional_u32(row, columns, "pci", 1007).ok()?;
-    let timing_advance = optional_u32(row, columns, "ta", 3846).ok()?;
-    let record_number = optional_number(row, columns, "recordNumber", u64::MAX).ok()?;
-    let group_number = optional_number(row, columns, "groupNumber", u64::MAX).ok()?;
-    let location_age_ms = optional_number(row, columns, "locationAge", 86_400_000).ok()?;
-    let sync_signal_power = optional_measurement(row, columns, "ssRsrp", -156.0, -31.0).ok()?;
-    let sync_signal_quality = optional_measurement(row, columns, "ssRsrq", -43.0, 20.0).ok()?;
-    let sync_signal_sinr = optional_measurement(row, columns, "ssSinr", -23.0, 40.0).ok()?;
-    let channel_state_power = optional_measurement(row, columns, "csiRsrp", -140.0, -44.0).ok()?;
+    let narfcn = optional_u32(column(row, columns, "narfcn"), 3_279_165).ok()?;
+    let pci = optional_u32(column(row, columns, "pci"), 1007).ok()?;
+    let timing_advance = optional_u32(column(row, columns, "ta"), 3846).ok()?;
+    let record_number = optional_number(column(row, columns, "recordNumber"), u64::MAX).ok()?;
+    let group_number = optional_number(column(row, columns, "groupNumber"), u64::MAX).ok()?;
+    let location_age_ms = optional_number(column(row, columns, "locationAge"), 86_400_000).ok()?;
+    let sync_signal_power = optional_finite(column(row, columns, "ssRsrp"), -156.0, -31.0).ok()?;
+    let sync_signal_quality = optional_finite(column(row, columns, "ssRsrq"), -43.0, 20.0).ok()?;
+    let sync_signal_sinr = optional_finite(column(row, columns, "ssSinr"), -23.0, 40.0).ok()?;
+    let channel_state_power =
+        optional_finite(column(row, columns, "csiRsrp"), -140.0, -44.0).ok()?;
     let channel_state_quality =
-        optional_measurement(row, columns, "csiRsrq", -200.0, 200.0).ok()?;
-    let channel_state_sinr = optional_measurement(row, columns, "csiSinr", -23.0, 40.0).ok()?;
+        optional_finite(column(row, columns, "csiRsrq"), -200.0, 200.0).ok()?;
+    let channel_state_sinr = optional_finite(column(row, columns, "csiSinr"), -23.0, 40.0).ok()?;
     let serving = match column(row, columns, "servingCell") {
         "true" => Some(true),
         "false" => Some(false),
@@ -205,14 +172,11 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     })
 }
 
-fn optional_u32(
-    row: &[String],
-    columns: &BTreeMap<&str, usize>,
-    name: &str,
-    max: u64,
-) -> Result<Option<u32>, &'static str> {
-    optional_number(row, columns, name, max)?
-        .map(|value| u32::try_from(value).map_err(|_| "out-of-range optional number"))
+/// An optional whole number of at most `max` that fits in 32 bits: `None` when `raw` is empty.
+/// **Pure.**
+fn optional_u32(raw: &str, max: u64) -> Result<Option<u32>, InvalidField> {
+    optional_number(raw, max)?
+        .map(|value| u32::try_from(value).map_err(|_| InvalidField))
         .transpose()
 }
 
