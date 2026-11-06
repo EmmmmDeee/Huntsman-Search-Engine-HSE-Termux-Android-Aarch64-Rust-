@@ -15,6 +15,7 @@
 //! `exposure` leg and the collector's receipt.
 
 use std::fmt;
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -501,39 +502,45 @@ fn refusal(status: u16, body: &[u8]) -> DehashedError {
     }
 }
 
-/// Resolve a provider credential from the shared lookup keys first, then from the
-/// legacy private `DeHashed` key file. The caller supplies `Keys::for_lookup` so
-/// `~/.huntsman.env` and individual environment slots use the same precedence
-/// as every other provider. No secret is printed or exposed in diagnostics.
+/// The key every `DeHashed` path uses, `dehashed search` and the lookup legs alike, resolved one
+/// way: the shared lookup keys (`~/.huntsman.env`, then the process environment, as `keys` holds
+/// them), then [`API_KEY_ENV`] in the process environment, then `DeHashed`'s legacy private key
+/// file, `~/.config/dehashed/api_key`. No secret is printed or exposed in diagnostics.
 ///
 /// # Errors
-/// The same errors as [`key_from_environment`] when the shared keys contain
-/// no `DeHashed` credential.
+/// As [`key_from`].
 pub fn key_from_sources(keys: &Keys) -> Result<Secret, DehashedError> {
-    keys.get(API_KEY_ENV).map_or_else(key_from_environment, Ok)
+    let home = crate::environment::home();
+    key_from(
+        keys,
+        crate::environment::variable(API_KEY_ENV),
+        home.as_deref().map(Path::new),
+    )
 }
 
-/// Load the API key from [`API_KEY_ENV`], then from `~/.config/dehashed/api_key`.
-///
-/// The file must be private (no group or other permission bits) on Unix.
-/// A file that exists but is readable by others is refused, not used.
+/// [`key_from_sources`] with the process environment given rather than read: `environment` is
+/// [`API_KEY_ENV`]'s value and `home` the home directory. The key file must be private (no group
+/// or other permission bits, owned by the user, not a link) on Unix: a file that exists but is
+/// readable by others is refused, not used.
 ///
 /// # Errors
-/// [`DehashedError::MissingKey`] when neither source holds a valid key, or
-/// [`DehashedError::KeyFilePermissions`] when the file is too open.
-pub fn key_from_environment() -> Result<Secret, DehashedError> {
-    if let Some(raw) = crate::environment::variable(API_KEY_ENV) {
-        if let Ok(secret) = Secret::new(raw) {
-            return Ok(secret);
-        }
+/// [`DehashedError::MissingKey`] when no source holds a valid key, or
+/// [`DehashedError::KeyFilePermissions`] when the key file is too open.
+pub fn key_from(
+    keys: &Keys,
+    environment: Option<String>,
+    home: Option<&Path>,
+) -> Result<Secret, DehashedError> {
+    if let Some(secret) = keys.get(API_KEY_ENV) {
+        return Ok(secret);
     }
-    let Some(home) = crate::environment::home() else {
+    if let Some(secret) = environment.and_then(|raw| Secret::new(raw).ok()) {
+        return Ok(secret);
+    }
+    let Some(home) = home else {
         return Err(DehashedError::MissingKey);
     };
-    let path = std::path::PathBuf::from(home)
-        .join(".config")
-        .join("dehashed")
-        .join("api_key");
+    let path = home.join(".config").join("dehashed").join("api_key");
     let bytes = match crate::keys::read_private_file(&path, 4096) {
         Ok(Some(Ok(bytes))) => bytes,
         Ok(Some(Err(_refusal))) => return Err(DehashedError::KeyFilePermissions),
@@ -541,4 +548,17 @@ pub fn key_from_environment() -> Result<Secret, DehashedError> {
     };
     let raw = String::from_utf8(bytes).map_err(|_| DehashedError::MissingKey)?;
     Secret::new(raw).map_err(|_| DehashedError::MissingKey)
+}
+
+/// The client a lookup's `DeHashed` leg searches with, or `None` when no source holds a key: the
+/// leg then sends nothing and records `NotConfigured`. The key is resolved as every `DeHashed` path
+/// resolves it ([`key_from_sources`]), so a key `dehashed search` finds is one the lookups find.
+#[must_use]
+pub fn client_for_lookup(
+    keys: &Keys,
+    http: Arc<dyn Transport + Send + Sync>,
+) -> Option<DehashedClient> {
+    key_from_sources(keys)
+        .ok()
+        .map(|key| DehashedClient::new(http, key))
 }

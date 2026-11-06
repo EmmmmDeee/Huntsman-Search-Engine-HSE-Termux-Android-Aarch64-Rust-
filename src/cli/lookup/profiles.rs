@@ -16,7 +16,7 @@ use huntsman_recon::clock;
 use huntsman_recon::company_cli::{self, COMPANY_USAGE, CompanyArgs};
 use huntsman_recon::concurrent;
 use huntsman_recon::crypto_cli::{self, CRYPTO_USAGE, CryptoArgs};
-use huntsman_recon::dehashed::{self, client::DehashedClient};
+use huntsman_recon::dehashed;
 use huntsman_recon::docmeta::{self, DOCMETA_USAGE, DocmetaArgs};
 use huntsman_recon::domain_cli::{DOMAIN_USAGE, DomainArgs};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
@@ -356,10 +356,10 @@ fn exposure_legs(
     let transport = UreqTransport::new(&stolen_tax::transport_config());
     let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
     // DeHashed reuses the opt-in client; its key comes from the same lookup keys.
-    let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
-        let transport = Arc::new(UreqTransport::new(&dehashed::client::transport_config()));
-        DehashedClient::new(transport, secret)
-    });
+    let dehashed_client = dehashed::client::client_for_lookup(
+        keys,
+        Arc::new(UreqTransport::new(&dehashed::client::transport_config())),
+    );
     let sources = Sources {
         hibp: client.as_ref(),
         stolen_tax: keys
