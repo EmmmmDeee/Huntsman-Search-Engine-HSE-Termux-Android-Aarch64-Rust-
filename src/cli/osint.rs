@@ -26,7 +26,7 @@ use huntsman_recon::rhinser_workspace::{MAX_WORKSPACE_BYTES, Workspace};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 pub(super) const OSINT_HELP: &str = "osint matrix [--json] | osint native [--entities] FILE | osint demo SEED | osint nfc apdu|ndef|tlv HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|overlaps|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
-  matrix: compiled Rust OSINT file groups, synergies and explicitly unverified runtime status.\n\
+  matrix: compiled Rust OSINT file groups, the reachable modules in each, synergies and explicitly unverified runtime status.\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
@@ -44,13 +44,14 @@ fn matrix_cmd(args: &[String]) -> ExitCode {
             println!("status=source_inventory_not_live_verification");
             for row in osint_matrix::FILE_ROWS {
                 println!(
-                    "p{}\t{}\t{}\t{}\t{}\t{}",
+                    "p{}\t{}\t{}\t{}\t{}\t{}\tmodules={}",
                     row.priority,
                     row.id,
                     row.discipline,
                     row.mode,
                     row.implementation,
-                    row.files.join(",")
+                    row.files.join(","),
+                    row.modules.join(",")
                 );
             }
             ExitCode::SUCCESS
