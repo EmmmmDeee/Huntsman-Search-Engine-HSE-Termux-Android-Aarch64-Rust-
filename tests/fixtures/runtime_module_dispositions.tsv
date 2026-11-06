@@ -36,6 +36,7 @@ solana_rpc	adapter	keyless Solana mainnet-beta account observations through cryp
 evm_rpc	leaf	the one keyless EVM JSON-RPC account-observation core (batch request, fail-closed decode, exact-wei provenance) shared by base_rpc and eth_rpc
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
+breach_record	leaf	what a breach record exposes, credentials held back, shared by the OathNet and DeHashed legs
 canonical	runtime	canonicalization for entities and provenance
 censys	adapter	Censys Platform v3 IP host lookup reached through the indicator legs when a PAT is configured
 circuit	leaf	bounded circuit/cache state
