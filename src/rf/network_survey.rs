@@ -7,7 +7,10 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::rf::survey_csv::{Export, exact_columns, read_export};
+use crate::rf::survey_csv::{
+    Export, InvalidField, exact_columns, optional_finite, optional_number, optional_text,
+    read_export,
+};
 use crate::rf::{canonical_network_id, is_mac};
 use crate::textnorm::escape_controls;
 use crate::timefmt::parse_timestamp;
@@ -80,33 +83,6 @@ fn invalid(reason: &str) -> Error {
     Error::Invalid(format!("Network Survey Bluetooth CSV: {reason}"))
 }
 
-#[derive(Debug, Clone, Copy)]
-struct InvalidField;
-
-fn number(raw: &str, max: u64) -> Result<Option<u64>, InvalidField> {
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(InvalidField);
-    }
-    raw.parse::<u64>()
-        .ok()
-        .filter(|value| *value <= max)
-        .map(Some)
-        .ok_or(InvalidField)
-}
-
-fn finite(raw: &str, low: f64, high: f64) -> Result<Option<f64>, InvalidField> {
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    let value = raw.parse::<f64>().map_err(|_| InvalidField)?;
-    (value.is_finite() && (low..=high).contains(&value))
-        .then_some(Some(value))
-        .ok_or(InvalidField)
-}
-
 fn enum_value(raw: &str, allowed: &[&'static str]) -> Result<Option<&'static str>, InvalidField> {
     if raw.is_empty() {
         return Ok(None);
@@ -117,13 +93,6 @@ fn enum_value(raw: &str, allowed: &[&'static str]) -> Result<Option<&'static str
         .find(|value| *value == raw)
         .map(Some)
         .ok_or(InvalidField)
-}
-
-fn text_field(raw: &str, max_bytes: usize) -> Result<Option<String>, InvalidField> {
-    if raw.len() > max_bytes {
-        return Err(InvalidField);
-    }
-    Ok((!raw.is_empty()).then(|| raw.to_owned()))
 }
 
 fn hex_field(raw: &str, max_digits: usize) -> Result<Option<String>, InvalidField> {
@@ -173,25 +142,25 @@ fn parse_record(row: &[String]) -> Option<BluetoothCsvRecord> {
         return None;
     }
     let observed_epoch = parse_timestamp(timestamp)?;
-    let signal_dbm = finite(&row[10], -200.0, 200.0).ok()??;
-    let tx_power_dbm = finite(&row[11], -200.0, 200.0).ok()?;
+    let signal_dbm = optional_finite(&row[10], -200.0, 200.0).ok()??;
+    let tx_power_dbm = optional_finite(&row[11], -200.0, 200.0).ok()?;
     let technology = enum_value(&row[12], &["UNKNOWN", "BR_EDR", "LE"])
         .ok()?
         .unwrap_or("UNKNOWN");
     let supported_technologies = enum_value(&row[13], &["UNKNOWN", "BR_EDR", "LE", "DUAL"]).ok()?;
-    let advertised_name = text_field(&row[14], 128).ok()?;
-    let channel = number(&row[15], 78)
+    let advertised_name = optional_text(&row[14], 128).ok()?;
+    let channel = optional_number(&row[15], 78)
         .ok()?
         .map(u8::try_from)
         .transpose()
         .ok()?;
-    let record_number = number(&row[7], u64::MAX).ok()?;
+    let record_number = optional_number(&row[7], u64::MAX).ok()?;
     if record_number == Some(0) {
         return None;
     }
-    let location_age_ms = number(&row[17], 86_400_000).ok()?;
+    let location_age_ms = optional_number(&row[17], 86_400_000).ok()?;
     let device_class = hex_field(&row[19], 8).ok()?;
-    let service_uuids = text_field(&row[20], 1024).ok()?;
+    let service_uuids = optional_text(&row[20], 1024).ok()?;
     let company_id = hex_field(&row[21], 8).ok()?;
     // Validate but never emit raw manufacturer payloads: these can carry
     // rotating identifiers, telemetry or application-specific private data.
