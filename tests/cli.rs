@@ -1683,7 +1683,7 @@ fn identifier_geohash_and_coarsen_commands() {
         (
             Some(0),
             "iban=AE070331234567890123456\nprinted=AE07 0331 2345 6789 0123 456\n\
-             check_digits=07\ninstitution_id=033\naccount=1234567890123456\n"
+             institution_id=033\n"
                 .into()
         )
     );

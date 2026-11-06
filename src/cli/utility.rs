@@ -117,8 +117,9 @@ pub(super) fn id_cmd(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// An Emirates ID number with its printed form and year field, or a UAE IBAN with its printed
-/// form and parts. A valid check digit says the number is well formed, not who holds it.
+/// An Emirates ID number with its printed form and year field, or a UAE IBAN with its printed form
+/// and institution identifier; the account number is never printed on its own. A valid check digit
+/// says the number is well formed, not who holds it.
 fn print_ae_identifier(identifier: &ae_id::AeIdentifier) {
     match identifier {
         ae_id::AeIdentifier::EmiratesId { bare } => {
@@ -129,10 +130,8 @@ fn print_ae_identifier(identifier: &ae_id::AeIdentifier) {
         ae_id::AeIdentifier::Iban { bare } => {
             println!("iban={bare}");
             println!("printed={}", identifier.printed());
-            if let Some((check, institution, account)) = ae_id::iban_parts(bare) {
-                println!("check_digits={check}");
+            if let Some(institution) = ae_id::iban_institution(bare) {
                 println!("institution_id={institution}");
-                println!("account={account}");
             }
         }
     }

@@ -162,7 +162,7 @@ cargo run -- domain-lifecycle analyze docs/domain-lifecycle-example.json --as-of
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
 cargo run -- id "784-1990-1234567-6"    # UAE Emirates ID: 784 prefix and Luhn check; year_field is the four digits after 784
-cargo run -- id "AE07 0331 2345 6789 0123 456"  # UAE IBAN: mod 97-10 check, institution identifier and account; no bank name guessed
+cargo run -- id "AE07 0331 2345 6789 0123 456"  # UAE IBAN: mod 97-10 check and the institution identifier; the account is not split out, no bank name guessed
 cargo run -- case-check examples/vero-case-evidence.json examples/vero-case-advert.txt  # verify the original advertisement SHA-256 and reference structure offline
 cargo run -- blueprint                 # each Android OSINT app, the Huntsman commands reproducing it, status and acceptance; offline
 cargo run -- geohash -27.4698,153.0251 9

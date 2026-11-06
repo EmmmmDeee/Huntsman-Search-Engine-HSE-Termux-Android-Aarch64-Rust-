@@ -137,11 +137,12 @@ pub fn uae_iban(raw: &str) -> Option<String> {
     .then_some(bare)
 }
 
-/// The parts of a UAE IBAN: its check digits, three-digit institution identifier and sixteen-digit
-/// account number. **Pure.**
+/// The three-digit institution identifier of a UAE IBAN: the bank, never the account. The account
+/// number is not split out: it stays inside the IBAN the operator gave, and no output repeats it
+/// on its own. **Pure.**
 #[must_use]
-pub fn iban_parts(bare: &str) -> Option<(&str, &str, &str)> {
-    (bare.len() == UAE_IBAN_LEN && bare.is_ascii()).then(|| (&bare[2..4], &bare[4..7], &bare[7..]))
+pub fn iban_institution(bare: &str) -> Option<&str> {
+    (bare.len() == UAE_IBAN_LEN && bare.is_ascii()).then(|| &bare[4..7])
 }
 
 /// Classify one token as an Emirates ID number or a UAE IBAN. Anything else is refused rather than
@@ -225,10 +226,8 @@ mod tests {
         }
         let iban = classify("AE07 0331 2345 6789 0123 456").unwrap();
         assert_eq!(iban.printed(), "AE07 0331 2345 6789 0123 456");
-        assert_eq!(
-            iban_parts("AE070331234567890123456"),
-            Some(("07", "033", "1234567890123456"))
-        );
+        assert_eq!(iban_institution("AE070331234567890123456"), Some("033"));
+        assert_eq!(iban_institution("AE07"), None);
         for refused in [
             // A wrong check pair, and one changed account digit.
             "AE080331234567890123456",
