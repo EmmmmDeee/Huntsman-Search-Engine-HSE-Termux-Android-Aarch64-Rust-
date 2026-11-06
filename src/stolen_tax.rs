@@ -469,7 +469,7 @@ fn decode_path_scrubbed(
         serde_json::from_slice(body).map_err(|e| decode_error_text(&e))?;
     if !envelope.success {
         let message = envelope.error.as_deref().unwrap_or("no error text");
-        let class = if crate::service_defs::looks_like_auth_failure_text(message) {
+        let class = if crate::source_outcome::looks_like_auth_failure_text(message) {
             "key or quota rejected"
         } else {
             "provider reported failure"

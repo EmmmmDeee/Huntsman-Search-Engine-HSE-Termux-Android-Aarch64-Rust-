@@ -167,25 +167,7 @@ pub fn service_for_env(env_var: &str) -> Option<&'static ServiceDef> {
         .find(|service| service.env_var.eq_ignore_ascii_case(env_var))
 }
 
-#[must_use]
-pub fn looks_like_auth_failure_text(body: &str) -> bool {
-    let lower = body.to_ascii_lowercase();
-    [
-        "api key not found",
-        "invalid api key",
-        "invalid authorization",
-        "invalid credentials",
-        "authentication failed",
-        "authentication_failed",
-        "no user found for the api key",
-        "api key format",
-        "missing api key",
-        "invalid token",
-        "forbidden",
-    ]
-    .iter()
-    .any(|phrase| lower.contains(phrase))
-}
+pub use crate::source_outcome::looks_like_auth_failure_text;
 
 /// The probe request without its key: [`probe_service`] adds the key as the request is sent,
 /// through a [`Credential`] bound to the `test_url`'s origin.
