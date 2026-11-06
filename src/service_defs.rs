@@ -137,11 +137,15 @@ const SERVICE_DEFS: &[ServiceDef] = &[
     ServiceDef {
         name: "dehashed",
         env_var: crate::environment::DEHASHED_KEY_ENV,
-        test_url: "https://api.dehashed.com/v2/search",
+        // A search spends a paid credit; DeHashed documents this endpoint as needing neither
+        // credits nor a subscription. The hash is SHA-256 of "huntsman-credential-probe".
+        test_url: "https://api.dehashed.com/v2/search-password",
         probe_method: Method::Post,
         key_placement: KeyPlace::Header("Dehashed-Api-Key"),
-        probe_body: Some(br#"{"query":"email:test@example.com","size":1}"#),
-        success_indicates_valid_key: false,
+        probe_body: Some(
+            br#"{"sha256_hashed_password":"99128459e698abba6e5fac40cf12b4c8e2c5d7f8e3ae1d7e4138aead2b3f80b8"}"#,
+        ),
+        success_indicates_valid_key: true,
     },
     ServiceDef {
         name: "hibp",
@@ -234,6 +238,14 @@ pub fn classify_probe_response(service: &ServiceDef, response: &Response) -> Pro
         "shodan" => match body.get("plan").and_then(serde_json::Value::as_str) {
             Some(plan) if !plan.trim().is_empty() => ProbeVerdict::Valid,
             _ => ProbeVerdict::Indeterminate,
+        },
+        // The password-hash count `/v2/search-password` answers with.
+        "dehashed" => match body
+            .get("results_found")
+            .and_then(serde_json::Value::as_u64)
+        {
+            Some(_) => ProbeVerdict::Valid,
+            None => ProbeVerdict::Indeterminate,
         },
         "hibp" => match (
             body.get("SubscriptionName")
@@ -575,6 +587,56 @@ mod tests {
                 }
             ),
             ProbeVerdict::Indeterminate
+        );
+    }
+
+    /// A `DeHashed` search costs one paid credit ("1 search = 1 credit"), so the key is probed on
+    /// `/v2/search-password`, which `DeHashed` documents as needing neither credits nor a
+    /// subscription. The hash sent is of a fixed probe string, never a password. A 200 proves the
+    /// key only when it carries that endpoint's own answer, `results_found`.
+    #[test]
+    fn the_dehashed_probe_spends_no_search_credit_and_reads_only_its_own_answer() {
+        let dehashed = find_service("dehashed").expect("dehashed");
+        let request = build_probe_request(dehashed);
+        assert_eq!(request.method, Method::Post);
+        assert_eq!(request.url, "https://api.dehashed.com/v2/search-password");
+        assert_eq!(
+            request.header_value("content-type"),
+            Some("application/json")
+        );
+        let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json body");
+        let hash = body["sha256_hashed_password"]
+            .as_str()
+            .expect("the hash field");
+        assert_eq!(
+            hash,
+            crate::sha256::hex32(&crate::sha256::sha256(b"huntsman-credential-probe"))
+        );
+        assert_eq!(body.as_object().map(serde_json::Map::len), Some(1));
+        let answer = |status: u16, body: &[u8]| {
+            classify_probe_response(
+                dehashed,
+                &Response {
+                    status,
+                    headers: Vec::new(),
+                    body: body.to_vec(),
+                    truncated: false,
+                },
+            )
+        };
+        assert_eq!(answer(200, br#"{"results_found": 0}"#), ProbeVerdict::Valid);
+        assert_eq!(
+            answer(200, br#"{"results_found": 12}"#),
+            ProbeVerdict::Valid
+        );
+        assert_eq!(answer(200, br#"{"ok": true}"#), ProbeVerdict::Indeterminate);
+        assert_eq!(
+            answer(200, br#"{"results_found": "x"}"#),
+            ProbeVerdict::Indeterminate
+        );
+        assert_eq!(
+            answer(403, br#"{"error": "Issue with API Key"}"#),
+            ProbeVerdict::Rejected
         );
     }
 
