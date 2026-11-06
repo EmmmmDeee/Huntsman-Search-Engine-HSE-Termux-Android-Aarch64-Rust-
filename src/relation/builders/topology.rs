@@ -16,27 +16,15 @@ use super::{
 const COLLOCATION_RADIUS_KM: f64 = 1.0;
 
 /// The host a URL names, as its canonical form writes it, without the port. **Pure.**
-fn url_host(url: &str) -> Option<String> {
-    let canonical = canonical_url(url)?;
-    let (_, rest) = canonical.split_once("://")?;
-    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, port)| {
-            if port.bytes().all(|b| b.is_ascii_digit()) && !host.ends_with(']') {
-                host
-            } else {
-                authority
-            }
-        });
-    Some(host.to_owned())
+fn canonical_url_host(url: &str) -> Option<String> {
+    crate::circuit::host_of(&canonical_url(url)?)
 }
 
 /// Domain keys a URL may be hosted on, most specific first: the exact host
 /// under the same `domain_key` Domain entities use, then its `www.`-stripped
 /// alias. An exact `www.` Domain entity therefore wins over the apex.
 fn url_host_keys(url: &str) -> Vec<String> {
-    let Some(host) = url_host(url) else {
+    let Some(host) = canonical_url_host(url) else {
         return Vec::new();
     };
     let host = host.as_str();
@@ -100,7 +88,7 @@ pub fn derive_structural(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
                 }
             }
             EntityKind::Url => {
-                let address = url_host(&entity.value)
+                let address = canonical_url_host(&entity.value)
                     .and_then(|host| canonical_ip_literal(&host))
                     .and_then(|address| addresses.get(address.as_str()).copied());
                 if let Some(domain_entity) = url_host_keys(&entity.value)

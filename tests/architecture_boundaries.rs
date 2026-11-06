@@ -875,6 +875,27 @@ fn the_report_shape_rule_sees_each_shape_by_any_name_and_ignores_the_rest() {
     }
 }
 
+/// A URL's host is `circuit::host_of`: the breakers key on it, and the Spiderfoot export, web
+/// meta-search and the hosted-on relation read it there. No other module keeps a reader of its
+/// own under that name or as `url_host` (G8).
+#[test]
+fn url_host_has_one_definition() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/circuit.rs")
+        .filter(|source| {
+            production_tokens(&source.text)
+                .windows(2)
+                .any(|w| w[0] == "fn" && matches!(w[1].as_str(), "url_host" | "host_of"))
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(
+        found.is_empty(),
+        "a URL-host reader redefined in: {found:?}"
+    );
+}
+
 /// Lower-case hex in the APK parsers is `base64::base16_lower`, whose test pins it to `{:02x}` for
 /// every byte; no APK module keeps its own `hex` formatter.
 #[test]
