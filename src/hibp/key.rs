@@ -88,15 +88,13 @@ impl KeySource for FileSource {
     }
 }
 
+/// HIBP's own key file, `~/.config/hibp/api_key`: its [`crate::keys::PROVIDER_KEY_FILES`] entry,
+/// which `credential-status` and the web UI read too.
 #[must_use]
 pub fn default_key_file() -> Option<PathBuf> {
     let home = environment::home()?;
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("hibp")
-            .join("api_key"),
-    )
+    crate::keys::provider_key_file(environment::HUNTSMAN_HIBP_KEY_ENV)
+        .map(|file| file.at(std::path::Path::new(&home)))
 }
 
 pub struct KeyLoader {

@@ -7,7 +7,7 @@ use crate::clock;
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Transport};
-use crate::keys::{Keys, PROVIDER_KEY_FILES, ProviderKeyFile, Secret};
+use crate::keys::{Keys, ProviderKeyFile, Secret};
 use crate::service_defs::{ProbeVerdict, probe_service, service_for_env};
 
 /// The only origin `WiGLE` credentials are ever sent to.
@@ -509,9 +509,19 @@ pub fn key_for_slot(keys: &Keys, slot: &str) -> Option<(Secret, KeySource)> {
             return Some((secret, KeySource::Shared(other)));
         }
     }
-    let file = PROVIDER_KEY_FILES.iter().find(|file| file.slot == slot)?;
+    let file = crate::keys::provider_key_file(slot)?;
     keys.provider_file(slot)
         .map(|secret| (secret, KeySource::ProviderFile(file)))
+}
+
+/// The key [`secret_for_slot`] finds for `slot` anywhere but the provider's own key file: for a
+/// loader that reads that file itself, last, and names it as the key's origin, as HIBP's
+/// `KeyLoader` does (`key_source=file:PATH`). Its precedence is unchanged.
+#[must_use]
+pub fn secret_for_slot_outside_its_file(keys: &Keys, slot: &str) -> Option<Secret> {
+    key_for_slot(keys, slot)
+        .filter(|(_, source)| !matches!(source, KeySource::ProviderFile(_)))
+        .map(|(secret, _)| secret)
 }
 
 #[must_use]
@@ -1050,6 +1060,64 @@ mod tests {
         ));
         // A provider key file sets only its own slot.
         assert!(key_for_slot(&keys, crate::environment::SHODAN_KEY_ENV).is_none());
+    }
+
+    /// HIBP's key loader takes the slot from everywhere but HIBP's own key file. It reads that
+    /// file last itself and names it as the key's source, while `credential-status` counts the
+    /// file as the slot's key.
+    #[test]
+    fn a_loader_that_reads_its_own_file_is_given_every_other_source() {
+        use crate::environment::{HIBP_API_KEY_ENV, HUNTSMAN_HIBP_KEY_ENV};
+        let file_only = Keys::parse("")
+            .expect("keys")
+            .with_provider_file(HUNTSMAN_HIBP_KEY_ENV, "hibp-file-key-0123456789");
+        assert!(secret_for_slot_outside_its_file(&file_only, HUNTSMAN_HIBP_KEY_ENV).is_none());
+        assert_eq!(
+            secret_for_slot(&file_only, HUNTSMAN_HIBP_KEY_ENV)
+                .expect("credential-status finds it")
+                .expose(),
+            "hibp-file-key-0123456789"
+        );
+        let hibp = status(&file_only)
+            .into_iter()
+            .find(|provider| provider.name == "HIBP")
+            .expect("HIBP");
+        assert!(hibp.configured);
+        for (text, key) in [
+            (
+                format!("{HUNTSMAN_HIBP_KEY_ENV}=slot-key-0123456789\n"),
+                "slot-key-0123456789",
+            ),
+            (
+                format!("{HIBP_API_KEY_ENV}=alias-key-0123456789\n"),
+                "alias-key-0123456789",
+            ),
+        ] {
+            let keys = Keys::parse(&text)
+                .expect("keys")
+                .with_provider_file(HUNTSMAN_HIBP_KEY_ENV, "hibp-file-key-0123456789");
+            assert_eq!(
+                secret_for_slot_outside_its_file(&keys, HUNTSMAN_HIBP_KEY_ENV)
+                    .expect("the slot or its alias")
+                    .expose(),
+                key
+            );
+        }
+    }
+
+    /// Each provider key file sets one slot of the credential catalogue, and no slot has two.
+    #[test]
+    fn every_provider_key_file_sets_one_catalogue_slot() {
+        let catalogue: Vec<&str> = PROVIDERS
+            .iter()
+            .flat_map(|provider| provider.slots.iter().copied())
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for file in crate::keys::PROVIDER_KEY_FILES {
+            assert!(catalogue.contains(&file.slot), "{}", file.slot);
+            assert!(seen.insert(file.slot), "two files set {}", file.slot);
+            assert!(file.shown().starts_with("~/.config/"), "{}", file.shown());
+        }
     }
 
     #[test]

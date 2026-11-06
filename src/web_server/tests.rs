@@ -2758,6 +2758,10 @@ fn the_key_settings_show_every_key_a_lookup_would_use_and_where_it_is() {
         format!("{TEST_KEY}\n"),
     );
     private(
+        &home.join(".config").join("hibp").join("api_key"),
+        format!("{TEST_KEY}\n"),
+    );
+    private(
         &home.join(keys::DEFAULT_KEYS_FILE),
         format!("HUNTSMAN_THREATFOX_KEY={TEST_KEY}\n"),
     );
@@ -2781,11 +2785,15 @@ fn the_key_settings_show_every_key_a_lookup_would_use_and_where_it_is() {
             row["from"].clone(),
         )
     };
-    // A slot the environment of the machine running this sets is found there first, as a
-    // lookup's would be.
+    // A slot the environment of the machine running this sets is found there first, and HIBP's
+    // own name for its key next, as a lookup's would be.
     let unsaved = |slot: &str, place: &str| {
         let place = if crate::environment::variable(slot).is_some() {
             "in the environment"
+        } else if slot == "HUNTSMAN_HIBP_KEY"
+            && crate::environment::variable("HIBP_API_KEY").is_some()
+        {
+            "by HIBP_API_KEY"
         } else {
             place
         };
@@ -2798,6 +2806,10 @@ fn the_key_settings_show_every_key_a_lookup_would_use_and_where_it_is() {
     assert_eq!(
         row("HUNTSMAN_ABUSECH_KEY"),
         unsaved("HUNTSMAN_ABUSECH_KEY", "by HUNTSMAN_THREATFOX_KEY")
+    );
+    assert_eq!(
+        row("HUNTSMAN_HIBP_KEY"),
+        unsaved("HUNTSMAN_HIBP_KEY", "in ~/.config/hibp/api_key")
     );
     assert_eq!(
         row("HUNTSMAN_THREATFOX_KEY"),

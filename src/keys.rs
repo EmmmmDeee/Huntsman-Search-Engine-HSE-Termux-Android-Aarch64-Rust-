@@ -65,7 +65,9 @@ impl ProviderKeyFile {
         format!("~/{}", self.path.join("/"))
     }
 
-    fn under(&self, home: &Path) -> PathBuf {
+    /// The file under `home`.
+    #[must_use]
+    pub fn at(&self, home: &Path) -> PathBuf {
         self.path
             .iter()
             .fold(home.to_path_buf(), |path, part| path.join(part))
@@ -73,11 +75,23 @@ impl ProviderKeyFile {
 }
 
 /// The provider key files read beside the keys file: `DeHashed`'s legacy
-/// `~/.config/dehashed/api_key`.
-pub const PROVIDER_KEY_FILES: &[ProviderKeyFile] = &[ProviderKeyFile {
-    slot: environment::DEHASHED_KEY_ENV,
-    path: &[".config", "dehashed", "api_key"],
-}];
+/// `~/.config/dehashed/api_key` and HIBP's `~/.config/hibp/api_key`.
+pub const PROVIDER_KEY_FILES: &[ProviderKeyFile] = &[
+    ProviderKeyFile {
+        slot: environment::DEHASHED_KEY_ENV,
+        path: &[".config", "dehashed", "api_key"],
+    },
+    ProviderKeyFile {
+        slot: environment::HUNTSMAN_HIBP_KEY_ENV,
+        path: &[".config", "hibp", "api_key"],
+    },
+];
+
+/// The provider key file that sets `slot`, if one does.
+#[must_use]
+pub fn provider_key_file(slot: &str) -> Option<&'static ProviderKeyFile> {
+    PROVIDER_KEY_FILES.iter().find(|file| file.slot == slot)
+}
 
 /// The longest provider key file read: one key, as [`MAX_KEY_BYTES`] bounds a saved one.
 const MAX_PROVIDER_KEY_FILE_BYTES: u64 = MAX_KEY_BYTES as u64;
@@ -97,7 +111,7 @@ impl ResolvedKeys {
     /// fix; one that is absent, blank or not UTF-8 sets nothing.
     fn with_provider_key_files(mut self, home: &Path) -> Self {
         for file in PROVIDER_KEY_FILES {
-            let path = file.under(home);
+            let path = file.at(home);
             match read_private_file(&path, MAX_PROVIDER_KEY_FILE_BYTES) {
                 Ok(None) => {}
                 Ok(Some(Ok(bytes))) => {
@@ -1518,7 +1532,9 @@ mod tests {
     /// `home`'s `DeHashed` key file, written with `mode`, and the path it is at.
     #[cfg(unix)]
     fn dehashed_key_file(home: &Path, text: &str, mode: u32) -> PathBuf {
-        let file = PROVIDER_KEY_FILES[0].under(home);
+        let file = provider_key_file(environment::DEHASHED_KEY_ENV)
+            .expect("DeHashed's key file")
+            .at(home);
         std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
         write_mode(&file, text, mode);
         file
