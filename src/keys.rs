@@ -21,8 +21,8 @@ use crate::credential_origin::CredentialFingerprint;
 use crate::environment;
 use crate::error::Error;
 use crate::fsio::{
-    CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, read_bounded, read_to_bound, same_inode, store_err,
-    write_atomic_private,
+    CHANGED_WHILE_OPENING, ExclusiveLock, LockRefusal, NOT_REGULAR_FILE, read_bounded,
+    read_to_bound, same_inode, store_err, write_atomic_private,
 };
 
 pub(crate) const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
@@ -585,6 +585,22 @@ fn read_for_rewrite(path: &Path) -> Result<String, Error> {
     String::from_utf8(bytes).map_err(|_| Error::Invalid("keys file is not utf-8".into()))
 }
 
+/// How long a save waits for another writer of the keys file, in this process or another, to
+/// finish.
+const KEYS_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The keys file's wording for a lock its save could not take: nothing was saved.
+fn keys_lock_refusal(path: &Path, refusal: LockRefusal) -> Error {
+    match refusal {
+        LockRefusal::Busy { lock } => Error::Store(format!(
+            "{} is busy or has a stale lock at {}; nothing was saved; remove the lock only after verifying no Huntsman writer is running",
+            path.display(),
+            lock.display()
+        )),
+        LockRefusal::Io { lock, error } => store_err(&lock, &error),
+    }
+}
+
 /// Sets `slot` to `value` in the keys file at `path`, or removes it when `value` is `None`, and
 /// keeps every other line as it was: [`store_slots`] with one change.
 ///
@@ -601,14 +617,15 @@ pub fn store_slot(path: &Path, slot: &str, value: Option<&str>) -> Result<(), Er
 /// the order of `changes`. The result must read back through [`Keys::parse`] with exactly these
 /// values (and without the removed slots) before it replaces the file, atomically and at mode
 /// 600, so a save never leaves a file that lookups would refuse or read differently, and a change
-/// that cannot be saved saves nothing. Saves in this process run one at a time, so two never
-/// lose each other's keys.
+/// that cannot be saved saves nothing. Saves run one at a time, in this process and across
+/// processes (the CLI and the Web UI), through a lock beside the file, so two never lose each
+/// other's keys.
 ///
 /// # Errors
 /// `Error::Invalid` for no change, a bad slot name, a blank, placeholder, over-long or
 /// unquotable value, or a file whose other lines do not parse (by line number, never a value);
 /// `Error::Store` for a file the default-file gate refuses for any reason but loose permissions,
-/// or an I/O failure.
+/// a lock another writer still holds after five seconds, or an I/O failure.
 pub fn store_slots(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<(), Error> {
     static SAVING: Mutex<()> = Mutex::new(());
     if changes.is_empty() {
@@ -639,6 +656,8 @@ pub fn store_slots(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<(), 
         }
     }
     let _saving = SAVING.lock().unwrap_or_else(PoisonError::into_inner);
+    let _writing = ExclusiveLock::acquire(path, KEYS_LOCK_WAIT)
+        .map_err(|refusal| keys_lock_refusal(path, refusal))?;
     let current = read_for_rewrite(path)?;
     let mut text = String::with_capacity(current.len() + 80 * planned.len());
     for raw in current.lines() {

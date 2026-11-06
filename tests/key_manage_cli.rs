@@ -87,6 +87,45 @@ fn piped_key_round_trips_in_private_file_without_leaking_to_output() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The CLI and the Web UI's Settings page are different processes, and each saves by reading the
+/// keys file, changing it and renaming a new one over it. A save that finds another writer's lock
+/// beside the file writes nothing and says why, instead of dropping that writer's change; the lock
+/// is left for its holder.
+#[cfg(unix)]
+#[test]
+fn a_save_while_another_process_holds_the_keys_lock_writes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home("locked");
+    let path = dir.join(".huntsman.env");
+    let saved = format!("{SLOT}={SECRET}\n");
+    std::fs::write(&path, &saved).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let lock = dir.join(".huntsman.env.lock");
+    std::fs::write(&lock, "1").unwrap();
+    let removed = command(&dir)
+        .args(["keys", "remove", SLOT])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&removed.stderr);
+    assert_eq!(removed.status.code(), Some(74), "{stderr}");
+    assert!(stderr.contains("busy or has a stale lock"), "{stderr}");
+    assert!(!stderr.contains(SECRET));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    assert!(lock.exists(), "another writer's lock was removed");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A save takes the lock only for its own read, change and rename, and leaves none behind.
+#[cfg(unix)]
+#[test]
+fn a_save_leaves_no_lock_behind() {
+    let dir = home("unlocked");
+    let stored = set(&dir, SLOT, format!("{SECRET}\n").as_bytes());
+    assert!(stored.status.success(), "{:?}", stored.stderr);
+    assert!(!dir.join(".huntsman.env.lock").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn listing_a_keys_file_prints_each_slot_with_only_its_short_fingerprint() {
