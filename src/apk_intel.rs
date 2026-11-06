@@ -631,6 +631,12 @@ fn read_member<'a>(
             "{name} would pass the {MAX_APK_INFLATED_BYTES}-byte budget for one APK"
         ));
     }
+    // Charge the declared inflation size before attempting decompression. A malformed
+    // member must not get unlimited retries against the per-APK work budget.
+    // Unsupported methods remain free because no decompression is attempted.
+    if member.method == 8 || member.method == 0 || member.payload_len == member.size {
+        *budget -= member.size;
+    }
     let raw = &data[member.payload_start..member.payload_start + member.payload_len];
     let (bytes, quirk) = match member.method {
         8 => (
@@ -659,7 +665,6 @@ fn read_member<'a>(
     if crc32fast::hash(&bytes) != member.crc {
         return Err(format!("{name} fails its ZIP CRC-32 check"));
     }
-    *budget -= member.size;
     Ok((bytes, quirk))
 }
 
