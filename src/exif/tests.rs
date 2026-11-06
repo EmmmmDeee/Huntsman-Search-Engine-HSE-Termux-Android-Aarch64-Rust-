@@ -601,3 +601,114 @@ fn a_corrupted_image_is_read_or_refused_never_a_panic() {
         }
     }
 }
+
+/// The value of the field `name` in `parsed`.
+fn value_of<'a>(parsed: &'a super::Parsed, name: &str) -> Option<&'a str> {
+    parsed
+        .fields
+        .iter()
+        .find(|(field, _)| field == name)
+        .map(|(_, value)| value.as_str())
+}
+
+/// `text` as UCS-2 code units in either byte order.
+fn ucs2(text: &str, big_endian: bool) -> Vec<u8> {
+    text.encode_utf16()
+        .flat_map(|unit| {
+            if big_endian {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            }
+        })
+        .collect()
+}
+
+/// Windows writes its title, comment, author, keywords and subject as UCS-2, little-endian in a
+/// block of either byte order. The text ends at its first NUL, and an unpaired surrogate reads as
+/// U+FFFD rather than ending the value or failing the file.
+#[test]
+fn windows_text_tags_are_read_as_text_in_either_block_order() {
+    let mut comment = ucs2("Café ☕ at the harbour", false);
+    for unit in [0xD800_u16, 0x0041, 0x0000, 0x0042] {
+        comment.extend_from_slice(&unit.to_le_bytes());
+    }
+    let author = ucs2("Ada Lovelace", false);
+    for big_endian in [false, true] {
+        let tiff = crate::test_support::images::exif_tiff(
+            big_endian,
+            &[(0x9C9C, 1, &comment), (0x9C9D, 1, &author)],
+            &[],
+        );
+        let parsed = parse(&tiff).expect("a readable TIFF");
+        assert_eq!(
+            value_of(&parsed, "XPComment"),
+            Some("Café ☕ at the harbour\u{FFFD}A"),
+            "big-endian block: {big_endian}"
+        );
+        assert_eq!(value_of(&parsed, "XPAuthor"), Some("Ada Lovelace"));
+    }
+}
+
+/// A user comment says how its text is stored in its first eight bytes: UCS-2 in the block's byte
+/// order (or the order a byte-order mark names), ASCII, or undefined, which writers fill with
+/// UTF-8. A JIS comment keeps the byte rendering.
+#[test]
+fn a_user_comment_is_read_by_its_character_code() {
+    let cases: [(bool, Vec<u8>, &str); 5] = [
+        (
+            true,
+            [b"UNICODE\0".as_slice(), &ucs2("big-endian words", true)].concat(),
+            "big-endian words",
+        ),
+        (
+            false,
+            [
+                b"UNICODE\0".as_slice(),
+                &[0xFE, 0xFF],
+                &ucs2("marked big", true),
+            ]
+            .concat(),
+            "marked big",
+        ),
+        (
+            true,
+            [b"ASCII\0\0\0".as_slice(), b"plain text\0\0\0"].concat(),
+            "plain text",
+        ),
+        (
+            false,
+            [b"\0\0\0\0\0\0\0\0".as_slice(), "café".as_bytes()].concat(),
+            "café",
+        ),
+        (
+            false,
+            [b"JIS\0\0\0\0\0".as_slice(), b"\x1b$B"].concat(),
+            "4a 49 53 00 00 00 00 00 1b 24 42",
+        ),
+    ];
+    for (big_endian, comment, expected) in cases {
+        let tiff =
+            crate::test_support::images::exif_tiff(big_endian, &[], &[(0x9286, 7, &comment)]);
+        let parsed = parse(&tiff).expect("a readable TIFF");
+        assert_eq!(
+            value_of(&parsed, "UserComment"),
+            Some(expected),
+            "{comment:?}"
+        );
+    }
+}
+
+/// A wide text longer than the read bound says how long the tag declares it, as an ASCII one does.
+#[test]
+fn a_wide_text_read_short_says_how_long_it_is() {
+    let long = ucs2(&"a".repeat(6000), false);
+    let tiff = crate::test_support::images::exif_tiff(false, &[(0x9C9C, 1, &long)], &[]);
+    let parsed = parse(&tiff).expect("a readable TIFF");
+    let comment = value_of(&parsed, "XPComment").expect("the comment is kept");
+    assert!(comment.starts_with("aaaa"), "{comment}");
+    assert!(
+        comment.ends_with("(12000 bytes, first 4096 shown)"),
+        "{comment}"
+    );
+}

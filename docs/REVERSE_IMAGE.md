@@ -33,28 +33,30 @@ URLs drop their query, and the uploaded form never holds it. Configure only serv
 authorised to use, and do not upload personal or sensitive photographs without authority to do
 so: the provider receives the image.
 
-## What is uploaded
+## What is uploaded, and what is read
 
-The provider receives the picture and nothing else the file holds. Before any request the image
-is rebuilt from only what a decoder needs, so metadata no list names goes too:
+The provider receives the file exactly as it was read: every byte, with all of its embedded
+metadata. Nothing is removed or rewritten. A JPEG keeps its Exif (with any GPS position), XMP,
+IPTC, ICC profile, maker notes and comments, a PNG its `eXIf` and text chunks, a WebP its `EXIF`
+and `XMP ` chunks, and anything after the end of the image goes too. JPEG, PNG, WebP and GIF files
+are uploaded alike. The upload is labelled with a generic file name (`image.jpg`), not the local
+one. The JSON report's `upload` gives the SHA-256 and size of the bytes sent, which are the file's
+own.
 
-- **JPEG**: the frame header, tables, restart interval, scans and the Adobe colour transform are
-  kept. Every other application segment is removed (`APP0` JFIF, `APP1` Exif with its GPS
-  position and XMP, `APP2` ICC profile and multi-picture index, `APP13` IPTC, maker and
-  content-credential segments), with every comment, before or between progressive scans.
-- **PNG**: `IHDR`, `PLTE`, `tRNS`, `IDAT` and `IEND` are kept; `eXIf`, `tEXt`, `zTXt`, `iTXt`,
-  `tIME`, colour chunks and every other ancillary chunk are removed.
-- **WebP** (still images only): `VP8X`, `ALPH` and the `VP8 ` or `VP8L` image are kept; `EXIF`,
-  `XMP `, `ICCP` and unknown chunks are removed, and the `VP8X` flags are cleared to match.
-- Anything after the end of the image, such as an appended video or a preview picture with its
-  own Exif, is removed.
+Every report, offline or live, also reads that metadata through the same reader the `exif` and
+`docmeta` commands, the web inspect view and `investigate --file` use (`embedded_metadata`):
 
-The stripped image is then read again by the `exif` and `docmeta` readers, and is not uploaded if
-either still finds metadata. A GIF, an animated WebP, any other format, an unknown critical PNG
-chunk or JPEG marker, and a file whose structure does not parse whole are refused before any
-request (exit 65). Colour profiles go too, so a wide-gamut photo's colours may look slightly
-different to the provider. The JSON report's `upload` gives the SHA-256 and size of the bytes
-sent and the kinds of data removed (`metadata_removed`).
+- the document entity, with every Exif, XMP, IPTC and PDF field kept as evidence;
+- the GPS position as a coordinates entity, which reverse-geocodes, takes geohash and area
+  checks and joins the rest of an investigation like any other point;
+- every email address, link, domain, IP address or phone number written into a field people
+  write (an author, rights, contact, comment or description field) as an entity of its own,
+  attributed to the file and to the field that holds it. A value the camera or a program writes
+  for itself (a serial number, an identifier, a version, a time) is read only for an email
+  address or a link, so its digits are never taken for a phone number.
+
+The JSON report holds them under `metadata` (`entities` and the two readers' `outcomes`), and the
+text report prints them as the `exif` and `docmeta` commands do.
 
 ## Result states
 
@@ -70,14 +72,15 @@ sent and the kinds of data removed (`metadata_removed`).
   provider's index held no match, not that the picture is nowhere else.
 
 `file_sha256`, `file_bytes` and `format` describe the file as read, and `upload` (once a request
-was sent) the stripped bytes that were uploaded; `observed_at_unix` is when the command ran.
+was sent) the bytes that were uploaded, which are the same; `observed_at_unix` is when the command
+ran.
 `match_type` and `provider_score` are the provider's own, **never identity probabilities**. No
 local perceptual hashing or face recognition is done: the provider does its own matching.
 
 **Limits:** 4 MiB per file, read through Huntsman's bounded reader, which refuses a symbolic link
 and a file that changes during the read; at most 80 matches; one request per search, within the
-20-second API leg timeout, with no retries and no redirects. Offline the file may be a JPEG, PNG,
-WebP or GIF by its first bytes; only a JPEG, PNG or still WebP is uploaded. CLI only: there is no
+20-second API leg timeout, with no retries and no redirects. The file may be a JPEG, PNG, WebP or GIF
+by its first bytes, offline and live. CLI only: there is no
 web route or Web UI panel.
 
 To check an install offline, `huntsman-recon reverse-image ./known.jpg --json` must print

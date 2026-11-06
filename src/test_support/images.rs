@@ -1,12 +1,13 @@
-//! Hand-built images for the reverse-image tests, so no binary fixture is committed. Each carries
+//! Hand-built images for the tests that read embedded metadata (reverse-image, the embedded
+//! metadata reader), so no binary fixture is committed. Each carries
 //! the metadata a camera, a phone or an editor embeds, beside the data a decoder needs.
 
 /// The picture's place in every fixture's GPS block: 48°51'N 2°21'E.
-pub(super) const GPS: (f64, f64) = (48.85, 2.35);
+pub const GPS: (f64, f64) = (48.85, 2.35);
 
 /// A little-endian TIFF block whose GPS IFD puts the camera at [`GPS`], as an Exif segment or
 /// chunk holds it.
-pub(super) fn gps_tiff() -> Vec<u8> {
+pub fn gps_tiff() -> Vec<u8> {
     fn entry(out: &mut Vec<u8>, tag: u16, kind: u16, count: u32, value: [u8; 4]) {
         out.extend_from_slice(&tag.to_le_bytes());
         out.extend_from_slice(&kind.to_le_bytes());
@@ -34,10 +35,10 @@ pub(super) fn gps_tiff() -> Vec<u8> {
 }
 
 /// An XMP packet naming its creator and a GPS position, as an editor writes one.
-pub(super) const XMP_PACKET: &[u8] = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="48,51.0N" exif:GPSLongitude="2,21.0E"><dc:creator><rdf:Seq><rdf:li>Ada Lovelace</rdf:li></rdf:Seq></dc:creator></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+pub const XMP_PACKET: &[u8] = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="48,51.0N" exif:GPSLongitude="2,21.0E"><dc:creator><rdf:Seq><rdf:li>Ada Lovelace</rdf:li></rdf:Seq></dc:creator></rdf:Description></rdf:RDF></x:xmpmeta>"#;
 
 /// One JPEG marker segment: the marker, its two-byte length and its payload.
-pub(super) fn segment(marker: u8, payload: &[u8]) -> Vec<u8> {
+pub fn segment(marker: u8, payload: &[u8]) -> Vec<u8> {
     let length = u16::try_from(payload.len() + 2).expect("a segment fits its length field");
     let mut out = vec![0xFF, marker];
     out.extend_from_slice(&length.to_be_bytes());
@@ -47,7 +48,7 @@ pub(super) fn segment(marker: u8, payload: &[u8]) -> Vec<u8> {
 
 /// The segments a decoder needs for a one-pixel greyscale baseline JPEG: a quantisation table, the
 /// frame, a Huffman table and one scan, whose data holds a stuffed `0xFF` and a restart marker.
-pub(super) fn jpeg_picture() -> Vec<u8> {
+pub fn jpeg_picture() -> Vec<u8> {
     let mut out = segment(0xDB, &[0x00; 65]); // DQT: table 0, 64 entries
     out.extend(segment(
         0xC0,
@@ -62,7 +63,7 @@ pub(super) fn jpeg_picture() -> Vec<u8> {
 /// A JPEG whose application segments and comment carry Exif with a GPS position, XMP, IPTC and a
 /// comment beside the JFIF header and the Adobe colour transform, followed after its end by a
 /// second picture with its own Exif, as a multi-picture file holds a preview.
-pub(super) fn jpeg_with_metadata() -> Vec<u8> {
+pub fn jpeg_with_metadata() -> Vec<u8> {
     let mut exif = b"Exif\0\0".to_vec();
     exif.extend(gps_tiff());
     let mut xmp = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
@@ -95,11 +96,112 @@ pub(super) fn jpeg_with_metadata() -> Vec<u8> {
 }
 
 /// A JPEG with no metadata at all: SOI, [`jpeg_picture`] and EOI.
-pub(super) fn plain_jpeg() -> Vec<u8> {
+pub fn plain_jpeg() -> Vec<u8> {
     let mut out = vec![0xFF, 0xD8];
     out.extend(jpeg_picture());
     out.extend_from_slice(&[0xFF, 0xD9]);
     out
+}
+
+/// One directory entry for [`exif_tiff`]: the tag, its TIFF type and its value bytes, already in
+/// the block's byte order.
+pub type TiffEntry<'a> = (u16, u16, &'a [u8]);
+
+/// A TIFF block, big-endian (`MM`) or little-endian (`II`), whose IFD0 holds `image` and, when
+/// `camera` is not empty, points to an Exif sub-IFD holding `camera`, as a camera writes one: each
+/// directory sorted by tag, and every value longer than four bytes stored after the directories.
+pub fn exif_tiff(big_endian: bool, image: &[TiffEntry], camera: &[TiffEntry]) -> Vec<u8> {
+    let u16_bytes = |value: u16| {
+        if big_endian {
+            value.to_be_bytes()
+        } else {
+            value.to_le_bytes()
+        }
+    };
+    let u32_bytes = |value: usize| {
+        let value = u32::try_from(value).expect("a test block fits in 32 bits");
+        if big_endian {
+            value.to_be_bytes()
+        } else {
+            value.to_le_bytes()
+        }
+    };
+    let directory_len = |count: usize| 2 + 12 * count + 4;
+    let points_to_camera = !camera.is_empty();
+    let camera_at = 8 + directory_len(image.len() + usize::from(points_to_camera));
+    let values_at = camera_at
+        + if points_to_camera {
+            directory_len(camera.len())
+        } else {
+            0
+        };
+    let mut out = if big_endian {
+        b"MM\0*".to_vec()
+    } else {
+        b"II*\0".to_vec()
+    };
+    out.extend_from_slice(&u32_bytes(8));
+    let mut values = Vec::new();
+    for (entries, pointer) in [(image, points_to_camera), (camera, false)] {
+        if entries.is_empty() && !pointer {
+            continue;
+        }
+        let mut all: Vec<(u16, u16, Vec<u8>)> = entries
+            .iter()
+            .map(|&(tag, kind, value)| (tag, kind, value.to_vec()))
+            .collect();
+        if pointer {
+            all.push((0x8769, 4, u32_bytes(camera_at).to_vec()));
+        }
+        all.sort_by_key(|&(tag, ..)| tag);
+        out.extend_from_slice(&u16_bytes(u16::try_from(all.len()).unwrap()));
+        for (tag, kind, value) in all {
+            let unit = match kind {
+                3 => 2,
+                4 => 4,
+                5 => 8,
+                _ => 1,
+            };
+            out.extend_from_slice(&u16_bytes(tag));
+            out.extend_from_slice(&u16_bytes(kind));
+            out.extend_from_slice(&u32_bytes(value.len() / unit));
+            if value.len() <= 4 {
+                let mut inline = value;
+                inline.resize(4, 0);
+                out.extend(inline);
+            } else {
+                out.extend_from_slice(&u32_bytes(values_at + values.len()));
+                values.extend(value);
+            }
+        }
+        out.extend_from_slice(&u32_bytes(0));
+    }
+    assert_eq!(out.len(), values_at);
+    out.extend(values);
+    out
+}
+
+/// [`plain_jpeg`] with `tiff` as its Exif segment and, when given, `xmp` as its XMP packet.
+pub fn jpeg_with(tiff: &[u8], xmp: Option<&[u8]>) -> Vec<u8> {
+    let mut exif = b"Exif\0\0".to_vec();
+    exif.extend_from_slice(tiff);
+    let picture = plain_jpeg();
+    let mut out = picture[..2].to_vec();
+    out.extend(segment(0xE1, &exif));
+    if let Some(packet) = xmp {
+        let mut payload = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+        payload.extend_from_slice(packet);
+        out.extend(segment(0xE1, &payload));
+    }
+    out.extend_from_slice(&picture[2..]);
+    out
+}
+
+/// `text` as a NUL-terminated ASCII value.
+pub fn ascii_value(text: &str) -> Vec<u8> {
+    let mut value = text.as_bytes().to_vec();
+    value.push(0);
+    value
 }
 
 /// The CRC-32 a PNG chunk ends with, over its type and body.
@@ -119,7 +221,7 @@ fn crc32(bytes: &[u8]) -> u32 {
 }
 
 /// One PNG chunk: length, type, body and CRC.
-pub(super) fn png_chunk(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
+pub fn png_chunk(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
     let mut out = u32::try_from(body.len()).unwrap().to_be_bytes().to_vec();
     out.extend_from_slice(&kind);
     out.extend_from_slice(body);
@@ -128,7 +230,7 @@ pub(super) fn png_chunk(kind: [u8; 4], body: &[u8]) -> Vec<u8> {
 }
 
 /// A one-pixel greyscale PNG's header, image data and end.
-pub(super) fn png_picture() -> [Vec<u8>; 3] {
+pub fn png_picture() -> [Vec<u8>; 3] {
     [
         png_chunk(*b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0, 0, 0]),
         png_chunk(*b"IDAT", &[120, 156, 99, 104, 0, 0, 0, 130, 0, 129]),
@@ -138,7 +240,7 @@ pub(super) fn png_picture() -> [Vec<u8>; 3] {
 
 /// A PNG carrying an `eXIf` chunk with a GPS position, `tEXt`, `zTXt`, an XMP `iTXt` and a `tIME`,
 /// with bytes appended after its end.
-pub(super) fn png_with_metadata() -> Vec<u8> {
+pub fn png_with_metadata() -> Vec<u8> {
     let [header, data, end] = png_picture();
     let mut xmp = b"XML:com.adobe.xmp\0\0\0\0\0".to_vec();
     xmp.extend_from_slice(XMP_PACKET);
@@ -156,7 +258,7 @@ pub(super) fn png_with_metadata() -> Vec<u8> {
 }
 
 /// One WebP chunk: its code, its size, its payload and the pad byte an odd size takes.
-pub(super) fn webp_chunk(fourcc: [u8; 4], payload: &[u8]) -> Vec<u8> {
+pub fn webp_chunk(fourcc: [u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut out = fourcc.to_vec();
     out.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
     out.extend_from_slice(payload);
@@ -167,7 +269,7 @@ pub(super) fn webp_chunk(fourcc: [u8; 4], payload: &[u8]) -> Vec<u8> {
 }
 
 /// A WebP file of `chunks`, with the RIFF size they make.
-pub(super) fn webp(chunks: &[Vec<u8>]) -> Vec<u8> {
+pub fn webp(chunks: &[Vec<u8>]) -> Vec<u8> {
     let body: Vec<u8> = chunks.concat();
     let mut out = b"RIFF".to_vec();
     out.extend_from_slice(&u32::try_from(body.len() + 4).unwrap().to_le_bytes());
@@ -177,12 +279,12 @@ pub(super) fn webp(chunks: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// A `VP8X` chunk with `flags` and a one-by-one canvas.
-pub(super) fn vp8x(flags: u8) -> Vec<u8> {
+pub fn vp8x(flags: u8) -> Vec<u8> {
     webp_chunk(*b"VP8X", &[flags, 0, 0, 0, 0, 0, 0, 0, 0, 0])
 }
 
 /// A lossy image chunk (its frame bytes are not decoded here).
-pub(super) fn vp8() -> Vec<u8> {
+pub fn vp8() -> Vec<u8> {
     webp_chunk(
         *b"VP8 ",
         b"\x30\x01\x00\x9d\x01\x2a\x01\x00\x01\x00\x02\x00",
@@ -191,7 +293,7 @@ pub(super) fn vp8() -> Vec<u8> {
 
 /// An extended WebP whose `VP8X` flags an ICC profile, Exif and XMP, holding all three beside its
 /// image, with bytes appended after the RIFF container.
-pub(super) fn webp_with_metadata() -> Vec<u8> {
+pub fn webp_with_metadata() -> Vec<u8> {
     let mut exif = b"Exif\0\0".to_vec();
     exif.extend(gps_tiff());
     let mut out = webp(&[

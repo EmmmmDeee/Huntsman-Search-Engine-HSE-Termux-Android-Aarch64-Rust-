@@ -502,7 +502,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Offline investigate
 
-`investigate TEXT... | investigate --file FILE` extracts actionable entities through the rebuilt classifier without network access. File input uses the bounded reader, refuses symlinks, and is capped at 1 MiB. The `modules` catalogue includes this path as `classifier` only because it is now reachable from the binary.
+`investigate TEXT... | investigate --file FILE` extracts actionable entities through the rebuilt classifier without network access. File input uses the bounded reader and refuses symlinks. A text file up to 1 MiB is read as text (and for its embedded metadata too, when it carries any); a longer text file is refused. Any other file up to 64 MiB, such as a photo or a PDF, is read for its embedded metadata through the same reader the web inspect view and `reverse-image` use (`embedded_metadata`): the `exif` and `docmeta` fields, a GPS position as coordinates, and every email address, link, domain, IP address or phone number written into a field people write (an author, rights, contact, comment or description field), each attributed to its file and field; a value a device or program writes for itself (a serial number, an identifier, a version, a time) is read only for an email address or a link, so its digits are never taken for a phone number. The `modules` catalogue includes this path as `classifier` only because it is now reachable from the binary.
 
 
 ### Offline investigation plan
@@ -624,13 +624,13 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 
 ### Reverse-image search
 
-`reverse-image IMAGE-FILE [--json]` prints a local image's SHA-256, size and format offline:
-nothing is sent and no search runs, so the report holds no matches rather than zero matches.
+`reverse-image IMAGE-FILE [--json]` prints a local image's SHA-256, size and format offline, with
+everything its embedded metadata says (the `exif` and `docmeta` readers' fields, its GPS position as
+coordinates, and every identifier a metadata value holds, attributed to its field): nothing is sent
+and no search runs, so the report holds no matches rather than zero matches.
 `--live --provider google_vision|lenso|saucenao` uploads the image to that one provider, with
-the key from its slot, and prints what the provider's own index returned. Before the upload its
-embedded metadata is removed (Exif with its GPS position, XMP, IPTC, comments, colour profiles,
-PNG text and time chunks, data after the end of the image); only a JPEG, PNG or still WebP is
-uploaded, and anything else is refused before any request (exit 65). `--live` without
+the key from its slot, and prints what the provider's own index returned. The provider receives
+the file exactly as read, with all of its embedded metadata: nothing is removed or rewritten. `--live` without
 `--provider` is refused, so no run asks more than one provider; a provider without a key is asked
 nothing (exit 66), and a failed search is never "no matches" (exit 69). Images are capped at
 4 MiB; the file reader refuses symlinks and changed inodes. CLI only: there is no web route or

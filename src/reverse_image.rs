@@ -7,12 +7,11 @@
 //! Each provider searches its own index, not the whole internet, and a visually similar image is
 //! never evidence of a person's identity.
 //!
-//! The provider receives the whole picture, so nothing else goes with it: before any request the
-//! `strip` submodule removes the image's embedded metadata (Exif with its GPS position, XMP, IPTC,
-//! comments, colour profiles, text and time chunks, and anything after the end of the image).
-//! Only a JPEG, PNG or still WebP image whose structure parses whole is uploaded; a GIF or any
-//! other file is refused before a request, and so is an image either metadata reader still finds
-//! metadata in once stripped.
+//! The provider receives the file exactly as it was read, with everything it embeds: Exif with any
+//! GPS position, XMP, IPTC, comments, colour profiles and anything after the end of the image.
+//! Nothing is removed or rewritten. Every report also reads that metadata
+//! ([`crate::embedded_metadata`]), offline and live alike, so the position, device, times and
+//! identifiers the file carries become evidence and pivots beside whatever the provider returns.
 //!
 //! Each provider is an [`Api`] leg ([`crate::api_leg`]): its key comes only from its operator
 //! slot, goes only to the provider's own origin, is added to the request only as it is sent and
@@ -26,14 +25,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
+use crate::embedded_metadata::{self, Inspected};
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-
-mod strip;
-#[cfg(test)]
-mod test_images;
 
 /// The largest image read and uploaded. It bounds the memory the Base64 and multipart copies of
 /// an upload take.
@@ -176,15 +172,12 @@ pub enum Search {
     Completed,
 }
 
-/// What a live search sent: the image with its embedded metadata removed.
+/// What a live search sent: the file exactly as it was read, its embedded metadata included.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Upload {
-    /// SHA-256 of the bytes sent, which differ from the file's when anything was removed.
+    /// SHA-256 of the bytes sent, which are the file's own.
     pub sha256: String,
     pub bytes: usize,
-    /// The kinds of data removed before the upload, each once: JPEG segments (`APP1`, `COM`), PNG
-    /// chunks (`eXIf`, `tEXt`), WebP chunks (`EXIF`, `XMP`) and `trailing data`.
-    pub metadata_removed: Vec<String>,
 }
 
 /// One `reverse-image` run.
@@ -195,6 +188,9 @@ pub struct ImageReport {
     pub file_bytes: usize,
     /// The container the file's first bytes name: JPEG, PNG, WebP or GIF.
     pub format: &'static str,
+    /// Everything the file's embedded metadata says, read before anything is sent: the EXIF and
+    /// document readers' entities, its GPS position, and the identifiers written into its fields.
+    pub metadata: Inspected,
     /// The one provider the operator named; `None` offline.
     pub provider: Option<&'static str>,
     pub search: Search,
@@ -211,15 +207,16 @@ pub struct ImageReport {
     pub truncated: bool,
 }
 
-/// The offline report: the file's SHA-256, size and format. No provider is asked and nothing is
-/// sent, so the report says no search ran and holds no matches.
+/// The offline report: the file's SHA-256, size, format and embedded metadata, for a file the
+/// operator knows as `label`. No provider is asked and nothing is sent, so the report says no
+/// search ran and holds no matches.
 ///
 /// # Errors
 /// An empty file, one over [`MAX_REVERSE_IMAGE_BYTES`], or one that is not a JPEG, PNG, WebP or
 /// GIF image.
-pub fn fingerprint(image: &[u8], now_unix: u64) -> Result<ImageReport, &'static str> {
+pub fn fingerprint(image: &[u8], label: &str, now_unix: u64) -> Result<ImageReport, &'static str> {
     let format = checked(image)?;
-    Ok(offline(image, format, now_unix))
+    Ok(offline(image, format, label, now_unix))
 }
 
 /// `image`'s format, when it is a JPEG, PNG, WebP or GIF of 1 byte to [`MAX_REVERSE_IMAGE_BYTES`].
@@ -230,12 +227,22 @@ fn checked(image: &[u8]) -> Result<Format, &'static str> {
     Format::of(image).ok_or("not a JPEG, PNG, WebP or GIF image")
 }
 
-/// The report of a run that sent nothing. **Pure.**
-fn offline(image: &[u8], format: Format, now_unix: u64) -> ImageReport {
+/// The report of a run that sent nothing, with what the file's embedded metadata says.
+fn offline(image: &[u8], format: Format, label: &str, now_unix: u64) -> ImageReport {
+    let metadata =
+        embedded_metadata::inspect(image, label, now_unix).unwrap_or_else(|why| Inspected {
+            entities: Vec::new(),
+            outcomes: vec![SourceExecutionOutcome::inconclusive(
+                crate::docmeta::SOURCE,
+                now_unix,
+                why,
+            )],
+        });
     ImageReport {
         file_sha256: hex32(&sha256(image)),
         file_bytes: image.len(),
         format: format.name(),
+        metadata,
         provider: None,
         search: Search::NotRun,
         upload: None,
@@ -246,34 +253,31 @@ fn offline(image: &[u8], format: Format, now_unix: u64) -> ImageReport {
     }
 }
 
-/// One live search: `image`, without its embedded metadata, uploaded to the one provider `name`
-/// names, with its key from `keys`, and to no other provider. A provider whose key
-/// is not configured is asked nothing. A refusal, a failure and an answer that is not the
-/// provider's documented shape are reported as such, never as no matches.
+/// One live search: `image`, the file `label` names exactly as it was read with its embedded
+/// metadata, uploaded to the one provider `name` names, with its key from `keys`, and to no other
+/// provider. A provider whose key is not configured is asked nothing. A refusal, a failure and an
+/// answer that is not the provider's documented shape are reported as such, never as no matches.
 ///
 /// # Errors
-/// Before any request: an unknown provider name, an image [`fingerprint`] refuses, and one whose
-/// metadata cannot be removed (a GIF or any other format, an animated WebP, a structure that does
-/// not parse whole, metadata that is still found once stripped).
+/// Before any request: an unknown provider name, and an image [`fingerprint`] refuses.
 pub fn search_one<T: Transport + ?Sized>(
     transport: &T,
     image: &[u8],
+    label: &str,
     keys: &Keys,
     name: &str,
     now_unix: u64,
 ) -> Result<ImageReport, &'static str> {
     let api = provider(name).ok_or("unknown reverse-image provider")?;
     let format = checked(image)?;
-    let stripped = strip::strip(image, format)?;
-    let mut report = offline(image, format, now_unix);
+    let mut report = offline(image, format, label, now_unix);
     report.provider = Some(api.source);
     let upload = Upload {
-        sha256: hex32(&sha256(&stripped.bytes)),
-        bytes: stripped.bytes.len(),
-        metadata_removed: stripped.removed,
+        sha256: report.file_sha256.clone(),
+        bytes: image.len(),
     };
     let (search, outcome) = if api.wanted(keys) {
-        match perform(transport, api, format, &stripped.bytes, keys, now_unix) {
+        match perform(transport, api, format, image, keys, now_unix) {
             Ok(found) => {
                 let outcome = if found.kept.is_empty() {
                     SourceExecutionOutcome::valid_zero(api.source, now_unix)
@@ -587,9 +591,9 @@ fn parse_saucenao(value: &Value) -> Result<Collected, LegError> {
 mod tests {
     use std::sync::Mutex;
 
-    use super::test_images::{jpeg_with_metadata, plain_jpeg};
     use super::*;
     use crate::http::{Method, Request, Response, TransportFailure};
+    use crate::test_support::images::{GPS, jpeg_picture, jpeg_with_metadata, plain_jpeg};
 
     /// A transport that must never be used.
     struct NoNetwork;
@@ -727,7 +731,7 @@ mod tests {
 
     #[test]
     fn offline_says_no_search_ran_and_holds_no_matches_rather_than_zero() {
-        let report = fingerprint(GIF, 7).unwrap();
+        let report = fingerprint(GIF, "photo.jpg", 7).unwrap();
         assert_eq!(report.file_sha256, hex32(&sha256(GIF)));
         assert_eq!(report.file_bytes, GIF.len());
         assert_eq!(report.format, "GIF");
@@ -746,58 +750,133 @@ mod tests {
     #[test]
     fn malformed_oversized_and_unknown_input_is_refused_before_any_request() {
         let keys = every_key();
-        assert!(search_one(&NoNetwork, b"not image", &keys, LENSO_SOURCE, 1).is_err());
+        assert!(
+            search_one(
+                &NoNetwork,
+                b"not image",
+                "photo.jpg",
+                &keys,
+                LENSO_SOURCE,
+                1
+            )
+            .is_err()
+        );
         let oversized = vec![0xFF; MAX_REVERSE_IMAGE_BYTES + 1];
-        assert!(search_one(&NoNetwork, &oversized, &keys, LENSO_SOURCE, 1).is_err());
-        assert!(search_one(&NoNetwork, b"", &keys, LENSO_SOURCE, 1).is_err());
-        assert!(search_one(&NoNetwork, &plain_jpeg(), &keys, "other", 1).is_err());
-        assert!(search_one(&NoNetwork, &plain_jpeg(), &keys, "", 1).is_err());
+        assert!(search_one(&NoNetwork, &oversized, "photo.jpg", &keys, LENSO_SOURCE, 1).is_err());
+        assert!(search_one(&NoNetwork, b"", "photo.jpg", &keys, LENSO_SOURCE, 1).is_err());
+        assert!(search_one(&NoNetwork, &plain_jpeg(), "photo.jpg", &keys, "other", 1).is_err());
+        assert!(search_one(&NoNetwork, &plain_jpeg(), "photo.jpg", &keys, "", 1).is_err());
     }
 
     #[test]
-    fn an_unsupported_format_is_refused_for_upload_before_any_request() {
-        // A GIF is hashed offline, but never uploaded: its metadata is not removed here.
-        assert!(fingerprint(GIF, 1).is_ok());
-        for api in PROVIDERS {
-            let refused = search_one(&NoNetwork, GIF, &every_key(), api.source, 1);
-            assert!(refused.unwrap_err().contains("GIF is not uploaded"));
-        }
-        let mut cut = plain_jpeg();
-        cut.truncate(cut.len() - 2);
-        assert!(search_one(&NoNetwork, &cut, &every_key(), LENSO_SOURCE, 1).is_err());
+    fn a_gif_is_uploaded_as_it_is_like_any_other_supported_image() {
+        let network = Scripted::new(&json!({"results":[]}));
+        let report = search_one(&network, GIF, "photo.jpg", &every_key(), LENSO_SOURCE, 1).unwrap();
+        assert_eq!(report.search, Search::Completed);
+        let payload: Value = serde_json::from_slice(&network.sent()[0].body).unwrap();
+        assert_eq!(payload["image"], crate::base64::standard(GIF));
     }
 
     #[test]
-    fn the_upload_is_the_image_without_its_metadata() {
+    fn the_upload_is_the_file_exactly_as_read_with_its_metadata() {
         let original = jpeg_with_metadata();
         let network = Scripted::new(&sauce_answer(0, &json!([])));
-        let report = search_one(&network, &original, &every_key(), SAUCENAO_SOURCE, 1).unwrap();
+        let report = search_one(
+            &network,
+            &original,
+            "photo.jpg",
+            &every_key(),
+            SAUCENAO_SOURCE,
+            1,
+        )
+        .unwrap();
         let sent = network.sent();
         let body = &sent[0].body;
         let holds = |needle: &[u8]| body.windows(needle.len()).any(|part| part == needle);
-        assert!(!holds(b"Exif\0\0") && !holds(b"<x:xmpmeta") && !holds(b"Ada Lovelace"));
-        assert!(holds(&test_images::jpeg_picture()));
+        // Every byte of the file goes, its Exif, XMP and IPTC included.
+        assert!(holds(&original));
+        assert!(holds(b"Exif\0\0") && holds(b"<x:xmpmeta") && holds(b"Ada Lovelace"));
+        assert!(holds(&jpeg_picture()));
         assert!(holds(b"filename=\"image.jpg\"\r\nContent-Type: image/jpeg"));
         let upload = report.upload.expect("an upload was sent");
         assert_eq!(report.file_sha256, hex32(&sha256(&original)));
-        assert_ne!(upload.sha256, report.file_sha256);
-        assert!(upload.bytes < original.len());
-        assert!(upload.metadata_removed.contains(&"APP1".to_owned()));
+        assert_eq!(upload.sha256, report.file_sha256);
+        assert_eq!(upload.bytes, original.len());
 
-        // Google and Lenso take the same stripped bytes, Base64-encoded in JSON.
+        // Google and Lenso take the same bytes, Base64-encoded in JSON.
         let network = Scripted::new(&json!({"results":[]}));
-        search_one(&network, &original, &every_key(), LENSO_SOURCE, 1).unwrap();
+        search_one(
+            &network,
+            &original,
+            "photo.jpg",
+            &every_key(),
+            LENSO_SOURCE,
+            1,
+        )
+        .unwrap();
         let payload: Value = serde_json::from_slice(&network.sent()[0].body).unwrap();
         let sent_image = payload["image"].as_str().unwrap();
-        let stripped = strip::strip(&original, Format::Jpeg).unwrap().bytes;
-        assert_eq!(sent_image, crate::base64::standard(&stripped));
+        assert_eq!(sent_image, crate::base64::standard(&original));
+    }
+
+    /// The report reads the file's embedded metadata whether or not anything is sent: its GPS
+    /// position becomes coordinates, attributed to the file, and both readers' outcomes are kept.
+    #[test]
+    fn every_report_carries_the_files_embedded_metadata_as_evidence() {
+        let report = fingerprint(&jpeg_with_metadata(), "photo.jpg", 7).unwrap();
+        let point = report
+            .metadata
+            .entities
+            .iter()
+            .find(|entity| entity.kind == crate::entity::EntityKind::Coordinates)
+            .expect("the GPS position is evidence");
+        let (lat, lon) = crate::geohash::parse_coords(&point.value).unwrap();
+        assert!((lat - GPS.0).abs() < 1e-6 && (lon - GPS.1).abs() < 1e-6);
+        assert!(
+            point
+                .evidence
+                .iter()
+                .any(|evidence| evidence.summary.contains("photo.jpg"))
+        );
+        let readers: Vec<&str> = report
+            .metadata
+            .outcomes
+            .iter()
+            .map(|outcome| outcome.module.as_str())
+            .collect();
+        assert_eq!(readers, [crate::exif::SOURCE, crate::docmeta::SOURCE]);
+        let json = serde_json::to_value(&report).unwrap();
+        assert!(
+            json["metadata"]["entities"]
+                .as_array()
+                .is_some_and(|all| !all.is_empty())
+        );
+
+        let network = Scripted::new(&sauce_answer(0, &json!([])));
+        let live = search_one(
+            &network,
+            &jpeg_with_metadata(),
+            "photo.jpg",
+            &every_key(),
+            SAUCENAO_SOURCE,
+            1,
+        )
+        .unwrap();
+        assert_eq!(live.metadata.entities.len(), report.metadata.entities.len());
     }
 
     #[test]
     fn a_provider_without_a_key_is_asked_nothing_and_named_with_its_slot() {
         for api in PROVIDERS {
-            let report =
-                search_one(&NoNetwork, &plain_jpeg(), &Keys::default(), api.source, 1).unwrap();
+            let report = search_one(
+                &NoNetwork,
+                &plain_jpeg(),
+                "photo.jpg",
+                &Keys::default(),
+                api.source,
+                1,
+            )
+            .unwrap();
             assert_eq!(report.search, Search::NotRun, "{}", api.source);
             assert!(report.matches.is_none() && report.upload.is_none());
             let outcome = report.outcome.unwrap();
@@ -818,7 +897,15 @@ mod tests {
             (&SAUCENAO, sauce_answer(0, &json!([]))),
         ] {
             let network = Scripted::new(&answer);
-            let report = search_one(&network, &plain_jpeg(), &every_key(), api.source, 9).unwrap();
+            let report = search_one(
+                &network,
+                &plain_jpeg(),
+                "photo.jpg",
+                &every_key(),
+                api.source,
+                9,
+            )
+            .unwrap();
             assert_eq!(report.provider, Some(api.source));
             assert_eq!(report.search, Search::Completed, "{}", api.source);
             assert_eq!(report.matches, Some(Vec::new()));
@@ -856,7 +943,15 @@ mod tests {
             "fullMatchingImages":[{"url":"https://example.org/picture.jpg"}]}}]}));
         let secret = "testing_provider_secret_123";
         let keys = keys_with(crate::environment::GOOGLE_VISION_KEY_ENV, secret);
-        let report = search_one(&network, &plain_jpeg(), &keys, GOOGLE_VISION_SOURCE, 123).unwrap();
+        let report = search_one(
+            &network,
+            &plain_jpeg(),
+            "photo.jpg",
+            &keys,
+            GOOGLE_VISION_SOURCE,
+            123,
+        )
+        .unwrap();
         assert_eq!(report.observed_at_unix, 123);
         assert_eq!(report.search, Search::Completed);
         assert_eq!(report.matches.as_ref().map(Vec::len), Some(1));
@@ -883,7 +978,15 @@ mod tests {
         let network = Scripted::new(&sauce_answer(0, &json!([])));
         let secret = "testing_sauce_secret_123";
         let keys = keys_with(crate::environment::SAUCENAO_KEY_ENV, secret);
-        let report = search_one(&network, &plain_jpeg(), &keys, SAUCENAO_SOURCE, 123).unwrap();
+        let report = search_one(
+            &network,
+            &plain_jpeg(),
+            "photo.jpg",
+            &keys,
+            SAUCENAO_SOURCE,
+            123,
+        )
+        .unwrap();
         assert_eq!(report.search, Search::Completed);
         let sent = network.sent();
         assert_eq!(sent.len(), 1);
@@ -915,7 +1018,15 @@ mod tests {
         let network = Scripted::new(&json!({"results":[]}));
         let secret = "testing_lenso_secret_123";
         let keys = keys_with(crate::environment::LENSO_KEY_ENV, secret);
-        let report = search_one(&network, &plain_jpeg(), &keys, LENSO_SOURCE, 123).unwrap();
+        let report = search_one(
+            &network,
+            &plain_jpeg(),
+            "photo.jpg",
+            &keys,
+            LENSO_SOURCE,
+            123,
+        )
+        .unwrap();
         assert_eq!(report.search, Search::Completed);
         let sent = network.sent();
         assert_eq!(sent[0].url, LENSO_URL);
@@ -929,7 +1040,15 @@ mod tests {
     #[test]
     fn malformed_provider_json_is_a_failed_search_not_a_negative_result() {
         let network = Scripted::new(&json!({"notResults": []}));
-        let report = search_one(&network, &plain_jpeg(), &every_key(), LENSO_SOURCE, 123).unwrap();
+        let report = search_one(
+            &network,
+            &plain_jpeg(),
+            "photo.jpg",
+            &every_key(),
+            LENSO_SOURCE,
+            123,
+        )
+        .unwrap();
         assert_eq!(report.search, Search::Failed);
         assert!(report.matches.is_none());
         assert!(report.upload.is_some(), "the image was sent");

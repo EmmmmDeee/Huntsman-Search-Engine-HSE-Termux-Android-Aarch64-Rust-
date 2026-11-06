@@ -8,7 +8,6 @@ use std::process::ExitCode;
 use super::fail;
 use huntsman_recon::clock;
 use huntsman_recon::diagnostics::TermuxState;
-use huntsman_recon::entity::merge_by_uid;
 use huntsman_recon::environment::SERVE_TOKEN_ENV;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
@@ -19,7 +18,6 @@ use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
     parse_kind,
 };
-use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceRun};
 use huntsman_recon::textnorm::one_line;
 use huntsman_recon::web_server::{
     LookupError, LookupQuery, LookupReport, ServeConfig, Server, resolve_serve_bind,
@@ -113,34 +111,14 @@ fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
             status: None,
         });
     }
-    let mut entities = Vec::new();
-    let mut outcomes = Vec::new();
-    match huntsman_recon::exif::run(bytes, label, now) {
-        SourceRun::Printed { report, .. } => {
-            entities.extend(report.entities);
-            outcomes.extend(report.outcomes);
-        }
-        SourceRun::Network(why) | SourceRun::Failed(why) => {
-            outcomes.push(SourceExecutionOutcome::inconclusive(
-                huntsman_recon::exif::SOURCE,
-                now,
-                why,
-            ));
-        }
-    }
-    match huntsman_recon::docmeta::run(bytes, label, now) {
-        SourceRun::Printed { report, .. } => {
-            entities.extend(report.entities);
-            outcomes.extend(report.outcomes);
-        }
-        SourceRun::Network(why) | SourceRun::Failed(why) => {
-            return Err(LookupError {
+    // Both readers of the file's embedded metadata, and the identifiers they find in its fields.
+    let huntsman_recon::embedded_metadata::Inspected { entities, outcomes } =
+        huntsman_recon::embedded_metadata::inspect(bytes, label, now).map_err(|message| {
+            LookupError {
                 status: 422,
-                message: why,
-            });
-        }
-    }
-    merge_by_uid(&mut entities);
+                message,
+            }
+        })?;
     let text = huntsman_recon::lookup_report::render(&entities, &outcomes).map_err(|message| {
         LookupError {
             status: 500,
