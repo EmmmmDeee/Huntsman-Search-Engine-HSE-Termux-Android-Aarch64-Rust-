@@ -72,12 +72,12 @@ fn a_lookup_saves_its_ledger_and_exits_141_when_the_reader_has_gone() {
     .output()
     .unwrap();
     assert_eq!(verify.status.code(), Some(0), "{}", stderr(&verify));
-    // Three outcomes, one per numbering plan (the plan that does not hold the number answers too),
+    // Four outcomes, one per numbering plan (each plan that does not hold the number answers too),
     // one not-configured row for each keyed phone leg this keyless run skipped (numverify and the
     // keyed indicator source), the entity, and one evidence record for each module that found the
     // number. The second module's record is the one a first-record-only save used to drop.
     assert!(
-        String::from_utf8_lossy(&verify.stdout).contains("entries=8"),
+        String::from_utf8_lossy(&verify.stdout).contains("entries=9"),
         "{}",
         String::from_utf8_lossy(&verify.stdout)
     );
