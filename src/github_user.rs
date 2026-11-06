@@ -30,11 +30,7 @@ const ADDRESS_CONF: f64 = 0.55;
 const URL_CONF: f64 = 0.70;
 const DOMAIN_CONF: f64 = 0.65;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct GhUser {
@@ -126,15 +122,10 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, username, credential.is_some(), scan_id, now_unix).unwrap_or_else(miss))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(
+        interpret(&fetched, username, credential.is_some(), scan_id, now_unix)
+            .unwrap_or_else(Report::miss),
+    )
 }
 
 pub(crate) fn token_credential(

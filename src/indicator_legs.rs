@@ -61,11 +61,7 @@ const PIVOT_CONFIDENCE: f64 = 0.60;
 type Answer = Result<Option<Finding>, crate::api_leg::LegError>;
 
 /// What the indicator legs produced.
-#[derive(Debug, Default)]
-pub struct Legs {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Legs = crate::lookup_report::LookupReport;
 
 /// The sources that run for `indicator` with `keys`, in order. **Pure.**
 #[must_use]

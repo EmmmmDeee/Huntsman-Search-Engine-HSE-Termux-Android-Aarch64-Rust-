@@ -24,7 +24,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{
     FetchOptions, Fetched, answer, decode_json, fetch, mediawiki_api_error, whole_response,
@@ -203,18 +203,7 @@ const ORGANISATION_TYPES: &[&str] = &[
     "Q43702",   // federation
 ];
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 fn configured_base() -> Result<String, Error> {
     crate::canonical::configured_https_origin(
@@ -300,7 +289,7 @@ pub fn lookup<T: Transport + ?Sized>(
     } else {
         match resolve(transport, &base, query, now_unix)? {
             Resolved::Item { qid, label } => (qid, label),
-            Resolved::None(outcome) => return Ok(miss(outcome)),
+            Resolved::None(outcome) => return Ok(Report::miss(outcome)),
         }
     };
 
@@ -312,7 +301,10 @@ pub fn lookup<T: Transport + ?Sized>(
         SOURCE,
         now_unix,
     )?;
-    Ok(interpret(&fetched, &qid, search_label.as_deref(), scan_id, now_unix).unwrap_or_else(miss))
+    Ok(
+        interpret(&fetched, &qid, search_label.as_deref(), scan_id, now_unix)
+            .unwrap_or_else(Report::miss),
+    )
 }
 
 enum Resolved {
@@ -775,6 +767,7 @@ fn collect_pivots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::Entity;
     use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::OneResponse;
 

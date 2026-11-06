@@ -132,11 +132,7 @@ const WEBSITE_CONF: f64 = 0.50;
 const ADDRESS_CONF: f64 = 0.55;
 
 /// One name lookup on SEC EDGAR.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// The full-text search envelope: `{hits: {total: {value}, hits: [{_source}]}}`.
 #[derive(Debug, Deserialize)]
@@ -291,10 +287,12 @@ fn lookup_with_config<T: Transport + ?Sized>(
     configured_agent: Option<&str>,
 ) -> Result<Report, Error> {
     if name_tokens(name).len() < 2 {
-        return Ok(miss(SourceExecutionOutcome::valid_zero(SOURCE, now_unix)));
+        return Ok(Report::miss(SourceExecutionOutcome::valid_zero(
+            SOURCE, now_unix,
+        )));
     }
     let Some(user_agent) = validated_user_agent(configured_agent) else {
-        return Ok(miss(SourceExecutionOutcome::failed(
+        return Ok(Report::miss(SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
             SourceOutcomeKind::NotConfigured,
@@ -322,10 +320,10 @@ fn lookup_with_agent<T: Transport + ?Sized>(
     )?;
     let filers = match interpret_search(&searched, name, now_unix) {
         Ok(filers) => filers,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
     if filers.is_empty() {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(200),
         ));
     }
@@ -370,14 +368,6 @@ fn lookup_with_agent<T: Transport + ?Sized>(
         SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(200)
     };
     Ok(Report { entities, outcome })
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 /// The distinct filers the full-text search matched to the queried name, most-frequent first, or the

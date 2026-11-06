@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, append_query_param};
@@ -43,11 +43,7 @@ const STATE_FIELDS: usize = 17;
 /// What an aircraft observation never establishes.
 pub const AIRCRAFT_LIMIT: &str = "A state vector OpenSky's receivers reported at its stated time: the transponder address identifies an airframe, not anyone aboard, the position is not where the aircraft is now, and being near the point is not involvement with it. OpenSky data is for non-commercial research and education.";
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// The query box `[lamin, lomin, lamax, lomax]` around a point, clamped to WGS 84 bounds; a box
 /// at a pole or the antimeridian is cut short rather than wrapped. **Pure.**

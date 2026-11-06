@@ -1,5 +1,5 @@
 use super::*;
-use crate::entity::EntityKind;
+use crate::entity::{Entity, EntityKind};
 use crate::source_outcome::SourceOutcomeKind;
 use crate::test_support::images::{
     GPS, ascii_value, exif_tiff, jpeg_with, jpeg_with_metadata, png_with_metadata,

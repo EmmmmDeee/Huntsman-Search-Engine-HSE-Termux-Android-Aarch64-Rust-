@@ -27,11 +27,7 @@ const CONF_EMAIL: f64 = 0.80;
 /// The name beside an address is whatever the key holder typed.
 const CONF_PERSON: f64 = 0.65;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Key {

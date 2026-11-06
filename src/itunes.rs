@@ -9,7 +9,7 @@
 
 use serde::Deserialize;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, percent_encode_unreserved};
@@ -25,11 +25,7 @@ const RESULT_LIMIT: usize = 25;
 /// match is a candidate for review, never a confirmed link.
 const KEYWORD_CONFIDENCE: f64 = 0.5;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct Search {
@@ -89,14 +85,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    Ok(interpret(&fetched, term, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, term, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// Turn one fetched response into a report; `Err` is the outcome of a response that was not a

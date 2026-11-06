@@ -137,11 +137,7 @@ const PDF_INFO_KEYS: &[&str] = &[
 pub type DocmetaRun = SourceRun<Report>;
 
 /// A finished `docmeta` run: the rendered report, the entities it is made of, and the outcome.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Report = crate::lookup_report::LookupReport;
 
 /// One parsed `docmeta FILE` argument: the path to read and a label for the report.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -189,24 +189,7 @@ fn execution(error: Error) -> CollectorError {
 }
 
 /// Entities and source outcomes from running `SeekNow` as one leg of a lookup.
-#[derive(Debug, Default)]
-pub struct LookupLeg {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
-
-impl LookupLeg {
-    /// Whether `SeekNow` was asked: a leg skipped for lack of a key made no request and carries
-    /// only the row saying so.
-    #[must_use]
-    pub fn asked(&self) -> bool {
-        !self.entities.is_empty()
-            || self
-                .outcomes
-                .iter()
-                .any(|outcome| outcome.kind != SourceOutcomeKind::NotConfigured)
-    }
-}
+pub type LookupLeg = crate::lookup_report::LookupReport;
 
 /// The operator-approved `SeekNow` credential built from `keys`.
 ///

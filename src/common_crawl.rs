@@ -55,7 +55,7 @@ pub fn lookup<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Report, Error> {
     let Some(domain) = canonical_domain(domain) else {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SOURCE,
             now_unix,
             "invalid domain selector",
@@ -69,7 +69,7 @@ pub fn lookup<T: Transport + ?Sized>(
     )?;
     let crawl = match newest_crawl(&fetched, now_unix) {
         Ok(crawl) => crawl,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
     let mut url = append_query_param(&format!("{INDEX}/{crawl}-index"), "url", &domain);
     url = append_query_param(&url, "matchType", "domain");
@@ -81,7 +81,7 @@ pub fn lookup<T: Transport + ?Sized>(
     let fetched = get(transport, url, "application/json", now_unix)?;
     let mut report = match index_answer(&fetched, &domain, &crawl, scan_id, now_unix) {
         Ok(report) => report,
-        Err(outcome) => miss(outcome),
+        Err(outcome) => Report::miss(outcome),
     };
     if report.outcome.kind == SourceOutcomeKind::Success {
         read_contents(transport, &mut report, &crawl, scan_id, now_unix);
@@ -105,13 +105,6 @@ fn get<T: Transport + ?Sized>(
         SOURCE,
         now_unix,
     )
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 fn failed(
@@ -178,7 +171,7 @@ fn index_answer(
 ) -> Result<Report, SourceExecutionOutcome> {
     let response = whole_response(fetched, "Common Crawl index")?;
     if response.status == 404 && no_captures(response) {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
                 .with_http_status(404)
                 .with_detail(format!("no {crawl} capture of {domain}")),
@@ -321,7 +314,7 @@ fn parse_index(
         ));
     }
     if lines.is_empty() {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
         ));
     }

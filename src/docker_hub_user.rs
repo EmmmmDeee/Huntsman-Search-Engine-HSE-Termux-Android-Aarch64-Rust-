@@ -46,11 +46,7 @@ const URL_CONF: f64 = 0.58;
 /// The host of the account's website, as a pivot.
 const DOMAIN_CONF: f64 = 0.56;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// A Docker Hub account: a user (keyed by `username`) or an organisation (keyed by `orgname`), with
 /// the self-declared profile fields shared by both shapes.
@@ -173,7 +169,7 @@ pub fn lookup<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     let handle = username.trim().trim_start_matches('@').to_ascii_lowercase();
     if !valid_handle(&handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SRC,
             now_unix,
             "selector is not a valid Docker Hub handle",
@@ -203,7 +199,7 @@ pub fn lookup<T: Transport + ?Sized>(
     };
     let (account, status) = match interpret_account(&fetched, &handle, now_unix) {
         Ok(found) => found,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
 
     // The account is confirmed; its repository count is enrichment, so a listing that is refused or
@@ -227,14 +223,6 @@ pub fn lookup<T: Transport + ?Sized>(
             .with_http_status(status),
         entities,
     })
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 /// Whether the fetch returned an unfollowed redirect (a 3xx under [`FetchOptions::no_redirects`]).

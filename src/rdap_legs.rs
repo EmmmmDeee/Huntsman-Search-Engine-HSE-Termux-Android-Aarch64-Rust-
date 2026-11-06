@@ -29,11 +29,7 @@ const RECORD_CONFIDENCE: f64 = 0.90;
 const NAMED_CONFIDENCE: f64 = 0.85;
 
 /// The leg's entities and its outcome row.
-#[derive(Debug, Default)]
-pub struct Leg {
-    pub entities: Vec<Entity>,
-    pub outcome: Option<SourceExecutionOutcome>,
-}
+pub type Leg = crate::lookup_report::Leg;
 
 /// The registration of `domain`'s registrable domain, from its TLD's registry.
 #[must_use]

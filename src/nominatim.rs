@@ -114,11 +114,7 @@ impl Mode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// One Nominatim place. `address` is kept as an open map so every component the service names --
 /// however it is keyed -- is preserved without this struct having to enumerate them.
@@ -194,7 +190,7 @@ pub fn forward<T: Transport + ?Sized>(
     let url = search_url_at(&origin, query);
     let (response, outcome, cached) = get(transport, &url, now_unix)?;
     let Some(response) = response else {
-        return Ok(miss(outcome));
+        return Ok(Report::miss(outcome));
     };
     let mut report = interpret_forward(&response, query, scan_id, outcome.observed_at_unix);
     annotate_origin(&mut report, &origin);
@@ -226,7 +222,7 @@ pub fn reverse<T: Transport + ?Sized>(
     let url = reverse_url_at(&origin, lat, lon);
     let (response, outcome, cached) = get(transport, &url, now_unix)?;
     let Some(response) = response else {
-        return Ok(miss(outcome));
+        return Ok(Report::miss(outcome));
     };
     let mut report = interpret_reverse(&response, lat, lon, scan_id, outcome.observed_at_unix);
     annotate_origin(&mut report, &origin);
@@ -364,18 +360,11 @@ fn get_with_state<T: Transport + ?Sized>(
     Ok((fetched.response, fetched.outcome, false))
 }
 
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
 /// A response that is a refusal or a wall rather than a result; `None` when it is a clean body to
 /// parse. **Pure.**
 fn refusal(response: &Response, now_unix: u64) -> Option<Report> {
     if response.truncated {
-        return Some(miss(SourceExecutionOutcome::failed(
+        return Some(Report::miss(SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
             SourceOutcomeKind::ParserDrift,
@@ -384,7 +373,7 @@ fn refusal(response: &Response, now_unix: u64) -> Option<Report> {
         )));
     }
     if response.body.len() > MAX_NOMINATIM_RAW_JSON_BYTES {
-        return Some(miss(SourceExecutionOutcome::failed(
+        return Some(Report::miss(SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
             SourceOutcomeKind::ParserDrift,
@@ -394,7 +383,7 @@ fn refusal(response: &Response, now_unix: u64) -> Option<Report> {
     }
     let classified = classify_fetch(response.status, &response.text());
     if classified != SourceOutcomeKind::Inconclusive {
-        return Some(miss(SourceExecutionOutcome::failed(
+        return Some(Report::miss(SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
             classified,
@@ -455,7 +444,7 @@ fn interpret_reverse(
             response.status,
             raw_json,
         ),
-        Ok(Reverse::Error { error }) => miss(
+        Ok(Reverse::Error { error }) => Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
                 .with_http_status(response.status)
                 .with_detail(format!("Nominatim: {}", error.trim())),
@@ -465,7 +454,7 @@ fn interpret_reverse(
 }
 
 fn drift(status: u16, now_unix: u64, detail: &str) -> Report {
-    miss(SourceExecutionOutcome::failed(
+    Report::miss(SourceExecutionOutcome::failed(
         SOURCE,
         now_unix,
         SourceOutcomeKind::ParserDrift,

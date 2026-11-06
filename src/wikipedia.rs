@@ -41,11 +41,7 @@ const ANCHOR_CONF: f64 = 0.75;
 /// so the lookup is inconclusive without a request.
 const MAX_LEN: usize = 255;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
@@ -89,7 +85,7 @@ pub fn lookup<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     let selector = username.trim();
     if selector.is_empty() || selector.len() > MAX_LEN {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SRC,
             now_unix,
             "selector cannot name a Wikipedia account",
@@ -115,7 +111,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    Ok(interpret(&fetched, selector, scan_id, now_unix).unwrap_or_else(miss))
+    Ok(interpret(&fetched, selector, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// The account name `MediaWiki` reads `selector` as: an underscore is a space, a run of spaces one,
@@ -151,14 +147,6 @@ fn ipv4_editor(name: &str) -> Option<String> {
         .map(|part| part.parse::<u8>().ok().map(|octet| octet.to_string()))
         .collect::<Option<Vec<_>>>()?;
     Some(octets.join("."))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 /// Turn one fetched `usercontribs` response into a report; `Err` is the outcome of a response

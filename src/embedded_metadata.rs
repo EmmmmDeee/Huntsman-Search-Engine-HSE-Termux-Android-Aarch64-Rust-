@@ -15,21 +15,15 @@
 //! Metadata is only read here, never removed or rewritten. A value in which nothing is found stays,
 //! as written, in the document entity's evidence.
 
-use serde::Serialize;
-
 use crate::docmeta;
-use crate::entity::{Entity, merge_by_uid};
+use crate::entity::merge_by_uid;
 use crate::exif;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub use crate::metadata_identifiers::TAG;
 
 /// What one file's embedded metadata says: the entities, and how each reader's pass ended.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct Inspected {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Inspected = crate::lookup_report::LookupReport;
 
 /// Everything `bytes`' embedded metadata says, for a file the operator knows as `label`.
 ///

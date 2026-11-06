@@ -1,4 +1,5 @@
 use super::*;
+use crate::entity::Entity;
 use crate::rdap::tests::{APNIC, IPV4_BOOTSTRAP};
 use crate::ripestat::tests::{ROUTING_HISTORY, RPKI_VALID};
 use crate::sf_elements::{DataElement, Target, elements};

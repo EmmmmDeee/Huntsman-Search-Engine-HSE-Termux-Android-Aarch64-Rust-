@@ -64,10 +64,7 @@ pub fn selector_identity(kind: ScanKind, selector: &str) -> String {
 /// What a collector observed for one target. A failed lookup still returns `outcomes` describing
 /// why (auth required, connect failure, …): the driver records every dispatch, so a source is
 /// never silently dropped from the recursion.
-pub struct Step {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Step = crate::lookup_report::LookupReport;
 
 /// Everything the crawl holds after one wave of lookups: what a checkpoint of a running scan
 /// saves, so a process that dies mid-crawl loses at most the wave in flight. The entities of the

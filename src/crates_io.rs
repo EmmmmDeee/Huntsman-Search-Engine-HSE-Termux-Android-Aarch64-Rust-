@@ -43,11 +43,7 @@ const CRATE_URL_CONF: f64 = 0.62;
 /// The host of a crate URL, as a pivot.
 const DOMAIN_CONF: f64 = 0.60;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct UserResp {
@@ -127,7 +123,7 @@ pub fn lookup<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     let handle = username.trim().trim_start_matches('@').to_ascii_lowercase();
     if !valid_handle(&handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SRC,
             now_unix,
             "selector is not a valid crates.io handle",
@@ -143,7 +139,7 @@ pub fn lookup<T: Transport + ?Sized>(
     )?;
     let (user, status) = match interpret_user(&fetched, &handle, now_unix) {
         Ok(found) => found,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
 
     // The account is confirmed; its crates are enrichment filtered by the resolved numeric id, so a
@@ -173,14 +169,6 @@ pub fn lookup<T: Transport + ?Sized>(
             .with_http_status(status),
         entities,
     })
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 /// The confirmed account, with the response status; `Err` is the outcome of a response that named

@@ -43,7 +43,7 @@ pub fn lookup<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Report, Error> {
     let Some(domain) = canonical_domain(domain) else {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SOURCE,
             now_unix,
             "invalid domain selector",
@@ -96,7 +96,7 @@ pub fn lookup<T: Transport + ?Sized>(
         primary
     };
 
-    let mut report = interpret(&fetched, &domain, scan_id, now_unix).unwrap_or_else(miss);
+    let mut report = interpret(&fetched, &domain, scan_id, now_unix).unwrap_or_else(Report::miss);
     if report.outcome.kind == SourceOutcomeKind::Success {
         read_contents(transport, &mut report, scan_id, now_unix);
     }
@@ -255,13 +255,6 @@ fn read_capture<T: Transport + ?Sized>(
     ))
 }
 
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
 fn interpret(
     fetched: &Fetched,
     domain: &str,
@@ -302,7 +295,7 @@ fn parse_response(
         ));
     }
     if rows.len() == 1 {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
         ));
     }

@@ -36,11 +36,7 @@ const PERSON_CONF: f64 = 0.60;
 const FINGERPRINT_CONF: f64 = 0.85;
 const BIO_CONF_CAP: f64 = 0.70;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct Lookup {
@@ -128,7 +124,7 @@ pub fn lookup<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     let selector = username.trim().trim_start_matches('@').to_ascii_lowercase();
     if !is_keybase_username(&selector) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SRC,
             now_unix,
             "selector cannot name a Keybase username",
@@ -148,15 +144,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    Ok(interpret(&fetched, &selector, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, &selector, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// Turn one fetched Keybase response into a report; `Err` is the outcome of a response that named
@@ -509,7 +497,7 @@ mod tests {
             1,
         )
         .unwrap();
-        interpret(&fetched, "max", "scan", 1).unwrap_or_else(miss)
+        interpret(&fetched, "max", "scan", 1).unwrap_or_else(Report::miss)
     }
 
     #[test]

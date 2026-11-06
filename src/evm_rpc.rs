@@ -9,7 +9,7 @@
 
 use serde_json::{Value, json};
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport};
@@ -43,11 +43,7 @@ pub struct Chain {
     pub tags: &'static [&'static str],
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// Explicit chain selector. A bare 0x-address is intentionally ambiguous across EVM chains and is
 /// never silently routed to one chain.

@@ -13,7 +13,6 @@ use crate::classifier;
 use crate::domains::{host_only, is_or_subdomain_of};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::html_text::{Markup, Piece, attribute, html_to_text};
-use crate::source_outcome::SourceExecutionOutcome;
 
 /// Archived pages one source reads per lookup.
 pub const MAX_PAGES: usize = 3;
@@ -40,11 +39,7 @@ const CONTACT_WORDS: &[&str] = &[
 ];
 
 /// A web-archive source's answer for one domain: its entities and its typed outcome.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// One capture to read: its 14-digit UTC timestamp and its canonical original URL.
 #[derive(Debug, Clone, PartialEq, Eq)]

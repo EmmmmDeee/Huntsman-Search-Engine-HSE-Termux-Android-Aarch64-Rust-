@@ -44,11 +44,7 @@ const ADDRESS_CONF: f64 = 0.60;
 /// An Australian local registration number that is a checksum-valid ACN.
 const ACN_CONF: f64 = 0.72;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// The by-LEI envelope: `{data: {type, id, attributes}}`.
 #[derive(Debug, Deserialize)]
@@ -284,7 +280,7 @@ pub fn lookup_within<T: Transport + ?Sized>(
         Some(lei) => lei,
         None => match resolve_by_name(transport, query, scope, now_unix)? {
             Ok(lei) => lei,
-            Err(outcome) => return Ok(miss(outcome)),
+            Err(outcome) => return Ok(Report::miss(outcome)),
         },
     };
     let fetched = fetch(
@@ -317,14 +313,6 @@ fn resolve_by_name<T: Transport + ?Sized>(
         now_unix,
     )?;
     Ok(interpret_search(&fetched, now_unix))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 /// The LEI of the top search hit, or the outcome of a search that named nothing usable. A 404 or an

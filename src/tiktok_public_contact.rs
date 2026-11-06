@@ -19,11 +19,7 @@ const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
 const PROFILE_CONFIDENCE: f64 = 0.75;
 const CONTACT_CONFIDENCE: f64 = 0.60;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// `TikTok` account handles are not arbitrary OSINT usernames. Do not request
 /// paths, URLs, emails, very long strings or handle variants from this source.

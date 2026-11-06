@@ -92,11 +92,7 @@ const KNOWN_OWNERS: [(&str, &str); 10] = [
 
 const BASE58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// Decode one canonical fixed-width base58 value. Reject overflow, invalid characters and
 /// leading-zero aliases, so a short string cannot masquerade as a transaction signature. **Pure.**

@@ -8,7 +8,9 @@
 #[path = "support/rust_code.rs"]
 mod rust_code;
 
-use rust_code::{code_with_string_literals, strip_non_code, tokens, without_test_items};
+use rust_code::{
+    code_with_string_literals, skip_group, strip_non_code, tok, tokens, without_test_items,
+};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -732,6 +734,145 @@ fn trimmed_nonblank_field_has_one_definition() {
         .map(|source| source.path)
         .collect();
     assert!(found.is_empty(), "nonblank copy defined in: {found:?}");
+}
+
+/// The report shapes `src/lookup_report.rs` defines once: what one source found (`SourceReport`),
+/// what a lookup found from every source (`LookupReport`) and one leg of a lookup that runs several
+/// (`Leg`). Each field list is written without `pub` and commas.
+const REPORT_SHAPES: [&[&str]; 3] = [
+    &[
+        "entities",
+        ":",
+        "Vec",
+        "<",
+        "Entity",
+        ">",
+        "outcome",
+        ":",
+        "SourceExecutionOutcome",
+    ],
+    &[
+        "entities",
+        ":",
+        "Vec",
+        "<",
+        "Entity",
+        ">",
+        "outcomes",
+        ":",
+        "Vec",
+        "<",
+        "SourceExecutionOutcome",
+        ">",
+    ],
+    &[
+        "entities",
+        ":",
+        "Vec",
+        "<",
+        "Entity",
+        ">",
+        "outcome",
+        ":",
+        "Option",
+        "<",
+        "SourceExecutionOutcome",
+        ">",
+    ],
+];
+
+/// The field tokens of each braced struct in `toks`, without `pub`, its restriction and commas.
+/// A tuple struct, a unit struct and a struct whose generics hold parentheses are skipped.
+fn struct_fields(toks: &[String]) -> Vec<Vec<String>> {
+    let mut found = Vec::new();
+    for (index, token) in toks.iter().enumerate() {
+        if token != "struct" {
+            continue;
+        }
+        let Some(open) =
+            (index + 2..toks.len()).find(|&at| matches!(toks[at].as_str(), "{" | ";" | "("))
+        else {
+            continue;
+        };
+        if toks[open] != "{" {
+            continue;
+        }
+        let close = skip_group(toks, open) - 1;
+        let mut fields = Vec::new();
+        let mut at = open + 1;
+        while at < close {
+            match toks[at].as_str() {
+                "pub" if tok(toks, at + 1) == "(" => at = skip_group(toks, at + 1) - 1,
+                "pub" | "," => {}
+                other => fields.push(other.to_owned()),
+            }
+            at += 1;
+        }
+        found.push(fields);
+    }
+    found
+}
+
+/// Whether the tokens declare a struct of one of the [`REPORT_SHAPES`], whatever its name.
+fn declares_a_report_shape(toks: &[String]) -> bool {
+    struct_fields(toks)
+        .iter()
+        .any(|fields| REPORT_SHAPES.iter().any(|shape| fields == shape))
+}
+
+/// A collector's report is `lookup_report::SourceReport`, `LookupReport` or `Leg`, named as its
+/// `Report` or `Leg` by a type alias; no other module declares a struct of those shapes (G7).
+#[test]
+fn report_shapes_have_one_definition() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/lookup_report.rs")
+        .filter(|source| declares_a_report_shape(&production_tokens(&source.text)))
+        .map(|source| source.path)
+        .collect();
+    assert!(found.is_empty(), "a report shape redefined in: {found:?}");
+}
+
+#[test]
+fn the_report_shape_rule_sees_each_shape_by_any_name_and_ignores_the_rest() {
+    for (name, fields) in [
+        (
+            "Report",
+            "pub entities: Vec<Entity>, pub outcome: SourceExecutionOutcome,",
+        ),
+        (
+            "Found",
+            "pub(crate) entities: Vec<Entity>, pub(crate) outcomes: Vec<SourceExecutionOutcome>",
+        ),
+        (
+            "Leg",
+            "entities: Vec<Entity>, outcome: Option<SourceExecutionOutcome>,",
+        ),
+    ] {
+        let code = format!("#[derive(Debug)]\npub struct {name} {{ {fields} }}");
+        assert!(declares_a_report_shape(&production_tokens(&code)), "{code}");
+        let commented = format!("// pub struct {name} {{ {fields} }}\nfn f() {{}}");
+        assert!(
+            !declares_a_report_shape(&production_tokens(&commented)),
+            "{commented}"
+        );
+        let test_only = format!("#[cfg(test)]\nstruct {name} {{ {fields} }}");
+        assert!(
+            !declares_a_report_shape(&production_tokens(&test_only)),
+            "{test_only}"
+        );
+    }
+    for other in [
+        "pub type Report = crate::lookup_report::SourceReport;",
+        "pub struct Report { pub entities: Vec<Entity>, pub outcome: SourceExecutionOutcome, pub total: usize }",
+        "pub struct Report(pub Vec<Entity>, pub SourceExecutionOutcome);",
+        "pub struct Report { pub leads: Vec<Lead>, pub outcome: SourceExecutionOutcome }",
+    ] {
+        assert!(
+            !declares_a_report_shape(&production_tokens(other)),
+            "{other}"
+        );
+    }
 }
 
 /// Lower-case hex in the APK parsers is `base64::base16_lower`, whose test pins it to `{:02x}` for

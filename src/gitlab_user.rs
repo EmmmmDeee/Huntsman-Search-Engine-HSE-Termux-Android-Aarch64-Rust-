@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Response, Transport, append_query_param};
@@ -18,11 +18,7 @@ const API: &str = "https://gitlab.com/api/v4/users";
 const MAX_GITLAB_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_USERNAME: usize = 128;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct PublicUser {
@@ -64,7 +60,7 @@ pub fn lookup<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     let name = username.trim().trim_start_matches('@').to_ascii_lowercase();
     if !valid_username(&name) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SRC,
             now_unix,
             "selector cannot name a GitLab username",
@@ -82,14 +78,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, &name, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, &name, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 fn interpret(
@@ -119,7 +108,7 @@ fn parse(
     }
     let users: Vec<PublicUser> = decode_json(response, SRC, now_unix, "GitLab")?;
     if users.is_empty() {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
         ));
     }

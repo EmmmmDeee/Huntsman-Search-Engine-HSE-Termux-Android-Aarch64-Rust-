@@ -19,11 +19,7 @@ pub const SRC: &str = "github_repos";
 const MAX_REPOS: usize = 30;
 const MAX_TEXT_CHARS: usize = 240;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct Owner {

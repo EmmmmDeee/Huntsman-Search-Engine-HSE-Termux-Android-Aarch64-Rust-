@@ -16,41 +16,13 @@
 
 use serde::de::DeserializeOwned;
 
-use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 /// What one account leg found: its entities and its row.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
-
-impl Report {
-    /// A leg that found nothing, with the row that says why.
-    #[must_use]
-    pub const fn miss(outcome: SourceExecutionOutcome) -> Self {
-        Self {
-            entities: Vec::new(),
-            outcome,
-        }
-    }
-
-    /// A confirmed account: its entities, merged by UID, and a success row with their count and
-    /// the HTTP status that carried them.
-    #[must_use]
-    pub fn found(source: &str, mut entities: Vec<Entity>, status: u16, now_unix: u64) -> Self {
-        merge_by_uid(&mut entities);
-        Self {
-            outcome: SourceExecutionOutcome::success(source, now_unix, entities.len())
-                .with_http_status(status),
-            entities,
-        }
-    }
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// How the site says an account does not exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

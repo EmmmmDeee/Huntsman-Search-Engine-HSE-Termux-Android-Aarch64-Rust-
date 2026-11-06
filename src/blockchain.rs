@@ -44,11 +44,7 @@ const CO_INPUT_CONFIDENCE: f64 = 0.35;
 /// What a counterparty never establishes.
 pub const COUNTERPARTY_LIMIT: &str = "Appearing in the same transaction is not common ownership or a relationship between people: the common-input heuristic fails for CoinJoin and payjoin transactions, and an exchange or custodial address links unrelated users. No wallet owner is identified.";
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct Account {
@@ -167,14 +163,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// Turn one fetched response into a report; `Err` is the outcome of a response that named no
@@ -210,7 +199,7 @@ fn decode(account: &Account, scan_id: &str, now_unix: u64, status: u16) -> Repor
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return miss(SourceExecutionOutcome::failed(
+        return Report::miss(SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
             SourceOutcomeKind::SchemaDrift,
@@ -431,7 +420,7 @@ mod tests {
             1,
         )
         .unwrap();
-        interpret(&fetched, "scan", 1).unwrap_or_else(miss)
+        interpret(&fetched, "scan", 1).unwrap_or_else(Report::miss)
     }
 
     #[test]
