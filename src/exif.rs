@@ -8,8 +8,12 @@
 //! [`MAX_METADATA_FIELDS`] shared between the directories so none crowds out another, with a count of
 //! any not kept, and when the GPS IFD holds a position it also becomes a
 //! [`EntityKind::Coordinates`] entity -- the same `lat,lon` the `geocode` command reverse-geocodes
-//! into an address. Nothing is inferred beyond what the tags state; EXIF can be edited, so the
-//! position is the file's embedded claim, not an independently verified location.
+//! into an address. The text people write -- the description, artist, copyright, camera owner and
+//! user comment, and Windows' title, comment, author, keywords and subject, stored as UCS-2 -- is
+//! read as text, and an email address, link, domain, IP address or phone number written there
+//! becomes an entity of its own ([`crate::metadata_identifiers`]). Nothing is inferred beyond what the
+//! tags state; EXIF can be edited, so the position is the file's embedded claim, not an
+//! independently verified location.
 //!
 //! The parser is bounds-checked and allocation-bounded: every read is range-checked against the
 //! buffer, directory entry counts and value lengths are capped, and only the Exif and GPS sub-IFDs
@@ -33,7 +37,7 @@ pub const EXIF_USAGE: &str = "usage: huntsman-recon exif IMAGE-FILE";
 
 pub const EXIF_HELP: &str = "\
 exif IMAGE-FILE
-Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved, up to 512 fields shared between the directories so none crowds out another (a file holding more says how many were not kept), each value shown up to 8 KiB (a longer text ends with a marker naming its whole length) and a long list of numbers as whole numbers with its count. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
+Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved, up to 512 fields shared between the directories so none crowds out another (a file holding more says how many were not kept), each value shown up to 8 KiB (a longer text ends with a marker naming its whole length) and a long list of numbers as whole numbers with its count. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. The text people write -- the description, artist, copyright, camera owner and user comment, and the Windows title, comment, author, keywords and subject -- is shown as text, and an email address, link, domain, IP address or phone number written there becomes an entity of its own, attributed to its tag; a serial number, identifier, time or setting the camera writes is read only for an email address or a link. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
 
 /// The largest image read, in bytes. EXIF sits at the head of the file, but the whole file is read
 /// so a TIFF whose directories point deep into it still parses; a larger file is refused by name.
@@ -236,6 +240,14 @@ pub fn run(image: &[u8], label: &str, now_unix: u64) -> ExifRun {
     let mut entities = Vec::new();
     document_entity(&mut entities, &parsed, label, &sid);
     gps_entity(&mut entities, parsed.gps.as_ref(), label, &sid);
+    crate::metadata_identifiers::identifiers(
+        &mut entities,
+        SOURCE,
+        label,
+        &sid,
+        &parsed.fields,
+        written_by_people,
+    );
     merge_by_uid(&mut entities);
 
     let outcome = SourceExecutionOutcome::success(SOURCE, now_unix, entities.len());
@@ -344,8 +356,7 @@ pub(crate) struct JpegSegment<'a> {
 }
 
 /// The JPEG marker at `at`, after any `0xFF` fill bytes before it, with its segment when it has
-/// one: the one step every JPEG walk takes, shared with [`crate::docmeta`] and the reverse-image
-/// metadata stripper. A standalone marker (`TEM`, `RSTn`) and the end of image (`EOI`) have an
+/// one: the one step every JPEG walk takes, shared with [`crate::docmeta`]. A standalone marker (`TEM`, `RSTn`) and the end of image (`EOI`) have an
 /// empty payload and a two-byte span; every other marker is followed by its length. `None` when no
 /// marker starts there or a segment runs past the end of the file. **Pure.**
 pub(crate) fn jpeg_marker_at(image: &[u8], mut at: usize) -> Option<JpegSegment<'_>> {
@@ -414,7 +425,7 @@ pub(crate) struct WebpChunk<'a> {
 }
 
 /// Each chunk of a WebP's RIFF container, in order, up to the end its RIFF size declares: the one
-/// WebP chunk walker, shared with the reverse-image metadata stripper. A header, size or chunk
+/// WebP chunk walker. A header, size or chunk
 /// bound that does not fit the file is an error, never a clean end; bytes past the declared end
 /// are not walked. **Pure.**
 pub(crate) fn webp_chunks(
@@ -496,17 +507,14 @@ fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
 /// The PNG file signature: the eight bytes every PNG begins with.
 pub(crate) const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-/// One chunk of a PNG: its four-byte type, its body, and its whole span (length, type, body and
-/// CRC).
+/// One chunk of a PNG: its four-byte type and its body.
 pub(crate) struct PngChunk<'a> {
     pub(crate) kind: &'a [u8],
     pub(crate) body: &'a [u8],
-    pub(crate) span: std::ops::Range<usize>,
 }
 
-/// Each chunk of a PNG after its signature, with its span, through `IEND`: the one chunk walker,
-/// shared with [`crate::docmeta`] (through [`png_chunks`]) and the reverse-image metadata
-/// stripper. A chunk that runs past the end of the file is an `Err` item and ends the walk; a file
+/// Each chunk of a PNG after its signature, through `IEND`: the one chunk walker, shared with
+/// [`crate::docmeta`] (through [`png_chunks`]). A chunk that runs past the end of the file is an `Err` item and ends the walk; a file
 /// that ends cleanly on a chunk boundary without `IEND` ends it too. Every chunk takes at least
 /// twelve bytes, so the walk is bounded by the file, never by a count that a large image's
 /// thousands of `IDAT` chunks would reach before a later `eXIf` or text chunk. **Pure.**
@@ -519,7 +527,6 @@ pub(crate) fn png_chunk_spans(
         if done || at == data.len() {
             return None;
         }
-        let start = at;
         let chunk = data.get(at..at + 8).and_then(|header| {
             let length = usize::try_from(u32::from_be_bytes(header[..4].try_into().ok()?)).ok()?;
             let body_end = (at + 8).checked_add(length)?;
@@ -535,16 +542,12 @@ pub(crate) fn png_chunk_spans(
         };
         at = next;
         done = kind == b"IEND";
-        Some(Ok(PngChunk {
-            kind,
-            body,
-            span: start..next,
-        }))
+        Some(Ok(PngChunk { kind, body }))
     })
 }
 
 /// Each chunk of a PNG after its signature, as its four-byte type and its body, through `IEND`:
-/// [`png_chunk_spans`] without the spans. **Pure.**
+/// [`png_chunk_spans`] as pairs. **Pure.**
 pub(crate) fn png_chunks(
     data: &[u8],
 ) -> impl Iterator<Item = Result<(&[u8], &[u8]), &'static str>> {
@@ -771,6 +774,9 @@ fn pointer(tiff: &Tiff, entry: &Entry) -> Option<usize> {
 /// A human-readable rendering of one entry's value. A value read short of what the entry declares,
 /// or rendered past the value bound, ends with a marker counting the whole. **Pure.**
 fn named_value(tiff: &Tiff, entry: &Entry) -> String {
+    if let Some(text) = written_text(tiff.endian, entry) {
+        return text;
+    }
     let declared = |width: usize| entry.declared / width;
     match entry.typ {
         2 => ascii(&entry.value, entry.declared),
@@ -795,6 +801,53 @@ fn ascii(bytes: &[u8], declared: usize) -> String {
     let text = String::from_utf8_lossy(&bytes[..end.unwrap_or(bytes.len())]);
     let whole = if end.is_none() && declared > bytes.len() {
         // Every byte so far is text, so the declared byte count is the text's whole length.
+        declared
+    } else {
+        text.trim().len()
+    };
+    cap_value_within(&text, whole, MAX_METADATA_VALUE_BYTES).0
+}
+
+/// The text of a tag people write that is not stored as ASCII: Windows' `XPTitle`, `XPComment`,
+/// `XPAuthor`, `XPKeywords` and `XPSubject` (UCS-2, little-endian whatever the TIFF byte order) and
+/// Exif `UserComment` (an 8-byte character code, then UCS-2 in the TIFF byte order for `UNICODE`,
+/// or text for `ASCII` and the undefined code, read as UTF-8 as writers use it). `None` for any
+/// other tag and for a `JIS` comment, which keep the byte rendering. **Pure.**
+fn written_text(endian: Endian, entry: &Entry) -> Option<String> {
+    match entry.tag {
+        0x9C9B..=0x9C9F => Some(wide_text(&entry.value, Endian::Little, entry.declared)),
+        0x9286 => {
+            let (code, text) = (entry.value.get(..8)?, entry.value.get(8..)?);
+            let declared = entry.declared.saturating_sub(8);
+            match code {
+                b"UNICODE\0" => Some(wide_text(text, endian, declared)),
+                b"ASCII\0\0\0" | b"\0\0\0\0\0\0\0\0" => Some(ascii(text, declared)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// UCS-2 text in `endian` order, or the order a leading byte-order mark names, up to its first
+/// NUL, trimmed; an unpaired surrogate reads as U+FFFD. Marked as [`ascii`] marks a value read
+/// short of the `declared` bytes. **Pure.**
+fn wide_text(bytes: &[u8], endian: Endian, declared: usize) -> String {
+    let read_short = declared > bytes.len();
+    let (bytes, endian) = match bytes {
+        [0xFF, 0xFE, rest @ ..] => (rest, Endian::Little),
+        [0xFE, 0xFF, rest @ ..] => (rest, Endian::Big),
+        _ => (bytes, endian),
+    };
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| read_u16(endian, pair))
+        .collect();
+    let end = units.iter().position(|unit| *unit == 0);
+    let text: String = char::decode_utf16(units[..end.unwrap_or(units.len())].iter().copied())
+        .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect();
+    let whole = if end.is_none() && read_short {
         declared
     } else {
         text.trim().len()
@@ -1027,6 +1080,34 @@ fn gps_timestamp(date: Option<&str>, time: Option<&str>) -> Option<String> {
 
 // ── tag names ────────────────────────────────────────────────────────────────────────────
 
+/// The tags people write: descriptions, names, rights and comments. Every other tag is the
+/// camera's or the program's own: make, model, software, serial numbers, identifiers, times,
+/// exposure settings and the GPS fix. XMP's `tiff:`, `exif:`, `exifEX:` and `aux:` properties
+/// restate these tags (`aux:OwnerName` is the camera owner), so [`crate::docmeta`] reads them by
+/// the same list.
+const PEOPLE_TAGS: [&str; 14] = [
+    "Artist",
+    "CameraOwnerName",
+    "Copyright",
+    "ImageDescription",
+    "ImageEditor",
+    "ImageTitle",
+    "OwnerName",
+    "Photographer",
+    "UserComment",
+    "XPAuthor",
+    "XPComment",
+    "XPKeywords",
+    "XPSubject",
+    "XPTitle",
+];
+
+/// Whether people write the tag `name`, rather than the camera or the program that made the file:
+/// only those yield a number-shaped identifier ([`crate::metadata_identifiers`]). **Pure.**
+pub(crate) fn written_by_people(name: &str) -> bool {
+    PEOPLE_TAGS.contains(&name)
+}
+
 /// The IFD0 tag name, or a hex fallback for an unnamed tag. **Pure.**
 fn ifd0_tag_name(tag: u16) -> String {
     match tag {
@@ -1044,6 +1125,11 @@ fn ifd0_tag_name(tag: u16) -> String {
         0x0132 => "DateTime",
         0x013B => "Artist",
         0x8298 => "Copyright",
+        0x9C9B => "XPTitle",
+        0x9C9C => "XPComment",
+        0x9C9D => "XPAuthor",
+        0x9C9E => "XPKeywords",
+        0x9C9F => "XPSubject",
         _ => return unknown_tag(tag),
     }
     .to_owned()
@@ -1058,16 +1144,27 @@ fn exif_tag_name(tag: u16) -> String {
         0x8827 => "ISOSpeedRatings",
         0x9003 => "DateTimeOriginal",
         0x9004 => "DateTimeDigitized",
+        0x9010 => "OffsetTime",
+        0x9011 => "OffsetTimeOriginal",
+        0x9012 => "OffsetTimeDigitized",
         0x920A => "FocalLength",
+        0x9286 => "UserComment",
+        0x9290 => "SubSecTime",
+        0x9291 => "SubSecTimeOriginal",
+        0x9292 => "SubSecTimeDigitized",
         0xA002 => "PixelXDimension",
         0xA003 => "PixelYDimension",
         0xA402 => "ExposureMode",
         0xA403 => "WhiteBalance",
+        0xA420 => "ImageUniqueID",
         0xA430 => "CameraOwnerName",
         0xA431 => "BodySerialNumber",
         0xA433 => "LensMake",
         0xA434 => "LensModel",
         0xA435 => "LensSerialNumber",
+        0xA436 => "ImageTitle",
+        0xA437 => "Photographer",
+        0xA438 => "ImageEditor",
         _ => return unknown_tag(tag),
     }
     .to_owned()

@@ -1497,6 +1497,60 @@ fn investigate_reads_one_bounded_local_file() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A file that is not text, such as a photo or a PDF, is read for its embedded metadata: the
+/// identifiers a metadata value holds and its GPS position become entities, where the command
+/// used to refuse anything that was not UTF-8.
+#[test]
+fn investigate_reads_the_embedded_metadata_of_a_binary_file() {
+    let dir = scratch("investigate-metadata");
+    let path = dir.join("scan.bin");
+    let mut file = b"\x00\xff\xfe binary header ".to_vec();
+    file.extend_from_slice(
+        br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="48,51.0N" exif:GPSLongitude="2,21.0E"><dc:rights><rdf:Alt><rdf:li xml:lang="x-default">(c) Ada, ada@example.org, https://example.org/ada</rdf:li></rdf:Alt></dc:rights></rdf:Description></rdf:RDF></x:xmpmeta>"#,
+    );
+    fs::write(&path, &file).unwrap();
+    let out = bin()
+        .arg("investigate")
+        .arg("--file")
+        .arg(&path)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("email\tada@example.org"), "{stdout:?}");
+    assert!(
+        stdout.contains("url\thttps://example.org/ada"),
+        "{stdout:?}"
+    );
+    assert!(stdout.contains("coordinates\t48.85"), "{stdout:?}");
+    assert!(stdout.contains("metadata_field"), "{stdout:?}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A text file over 1 MiB is refused exactly as before metadata reading was added.
+#[test]
+fn investigate_still_refuses_a_text_file_over_one_mib() {
+    let dir = scratch("investigate-large-text");
+    let path = dir.join("big.txt");
+    fs::write(&path, vec![b'a'; 1_048_577]).unwrap();
+    let out = bin()
+        .arg("investigate")
+        .arg("--file")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(66));
+    assert_eq!(out.stdout, Vec::<u8>::new());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("exceeds 1048576 bytes"), "{stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn query_missing_terms_is_usage() {
     let out = bin().arg("query").output().unwrap();

@@ -1,5 +1,7 @@
 //! Test doubles and fixtures shared across the crate's tests. Compiled only for `cargo test`.
 
+pub mod images;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};

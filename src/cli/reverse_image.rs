@@ -10,6 +10,7 @@ use huntsman_recon::clock;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::UreqTransport;
+use huntsman_recon::lookup_report;
 use huntsman_recon::reverse_image::{self, ImageReport, MAX_REVERSE_IMAGE_BYTES, Search};
 use huntsman_recon::textnorm::escape_controls;
 
@@ -80,11 +81,11 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
     };
     let now = clock::unix_now();
     let report = match options.provider {
-        None => reverse_image::fingerprint(&bytes, now),
+        None => reverse_image::fingerprint(&bytes, options.path, now),
         Some(name) => {
             let keys = super::credentials::lookup_keys();
             let transport = UreqTransport::new(&api_leg::transport_config());
-            reverse_image::search_one(&transport, &bytes, &keys, name, now)
+            reverse_image::search_one(&transport, &bytes, options.path, &keys, name, now)
         }
     };
     let report = match report {
@@ -107,13 +108,18 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
     status(&report)
 }
 
-/// The report as text: the file first, then whether a search ran, then what the provider
-/// returned. Provider text is printed with its control characters escaped.
+/// The report as text: the file first, then what its embedded metadata says, then whether a
+/// search ran, then what the provider returned. Provider text is printed with its control
+/// characters escaped.
 fn print_text(report: &ImageReport) {
     println!(
         "file sha256={} bytes={} format={}",
         report.file_sha256, report.file_bytes, report.format
     );
+    // The same rendering the exif and docmeta commands print, so the metadata reads alike.
+    if let Ok(text) = lookup_report::render(&report.metadata.entities, &report.metadata.outcomes) {
+        print!("{text}");
+    }
     let Some(provider) = report.provider else {
         println!(
             "no search ran: nothing was sent. --live --provider google_vision|lenso|saucenao uploads the image to that one provider"
@@ -125,13 +131,8 @@ fn print_text(report: &ImageReport) {
         .as_ref()
         .map_or_else(String::new, |outcome| escape_controls(&outcome.reason()));
     if let Some(upload) = &report.upload {
-        let removed = if upload.metadata_removed.is_empty() {
-            "none found".to_owned()
-        } else {
-            escape_controls(&upload.metadata_removed.join(", "))
-        };
         println!(
-            "uploaded to {provider}: sha256={} bytes={} metadata removed: {removed}",
+            "uploaded to {provider}: sha256={} bytes={} (the file as read, its embedded metadata included)",
             upload.sha256, upload.bytes
         );
     }

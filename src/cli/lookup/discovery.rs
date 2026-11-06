@@ -6,6 +6,8 @@ use std::process::ExitCode;
 use crate::cli::{MAX_PLAIN_FILE_BYTES, fail, terminal_json_pretty, usage_error};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::clock;
+use huntsman_recon::docmeta;
+use huntsman_recon::embedded_metadata;
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
 use huntsman_recon::exa;
@@ -36,28 +38,28 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
         );
     }
 
-    let text = if args.first().is_some_and(|arg| arg == "--file") {
+    let entities = if args.first().is_some_and(|arg| arg == "--file") {
         if args.len() != 2 {
             return fail(EX_USAGE, "investigate --file needs exactly one FILE");
         }
         let path = Path::new(&args[1]);
-        let bytes = match read_bounded(path, MAX_PLAIN_FILE_BYTES) {
+        // The metadata readers' own bound: a photo or a document is read whole.
+        let bytes = match read_bounded(path, docmeta::MAX_FILE_BYTES) {
             Ok(bytes) => bytes,
             Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
             Err(error) => return fail(EX_DATAERR, &error.to_string()),
         };
-        match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(_) => return fail(EX_DATAERR, "investigate input is not UTF-8"),
+        match file_entities(path, bytes) {
+            Ok(entities) => entities,
+            Err((code, message)) => return fail(code, &message),
         }
     } else {
         if args.iter().any(|arg| arg == "--file") {
             return fail(EX_USAGE, "--file must be the first investigate argument");
         }
-        args.join(" ")
+        investigate_entities(&args.join(" "))
     };
 
-    let entities = investigate_entities(&text);
     println!("entities={}", entities.len());
     for entity in &entities {
         println!("{}", entity_row(entity, &entity.raw_value));
@@ -68,6 +70,36 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// What `investigate --file` reads in one file. A text file up to [`MAX_PLAIN_FILE_BYTES`] is read
+/// as text, and for its embedded metadata too when it carries any; a longer text file is refused as
+/// it always was. Any other file, such as a photo or a PDF, is read for its embedded metadata
+/// ([`embedded_metadata::inspect`]), which is never removed or rewritten.
+fn file_entities(path: &Path, bytes: Vec<u8>) -> Result<Vec<entity::Entity>, (u8, String)> {
+    let label = path.display().to_string();
+    let metadata = |bytes: &[u8]| {
+        embedded_metadata::inspect(bytes, &label, clock::unix_now())
+            .map(|inspected| inspected.entities)
+            .map_err(|why| (EX_DATAERR, why))
+    };
+    match String::from_utf8(bytes) {
+        Ok(text) => {
+            if text.len() as u64 > MAX_PLAIN_FILE_BYTES {
+                return Err((
+                    EX_NOINPUT,
+                    format!("{}: exceeds {MAX_PLAIN_FILE_BYTES} bytes", path.display()),
+                ));
+            }
+            let mut entities = investigate_entities(&text);
+            if embedded_metadata::carries_metadata(text.as_bytes()) {
+                entities.extend(metadata(text.as_bytes())?);
+                entity::merge_by_uid(&mut entities);
+            }
+            Ok(entities)
+        }
+        Err(binary) => metadata(binary.as_bytes()),
+    }
 }
 
 /// The keyless query options, in either order and each at most once: `--adaptive`, and

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use huntsman_recon::environment::{GOOGLE_VISION_KEY_ENV, LENSO_KEY_ENV, SAUCENAO_KEY_ENV};
-use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
+use huntsman_recon::exit::{EX_NOINPUT, EX_USAGE};
 
 /// A minimal 1x1 GIF with a global palette and a single image frame.
 const GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
@@ -99,8 +99,10 @@ fn live_needs_one_named_provider_and_sends_nothing_without_it() {
     fs::remove_dir_all(home).expect("clean scratch");
 }
 
+/// A GIF is uploaded as it is, like any other supported image: with no key configured each
+/// provider is asked nothing and the slot is named, never a refusal of the format.
 #[test]
-fn a_gif_is_refused_for_upload_before_any_request() {
+fn a_gif_goes_to_the_named_provider_as_it_is() {
     let home = scratch("gif");
     fs::write(home.join("photo.gif"), GIF).expect("image fixture");
     for provider in ["google_vision", "lenso", "saucenao"] {
@@ -112,13 +114,20 @@ fn a_gif_is_refused_for_upload_before_any_request() {
                 "--live",
                 "--provider",
                 provider,
+                "--json",
             ],
         );
-        assert_eq!(out.status.code(), Some(i32::from(EX_DATAERR)), "{provider}");
-        assert_eq!(text(&out.stdout), "");
-        let stderr = text(&out.stderr);
-        assert!(stderr.contains("GIF is not uploaded"), "{stderr}");
-        assert!(stderr.contains("nothing was sent"), "{stderr}");
+        assert_eq!(out.status.code(), Some(i32::from(EX_NOINPUT)), "{provider}");
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("report JSON");
+        assert_eq!(report["format"], "GIF");
+        assert_eq!(report["search"], "not_run");
+        assert_eq!(report["outcome"]["kind"], "not_configured");
+        assert!(
+            report["metadata"]["outcomes"]
+                .as_array()
+                .is_some_and(|outcomes| !outcomes.is_empty()),
+            "{provider}: the file's metadata is read"
+        );
     }
     fs::remove_dir_all(home).expect("clean scratch");
 }

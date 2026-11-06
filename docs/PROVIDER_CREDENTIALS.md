@@ -56,7 +56,7 @@ quota charges before enabling a service.
 | SauceNAO | `HUNTSMAN_SAUCENAO_KEY` | image-index search; the key goes only to `saucenao.com`, as the `api_key` query parameter SauceNAO's API takes, added as the request is sent and never inside the uploaded form |
 
 `huntsman-recon reverse-image IMAGE --live --provider google_vision --json`
-uploads the image, with its embedded metadata removed, to that one provider. `--live`
+uploads the image, exactly as read and with all of its embedded metadata, to that one provider. `--live`
 without `--provider` is refused, so no run sends the image to more than one provider or
 spends more than one provider's quota.
 
