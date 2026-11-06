@@ -217,6 +217,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("peeringdb", C::Other, Some(C::Infra)),
     row("phishstats", C::Infra, None),
     row("phishtank", C::Other, None),
+    row("phone_ae", C::Other, None),
     row("phone_au", C::Other, None),
     row("phone_intl", C::Other, None),
     row("phone_nanp", C::Other, None),

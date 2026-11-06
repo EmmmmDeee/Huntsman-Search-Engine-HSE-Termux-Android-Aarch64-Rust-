@@ -186,6 +186,65 @@ pub fn search_url(query: &str) -> String {
     )
 }
 
+/// Where a name search looks, each part optional: the country of the entity's legal address
+/// (ISO 3166-1 alpha-2, `AE`) and the jurisdiction it is registered in (ISO 3166-1 alpha-2 or
+/// ISO 3166-2, `AE-DU` for Dubai). GLEIF records many Dubai entities under the federal `AE`
+/// jurisdiction, so `--country AE` reaches entities `--jurisdiction AE-DU` does not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scope {
+    pub country: Option<String>,
+    pub jurisdiction: Option<String>,
+}
+
+impl Scope {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.country.is_none() && self.jurisdiction.is_none()
+    }
+}
+
+/// `raw` as an ISO 3166-1 alpha-2 country code, upper case: two ASCII letters. **Pure.**
+#[must_use]
+pub fn country_code(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    (raw.len() == 2 && raw.bytes().all(|byte| byte.is_ascii_alphabetic()))
+        .then(|| raw.to_ascii_uppercase())
+}
+
+/// `raw` as a jurisdiction code, upper case: an ISO 3166-1 alpha-2 country (`AE`) or an ISO
+/// 3166-2 subdivision, the country, a hyphen and one to three letters or digits (`AE-DU`,
+/// `AU-NSW`). **Pure.**
+#[must_use]
+pub fn jurisdiction_code(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    match raw.split_once('-') {
+        None => country_code(raw),
+        Some((country, subdivision)) => {
+            let country = country_code(country)?;
+            ((1..=3).contains(&subdivision.len())
+                && subdivision.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+            .then(|| format!("{country}-{}", subdivision.to_ascii_uppercase()))
+        }
+    }
+}
+
+/// [`search_url`] narrowed to `scope`: GLEIF's `filter[entity.legalAddress.country]` and
+/// `filter[entity.jurisdiction]`. The codes are already validated as letters, digits and a
+/// hyphen, so they need no escaping. **Pure.**
+#[must_use]
+pub fn search_url_within(query: &str, scope: &Scope) -> String {
+    let mut url = search_url(query);
+    if let Some(country) = &scope.country {
+        url.push_str("&filter%5Bentity.legalAddress.country%5D=");
+        url.push_str(country);
+    }
+    if let Some(jurisdiction) = &scope.jurisdiction {
+        url.push_str("&filter%5Bentity.jurisdiction%5D=");
+        url.push_str(jurisdiction);
+    }
+    url
+}
+
 fn request(url: String) -> Request {
     Request::get(url)
         .header("accept", "application/vnd.api+json")
@@ -206,9 +265,24 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
+    lookup_within(transport, query, &Scope::default(), scan_id, now_unix)
+}
+
+/// [`lookup`], with a name search narrowed to `scope` (an LEI already names one record, so it is
+/// fetched as it is).
+///
+/// # Errors
+/// Returns a network-boundary error when the guarded fetch refuses a URL.
+pub fn lookup_within<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    scope: &Scope,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, Error> {
     let lei = match as_lei(query) {
         Some(lei) => lei,
-        None => match resolve_by_name(transport, query, now_unix)? {
+        None => match resolve_by_name(transport, query, scope, now_unix)? {
             Ok(lei) => lei,
             Err(outcome) => return Ok(miss(outcome)),
         },
@@ -231,11 +305,12 @@ pub fn lookup<T: Transport + ?Sized>(
 fn resolve_by_name<T: Transport + ?Sized>(
     transport: &T,
     query: &str,
+    scope: &Scope,
     now_unix: u64,
 ) -> Result<Result<String, SourceExecutionOutcome>, Error> {
     let fetched = fetch(
         transport,
-        request(search_url(query)),
+        request(search_url_within(query, scope)),
         None,
         &options(),
         SOURCE,
@@ -792,6 +867,48 @@ mod tests {
             search_url("Example Holdings"),
             "https://api.gleif.org/api/v1/lei-records?filter%5Bfulltext%5D=Example%20Holdings&page%5Bsize%5D=5"
         );
+    }
+
+    #[test]
+    fn a_scoped_search_adds_gleifs_country_and_jurisdiction_filters() {
+        let dubai = Scope {
+            country: None,
+            jurisdiction: Some("AE-DU".into()),
+        };
+        assert_eq!(
+            search_url_within("Emirates", &dubai),
+            "https://api.gleif.org/api/v1/lei-records?filter%5Bfulltext%5D=Emirates&page%5Bsize%5D=5&filter%5Bentity.jurisdiction%5D=AE-DU"
+        );
+        let uae = Scope {
+            country: Some("AE".into()),
+            jurisdiction: None,
+        };
+        assert!(
+            search_url_within("Emirates", &uae)
+                .ends_with("&filter%5Bentity.legalAddress.country%5D=AE")
+        );
+        assert_eq!(
+            search_url_within("Emirates", &Scope::default()),
+            search_url("Emirates")
+        );
+        // Arabic names are searched as written, percent-encoded.
+        assert!(search_url_within("طيران الإمارات", &dubai).contains("%D8%B7"));
+    }
+
+    #[test]
+    fn country_and_jurisdiction_codes_are_iso_shaped_or_refused() {
+        assert_eq!(country_code(" ae ").as_deref(), Some("AE"));
+        assert_eq!(jurisdiction_code("ae-du").as_deref(), Some("AE-DU"));
+        assert_eq!(jurisdiction_code("AU-NSW").as_deref(), Some("AU-NSW"));
+        assert_eq!(jurisdiction_code("AE").as_deref(), Some("AE"));
+        for refused in [
+            "", "A", "ARE", "A1", "AE-", "AE-DUBA", "AE-D U", "AE-DU-X", "-DU",
+        ] {
+            assert_eq!(jurisdiction_code(refused), None, "{refused:?}");
+        }
+        for refused in ["", "A", "ARE", "1A", "A-"] {
+            assert_eq!(country_code(refused), None, "{refused:?}");
+        }
     }
 
     #[test]

@@ -433,6 +433,7 @@ fn modules_lists_only_reachable_catalog_entries() {
     for name in [
         "phone_intl",
         "phone_nanp",
+        "phone_ae",
         "github_user",
         "gravatar",
         "duolingo",
@@ -1669,6 +1670,24 @@ fn identifier_geohash_and_coarsen_commands() {
     );
     assert_eq!(run(&["id", "51824753557"]).0, Some(65));
     assert_eq!(run(&["id"]).0, Some(64));
+    assert_eq!(
+        run(&["id", "784", "1990", "1234567", "6"]),
+        (
+            Some(0),
+            "emirates_id=784199012345676\nprinted=784-1990-1234567-6\nyear_field=1990\n".into()
+        )
+    );
+    assert_eq!(run(&["id", "784-1990-1234567-0"]).0, Some(65));
+    assert_eq!(
+        run(&["id", "AE07 0331 2345 6789 0123 456"]),
+        (
+            Some(0),
+            "iban=AE070331234567890123456\nprinted=AE07 0331 2345 6789 0123 456\n\
+             check_digits=07\ninstitution_id=033\naccount=1234567890123456\n"
+                .into()
+        )
+    );
+    assert_eq!(run(&["id", "AE08 0331 2345 6789 0123 456"]).0, Some(65));
     assert_eq!(
         run(&["geohash", "57.64911,10.40744", "11"]),
         (Some(0), "u4pruydqqvj\n".into())

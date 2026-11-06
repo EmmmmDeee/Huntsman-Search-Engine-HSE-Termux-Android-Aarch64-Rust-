@@ -789,6 +789,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "North American Numbering Plan reading of a +1 number: plan validity, local and international forms, line class, the area code's country and the 555-01XX fiction block",
     },
     ReachableModule {
+        name: crate::phone_intl::AE_SOURCE,
+        command: "phone NUMBER",
+        access: "offline",
+        network: false,
+        category: ModuleCategory::Phone,
+        attack_techniques: &[],
+        description: "United Arab Emirates numbering-plan reading of a +971 number: fixed line, mobile or service range, local and international forms, and a fixed line's area and emirates (Dubai is 04); no operator or address is inferred",
+    },
+    ReachableModule {
         name: "numverify",
         command: "phone NUMBER",
         access: "operator_key",

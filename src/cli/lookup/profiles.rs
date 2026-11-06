@@ -777,7 +777,12 @@ pub(in crate::cli) fn gleif_cmd(args: &[String]) -> ExitCode {
         Err(e) => return usage_failure(&e, GLEIF_USAGE),
     };
     let transport = transport(&TransportConfig::default(), &Selection::all());
-    match source_report(gleif_cli::run(&transport, &parsed.query, clock::unix_now())) {
+    match source_report(gleif_cli::run_within(
+        &transport,
+        &parsed.query,
+        &parsed.scope,
+        clock::unix_now(),
+    )) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS

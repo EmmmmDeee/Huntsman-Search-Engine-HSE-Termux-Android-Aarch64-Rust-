@@ -12,6 +12,10 @@ pub const AU_SOURCE: &str = "phone_au";
 /// The label the North American Numbering Plan reading records its evidence and outcome under.
 pub const NANP_SOURCE: &str = "phone_nanp";
 
+/// The label the United Arab Emirates numbering-plan reading records its evidence and outcome
+/// under.
+pub const AE_SOURCE: &str = "phone_ae";
+
 /// Each ITU calling code with its ISO 3166 code and country name, longest code first. Codes are
 /// numbers, not text, for the reason [`NANP_TOLL_FREE`] gives: as text, whole-program
 /// optimisation packed them into long digit strings that the release key scan reads as a key.
@@ -540,6 +544,189 @@ fn nanp_national(national: &str) -> Result<Nanp, NanpError> {
     })
 }
 
+/// The service a `+971` number carries, by the range of the UAE plan that holds it.
+///
+/// The ranges are those Google's libphonenumber records for the UAE (`PhoneNumberMetadata.xml`,
+/// territory `AE`), the metadata Android validates numbers by: fixed lines `[2-4679][2-8]` and six
+/// digits, mobiles `5[02-68]` and seven, toll-free `400` and six or `800` and two to nine, premium
+/// rate `900[02]` and five, shared cost `700[05]` and five, universal access `600[25]` and five.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UaeClass {
+    Geographic,
+    Mobile,
+    TollFree,
+    Premium,
+    SharedCost,
+    /// A `600` number: one number a business or government service answers across the country.
+    UniversalAccess,
+}
+
+impl UaeClass {
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Geographic => "geographic",
+            Self::Mobile => "mobile",
+            Self::TollFree => "toll-free",
+            Self::Premium => "premium-rate",
+            Self::SharedCost => "shared-cost",
+            Self::UniversalAccess => "universal-access",
+        }
+    }
+}
+
+/// A UAE fixed-line area: the digit after `+971` (dialled `0` and that digit at home), what it
+/// serves, and the ISO 3166-2 codes of the emirates in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UaeArea {
+    pub digit: u8,
+    pub name: &'static str,
+    pub emirates: &'static [&'static str],
+}
+
+impl UaeArea {
+    /// The area code as dialled within the UAE: `04` for Dubai.
+    #[must_use]
+    pub fn trunk_code(self) -> String {
+        format!("0{}", char::from(self.digit))
+    }
+}
+
+/// Every UAE fixed-line area. Al Ain has its own area within the emirate of Abu Dhabi; one area
+/// serves Sharjah, Ajman and Umm Al Quwain.
+const UAE_AREAS: [UaeArea; 6] = [
+    UaeArea {
+        digit: b'2',
+        name: "Abu Dhabi",
+        emirates: &["AE-AZ"],
+    },
+    UaeArea {
+        digit: b'3',
+        name: "Al Ain",
+        emirates: &["AE-AZ"],
+    },
+    UaeArea {
+        digit: b'4',
+        name: "Dubai",
+        emirates: &["AE-DU"],
+    },
+    UaeArea {
+        digit: b'6',
+        name: "Sharjah, Ajman and Umm Al Quwain",
+        emirates: &["AE-SH", "AE-AJ", "AE-UQ"],
+    },
+    UaeArea {
+        digit: b'7',
+        name: "Ras Al Khaimah",
+        emirates: &["AE-RK"],
+    },
+    UaeArea {
+        digit: b'9',
+        name: "Fujairah",
+        emirates: &["AE-FU"],
+    },
+];
+
+/// What the UAE numbering plan says about a `+971` number, offline: its national number, the kind
+/// of service its range carries and, for a fixed line, its area. Nothing here names an operator,
+/// a subscriber or an address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Uae {
+    /// The national significant number: the digits after `+971`.
+    pub national: String,
+    pub class: UaeClass,
+    pub area: Option<UaeArea>,
+}
+
+/// Why a `+971` number cannot be a UAE number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum UaeError {
+    #[error(
+        "no range of the UAE plan holds it: a fixed line is 8 digits after +971 starting 2, 3, 4, 6, 7 or 9, a mobile 9 starting 50, 52 to 56 or 58, and a service number starts 400, 600, 700, 800 or 900"
+    )]
+    NotInPlan,
+}
+
+impl Uae {
+    /// The national number in the groups the plan writes it in: `4 123 4567`, `50 123 4567`,
+    /// `800 123456`, `900 2 12345`.
+    fn groups(&self) -> Vec<&str> {
+        let national = self.national.as_str();
+        match self.class {
+            UaeClass::Geographic => vec![&national[..1], &national[1..4], &national[4..]],
+            UaeClass::Mobile => vec![&national[..2], &national[2..5], &national[5..]],
+            UaeClass::UniversalAccess => vec![&national[..3], &national[3..]],
+            UaeClass::TollFree if national.starts_with('8') => {
+                vec![&national[..3], &national[3..]]
+            }
+            UaeClass::TollFree | UaeClass::Premium | UaeClass::SharedCost => {
+                vec![&national[..3], &national[3..4], &national[4..]]
+            }
+        }
+    }
+
+    /// The national form, as dialled within the UAE: a fixed line or mobile with its trunk `0`
+    /// (`04 123 4567`, `050 123 4567`), a service number without one (`800 123456`).
+    #[must_use]
+    pub fn local(&self) -> String {
+        let written = self.groups().join(" ");
+        if matches!(self.class, UaeClass::Geographic | UaeClass::Mobile) {
+            format!("0{written}")
+        } else {
+            written
+        }
+    }
+
+    /// The ITU-T E.123 international form: `+971 4 123 4567`.
+    #[must_use]
+    pub fn international(&self) -> String {
+        format!("+971 {}", self.groups().join(" "))
+    }
+}
+
+/// The UAE plan's reading of a canonical E.164 number: `None` when it is not a `+971` number, else
+/// its class and area or the plan rule it breaks. **Pure.**
+///
+/// # Errors
+/// [`UaeError::NotInPlan`] for a `+971` number no range of the plan holds.
+#[must_use]
+pub fn uae(e164: &str) -> Option<Result<Uae, UaeError>> {
+    let national = e164.strip_prefix("+971")?;
+    Some(uae_national(national))
+}
+
+fn uae_national(national: &str) -> Result<Uae, UaeError> {
+    let digits = national.as_bytes();
+    if digits.len() < 5 || !digits.iter().all(u8::is_ascii_digit) {
+        return Err(UaeError::NotInPlan);
+    }
+    let (first, second, fourth) = (digits[0], digits[1], digits[3]);
+    let (class, area) = match (digits.len(), first) {
+        (8, b'2' | b'3' | b'4' | b'6' | b'7' | b'9') if (b'2'..=b'8').contains(&second) => (
+            UaeClass::Geographic,
+            UAE_AREAS.iter().find(|area| area.digit == first).copied(),
+        ),
+        (9, b'5') if matches!(second, b'0' | b'2'..=b'6' | b'8') => (UaeClass::Mobile, None),
+        (9, _) if national.starts_with("400") => (UaeClass::TollFree, None),
+        (5..=12, _) if national.starts_with("800") => (UaeClass::TollFree, None),
+        (9, _) if national.starts_with("900") && matches!(fourth, b'0' | b'2') => {
+            (UaeClass::Premium, None)
+        }
+        (9, _) if national.starts_with("700") && matches!(fourth, b'0' | b'5') => {
+            (UaeClass::SharedCost, None)
+        }
+        (9, _) if national.starts_with("600") && matches!(fourth, b'2' | b'5') => {
+            (UaeClass::UniversalAccess, None)
+        }
+        _ => return Err(UaeError::NotInPlan),
+    };
+    Ok(Uae {
+        national: national.to_owned(),
+        class,
+        area,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,5 +917,92 @@ mod tests {
         assert_eq!(calling_code("+61412345678"), Some(61));
         assert_eq!(calling_code("+442071838750"), Some(44));
         assert_eq!(calling_code("61412345678"), None);
+    }
+
+    fn emirati(e164: &str) -> Uae {
+        uae(e164).expect("a +971 number").expect("in the plan")
+    }
+
+    #[test]
+    fn a_uae_fixed_line_names_its_area_and_emirates() {
+        let dubai = emirati("+97143123456");
+        assert_eq!(dubai.class, UaeClass::Geographic);
+        let area = dubai.area.expect("a fixed line has an area");
+        assert_eq!(
+            (area.name, area.emirates, area.trunk_code().as_str()),
+            ("Dubai", &["AE-DU"][..], "04")
+        );
+        assert_eq!(dubai.local(), "04 312 3456");
+        assert_eq!(dubai.international(), "+971 4 312 3456");
+        for (e164, name, emirates) in [
+            ("+97122345678", "Abu Dhabi", &["AE-AZ"][..]),
+            ("+97137654321", "Al Ain", &["AE-AZ"][..]),
+            (
+                "+97165432100",
+                "Sharjah, Ajman and Umm Al Quwain",
+                &["AE-SH", "AE-AJ", "AE-UQ"][..],
+            ),
+            ("+97172345678", "Ras Al Khaimah", &["AE-RK"][..]),
+            ("+97192223333", "Fujairah", &["AE-FU"][..]),
+        ] {
+            let area = emirati(e164).area.expect(e164);
+            assert_eq!((area.name, area.emirates), (name, emirates), "{e164}");
+        }
+    }
+
+    #[test]
+    fn a_uae_mobile_has_no_area_and_keeps_its_prefix() {
+        for prefix in ["50", "52", "53", "54", "55", "56", "58"] {
+            let number = emirati(&format!("+971{prefix}1234567"));
+            assert_eq!(number.class, UaeClass::Mobile, "{prefix}");
+            assert_eq!(number.area, None);
+            assert_eq!(number.local(), format!("0{prefix} 123 4567"));
+        }
+        assert_eq!(emirati("+971501234567").international(), "+971 50 123 4567");
+        // 51, 57 and 59 are no mobile range of the plan.
+        for unassigned in ["+971511234567", "+971571234567", "+971591234567"] {
+            assert_eq!(
+                uae(unassigned),
+                Some(Err(UaeError::NotInPlan)),
+                "{unassigned}"
+            );
+        }
+    }
+
+    #[test]
+    fn uae_service_numbers_are_read_by_their_range() {
+        for (e164, class, local) in [
+            ("+971800123456", UaeClass::TollFree, "800 123456"),
+            ("+97180012", UaeClass::TollFree, "800 12"),
+            ("+971400123456", UaeClass::TollFree, "400 1 23456"),
+            ("+971900212345", UaeClass::Premium, "900 2 12345"),
+            ("+971700012345", UaeClass::SharedCost, "700 0 12345"),
+            ("+971600212345", UaeClass::UniversalAccess, "600 212345"),
+        ] {
+            let number = emirati(e164);
+            assert_eq!(
+                (number.class, number.local().as_str()),
+                (class, local),
+                "{e164}"
+            );
+            assert_eq!(number.area, None, "{e164}");
+        }
+        for outside in [
+            // A fixed line whose second digit is 0, 1 or 9 is in no range.
+            "+97141234567",
+            "+97149234567",
+            // Wrong lengths for a fixed line and a mobile.
+            "+9714312345",
+            "+9715012345678",
+            // 900, 700 and 600 numbers outside their assigned blocks.
+            "+971901123456",
+            "+971701123456",
+            "+971601123456",
+            // Area 1, 5 and 8 hold no fixed line.
+            "+97112345678",
+        ] {
+            assert_eq!(uae(outside), Some(Err(UaeError::NotInPlan)), "{outside}");
+        }
+        assert_eq!(uae("+61412345678"), None);
     }
 }

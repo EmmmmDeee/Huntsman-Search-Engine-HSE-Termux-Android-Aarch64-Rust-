@@ -44,7 +44,7 @@ fn every_command_documents_itself_and_refuses_missing_arguments() {
         ),
         (
             "people-discover",
-            "people-discover [--region au|us] [--bibliography-only] FULL NAME...",
+            "people-discover [--region au|us|ae] [--bibliography-only] FULL NAME...",
         ),
     ] {
         let help = run(&dir, &[command, "--help"]);

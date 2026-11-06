@@ -27,6 +27,7 @@ fn every_front_end_label_is_its_home_label_unchanged() {
             "phone_nanp",
         ),
         (phone_cli::AU_SOURCE, phone_intl::AU_SOURCE, "phone_au"),
+        (phone_cli::AE_SOURCE, phone_intl::AE_SOURCE, "phone_ae"),
         (network_cli::OUI_SOURCE, oui::SOURCE, "oui"),
     ] {
         assert_eq!(old, home);
@@ -40,8 +41,12 @@ fn phone_offline_labels_match_the_catalogue_outcomes_and_evidence() {
         phone_intl::SOURCE,
         phone_intl::AU_SOURCE,
         phone_intl::NANP_SOURCE,
+        phone_intl::AE_SOURCE,
     ];
-    assert_eq!(sources, ["phone_intl", "phone_au", "phone_nanp"]);
+    assert_eq!(
+        sources,
+        ["phone_intl", "phone_au", "phone_nanp", "phone_ae"]
+    );
     assert_eq!(lookup_modules::offline_runs(ScanKind::Phone), sources);
 
     for source in sources {

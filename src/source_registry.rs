@@ -84,6 +84,8 @@ const COORDINATES_ONLY: &[EntityKind] = &[EntityKind::Coordinates];
 // Australian registry and archival discovery: links only, not fetched evidence.
 const AU_BUSINESS: &[EntityKind] = &[EntityKind::Organisation, EntityKind::AbnAcn];
 const AU_HISTORY: &[EntityKind] = &[EntityKind::Person, EntityKind::Organisation];
+// Dubai regulator discovery: the register lists DIFC firms and the individuals they employ.
+const AE_DFSA: &[EntityKind] = &[EntityKind::Person, EntityKind::Organisation];
 
 /// Small, independently curated bootstrap set. The architecture is designed to grow
 /// by adding descriptors rather than one Rust module per external search surface.
@@ -247,6 +249,21 @@ static SOURCES: &[SourceDescriptor] = &[
         reference_url: "https://trove.nla.gov.au/",
         evidence_role: EvidenceRole::LeadOnly,
     },
+    // The Dubai Financial Services Authority's public register pages for DIFC firms and the
+    // individuals they authorise (dfsa.ae/public-register/firms/... and /individuals/...) are
+    // indexed by search engines, while the register's own search refuses scripted requests, so
+    // the lead is a search scoped to the register's site. A page found there is a candidate to
+    // open, not proof that the person or firm is the one sought.
+    SourceDescriptor {
+        id: "ae_dfsa_register",
+        name: "DFSA public register (Dubai: DIFC firms and individuals)",
+        accepted_kinds: AE_DFSA,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.bing.com/search?q=%22{value}%22+site%3Adfsa.ae",
+        reference_url: "https://www.dfsa.ae/public-register",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
     SourceDescriptor {
         id: "google_maps",
         name: "Google Maps coordinates",
@@ -349,6 +366,36 @@ mod tests {
                 ids.insert(engine.name),
                 "engine {} reuses a source id",
                 engine.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_dubai_register_lead_is_a_dfsa_scoped_search_for_people_and_firms() {
+        for kind in [EntityKind::Person, EntityKind::Organisation] {
+            let routes = routes_for(&kind, "Jane Example");
+            let dfsa = routes
+                .iter()
+                .find(|route| route.source_id == "ae_dfsa_register")
+                .unwrap_or_else(|| panic!("{kind:?} has the DFSA register lead"));
+            assert_eq!(
+                dfsa.url,
+                "https://www.bing.com/search?q=%22Jane%20Example%22+site%3Adfsa.ae"
+            );
+            assert_eq!(dfsa.reference_url, "https://www.dfsa.ae/public-register");
+            assert_eq!(dfsa.evidence_role, EvidenceRole::LeadOnly);
+            assert_eq!(dfsa.execution, ExecutionMode::SearchUrl);
+        }
+        for (kind, value) in [
+            (EntityKind::Domain, "example.ae"),
+            (EntityKind::Email, "jane@example.ae"),
+            (EntityKind::Phone, "+97143123456"),
+        ] {
+            assert!(
+                !routes_for(&kind, value)
+                    .iter()
+                    .any(|route| route.source_id == "ae_dfsa_register"),
+                "{kind:?}"
             );
         }
     }

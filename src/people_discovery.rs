@@ -21,14 +21,17 @@ use crate::web_query::{self, EngineSet};
 const MAX_PEOPLE_DISCOVERY_NAME_BYTES: usize = 120;
 const MAX_CANDIDATES: usize = 80;
 pub const PEOPLE_DISCOVER_USAGE: &str =
-    "usage: huntsman-recon people-discover [--region au|us] [--bibliography-only] FULL NAME...";
-pub const PEOPLE_DISCOVER_HELP: &str = "people-discover [--region au|us] [--bibliography-only] FULL NAME...\nSearch public sources for leads on one person by full name. The name you type leaves this device: it is sent to Bing, Brave and Mojeek, in four site-scoped searches on each (LinkedIn profiles, GitHub accounts, ORCID research identifiers, and ASIC pages for --region au, the default, or SEC pages for us), and to Open Library's author search. --bibliography-only sends it to Open Library alone. No key is needed. Prints JSON: each admitted URL with the searches and engines that returned it, every engine's typed outcome, the count of returned URLs outside the searched site, the Open Library author leads with their own outcome, and whether anything was cut. Every result is an unverified lead: a matching name, an indexed page or the same URL from several engines does not prove identity, employment or control, and a blocked or empty source does not prove absence. Separate from `people`, which reads structured registers. No breach lookup, location tracing or automatic follow-up search. Exits 69 when no source returned a lead.";
+    "usage: huntsman-recon people-discover [--region au|us|ae] [--bibliography-only] FULL NAME...";
+pub const PEOPLE_DISCOVER_HELP: &str = "people-discover [--region au|us|ae] [--bibliography-only] FULL NAME...\nSearch public sources for leads on one person by full name. The name you type leaves this device: it is sent to Bing, Brave and Mojeek, in four site-scoped searches on each (LinkedIn profiles, GitHub accounts, ORCID research identifiers, and ASIC pages for --region au, the default, SEC pages for us, or for ae the Dubai Financial Services Authority's public register of DIFC firms and individuals on dfsa.ae), and to Open Library's author search. --bibliography-only sends it to Open Library alone. No key is needed. Prints JSON: each admitted URL with the searches and engines that returned it, every engine's typed outcome, the count of returned URLs outside the searched site, the Open Library author leads with their own outcome, and whether anything was cut. Every result is an unverified lead: a matching name, an indexed page or the same URL from several engines does not prove identity, employment or control, and a blocked or empty source does not prove absence. Separate from `people`, which reads structured registers. No breach lookup, location tracing or automatic follow-up search. Exits 69 when no source returned a lead.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Region {
     Au,
     Us,
+    /// The United Arab Emirates, scoped to the Dubai Financial Services Authority's public
+    /// register of firms and individuals in the Dubai International Financial Centre.
+    Ae,
 }
 
 impl Region {
@@ -37,6 +40,7 @@ impl Region {
         match raw {
             "au" => Some(Self::Au),
             "us" => Some(Self::Us),
+            "ae" => Some(Self::Ae),
             _ => None,
         }
     }
@@ -45,6 +49,7 @@ impl Region {
         match self {
             Self::Au => "asic.gov.au",
             Self::Us => "sec.gov",
+            Self::Ae => "dfsa.ae",
         }
     }
 }
@@ -363,6 +368,61 @@ mod tests {
                 .iter()
                 .map(|f| f.accepted_host)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_uae_region_searches_the_dfsa_register_and_admits_only_its_pages() {
+        struct Dubai;
+        impl Transport for Dubai {
+            fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+                let catalogue = request.url.starts_with("https://openlibrary.org/");
+                let body: &[u8] = if catalogue {
+                    br#"{"numFound":0,"numFoundExact":true,"docs":[]}"#
+                } else {
+                    concat!(
+                        "<html><a href='https://www.dfsa.ae/public-register/individuals/mr-jane-example'>DFSA</a>",
+                        "<a href='https://dfsa.ae.evil.example/public-register'>impersonation</a>",
+                        "<a href='https://asic.gov.au/register/candidate'>AU</a></html>"
+                    )
+                    .as_bytes()
+                };
+                Ok(Response {
+                    status: 200,
+                    headers: vec![(
+                        "content-type".into(),
+                        if catalogue {
+                            "application/json"
+                        } else {
+                            "text/html"
+                        }
+                        .into(),
+                    )],
+                    body: body.to_vec(),
+                    truncated: false,
+                })
+            }
+        }
+        assert_eq!(Region::parse("ae"), Some(Region::Ae));
+        let report = discover(&Dubai, "Jane Example", Region::Ae, 1).unwrap();
+        assert_eq!(report.facets[3].accepted_host, "dfsa.ae");
+        // The name is searched in its canonical (lower-case) form, as every region searches it.
+        assert_eq!(report.facets[3].query, "\"jane example\" site:dfsa.ae");
+        let register: Vec<&str> = report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.facets.contains(&"official_registry"))
+            .map(|candidate| candidate.url.as_str())
+            .collect();
+        assert_eq!(
+            register,
+            ["https://www.dfsa.ae/public-register/individuals/mr-jane-example"]
+        );
+        assert!(
+            report
+                .candidates
+                .iter()
+                .all(|candidate| candidate.status == "unverified_search_index_lead")
         );
     }
 

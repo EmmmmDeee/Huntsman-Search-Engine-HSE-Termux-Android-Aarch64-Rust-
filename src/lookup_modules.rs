@@ -228,6 +228,7 @@ pub fn offline_runs(kind: ScanKind) -> Vec<&'static str> {
             crate::phone_intl::SOURCE,
             crate::phone_intl::AU_SOURCE,
             crate::phone_intl::NANP_SOURCE,
+            crate::phone_intl::AE_SOURCE,
         ],
         ScanKind::Network => vec![crate::oui::SOURCE],
         ScanKind::Ip

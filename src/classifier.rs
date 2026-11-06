@@ -48,8 +48,12 @@ impl Classified {
     }
 }
 
+/// What one value is. Arabic-Indic digits are read as ASCII digits and the direction marks of
+/// right-to-left text are ignored ([`crate::value_syntax::western_digits`]), so a number written
+/// in Arabic text classifies as it does in Latin digits.
 #[must_use]
 pub fn classify(raw: &str) -> Classified {
+    let raw = crate::value_syntax::western_digits(raw);
     let value = raw.trim();
     if value.is_empty() {
         return Classified {
@@ -235,9 +239,12 @@ fn word_tokens(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every distinct value `text` holds, in order. Arabic-Indic digits and the direction marks of
+/// right-to-left text are read as [`classify`] reads them.
 #[must_use]
 pub fn extract(text: &str) -> Vec<Classified> {
-    let tokens = tokenize(text);
+    let text = crate::value_syntax::western_digits(text);
+    let tokens = tokenize(&text);
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     let mut index = 0;
@@ -599,6 +606,20 @@ mod tests {
         let local = extract("call 0412 345 678 today");
         assert_eq!(local.len(), 1, "{local:?}");
         assert_eq!(local[0].kind, EntityKind::Phone);
+    }
+
+    #[test]
+    fn a_phone_number_in_arabic_text_and_digits_is_found() {
+        // "Contact the office on +971 4 123 4567" as an Arabic notice writes it, with the
+        // number in Arabic-Indic digits wrapped in left-to-right isolates.
+        let found = extract("للتواصل مع المكتب \u{2066}+٩٧١ ٤ ١٢٣ ٤٥٦٧\u{2069} شكرا");
+        let phones: Vec<_> = found
+            .iter()
+            .filter(|item| item.kind == EntityKind::Phone)
+            .collect();
+        assert_eq!(phones.len(), 1, "{found:?}");
+        assert_eq!(phones[0].value, "+97141234567");
+        assert_eq!(classify("+۹۷۱۵۰۱۲۳۴۵۶۷").value, "+971501234567");
     }
 
     #[test]

@@ -218,10 +218,51 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
     au_national_key(&compact)
 }
 
+/// The value of an Arabic-Indic (U+0660 to U+0669) or Extended Arabic-Indic (U+06F0 to U+06F9,
+/// the Persian and Urdu forms) digit, written in Arabic text across the Gulf. **Pure.**
+const fn eastern_digit(character: char) -> Option<char> {
+    let zero = match character {
+        '\u{0660}'..='\u{0669}' => '\u{0660}',
+        '\u{06f0}'..='\u{06f9}' => '\u{06f0}',
+        _ => return None,
+    };
+    char::from_digit(character as u32 - zero as u32, 10)
+}
+
+/// The invisible marks right-to-left text puts around a number so that it displays left to right:
+/// the Arabic letter mark, the left-to-right and right-to-left marks, and the bidirectional
+/// embeddings, overrides and isolates. They carry no character of the value. **Pure.**
+const fn is_direction_mark(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// `raw` with every Arabic-Indic and Extended Arabic-Indic digit written as its ASCII digit and
+/// without the direction marks around numbers in right-to-left text, so `+٩٧١ ٥٠ ١٢٣ ٤٥٦٧` reads
+/// as `+971 50 123 4567`. Text holding neither is returned unchanged, without a copy. **Pure.**
+#[must_use]
+pub fn western_digits(raw: &str) -> std::borrow::Cow<'_, str> {
+    if !raw
+        .chars()
+        .any(|character| eastern_digit(character).is_some() || is_direction_mark(character))
+    {
+        return std::borrow::Cow::Borrowed(raw);
+    }
+    raw.chars()
+        .filter(|&character| !is_direction_mark(character))
+        .map(|character| eastern_digit(character).unwrap_or(character))
+        .collect::<String>()
+        .into()
+}
+
 /// The one canonical form of a phone number, which every phone value is read by (an entity, a
 /// classified token, a selector, `phone_intl::canonicalize`): an explicit international number or
 /// a recognised Australian national number in E.164, else `None`. **Pure.**
 ///
+/// - Arabic-Indic and Extended Arabic-Indic digits are read as their ASCII digits, and the
+///   direction marks of right-to-left text are ignored ([`western_digits`]).
 /// - The number starts at its first digit or `+`, so `tel:+1…` and `(+44)…` are read as written.
 /// - A `00` or Australian `0011` international prefix is a `+` (`0044 20…`, `0011 44 20…` are
 ///   `+4420…`).
@@ -234,6 +275,7 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
 ///   guessed.
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
+    let raw = western_digits(raw);
     let number =
         raw.trim_start_matches(|character: char| !(character.is_ascii_digit() || character == '+'));
     if has_digits_after_a_marker(number) {
@@ -896,6 +938,32 @@ mod au_phone_key_contract {
             canonical_phone("+1202555010").as_deref(),
             Some("+1202555010")
         );
+    }
+
+    #[test]
+    fn a_number_in_arabic_indic_digits_is_the_same_number() {
+        let want = Some("+971501234567".to_string());
+        for written in [
+            "+971 50 123 4567",
+            // Arabic-Indic digits, as an Emirati card or document writes them.
+            "+٩٧١ ٥٠ ١٢٣ ٤٥٦٧",
+            "٠٠٩٧١٥٠١٢٣٤٥٦٧",
+            // Extended Arabic-Indic (Persian and Urdu) digits.
+            "+۹۷۱ ۵۰ ۱۲۳ ۴۵۶۷",
+            // Direction marks around the number, as right-to-left text holds it.
+            "\u{200e}+971 50 123 4567\u{200e}",
+            "\u{2066}+٩٧١ ٥٠ ١٢٣ ٤٥٦٧\u{2069}",
+        ] {
+            assert_eq!(canonical_phone(written), want, "{written:?}");
+        }
+        assert_eq!(western_digits("plain +971 text"), "plain +971 text");
+        assert!(matches!(
+            western_digits("plain"),
+            std::borrow::Cow::Borrowed("plain")
+        ));
+        assert_eq!(western_digits("رقم ٤٢"), "رقم 42");
+        // An extension after an Arabic-Indic number is still an extension.
+        assert_eq!(canonical_phone("+٩٧١ ٤ ١٢٣ ٤٥٦٧ ext ٢٢"), None);
     }
 
     #[test]

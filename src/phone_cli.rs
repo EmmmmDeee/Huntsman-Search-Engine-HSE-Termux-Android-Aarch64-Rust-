@@ -27,7 +27,7 @@ use crate::source_outcome::SourceExecutionOutcome;
 pub const PHONE_USAGE: &str = "usage: huntsman-recon phone NUMBER [--save FILE]";
 pub const PHONE_HELP: &str = "\
 phone NUMBER [--save FILE]
-Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region; an Australian mobile also carries its ACMA numbering-register block — the range's original allocatee and date and its latest holder and transfer date, or that the block is spare — read offline from an embedded copy of the regulator's register (the holder is the range's registered holder, never the carrier serving the number today nor the subscriber). A +1 number is held to the North American Numbering Plan: one the plan cannot hold (an area code or exchange beginning 0 or 1, an N11 code, a reserved area code) is refused with the rule it breaks; otherwise it gets its local (NPA) NXX-XXXX and international +1 NPA NXX XXXX forms, whether it is geographic, toll-free, premium or another service code, the country or territory its area code belongs to (Canada, the Caribbean countries and US territories by list, the United States otherwise), and a flag for the 555-0100 to 555-0199 numbers set aside for fiction. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region; an Australian mobile also carries its ACMA numbering-register block — the range's original allocatee and date and its latest holder and transfer date, or that the block is spare — read offline from an embedded copy of the regulator's register (the holder is the range's registered holder, never the carrier serving the number today nor the subscriber). A +1 number is held to the North American Numbering Plan: one the plan cannot hold (an area code or exchange beginning 0 or 1, an N11 code, a reserved area code) is refused with the rule it breaks; otherwise it gets its local (NPA) NXX-XXXX and international +1 NPA NXX XXXX forms, whether it is geographic, toll-free, premium or another service code, the country or territory its area code belongs to (Canada, the Caribbean countries and US territories by list, the United States otherwise), and a flag for the 555-0100 to 555-0199 numbers set aside for fiction. A +971 number is read against the UAE plan: a fixed line's area and the emirates in it (04 is Dubai, AE-DU; 02 Abu Dhabi, 03 Al Ain, 06 Sharjah, Ajman and Umm Al Quwain, 07 Ras Al Khaimah, 09 Fujairah), a mobile range (50, 52 to 56, 58) or a toll-free, universal access (600), shared-cost or premium-rate range, with its local (04 312 3456) and international (+971 4 312 3456) forms; no operator or address is inferred. Digits may be written in Arabic-Indic or Persian form. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
 
 const PHONE_CONFIDENCE: f64 = 0.90;
 
@@ -113,7 +113,7 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     )];
 
     // Every plan is consulted for every number and answers for its own, so a phone scan's Sources
-    // table names all three plans, and a plan that does not hold the number says so in its row
+    // table names all four plans, and a plan that does not hold the number says so in its row
     // instead of leaving none.
     if iso == "AU" {
         enrich_au(&canonical, &scan_id, &mut entity);
@@ -134,6 +134,24 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
                 "+{prefix} is not the North American Numbering Plan's +1, so the plan holds no reading of it"
             )),
         );
+    }
+    match phone_intl::uae(&canonical) {
+        Some(Ok(number)) => {
+            enrich_uae(&number, &scan_id, &mut entity);
+            outcomes.push(SourceExecutionOutcome::success(AE_SOURCE, now_unix, 1));
+        }
+        // A +971 number no range of the plan holds stays a number of the UAE; the plan says it
+        // has no reading of it rather than refusing the lookup, since a newly opened range would
+        // otherwise refuse a number in service.
+        Some(Err(rule)) => outcomes.push(
+            SourceExecutionOutcome::valid_zero(AE_SOURCE, now_unix)
+                .with_detail(format!("no UAE plan reading: {rule}")),
+        ),
+        None => outcomes.push(
+            SourceExecutionOutcome::valid_zero(AE_SOURCE, now_unix).with_detail(format!(
+                "+{prefix} is not the United Arab Emirates' +971, so the UAE plan holds no reading of it"
+            )),
+        ),
     }
 
     let report = Report {
@@ -305,9 +323,70 @@ fn enrich_au(canonical: &str, scan_id: &str, entity: &mut Entity) {
     entity.add_evidence(evidence);
 }
 
-/// Evidence source for the offline North American Numbering Plan reading.
+/// Evidence sources for the offline numbering-plan readings.
 /// Re-exported from [`crate::phone_intl`], the numbering-plan home; these paths stay stable.
-pub use crate::phone_intl::{AU_SOURCE, NANP_SOURCE};
+pub use crate::phone_intl::{AE_SOURCE, AU_SOURCE, NANP_SOURCE};
+
+/// What the UAE numbering plan says about a `+971` number: its national and international forms,
+/// its class and, for a fixed line, its area and the emirates in it. Nothing here names an
+/// operator, a subscriber or an address: an area is where the exchange is, and no operator is
+/// inferred from a mobile prefix.
+fn enrich_uae(number: &phone_intl::Uae, scan_id: &str, entity: &mut Entity) {
+    use phone_intl::UaeClass;
+    entity.tag("ae-phone");
+    entity.tag(format!("line:{}", number.class.slug()));
+    let mobile_prefix = format!("0{}", number.national.get(..2).unwrap_or_default());
+    let summary = match (number.class, number.area) {
+        (UaeClass::Geographic, Some(area)) => {
+            format!("UAE fixed line, area {} ({})", area.trunk_code(), area.name)
+        }
+        (UaeClass::Geographic, None) => "UAE fixed line".to_owned(),
+        (UaeClass::Mobile, _) => format!("UAE mobile number, prefix {mobile_prefix}"),
+        (UaeClass::TollFree, _) => "UAE toll-free number".to_owned(),
+        (UaeClass::Premium, _) => "UAE premium-rate number".to_owned(),
+        (UaeClass::SharedCost, _) => "UAE shared-cost number".to_owned(),
+        (UaeClass::UniversalAccess, _) => "UAE universal access (600) number".to_owned(),
+    };
+    let mut evidence = Evidence::new(EvidenceProvenance::for_scan(AE_SOURCE, scan_id), summary)
+        .with_attr("numbering_plan", "UAE")
+        .with_attr("line_type", number.class.slug())
+        .with_attr("local_format", number.local())
+        .with_attr("international_format", number.international());
+    match number.class {
+        UaeClass::Geographic => {
+            entity.tag("geographic");
+            if let Some(area) = number.area {
+                entity.tag(format!("ae-area:{}", area.trunk_code()));
+                for emirate in area.emirates {
+                    entity.tag(format!("ae-emirate:{emirate}"));
+                }
+                evidence = evidence
+                    .with_attr("area_code", area.trunk_code())
+                    .with_attr("area", area.name)
+                    .with_attr("area_emirates", area.emirates.join(", "))
+                    .with_attr(
+                        "note",
+                        "an area code names where the exchange is, not the subscriber's address",
+                    );
+            }
+        }
+        UaeClass::Mobile => {
+            entity.tag("mobile");
+            evidence = evidence.with_attr("mobile_prefix", mobile_prefix).with_attr(
+                "note",
+                "a mobile number is non-geographic; no operator or location is inferred offline",
+            );
+        }
+        UaeClass::TollFree
+        | UaeClass::Premium
+        | UaeClass::SharedCost
+        | UaeClass::UniversalAccess => {
+            entity.tag("non-geographic");
+            entity.tag("service-number");
+        }
+    }
+    entity.add_evidence(evidence);
+}
 
 /// What the North American Numbering Plan says about a `+1` number: its national and
 /// international forms, its class, its area code's country, and whether it is one of the
@@ -559,6 +638,7 @@ mod tests {
                         ("phone_intl", SourceOutcomeKind::Success),
                         (AU_SOURCE, SourceOutcomeKind::ValidZero),
                         (NANP_SOURCE, SourceOutcomeKind::ValidZero),
+                        (AE_SOURCE, SourceOutcomeKind::ValidZero),
                     ]
                 );
                 assert!(
@@ -569,9 +649,109 @@ mod tests {
                     "{:?}",
                     report.outcomes[1].detail
                 );
+                assert!(
+                    report.outcomes[3]
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail
+                            .starts_with("+44 is not the United Arab Emirates' +971")),
+                    "{:?}",
+                    report.outcomes[3].detail
+                );
             }
             PhoneRun::Failed(message) => panic!("{message}"),
         }
+    }
+
+    fn printed(phone: &str) -> (String, Report) {
+        match run(phone, 1) {
+            PhoneRun::Printed { text, report } => (text, report),
+            PhoneRun::Failed(message) => panic!("{phone}: {message}"),
+        }
+    }
+
+    #[test]
+    fn a_dubai_fixed_line_names_its_area_and_emirate_not_an_address() {
+        let (text, report) = printed("+971 4 312 3456");
+        let entity = &report.entities[0];
+        assert_eq!(entity.value, "+97143123456");
+        for tag in [
+            "country:AE",
+            "ae-phone",
+            "line:geographic",
+            "geographic",
+            "ae-area:04",
+            "ae-emirate:AE-DU",
+        ] {
+            assert!(entity.has_tag(tag), "{tag}: {:?}", entity.tags);
+        }
+        let plan = entity
+            .evidence
+            .iter()
+            .find(|evidence| evidence.provenance.source == AE_SOURCE)
+            .expect("the UAE plan's evidence");
+        assert!(plan.attr_values("area").eq(["Dubai"]));
+        assert!(plan.attr_values("area_emirates").eq(["AE-DU"]));
+        assert!(plan.attr_values("local_format").eq(["04 312 3456"]));
+        assert!(
+            plan.attr_values("international_format")
+                .eq(["+971 4 312 3456"])
+        );
+        // An area is where the exchange is: no address or coordinates are minted from it.
+        assert_eq!(report.entities.len(), 1);
+        assert!(text.contains("phone_ae\tsuccess\tfound=1"), "{text}");
+        let kinds: Vec<_> = report.outcomes.iter().map(|outcome| outcome.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                SourceOutcomeKind::Success,
+                SourceOutcomeKind::ValidZero,
+                SourceOutcomeKind::ValidZero,
+                SourceOutcomeKind::Success,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_uae_mobile_written_in_arabic_indic_digits_is_read_without_an_operator() {
+        let (_, report) = printed("+٩٧١ ٥٠ ١٢٣ ٤٥٦٧");
+        let entity = &report.entities[0];
+        assert_eq!(entity.value, "+971501234567");
+        assert!(entity.has_tag("mobile") && entity.has_tag("line:mobile"));
+        assert!(!entity.tags.iter().any(|tag| tag.starts_with("ae-emirate:")));
+        let plan = entity
+            .evidence
+            .iter()
+            .find(|evidence| evidence.provenance.source == AE_SOURCE)
+            .expect("the UAE plan's evidence");
+        assert!(plan.attr_values("mobile_prefix").eq(["050"]));
+        assert!(
+            !plan
+                .attributes
+                .iter()
+                .any(|(key, _)| key.contains("operator") || key.contains("carrier"))
+        );
+    }
+
+    #[test]
+    fn a_uae_number_outside_every_range_keeps_its_country_and_says_why() {
+        let (_, report) = printed("+971 51 123 4567");
+        let entity = &report.entities[0];
+        assert!(entity.has_tag("country:AE"));
+        assert!(!entity.has_tag("ae-phone"));
+        let row = report
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == AE_SOURCE)
+            .expect("the UAE plan's row");
+        assert_eq!(row.kind, SourceOutcomeKind::ValidZero);
+        assert!(
+            row.detail
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("no UAE plan reading: no range")),
+            "{:?}",
+            row.detail
+        );
     }
 
     #[test]
@@ -643,8 +823,14 @@ mod tests {
         let au = &sydney.entities[0];
         assert_eq!(au.corroborating_sources(), nanp.corroborating_sources());
         assert_eq!(au.source_count(), nanp.source_count());
-        // Each scan's Sources table names all three plans, the one that holds the number as a
-        // success and the other as a valid zero that says why.
+        let PhoneRun::Printed { report: dubai, .. } = run("+971 4 312 3456", 1) else {
+            panic!("a Dubai fixed line prints");
+        };
+        let ae = &dubai.entities[0];
+        assert_eq!(ae.corroborating_sources(), nanp.corroborating_sources());
+        assert_eq!(ae.source_count(), nanp.source_count());
+        // Each scan's Sources table names all four plans, the one that holds the number as a
+        // success and the others as valid zeros that say why.
         let kinds = |report: &Report| -> Vec<(String, SourceOutcomeKind)> {
             report
                 .outcomes
@@ -658,6 +844,7 @@ mod tests {
                 ("phone_intl".to_owned(), SourceOutcomeKind::Success),
                 (AU_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
                 (NANP_SOURCE.to_owned(), SourceOutcomeKind::Success),
+                (AE_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
             ]
         );
         assert_eq!(
@@ -666,17 +853,31 @@ mod tests {
                 ("phone_intl".to_owned(), SourceOutcomeKind::Success),
                 (AU_SOURCE.to_owned(), SourceOutcomeKind::Success),
                 (NANP_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
+                (AE_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
             ]
         );
-        assert!(
-            crate::module::reachable_modules()
-                .iter()
-                .any(|module| module.name == NANP_SOURCE && !module.network)
+        assert_eq!(
+            kinds(&dubai),
+            [
+                ("phone_intl".to_owned(), SourceOutcomeKind::Success),
+                (AU_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
+                (NANP_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
+                (AE_SOURCE.to_owned(), SourceOutcomeKind::Success),
+            ]
         );
-        assert!(
-            crate::lookup_modules::offline_runs(crate::scan_route::ScanKind::Phone)
-                .contains(&NANP_SOURCE)
-        );
+        for plan in [NANP_SOURCE, AE_SOURCE] {
+            assert!(
+                crate::module::reachable_modules()
+                    .iter()
+                    .any(|module| module.name == plan && !module.network),
+                "{plan}"
+            );
+            assert!(
+                crate::lookup_modules::offline_runs(crate::scan_route::ScanKind::Phone)
+                    .contains(&plan),
+                "{plan}"
+            );
+        }
     }
 
     /// A +1 number gets `PhoneInfoga`'s fields and more: its national and international forms, its
