@@ -57,12 +57,6 @@ pub struct AreaEstimate {
     pub evidence_role: &'static str,
     pub limitations: Vec<&'static str>,
 }
-fn valid_location(lat: f64, lon: f64) -> bool {
-    lat.is_finite()
-        && lon.is_finite()
-        && (-90.0..=90.0).contains(&lat)
-        && (-180.0..=180.0).contains(&lon)
-}
 fn valid_category(value: &str) -> bool {
     matches!(
         value,
@@ -82,7 +76,7 @@ pub fn validate(input: &AreaInput) -> Result<(), Error> {
             || event.id.len() > 128
             || event.id.chars().any(char::is_control)
             || !ids.insert(event.id.as_str())
-            || !valid_location(event.lat, event.lon)
+            || !crate::geohash::valid_coordinate(event.lat, event.lon)
             || !(1..=5).contains(&event.severity)
             || !valid_category(&event.category)
             || event.occurred_at_unix > input.as_of_unix
@@ -108,7 +102,7 @@ pub fn estimate(
     category: &str,
 ) -> Result<AreaEstimate, Error> {
     validate(input)?;
-    if !valid_location(lat, lon)
+    if !crate::geohash::valid_coordinate(lat, lon)
         || !radius_m.is_finite()
         || !(100.0..=10000.0).contains(&radius_m)
         || !valid_category(category)

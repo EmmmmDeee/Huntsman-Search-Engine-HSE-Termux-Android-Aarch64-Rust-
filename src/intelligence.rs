@@ -73,8 +73,7 @@ pub struct GeoAssertion {
 impl GeoAssertion {
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        (-90.0..=90.0).contains(&self.latitude)
-            && (-180.0..=180.0).contains(&self.longitude)
+        crate::geohash::valid_coordinate(self.latitude, self.longitude)
             && (0.0..=1.0).contains(&self.confidence)
             && self
                 .uncertainty_radius_m

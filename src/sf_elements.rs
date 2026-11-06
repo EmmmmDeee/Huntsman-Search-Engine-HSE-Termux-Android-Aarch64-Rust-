@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::domains::{is_or_subdomain_of, registrable_domain};
+use crate::domains::{is_or_subdomain_of, is_proper_subdomain_of, registrable_domain};
 use crate::entity::{Entity, EntityKind, Evidence};
 use crate::recursion::PivotEdge;
 use crate::sf_country;
@@ -1137,7 +1137,7 @@ impl Walk<'_> {
                 continue;
             };
             if derived == "DOMAIN_NAME" && !self.target.claims(&domain) {
-                if !host.ends_with(&format!(".{domain}")) {
+                if !is_proper_subdomain_of(&host, &domain) {
                     continue;
                 }
                 derived = "DOMAIN_NAME_PARENT";

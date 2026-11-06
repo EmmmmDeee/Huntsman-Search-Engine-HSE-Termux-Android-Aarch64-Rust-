@@ -41,10 +41,7 @@ pub fn search<T: Transport + ?Sized>(
     query: &str,
     now_unix: u64,
 ) -> Result<Vec<String>, LegError> {
-    if query.trim().is_empty()
-        || query.len() > EXA_MAX_QUERY_BYTES
-        || query.chars().any(char::is_control)
-    {
+    if !crate::textnorm::is_bounded_text(query, EXA_MAX_QUERY_BYTES) {
         return Err(LegError::Decode(
             "search query must contain 1-512 bytes without control characters".into(),
         ));

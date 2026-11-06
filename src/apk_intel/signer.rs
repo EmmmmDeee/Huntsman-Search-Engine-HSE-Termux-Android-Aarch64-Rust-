@@ -13,6 +13,7 @@
 use serde::Serialize;
 
 use crate::sha256::{hex32, sha256};
+use crate::x509::oid_text;
 
 const SEQUENCE: u8 = 0x30;
 const SET: u8 = 0x31;
@@ -170,40 +171,22 @@ fn name(data: &[u8], name: Tlv) -> Option<String> {
             let label = NAME_ATTRIBUTES
                 .iter()
                 .find(|(known, _)| *known == oid)
-                .map_or_else(|| dotted(oid), |(_, label)| (*label).to_owned());
+                .map_or_else(|| oid_text(oid), |(_, label)| (*label).to_owned());
             parts.push(format!("{label}={}", name_value(data, value)));
         }
     }
     Some(parts.join(", "))
 }
 
-/// An object identifier in dotted form, for a name attribute without a short label.
-fn dotted(oid: &[u8]) -> String {
-    let mut arcs: Vec<u64> = Vec::new();
-    let mut value = 0_u64;
-    for byte in oid {
-        value = (value << 7) | u64::from(byte & 0x7f);
-        if byte & 0x80 == 0 {
-            if arcs.is_empty() {
-                let first = value.min(80) / 40;
-                arcs.push(first);
-                arcs.push(value - first * 40);
-            } else {
-                arcs.push(value);
-            }
-            value = 0;
-        }
-    }
-    arcs.iter()
-        .map(u64::to_string)
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-/// A `UTCTime` or `GeneralizedTime` as `YYYY-MM-DDTHH:MM:SSZ`.
+/// A `UTCTime` or `GeneralizedTime` as `YYYY-MM-DDTHH:MM:SSZ`. Only ASCII digits before the `Z`
+/// are read, so every slice below falls on a character boundary: a crafted time holding a
+/// multi-byte character is refused, never a panic.
 fn time(data: &[u8], time: Tlv) -> Option<String> {
     let text = std::str::from_utf8(&data[time.start..time.end]).ok()?;
     let digits = text.strip_suffix('Z')?;
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
     let full = match (time.tag, digits.len()) {
         (UTC_TIME, 12) => {
             let year: u32 = digits[..2].parse().ok()?;
@@ -212,9 +195,6 @@ fn time(data: &[u8], time: Tlv) -> Option<String> {
         (GENERALIZED_TIME, 14) => digits.to_owned(),
         _ => return None,
     };
-    if !full.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
     Some(format!(
         "{}-{}-{}T{}:{}:{}Z",
         &full[..4],
@@ -1111,10 +1091,45 @@ pub(super) mod tests {
 
     #[test]
     fn unlabelled_name_attributes_keep_their_dotted_oid() {
-        assert_eq!(dotted(&[0x55, 0x04, 0x2a]), "2.5.4.42");
+        assert_eq!(oid_text(&[0x55, 0x04, 0x2a]), "2.5.4.42");
         assert_eq!(
-            dotted(&[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d]),
+            oid_text(&[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d]),
             "1.2.840.113549"
         );
+    }
+
+    /// A certificate time is read only when it is ASCII digits and a `Z`. A crafted time with a
+    /// multi-byte character where the year's digits belong used to panic slicing through it.
+    #[test]
+    fn a_time_holding_anything_but_digits_is_refused_never_a_panic() {
+        let read = |tag: u8, text: &str| {
+            let data = text.as_bytes();
+            time(
+                data,
+                Tlv {
+                    tag,
+                    at: 0,
+                    start: 0,
+                    end: data.len(),
+                },
+            )
+        };
+        assert_eq!(
+            read(UTC_TIME, "200101000000Z").as_deref(),
+            Some("2020-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            read(UTC_TIME, "990101000000Z").as_deref(),
+            Some("1999-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            read(GENERALIZED_TIME, "20500101000000Z").as_deref(),
+            Some("2050-01-01T00:00:00Z")
+        );
+        for crafted in ["1\u{e9}101000000Z", "\u{e9}0101000000Z", "20\u{e9}0101000Z"] {
+            assert_eq!(read(UTC_TIME, crafted), None, "{crafted}");
+        }
+        assert_eq!(read(GENERALIZED_TIME, "2050\u{e9}0100000Z"), None);
+        assert_eq!(read(UTC_TIME, "2001010000+0Z"), None);
     }
 }

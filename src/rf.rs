@@ -160,7 +160,7 @@ impl RfSighting {
     #[must_use]
     pub fn has_usable_position(&self) -> bool {
         match (self.latitude, self.longitude) {
-            (Some(lat), Some(lon)) => is_valid_coords(lat, lon),
+            (Some(lat), Some(lon)) => crate::geohash::valid_fix(lat, lon),
             _ => false,
         }
     }
@@ -179,15 +179,6 @@ pub fn valid_wifi_bssid(value: &str) -> bool {
     }
     // IEEE 802 I/G low bit distinguishes group/broadcast from individual.
     oui::is_multicast(&address) == Some(false)
-}
-
-/// A finite, in-range coordinate other than (0, 0), the null island an unset fix is written as.
-fn is_valid_coords(lat: f64, lon: f64) -> bool {
-    lat.is_finite()
-        && lon.is_finite()
-        && (-90.0..=90.0).contains(&lat)
-        && (-180.0..=180.0).contains(&lon)
-        && !(lat == 0.0 && lon == 0.0)
 }
 
 #[must_use]
@@ -471,15 +462,15 @@ mod tests {
 
     #[test]
     fn valid_coords_refuse_null_island_non_finite_and_out_of_range() {
-        assert!(is_valid_coords(-27.4698, 153.0251));
-        assert!(is_valid_coords(90.0, 180.0));
-        assert!(is_valid_coords(-90.0, -180.0));
-        assert!(!is_valid_coords(0.0, 0.0));
-        assert!(!is_valid_coords(f64::NAN, 0.0));
-        assert!(!is_valid_coords(0.0, f64::NAN));
-        assert!(!is_valid_coords(f64::INFINITY, 0.0));
-        assert!(!is_valid_coords(91.0, 0.0));
-        assert!(!is_valid_coords(0.0, -180.5));
+        assert!(crate::geohash::valid_fix(-27.4698, 153.0251));
+        assert!(crate::geohash::valid_fix(90.0, 180.0));
+        assert!(crate::geohash::valid_fix(-90.0, -180.0));
+        assert!(!crate::geohash::valid_fix(0.0, 0.0));
+        assert!(!crate::geohash::valid_fix(f64::NAN, 0.0));
+        assert!(!crate::geohash::valid_fix(0.0, f64::NAN));
+        assert!(!crate::geohash::valid_fix(f64::INFINITY, 0.0));
+        assert!(!crate::geohash::valid_fix(91.0, 0.0));
+        assert!(!crate::geohash::valid_fix(0.0, -180.5));
     }
 
     #[test]

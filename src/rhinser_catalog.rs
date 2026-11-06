@@ -217,7 +217,7 @@ impl Catalog {
             .query_template
             .as_ref()
             .ok_or_else(|| "this tool has no verified query template".to_owned())?;
-        if query.trim().is_empty() || query.len() > 256 || query.chars().any(char::is_control) {
+        if !crate::textnorm::is_bounded_text(query, 256) {
             return Err("invalid catalogue query".to_owned());
         }
         let encoded = crate::http::percent_encode_unreserved(query.trim());
@@ -228,7 +228,7 @@ impl Catalog {
     #[must_use]
     pub fn find(&self, query: &str) -> Vec<ToolHit<'_>> {
         let needle = query.trim().to_lowercase();
-        if needle.is_empty() || needle.len() > 256 || needle.chars().any(char::is_control) {
+        if !crate::textnorm::is_bounded_text(&needle, 256) {
             return Vec::new();
         }
         let mut hits = Vec::new();

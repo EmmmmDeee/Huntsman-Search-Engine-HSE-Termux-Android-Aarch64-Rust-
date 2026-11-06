@@ -56,12 +56,19 @@ pub fn format_unix(ts: i64) -> String {
 
 /// Days in `month` of `year`, with leap years under the Gregorian rule. `month` must be 1..=12.
 pub(crate) fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
+    month_days(year, month).unwrap_or(31)
+}
+
+/// Days in `month` of `year` under the Gregorian rule, or `None` for a month outside 1..=12: the
+/// one calendar every date check here applies. **Pure.**
+pub(crate) fn month_days(year: i32, month: u32) -> Option<u32> {
+    Some(match month {
         2 if is_leap_year(year) => 29,
         2 => 28,
         4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return None,
+    })
 }
 
 fn is_leap_year(year: i32) -> bool {

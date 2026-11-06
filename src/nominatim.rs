@@ -185,7 +185,7 @@ pub fn forward<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     // A direct Rust caller may bypass the CLI's query checks. Refuse invalid
     // input before it consumes a public-service rate slot or reaches the wire.
-    if query.trim().is_empty() || query.len() > 512 || query.chars().any(char::is_control) {
+    if !crate::textnorm::is_bounded_text(query, 512) {
         return Err(Error::Invalid(
             "Nominatim query must be non-empty, at most 512 bytes and contain no controls".into(),
         ));
@@ -217,11 +217,7 @@ pub fn reverse<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    if !lat.is_finite()
-        || !lon.is_finite()
-        || !(-90.0..=90.0).contains(&lat)
-        || !(-180.0..=180.0).contains(&lon)
-    {
+    if !crate::geohash::valid_coordinate(lat, lon) {
         return Err(Error::Invalid(
             "invalid Nominatim latitude or longitude".into(),
         ));

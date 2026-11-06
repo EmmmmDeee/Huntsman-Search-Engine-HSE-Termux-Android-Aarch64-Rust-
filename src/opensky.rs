@@ -184,7 +184,7 @@ fn state(row: &Value, point: (f64, f64)) -> Option<State> {
     let row = row.as_array().filter(|row| row.len() >= STATE_FIELDS)?;
     let address = row[0].as_str().filter(|address| icao24(address))?;
     let (lat, lon) = (number(&row[6])?, number(&row[5])?);
-    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+    if !crate::geohash::valid_coordinate(lat, lon) {
         return None;
     }
     let position_unix = row[3].as_i64().filter(|t| *t > 0)?;
