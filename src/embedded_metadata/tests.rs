@@ -223,6 +223,7 @@ fn only_fields_people_write_yield_number_shaped_identifiers() {
         [
             (EntityKind::Phone, "+61298765432".to_owned()),
             (EntityKind::Phone, "+61398765432".to_owned()),
+            (EntityKind::Person, "ada lovelace".to_owned()),
             (EntityKind::Domain, "example.org".to_owned()),
             (EntityKind::Url, "https://example.net/darkroom".to_owned()),
             (EntityKind::Url, "https://example.org/portfolio".to_owned()),
@@ -262,71 +263,214 @@ fn only_fields_people_write_yield_number_shaped_identifiers() {
     assert!(values.iter().any(|value| value.contains("79.1462899")));
 }
 
+/// Asserts that `reader` reads every one of `fields` as written by `writer`.
+fn expect_writer(
+    reader: fn(&str) -> crate::metadata_identifiers::Field,
+    writer: crate::metadata_identifiers::Field,
+    fields: &[&str],
+) {
+    for field in fields {
+        assert_eq!(reader(field), writer, "{field}");
+    }
+}
+
 #[test]
-fn people_fields_are_told_from_the_fields_a_device_or_program_writes() {
-    for field in [
-        "Artist",
-        "Copyright",
-        "ImageDescription",
-        "UserComment",
-        "XPAuthor",
-        "CameraOwnerName",
-    ] {
-        assert!(exif::written_by_people(field), "{field}");
+fn each_exif_tag_is_read_by_who_writes_it() {
+    use crate::metadata_identifiers::Field;
+    let expect = expect_writer;
+    expect(
+        exif::field,
+        Field::Name,
+        &[
+            "Artist",
+            "XPAuthor",
+            "CameraOwnerName",
+            "OwnerName",
+            "Photographer",
+            "ImageEditor",
+        ],
+    );
+    expect(
+        exif::field,
+        Field::People,
+        &[
+            "Copyright",
+            "ImageDescription",
+            "ImageTitle",
+            "UserComment",
+            "XPComment",
+            "XPKeywords",
+        ],
+    );
+    expect(
+        exif::field,
+        Field::Program,
+        &[
+            "Make",
+            "Software",
+            "BodySerialNumber",
+            "ImageUniqueID",
+            "DateTimeOriginal",
+            "GPSLatitude",
+            "tag_0x9999",
+        ],
+    );
+}
+
+#[test]
+fn each_document_field_is_read_by_who_writes_it() {
+    use crate::metadata_identifiers::Field;
+    let expect = expect_writer;
+    expect(
+        docmeta::field,
+        Field::Name,
+        &[
+            "dc:creator",
+            "dc:contributor",
+            "info:Author",
+            "info-prior:Author",
+            "png:Author",
+            "iptc:Byline",
+            "iptc:CaptionWriter",
+            "photoshop:CaptionWriter",
+            "xmpRights:Owner",
+            "Iptc4xmpExt:PersonInImage",
+            "mwg-rs:Name",
+            "MPReg:PersonDisplayName",
+            "plus:ImageCreatorName",
+            "tiff:Artist",
+            "aux:OwnerName",
+            "exifEX:CameraOwnerName",
+        ],
+    );
+    expect(
+        docmeta::field,
+        Field::People,
+        &[
+            "dc:rights",
+            "dc:description",
+            "Iptc4xmpCore:CiTelWork",
+            "photoshop:City",
+            "info-prior:Title",
+            "png:Comment",
+            "gif:Comment",
+            "iptc:Credit",
+            "tiff:Copyright",
+            "pdfx:Phone",
+        ],
+    );
+    expect(
+        docmeta::field,
+        Field::Program,
+        &[
+            "x:xmptk",
+            "xmpMM:DocumentID",
+            "stEvt:softwareAgent",
+            "xmp:CreatorTool",
+            "xmp:CreateDate",
+            "photoshop:DocumentAncestors",
+            "photoshop:LegacyIPTCDigest",
+            "tiff:Make",
+            "aux:SerialNumber",
+            "exif:GPSLatitude",
+            "info:Creator",
+            "info:Producer",
+            "info-prior:ModDate",
+            "pdf:InfoRevisions",
+            "png:Software",
+            "png:Creation Time",
+            "png:Raw profile type exif",
+            "iptc:OriginatingProgram",
+            "iptc:BylineRawSha256",
+            "iptc:BylineRawByteCount",
+            "plus:ImageCreatorID",
+        ],
+    );
+}
+
+/// Each name written in a field that names someone becomes a person or an organisation, in a
+/// list as in a single value. A placeholder a program writes for an unknown user, a copyright line
+/// in a rights field, a single word and a program's own name are not people.
+#[test]
+fn names_in_name_fields_become_people_and_organisations() {
+    let artist = ascii_value("Ada Lovelace");
+    let tiff = exif_tiff(false, &[(0x013B, 2, &artist)], &[]);
+    let xmp = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/" xmp:CreatorTool="Adobe Photoshop" photoshop:CaptionWriter="Microsoft Office User"><dc:creator><rdf:Seq><rdf:li>Ada Lovelace</rdf:li><rdf:li>Analytical Engines Pty Ltd</rdf:li><rdf:li>Babbage</rdf:li></rdf:Seq></dc:creator><dc:rights><rdf:Alt><rdf:li xml:lang="x-default">Copyright 2024 Ada Lovelace</rdf:li></rdf:Alt></dc:rights><dc:description><rdf:Alt><rdf:li xml:lang="x-default">Charles Babbage at the engine</rdf:li></rdf:Alt></dc:description><Iptc4xmpExt:PersonInImage><rdf:Bag><rdf:li>Charles Babbage</rdf:li></rdf:Bag></Iptc4xmpExt:PersonInImage></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+    let inspected = inspect(&jpeg_with(&tiff, Some(xmp)), "engine.jpg", 7).unwrap();
+    let named: Vec<(EntityKind, String)> = found_in_values(&inspected)
+        .into_iter()
+        .filter(|(kind, _)| matches!(kind, EntityKind::Person | EntityKind::Organisation))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            (EntityKind::Person, "ada lovelace".to_owned()),
+            (
+                EntityKind::Organisation,
+                "analytical engines pty ltd".to_owned()
+            ),
+            (EntityKind::Person, "charles babbage".to_owned()),
+        ],
+        "{:#?}",
+        inspected.entities
+    );
+    // Ada Lovelace is named by both readers: one entity, with each field as its evidence. The
+    // entity keeps the name as written beside its canonical, lower-case value.
+    let ada = found(&inspected, &EntityKind::Person, "ada lovelace");
+    assert_eq!(ada.raw_value, "Ada Lovelace");
+    let fields: Vec<&str> = ada
+        .evidence
+        .iter()
+        .filter_map(|evidence| {
+            evidence
+                .attributes
+                .get("metadata_field")
+                .map(String::as_str)
+        })
+        .collect();
+    assert!(
+        fields.contains(&"Artist") && fields.contains(&"dc:creator"),
+        "{fields:?}"
+    );
+    let babbage = found(&inspected, &EntityKind::Person, "charles babbage");
+    assert_eq!(
+        attr(babbage, "metadata_field"),
+        Some("Iptc4xmpExt:PersonInImage")
+    );
+}
+
+/// A file crafted to carry far more identifiers than any real file keeps a bounded number of
+/// them, per reader, and says how many more it held; the values themselves stay as evidence.
+#[test]
+fn a_file_crafted_to_carry_many_identifiers_keeps_a_bounded_number_and_counts_the_rest() {
+    use crate::metadata_identifiers::MAX_METADATA_IDENTIFIERS;
+    use std::fmt::Write as _;
+    let mut properties = String::new();
+    for field in 0..4 {
+        let emails: Vec<String> = (0..100)
+            .map(|n| format!("u{field}x{n}@example.org"))
+            .collect();
+        write!(properties, "<n:f{field}>{}</n:f{field}>", emails.join(" ")).unwrap();
     }
-    for field in [
-        "Make",
-        "Software",
-        "BodySerialNumber",
-        "ImageUniqueID",
-        "DateTimeOriginal",
-        "GPSLatitude",
-        "tag_0x9999",
-    ] {
-        assert!(!exif::written_by_people(field), "{field}");
-    }
-    for field in [
-        "dc:creator",
-        "dc:rights",
-        "dc:description",
-        "Iptc4xmpCore:CiTelWork",
-        "photoshop:City",
-        "tiff:Artist",
-        "aux:OwnerName",
-        "info:Author",
-        "info-prior:Title",
-        "png:Comment",
-        "gif:Comment",
-        "iptc:By-line",
-        "pdfx:Phone",
-    ] {
-        assert!(docmeta::written_by_people(field), "{field}");
-    }
-    for field in [
-        "x:xmptk",
-        "xmpMM:DocumentID",
-        "stEvt:softwareAgent",
-        "xmp:CreatorTool",
-        "xmp:CreateDate",
-        "photoshop:DocumentAncestors",
-        "photoshop:LegacyIPTCDigest",
-        "tiff:Make",
-        "aux:SerialNumber",
-        "exif:GPSLatitude",
-        "info:Creator",
-        "info:Producer",
-        "info-prior:ModDate",
-        "pdf:InfoRevisions",
-        "png:Software",
-        "png:Creation Time",
-        "png:Raw profile type exif",
-        "iptc:OriginatingProgram",
-        "iptc:By-lineRawSha256",
-        "iptc:By-lineRawByteCount",
-        "plus:ImageCreatorID",
-    ] {
-        assert!(!docmeta::written_by_people(field), "{field}");
-    }
+    let file = format!(
+        "notes <x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:n=\"urn:example\">{properties}</rdf:Description></rdf:RDF></x:xmpmeta>"
+    );
+    let inspected = inspect(file.as_bytes(), "crafted.bin", 7).unwrap();
+    let emails = inspected
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Email)
+        .count();
+    assert_eq!(emails, MAX_METADATA_IDENTIFIERS);
+    let document = inspected
+        .entities
+        .iter()
+        .find(|entity| entity.kind == EntityKind::Document)
+        .unwrap();
+    assert_eq!(
+        attr(document, "metadata_identifiers_omitted"),
+        Some((400 - MAX_METADATA_IDENTIFIERS).to_string().as_str())
+    );
 }
 
 /// The `exif` and `docmeta` commands report the identifiers their own fields hold, each with the

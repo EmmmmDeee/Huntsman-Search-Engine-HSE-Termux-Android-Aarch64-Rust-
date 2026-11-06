@@ -7,9 +7,10 @@
 //! coordinates, and the identifiers each reader found in the fields people write
 //! ([`crate::metadata_identifiers`]): an email address, a link, a domain, an IP address or a phone
 //! number written into an author, rights, contact, comment or description field, attributed to the
-//! file and to the field that holds it, pivots like any other entity. A value a device or a program
-//! writes for itself -- a serial number, an identifier, a version, a time -- is read only for an
-//! email address or a link.
+//! file and to the field that holds it, pivots like any other entity, as does each person or
+//! organisation named in a field that names someone. A value a device or a program writes for
+//! itself -- a serial number, an identifier, a version, a time -- is read only for an email address
+//! or a link. A file yields a bounded number of these, and says how many more it held.
 //!
 //! Metadata is only read here, never removed or rewritten. A value in which nothing is found stays,
 //! as written, in the document entity's evidence.

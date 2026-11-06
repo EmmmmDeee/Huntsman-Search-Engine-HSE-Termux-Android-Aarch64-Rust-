@@ -15,9 +15,10 @@
 //! `lat,lon` the `geocode` command
 //! reverse-geocodes into an address. An email address, link, domain, IP address or phone number
 //! written into a field people write (author, rights, contact details, description, keywords,
-//! comments) becomes an entity of its own, attributed to that field; a value a program writes for
-//! itself (its name and version, identifiers, times, edit history) is read only for an email
-//! address or a link ([`crate::metadata_identifiers`]).
+//! comments) becomes an entity of its own, attributed to that field, and so does each person or
+//! organisation named in a field that names someone (an author, creator, owner or person shown); a
+//! value a program writes for itself (its name and version, identifiers, times, edit history) is
+//! read only for an email address or a link ([`crate::metadata_identifiers`]).
 //!
 //! A WebP or GIF is recognised by its container magic and named as such even when it carries only an
 //! embedded XMP packet (found the same byte-scanned way as in any other container) or, for a GIF, a
@@ -52,6 +53,7 @@ use crate::exif::{
     png_chunks, rendered_width,
 };
 use crate::lookup_report;
+use crate::metadata_identifiers::Field;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 use crate::textnorm::decode_xml_references;
@@ -63,7 +65,7 @@ pub const DOCMETA_USAGE: &str = "usage: huntsman-recon docmeta FILE";
 
 pub const DOCMETA_HELP: &str = "\
 docmeta FILE
-Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read), and a GIF's Comment Extension blocks become gif:Comment fields, and a JPEG's IPTC IIM block (the legacy Photoshop APP13 record) becomes iptc:* fields (by-line, caption writer, credit, source, headline, caption, keywords and the named city/province/country location); an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved (up to 512 fields, a file holding more saying how many were not kept, and each value up to 8 KiB, a longer one ending with a marker naming its whole length); a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. An email address, link, domain, IP address or phone number written into a field people write (author, rights, contact details, description, keywords, comments) becomes an entity of its own, attributed to that field; a value a program writes for itself (its name and version, identifiers, times, edit history) is read only for an email address or a link. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
+Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read), and a GIF's Comment Extension blocks become gif:Comment fields, and a JPEG's IPTC IIM block (the legacy Photoshop APP13 record) becomes iptc:* fields (by-line, caption writer, credit, source, headline, caption, keywords and the named city/province/country location); an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved (up to 512 fields, a file holding more saying how many were not kept, and each value up to 8 KiB, a longer one ending with a marker naming its whole length); a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. An email address, link, domain, IP address or phone number written into a field people write (author, rights, contact details, description, keywords, comments) becomes an entity of its own, attributed to that field, as does each person or organisation named in a field that names someone (dc:creator, dc:contributor, the PDF /Info Author, a PNG Author, the IPTC by-line and caption writer, the rights owner, a person shown or a face region's name), except a placeholder such as Microsoft Office User; a value a program writes for itself (its name and version, identifiers, times, edit history) is read only for an email address or a link. At most 256 such entities are taken from one file, and the document says how many more it held (metadata_identifiers_omitted). Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
 
 /// The largest file read, in bytes. The whole file is read because a PDF's `/Info` and the XMP
 /// packet can sit anywhere in it; a larger file is refused by name.
@@ -214,17 +216,26 @@ pub fn parse(data: &[u8]) -> Parsed {
 pub fn run(data: &[u8], label: &str, now_unix: u64) -> DocmetaRun {
     let parsed = parse(data);
     let sid = scan_id(SOURCE, label);
-    let mut entities = Vec::new();
-    document_entity(&mut entities, &parsed, label, &sid, data);
-    gps_entity(&mut entities, parsed.gps, label, &sid);
-    crate::metadata_identifiers::identifiers(
-        &mut entities,
+    let mut found = Vec::new();
+    let identifiers_omitted = crate::metadata_identifiers::identifiers(
+        &mut found,
         SOURCE,
         label,
         &sid,
         &parsed.fields,
-        written_by_people,
+        field,
     );
+    let mut entities = Vec::new();
+    document_entity(
+        &mut entities,
+        &parsed,
+        label,
+        &sid,
+        data,
+        identifiers_omitted,
+    );
+    gps_entity(&mut entities, parsed.gps, label, &sid);
+    entities.extend(found);
     merge_by_uid(&mut entities);
 
     let outcome = SourceExecutionOutcome::success(SOURCE, now_unix, entities.len());
@@ -239,7 +250,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> DocmetaRun {
 }
 
 /// The XMP namespaces whose properties restate EXIF tags, read by the EXIF reader's list of the
-/// tags people write ([`crate::exif::written_by_people`]).
+/// tags people write ([`crate::exif::field`]).
 const EXIF_MIRRORS: [&str; 4] = ["aux", "exif", "exifEX", "tiff"];
 
 /// The XMP namespaces a program writes for itself: the toolkit, media management and its edit
@@ -285,33 +296,64 @@ const PROGRAM_MARKERS: [&str; 16] = [
     "version",
 ];
 
-/// Whether people write `field` (`prefix:Name`, as this reader names it), rather than the device or
-/// the program that made the file: only those yield a number-shaped identifier
-/// ([`crate::metadata_identifiers`]). A field is one unless it restates an EXIF tag people do not
-/// write, its namespace is a program's own, it is a PDF's `/Creator` (the program that made the
-/// file, unlike XMP's `dc:creator`), or its name marks a program's value: a word in
-/// [`PROGRAM_MARKERS`], or an `ID` ending. **Pure.**
-pub(crate) fn written_by_people(field: &str) -> bool {
+/// The fields that name someone: an author, creator, contributor, owner, caption writer or a
+/// person shown, by XMP's Dublin Core, IPTC, PLUS, Photoshop, rights and face-region properties, a
+/// PDF's `/Info` (and the value an update superseded), a PNG's text and a JPEG's IPTC record.
+const NAME_FIELDS: [&str; 15] = [
+    "Iptc4xmpExt:PersonInImage",
+    "MPReg:PersonDisplayName",
+    "dc:contributor",
+    "dc:creator",
+    "info-prior:Author",
+    "info:Author",
+    "iptc:Byline",
+    "iptc:CaptionWriter",
+    "mwg-rs:Name",
+    "photoshop:CaptionWriter",
+    "plus:CopyrightOwnerName",
+    "plus:ImageCreatorName",
+    "plus:LicensorName",
+    "png:Author",
+    "xmpRights:Owner",
+];
+
+/// Who writes `field` (`prefix:Name`, as this reader names it; [`crate::metadata_identifiers`]).
+/// A field restating an EXIF tag is read as the EXIF reader reads that tag. A program writes a
+/// field whose namespace is a program's own, a PDF's `/Creator` (the program that made the file,
+/// unlike XMP's `dc:creator`), and a field whose name marks a program's value: a word in
+/// [`PROGRAM_MARKERS`], or an `ID` ending. A field in [`NAME_FIELDS`] names someone; people write
+/// every other field. **Pure.**
+pub(crate) fn field(field: &str) -> Field {
     let (prefix, name) = field.split_once(':').unwrap_or(("", field));
     if EXIF_MIRRORS.contains(&prefix) {
-        return crate::exif::written_by_people(name);
+        return crate::exif::field(name);
     }
     if PROGRAM_NAMESPACES.contains(&prefix)
         || (matches!(prefix, "info" | "info-prior") && name == "Creator")
     {
-        return false;
+        return Field::Program;
+    }
+    if NAME_FIELDS.contains(&field) {
+        return Field::Name;
     }
     let name = name.to_ascii_lowercase();
-    !(name.ends_with("id") || PROGRAM_MARKERS.iter().any(|marker| name.contains(marker)))
+    if name.ends_with("id") || PROGRAM_MARKERS.iter().any(|marker| name.contains(marker)) {
+        Field::Program
+    } else {
+        Field::People
+    }
 }
 
-/// The document entity for the file, carrying its format and every field as evidence.
+/// The document entity for the file, carrying its format and every field as evidence, and how
+/// many identifiers its values held past
+/// [`crate::metadata_identifiers::MAX_METADATA_IDENTIFIERS`].
 fn document_entity(
     entities: &mut Vec<Entity>,
     parsed: &Parsed,
     label: &str,
     sid: &str,
     data: &[u8],
+    identifiers_omitted: usize,
 ) {
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, sid),
@@ -324,6 +366,12 @@ fn document_entity(
     }
     if parsed.values_omitted > 0 {
         evidence = evidence.with_attr("metadata_values_omitted", parsed.values_omitted.to_string());
+    }
+    if identifiers_omitted > 0 {
+        evidence = evidence.with_attr(
+            "metadata_identifiers_omitted",
+            identifiers_omitted.to_string(),
+        );
     }
     evidence = evidence
         // Local observation over the exact bytes, independent of editable embedded metadata.
