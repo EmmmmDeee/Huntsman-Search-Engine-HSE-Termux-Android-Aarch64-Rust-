@@ -199,6 +199,7 @@ cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenS
 cargo run -- traffic-cameras --reconcile --limit 5  # two public TMR camera catalogues; needs HUNTSMAN_QLDTRAFFIC_KEY; network, no image downloads
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
+cargo run -- reverse-image --help         # offline help: a local image's SHA-256; --live --provider NAME uploads it to that one provider
 cargo run -- apk --help                   # offline Android APK archive intelligence: structural ZIP/DEX/ABI/signing indicators, exact-byte SHA-256
 cargo run -- source-intel --help          # offline APK-to-source-candidate projection; no public-access or network-contact claims
 # Example after creating two local archives: huntsman-recon apk diff old.apk new.apk --json
@@ -620,3 +621,19 @@ On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no
 ### Domain lifecycle analysis
 
 `domain-lifecycle analyze INPUT.json --as-of UNIX_SECONDS [--output REPORT.json]` compares imported domain observations entirely offline. It preserves source/upstream boundaries, rejects conflicting duplicate identifiers, records failed/truncated observations as coverage gaps, and emits only conservative observed changes. Ownership, causality, and registration availability remain explicitly unknown unless established elsewhere. See [docs/DOMAIN_LIFECYCLE.md](DOMAIN_LIFECYCLE.md).
+
+### Reverse-image search
+
+`reverse-image IMAGE-FILE [--json]` prints a local image's SHA-256, size and format offline:
+nothing is sent and no search runs, so the report holds no matches rather than zero matches.
+`--live --provider google_vision|lenso|saucenao` uploads the image to that one provider, with
+the key from its slot, and prints what the provider's own index returned. Before the upload its
+embedded metadata is removed (Exif with its GPS position, XMP, IPTC, comments, colour profiles,
+PNG text and time chunks, data after the end of the image); only a JPEG, PNG or still WebP is
+uploaded, and anything else is refused before any request (exit 65). `--live` without
+`--provider` is refused, so no run asks more than one provider; a provider without a key is asked
+nothing (exit 66), and a failed search is never "no matches" (exit 69). Images are capped at
+4 MiB; the file reader refuses symlinks and changed inodes. CLI only: there is no web route or
+Web UI panel. The returned image URLs are leads about image reuse and need independent checking.
+See [REVERSE_IMAGE.md](REVERSE_IMAGE.md) for credential slots, key placement, result states and
+limits.
