@@ -8,9 +8,9 @@ use super::client::{
     API_KEY_HEADER, DEHASHED_API_BASE, DehashedClient, DehashedError, SearchRequest,
 };
 use super::query::{Field, Purpose, QueryError, Selector};
-use crate::hibp::rate_limit::RateLimiter;
 use crate::http::{Request, Response, Transport, TransportFailure};
 use crate::keys::Secret;
+use crate::rate_limit::RateLimiter;
 use crate::source_outcome::SourceOutcomeKind;
 
 const KEY: &str = "test-key-7f3a9c";
@@ -248,10 +248,13 @@ fn rate_limit_reads_retry_after_as_the_fetch_does() {
         ("soon", None),
     ];
     for (value, expected) in cases {
-        let fake = Fake::with(429, "", &[("retry-after", value)]);
-        let error = client(&fake)
-            .search(&email_request(Purpose::OwnAccount))
-            .unwrap_err();
+        // Each case on its own breaker: a 429 pauses DeHashed, so a second one would not be sent.
+        let error = crate::test_support::on_fresh_breakers(|| {
+            let fake = Fake::with(429, "", &[("retry-after", value)]);
+            client(&fake)
+                .search(&email_request(Purpose::OwnAccount))
+                .unwrap_err()
+        });
         match error {
             DehashedError::RateLimited { retry_after } => {
                 assert_eq!(retry_after.map(|d| d.as_secs()), expected, "{value}");
@@ -259,6 +262,85 @@ fn rate_limit_reads_retry_after_as_the_fetch_does() {
             other => panic!("{value}: {other:?}"),
         }
     }
+}
+
+/// Every client `DehashedClient::new` builds spends one budget for the whole process: the exposure
+/// legs of concurrent lookups, a batch scan and the web UI each build their own client, so a
+/// budget per client would multiply `DeHashed`'s rate by the number of callers.
+#[test]
+fn every_production_client_shares_one_process_wide_budget() {
+    let first = DehashedClient::new(Fake::with(200, "{}", &[]), Secret::new(KEY).unwrap());
+    let second = DehashedClient::new(Fake::with(200, "{}", &[]), Secret::new(KEY).unwrap());
+    assert!(
+        std::sync::Arc::ptr_eq(first.limiter(), second.limiter()),
+        "each client kept its own budget"
+    );
+    assert_eq!(first.limiter().limit(), super::client::REQUESTS_PER_WINDOW);
+}
+
+/// A 429 pauses `DeHashed` for the process: the next search in the pause is not sent, and says
+/// so, instead of spending another request into the limit. The pause is the one `fetch`'s
+/// per-host breaker keeps for every paced source.
+#[test]
+fn a_rate_limit_pauses_the_next_search_without_sending_it() {
+    let fake = Fake::with(429, "", &[("retry-after", "30")]);
+    fake.responses.lock().unwrap().push_back(Response {
+        status: 200,
+        headers: Vec::new(),
+        body: br#"{"entries": []}"#.to_vec(),
+        truncated: false,
+    });
+    let dehashed = client(&fake);
+    let first = dehashed.search(&email_request(Purpose::OwnAccount));
+    assert!(
+        matches!(first, Err(DehashedError::RateLimited { .. })),
+        "{first:?}"
+    );
+    let second = dehashed
+        .search(&email_request(Purpose::OwnAccount))
+        .unwrap_err();
+    assert!(matches!(second, DehashedError::Paused), "{second:?}");
+    assert_eq!(fake.calls(), 1, "the paused search was sent");
+    let outcome = second.outcome("dehashed", 1);
+    assert_eq!(outcome.kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(outcome.http_status, None);
+    assert!(
+        outcome
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("nothing was sent")),
+        "{outcome:?}"
+    );
+}
+
+/// A run of server failures opens the breaker too: after `circuit::FAILURE_THRESHOLD` failed
+/// searches the next is held back, so a batch scan stops hammering a failing API.
+#[test]
+fn repeated_server_failures_hold_back_the_next_search() {
+    let fake = Arc::new(Fake::default());
+    for _ in 0..=crate::circuit::FAILURE_THRESHOLD {
+        fake.responses.lock().unwrap().push_back(Response {
+            status: 503,
+            headers: Vec::new(),
+            body: Vec::new(),
+            truncated: false,
+        });
+    }
+    let dehashed = client(&fake);
+    for _ in 0..crate::circuit::FAILURE_THRESHOLD {
+        let failed = dehashed.search(&email_request(Purpose::OwnAccount));
+        assert!(
+            matches!(failed, Err(DehashedError::Server(503))),
+            "{failed:?}"
+        );
+    }
+    let held = dehashed.search(&email_request(Purpose::OwnAccount));
+    assert!(matches!(held, Err(DehashedError::Paused)), "{held:?}");
+    assert_eq!(
+        fake.calls(),
+        crate::circuit::FAILURE_THRESHOLD as usize,
+        "the held-back search was sent"
+    );
 }
 
 /// A Cloudflare interstitial served with 200 in place of the API's answer.
@@ -755,15 +837,18 @@ mod collector_tests {
             (503, SourceOutcomeKind::Upstream5xx),
         ];
         for (status, expected) in cases {
-            let fake = Fake::with(status, "", &[]);
-            let batch = collect(
-                &client(&fake),
-                &selector(EntityKind::Email, "a@example.com"),
-                purpose(),
-                &limits(),
-                1,
-            )
-            .unwrap_or_else(|e| panic!("{status}: {e:?}"));
+            // Each case on its own breaker: after the 429 a paced source sends nothing.
+            let batch = crate::test_support::on_fresh_breakers(|| {
+                let fake = Fake::with(status, "", &[]);
+                collect(
+                    &client(&fake),
+                    &selector(EntityKind::Email, "a@example.com"),
+                    purpose(),
+                    &limits(),
+                    1,
+                )
+                .unwrap_or_else(|e| panic!("{status}: {e:?}"))
+            });
             assert_eq!(batch.outcome, CollectionOutcome::Failed, "{status}");
             assert_eq!(batch.receipts[0].outcome.kind, expected, "{status}");
             assert_eq!(batch.receipts[0].outcome.http_status, Some(status));

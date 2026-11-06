@@ -197,6 +197,7 @@ provider_credentials	leaf	provider credential completeness manifest
 pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
 qld_traffic_cameras	adapter	Explicit QLDTraffic (keyed slot) and state-road GIS collectors reached only through the traffic-cameras CLI; nearby assets remain candidates
 radar	leaf	cross-sweep recurrence and follower detection over the private sweep log, reached through cli/radar.rs from radar track; its Bluetooth live tracker (BtRadarState) has no rootless Termux source and no caller yet
+rate_limit	leaf	sliding-window request budget each keyed provider with a stated rate shares process-wide (HIBP, DeHashed)
 recon	leaf	seed kinds the crtsh lookup and the domain recon front-ends share
 recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
 rdap	adapter	keyless RDAP registration client reached through rdap_legs from domain, ip, scan and /api/lookup

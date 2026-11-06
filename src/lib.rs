@@ -215,6 +215,7 @@ pub mod public_osint;
 pub mod pulsedive;
 pub mod qld_traffic_cameras;
 pub mod radar;
+pub mod rate_limit;
 pub mod rdap;
 pub mod rdap_legs;
 pub mod recon;

@@ -1768,21 +1768,27 @@ fn a_dehashed_failure_reads_the_same_on_the_exposure_leg_and_in_the_collector_re
     let selector = Entity::new(EntityKind::Email, "ada@example.com", 1.0, "scan-1");
     for answer in answers {
         let client = dehashed_answering(answer.clone());
-        let leg = dehashed_leg(
-            &client,
-            "ada@example.com",
-            "scan-1",
-            7,
-            &mut Report::default(),
-        );
-        let batch = dehashed::collect(
-            &client,
-            &selector,
-            dehashed::Purpose::OwnAccount,
-            &crate::collector::CollectionLimits::default(),
-            7,
-        )
-        .unwrap_or_else(|e| panic!("{answer:?}: {e:?}"));
+        // Each path on its own breaker: after a 429 or a failure a paced source pauses, so the
+        // second path would otherwise read the pause, not the answer.
+        let leg = crate::test_support::on_fresh_breakers(|| {
+            dehashed_leg(
+                &client,
+                "ada@example.com",
+                "scan-1",
+                7,
+                &mut Report::default(),
+            )
+        });
+        let batch = crate::test_support::on_fresh_breakers(|| {
+            dehashed::collect(
+                &client,
+                &selector,
+                dehashed::Purpose::OwnAccount,
+                &crate::collector::CollectionLimits::default(),
+                7,
+            )
+            .unwrap_or_else(|e| panic!("{answer:?}: {e:?}"))
+        });
         assert!(!leg.kind.is_accepted(), "{answer:?} gave {leg:?}");
         assert_eq!(leg, batch.receipts[0].outcome, "{answer:?}");
     }

@@ -15,7 +15,7 @@
 //! `exposure` leg and the collector's receipt.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -26,9 +26,9 @@ use super::types::{Entry, SearchResponse};
 use crate::clock;
 use crate::credential_origin::AuthenticationAuthority;
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
-use crate::hibp::rate_limit::{DEFAULT_REQUESTS_PER_MINUTE, RateLimiter};
 use crate::http::{Request, Response, Transport};
 use crate::keys::{Keys, Secret};
+use crate::rate_limit::RateLimiter;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
 
@@ -47,6 +47,22 @@ pub const DEFAULT_PAGE_SIZE: u32 = 10;
 pub const MAX_PAGE_SIZE: u32 = 100;
 /// Largest page number this client will request.
 pub const MAX_PAGE: u32 = 1_000;
+/// Searches per [`RATE_WINDOW`] every `DeHashed` client in this process shares: `DeHashed`'s
+/// documented limit, "a maximum of 10 requests per second from a single IP and API credential",
+/// enforced by a sliding window, past which it answers 429 and may suspend the account.
+pub const REQUESTS_PER_WINDOW: u32 = 10;
+/// The window [`REQUESTS_PER_WINDOW`] is counted over.
+pub const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// The one budget every `DeHashed` client in this process spends: the exposure legs of concurrent
+/// lookups, a batch scan, a recursive crawl and the web UI each build a client, and they share it.
+#[must_use]
+pub fn shared_limiter() -> Arc<RateLimiter> {
+    static SHARED: OnceLock<Arc<RateLimiter>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| Arc::new(RateLimiter::new(REQUESTS_PER_WINDOW, RATE_WINDOW)))
+        .clone()
+}
 
 #[derive(Debug, Error)]
 pub enum DehashedError {
@@ -85,6 +101,10 @@ pub enum DehashedError {
     /// Nothing reached the network, so it says nothing about the identifier.
     #[error("dehashed: request refused before sending")]
     Refused,
+    /// The process's pacing held the request back: an earlier 429 or a run of failures opened
+    /// `DeHashed`'s circuit in [`crate::circuit`], so nothing was sent.
+    #[error("dehashed: paused after an earlier rate limit or failures; nothing was sent")]
+    Paused,
     /// A 200 that is not an API answer: a challenge page served in its place.
     #[error("dehashed: response is not an API answer ({0:?})")]
     NotAnAnswer(SourceOutcomeKind),
@@ -111,7 +131,10 @@ impl DehashedError {
             Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
             Self::Refused => SourceOutcomeKind::RefusedBeforeSending,
             Self::Decode(_) => SourceOutcomeKind::SchemaDrift,
-            Self::Query(_)
+            // A held-back request, like a local refusal of the arguments, says nothing about
+            // the identifier.
+            Self::Paused
+            | Self::Query(_)
             | Self::KeyFilePermissions
             | Self::InvalidSize(_)
             | Self::InvalidPage(_) => SourceOutcomeKind::Inconclusive,
@@ -238,19 +261,19 @@ impl fmt::Debug for DehashedClient {
 }
 
 impl DehashedClient {
-    /// A client over `http` authenticating with `key`, limited to the default
-    /// requests-per-minute budget.
+    /// A client over `http` authenticating with `key`, spending the process's one `DeHashed`
+    /// budget ([`shared_limiter`]).
     #[must_use]
     pub fn new(http: Arc<dyn Transport + Send + Sync>, key: Secret) -> Self {
-        Self::with_limiter(
+        Self {
             http,
             key,
-            RateLimiter::per_minute(DEFAULT_REQUESTS_PER_MINUTE),
-        )
+            limiter: shared_limiter(),
+        }
     }
 
-    /// A client with an explicit limiter (used by tests and callers that
-    /// share a budget across clients).
+    /// A client with its own limiter, not the process's: for tests that must not wait on, or
+    /// spend, another test's budget.
     #[must_use]
     pub fn with_limiter(
         http: Arc<dyn Transport + Send + Sync>,
@@ -262,6 +285,12 @@ impl DehashedClient {
             key,
             limiter: Arc::new(limiter),
         }
+    }
+
+    /// The budget this client spends.
+    #[cfg(test)]
+    pub(crate) const fn limiter(&self) -> &Arc<RateLimiter> {
+        &self.limiter
     }
 
     /// Run one exact-match search.
@@ -316,8 +345,11 @@ fn credential(key: Secret, now_unix: u64) -> Result<Credential, DehashedError> {
         .map_err(|_| DehashedError::Refused)
 }
 
-/// One request through [`fetch`] with the key, redirects off, with the response and what the
-/// fetch made of it. A request the guarded egress refused before sending is
+/// One request through [`fetch`] with the key, redirects off and paced by the shared per-host
+/// breaker ([`FetchOptions::paced`]): a 429 pauses `DeHashed` for its `Retry-After` (or the
+/// breaker's cool-down) and a run of failures opens it, for every caller in the process. Returns
+/// the response and what the fetch made of it; a request the breaker holds back is
+/// [`DehashedError::Paused`]. A request the guarded egress refused before sending is
 /// [`DehashedError::Refused`] (fetch's `Err`); a request that was attempted but got no response is
 /// [`DehashedError::Transport`] carrying the fetch's cause; nothing the transport said is kept,
 /// since it can name the request.
@@ -334,13 +366,19 @@ fn send(
         http,
         request,
         Some(credential),
-        &FetchOptions::no_redirects(),
+        &FetchOptions::no_redirects().paced(),
         "dehashed",
         now_unix,
     )
     .map_err(|_| DehashedError::Refused)?;
     let Some(response) = fetched.response else {
-        return Err(DehashedError::Transport(fetched.outcome.kind));
+        // A paced fetch the breaker holds back is the one no-response `Inconclusive`; every
+        // attempted request that got no answer carries the cause the fetch observed.
+        return Err(if fetched.outcome.kind == SourceOutcomeKind::Inconclusive {
+            DehashedError::Paused
+        } else {
+            DehashedError::Transport(fetched.outcome.kind)
+        });
     };
     if response.truncated {
         return Err(DehashedError::Decode("response exceeds body limit".into()));

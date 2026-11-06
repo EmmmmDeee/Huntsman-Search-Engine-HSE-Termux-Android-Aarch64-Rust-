@@ -128,9 +128,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::hibp::rate_limit::RateLimiter;
     use crate::http::{Request, Response, Transport, TransportFailure};
     use crate::keys::Secret;
+    use crate::rate_limit::RateLimiter;
 
     const KEY: &str = "dh-exposure-key-0123456789";
 
