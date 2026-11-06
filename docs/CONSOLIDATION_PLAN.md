@@ -417,6 +417,7 @@ same files.
 | B14 | Every `DeHashed` path resolves the key one way | A key only in `~/.config/dehashed/api_key` now reaches the lookups too |
 | B15 | `credential-status`, its probe and the web UI's key settings read each slot by the lookups' rule | A key only in `~/.config/dehashed/api_key` shows as set and is probed; a refused one is named with its own fix. The web UI also shows the shared abuse.ch key on URLhaus and ThreatFox, and HIBP's `HIBP_API_KEY`, as set, with where each key is |
 | B16 | HIBP's `~/.config/hibp/api_key` is a provider key file | `credential-status`, its probe and the web UI report the key HIBP's lookups read from it. A refused one is named with its fix, and `hibp subscription` still names the file as the key's source |
+| B17 | The evidence matrix counts only modules that ran | `module_execution_counts` no longer counts a module that never sent a request (`not_configured`, `refused_before_sending`). `module_outcome_kinds` says, for each module, what its outcomes were |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 

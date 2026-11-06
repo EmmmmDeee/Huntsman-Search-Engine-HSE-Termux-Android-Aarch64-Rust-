@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::scan_store::{ScanRecord, ScanResults, ScanStatus};
 use crate::sf_elements::DataElement;
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::escape_unsafe_text;
 
 use super::{MAX_RECORDS, MAX_RENDER_BYTES};
@@ -132,6 +133,36 @@ fn normalized_candidate_groups(rows: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// What the saved outcomes say each module did.
+struct ModuleOutcomes {
+    /// By module, the outcomes of runs it made: a module that sent nothing, for want of a key
+    /// (`not_configured`) or because the guarded path refused the request
+    /// (`refused_before_sending`), did not run and is not counted.
+    executions: BTreeMap<String, usize>,
+    /// By module, every outcome kind it recorded and how often: why a module without rows has
+    /// none (never asked, asked and found nothing, or asked without an answer).
+    kinds: BTreeMap<String, BTreeMap<&'static str, usize>>,
+}
+
+fn module_outcomes(outcomes: &[SourceExecutionOutcome]) -> ModuleOutcomes {
+    let mut tally = ModuleOutcomes {
+        executions: BTreeMap::new(),
+        kinds: BTreeMap::new(),
+    };
+    for outcome in outcomes {
+        *tally
+            .kinds
+            .entry(outcome.module.clone())
+            .or_default()
+            .entry(outcome.kind.as_str())
+            .or_insert(0) += 1;
+        if !outcome.kind.is_not_configured() && !outcome.kind.is_refused_before_sending() {
+            *tally.executions.entry(outcome.module.clone()).or_insert(0) += 1;
+        }
+    }
+    tally
+}
+
 /// Build a bounded sparse evidence matrix offline. Rows are exact type/value
 /// pairs, while columns are recorded source-module labels.
 ///
@@ -159,11 +190,9 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
         .collect();
     let normalization_candidates = normalized_candidate_groups(&rows);
     let observed_modules: BTreeSet<&str> = sources.iter().map(String::as_str).collect();
-    let mut executions = BTreeMap::new();
-    for outcome in &saved.outcomes {
-        *executions.entry(outcome.module.clone()).or_insert(0_usize) += 1;
-    }
-    let without_rows: Vec<&str> = executions
+    let outcomes = module_outcomes(&saved.outcomes);
+    let without_rows: Vec<&str> = outcomes
+        .kinds
         .keys()
         .filter(|module| !observed_modules.contains(module.as_str()))
         .map(String::as_str)
@@ -192,7 +221,8 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
             "normalization_candidate_groups": normalization_candidates.len(),
             "multi_module_exact_matches": multi_source_rows,
             "mixed_operator_flag_rows": mixed_flags,
-            "module_execution_counts": executions,
+            "module_execution_counts": outcomes.executions,
+            "module_outcome_kinds": outcomes.kinds,
             "modules_with_outcomes_but_no_element_rows": without_rows,
         },
         "uncertainty_register": crate::scan_uncertainty::derive(scan, Some(saved)),
@@ -372,6 +402,68 @@ mod tests {
         assert_ne!(
             stable_id("domain", "EXAMPLE.org"),
             stable_id("domain", "example.org")
+        );
+    }
+
+    /// A module that sent nothing, for want of a key or because the guarded path refused the
+    /// request, never ran: it is not counted as an execution, and every module without rows keeps
+    /// the outcome that says why.
+    #[test]
+    fn a_module_that_never_ran_is_not_counted_as_executed() {
+        use crate::scan_store::{FORMAT_VERSION, RiskCounts, ScanOptions};
+        let record = ScanRecord {
+            format_version: FORMAT_VERSION,
+            id: "0123456789abcdef".into(),
+            name: "example".into(),
+            target: "example.org".into(),
+            target_type: "INTERNET_NAME".into(),
+            kind: "domain".into(),
+            options: ScanOptions::default(),
+            status: ScanStatus::Finished,
+            created: 0,
+            started: None,
+            ended: None,
+            elements: 1,
+            unique: 1,
+            correlations: RiskCounts::default(),
+            errors: 0,
+            modules_run: Vec::new(),
+            owner: None,
+            owner_started: None,
+        };
+        let saved = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: record.id.clone(),
+            text: String::new(),
+            entities: Vec::new(),
+            outcomes: vec![
+                SourceExecutionOutcome::success("dns", 0, 1),
+                SourceExecutionOutcome::valid_zero("rdap", 0),
+                SourceExecutionOutcome::not_configured("numverify", 0),
+                SourceExecutionOutcome::refused_before_sending("censys", 0, "egress refused"),
+            ],
+            elements: vec![element("a", "dns", false)],
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        let summary = &compile_matrix(&record, &saved).unwrap()["summary"];
+        assert_eq!(
+            summary["module_execution_counts"],
+            json!({"dns": 1, "rdap": 1})
+        );
+        assert_eq!(
+            summary["module_outcome_kinds"],
+            json!({
+                "censys": {"refused_before_sending": 1},
+                "dns": {"success": 1},
+                "numverify": {"not_configured": 1},
+                "rdap": {"valid_zero": 1},
+            })
+        );
+        assert_eq!(
+            summary["modules_with_outcomes_but_no_element_rows"],
+            json!(["censys", "numverify", "rdap"])
         );
     }
 

@@ -69,8 +69,17 @@ module labels saved on source elements, cells contain explicit element IDs,
 observed counts and operator false-positive counts. Rows are ordered
 deterministically; record IDs are stable SHA-256-derived keys. Mixed
 false-positive markings are surfaced, not interpreted as factual conflict.
-Modules with recorded executions but no saved element rows remain visible
-as a coverage gap, not proof that no results exist.
+Modules with recorded outcomes but no saved element rows remain visible
+as a coverage gap (`modules_with_outcomes_but_no_element_rows`), not proof
+that no results exist. `module_outcome_kinds` gives each module's outcomes by
+kind, so the gap says why:
+- `not_configured` or `refused_before_sending`: the module was never asked;
+- `valid_zero`: it was asked and validly found nothing;
+- any other kind: it was asked and gave no usable answer.
+
+`module_execution_counts` counts only runs a module made. A module that sent
+nothing, for want of a key or because the guarded request path refused it,
+did not run and is not counted.
 
 Important: different module labels do not establish independent upstream
 sources, and matching value strings never establish personal identity.

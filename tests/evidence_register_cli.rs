@@ -26,6 +26,9 @@ fn run(home: &std::path::Path, args: &[&str]) -> Output {
         .args(args)
         .env("HOME", home)
         .env_remove("HUNTSMAN_HOME")
+        // The phone scan's keyed sources stay unconfigured, so they never run.
+        .env_remove("HUNTSMAN_IPQS_KEY")
+        .env_remove("HUNTSMAN_NUMVERIFY_KEY")
         .output()
         .expect("run huntsman-recon")
 }
@@ -42,6 +45,26 @@ fn scan(home: &std::path::Path) -> String {
     );
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("scan JSON");
     parsed["id"].as_str().expect("scan id").to_owned()
+}
+
+/// A keyed source with no key sent nothing: the matrix never counts it as run, and its outcome
+/// says why. The offline phone plan that answered is counted once.
+fn unconfigured_sources_never_ran(summary: &serde_json::Value) {
+    for keyed in ["ipqs", "numverify"] {
+        assert!(
+            summary["module_execution_counts"].get(keyed).is_none(),
+            "{keyed} never ran: {summary}"
+        );
+        assert_eq!(
+            summary["module_outcome_kinds"][keyed],
+            serde_json::json!({"not_configured": 1}),
+            "{summary}"
+        );
+    }
+    assert_eq!(
+        summary["module_execution_counts"]["phone_au"], 1,
+        "{summary}"
+    );
 }
 
 #[test]
@@ -122,6 +145,7 @@ fn evidence_export_preserves_raw_and_supports_delta() {
         matrix["summary"]["recorded_elements"].as_u64().unwrap_or(0)
     );
     assert!(matrix["uncertainty_register"]["items"].is_array());
+    unconfigured_sources_never_ran(&matrix["summary"]);
     assert!(
         matrix["summary"]["recorded_elements"].as_u64().unwrap_or(0)
             >= matrix["rows"].as_array().expect("rows").len() as u64
