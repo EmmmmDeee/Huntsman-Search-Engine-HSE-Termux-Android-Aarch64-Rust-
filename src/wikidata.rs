@@ -145,6 +145,54 @@ const PROPERTIES: &[Property] = &[
         },
     },
     Property {
+        pid: "P6634",
+        attr: "linkedin_personal_id",
+        pivot: Pivot::External {
+            url: "https://www.linkedin.com/in/{}/",
+            handle: false,
+        },
+    },
+    Property {
+        pid: "P11892",
+        attr: "threads_username",
+        pivot: Pivot::External {
+            url: "https://www.threads.net/@{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P7085",
+        attr: "tiktok_username",
+        pivot: Pivot::External {
+            url: "https://www.tiktok.com/@{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P12361",
+        attr: "bluesky_handle",
+        pivot: Pivot::External {
+            url: "https://bsky.app/profile/{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P4265",
+        attr: "reddit_username",
+        pivot: Pivot::External {
+            url: "https://www.reddit.com/user/{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P2397",
+        attr: "youtube_channel_id",
+        pivot: Pivot::External {
+            url: "https://www.youtube.com/channel/{}",
+            handle: false,
+        },
+    },
+    Property {
         pid: "P345",
         attr: "imdb_id",
         pivot: Pivot::External {
@@ -1571,5 +1619,58 @@ mod tests {
         let report = lookup(&transport, "Jane Example", "scan-wd", 1).expect("lookup");
         assert!(transport.seen.borrow()[1].url.ends_with("/items/Q000"));
         entity(&report, &EntityKind::Person, "Jane Example");
+    }
+
+    #[test]
+    fn linkedin_threads_and_other_account_ids_become_pivots() {
+        let item = r#"{"type":"item","id":"Q45","labels":{"en":"Example Executive"},
+          "statements":{
+            "P31":[{"value":{"type":"value","content":"Q5"}}],
+            "P6634":[{"rank":"normal","value":{"type":"value","content":"example-exec"}}],
+            "P11892":[{"rank":"normal","value":{"type":"value","content":"exampleexec"}}],
+            "P7085":[{"rank":"normal","value":{"type":"value","content":"exampletok"}}],
+            "P12361":[{"rank":"normal","value":{"type":"value","content":"example.bsky.social"}}],
+            "P4265":[{"rank":"normal","value":{"type":"value","content":"exampleredditor"}}],
+            "P2397":[{"rank":"normal","value":{"type":"value","content":"UCabc123"}}]
+          }}"#;
+        let report = report_of(item, "Q45");
+        for url in [
+            "https://www.linkedin.com/in/example-exec/",
+            "https://www.threads.net/@exampleexec",
+            "https://www.tiktok.com/@exampletok",
+            "https://bsky.app/profile/example.bsky.social",
+            "https://www.reddit.com/user/exampleredditor",
+            "https://www.youtube.com/channel/UCabc123",
+        ] {
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Url && e.raw_value == url),
+                "{url}"
+            );
+        }
+        for handle in [
+            "exampleexec",
+            "exampletok",
+            "example.bsky.social",
+            "exampleredditor",
+        ] {
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Username && e.raw_value == handle),
+                "{handle}"
+            );
+        }
+        // A LinkedIn slug and a YouTube channel id are not cross-site usernames.
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username
+                    && (e.raw_value == "example-exec" || e.raw_value == "UCabc123"))
+        );
     }
 }
