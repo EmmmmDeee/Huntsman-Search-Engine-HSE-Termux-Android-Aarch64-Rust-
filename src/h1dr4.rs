@@ -102,12 +102,12 @@ pub struct Report {
 
 fn checked_identifier(s: &str) -> bool {
     (1..=128).contains(&s.len())
-        && s.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':' | b'.'))
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':' | b'.'))
 }
 
 fn checked_query(s: &str) -> bool {
-    (1..=160).contains(&s.len()) && s.trim() == s
-        && !s.chars().any(char::is_control)
+    (1..=160).contains(&s.len()) && s.trim() == s && !s.chars().any(char::is_control)
 }
 
 fn url(resource: &Resource, limit: u16, offset: u16) -> String {
@@ -119,10 +119,13 @@ fn url(resource: &Resource, limit: u16, offset: u16) -> String {
         }
         Resource::Case(id) => append_query_param(
             &format!("{BASE}/investigations/{}", percent_encode_unreserved(id)),
-            "limit", &limit.to_string(),
+            "limit",
+            &limit.to_string(),
         ),
         Resource::OfficialRewards => append_query_param(
-            &format!("{BASE}/official-rewards"), "limit", &limit.to_string(),
+            &format!("{BASE}/official-rewards"),
+            "limit",
+            &limit.to_string(),
         ),
         Resource::OnchainStats => format!("{BASE}/onchain-registry/stats"),
     }
@@ -138,28 +141,41 @@ fn label(resource: &Resource) -> &'static str {
 }
 
 fn field<'a>(row: &'a Value, key: &str) -> Option<&'a str> {
-    row.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+    row.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 fn record_id(row: &Value) -> Option<String> {
-    row.get("id").and_then(|v| match v {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }).filter(|s| !s.is_empty())
+    row.get("id")
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
+        .filter(|s| !s.is_empty())
 }
 fn geo(row: &Value) -> Option<Coordinates> {
     // Never interpret missing coordinates or a (0,0) placeholder as a real observation.
     // A route/unknown geometry is not a point. Do not infer a place from free text.
-    let point = row.get("raw").and_then(|v| v.get("geo"))
+    let point = row
+        .get("raw")
+        .and_then(|v| v.get("geo"))
         .or_else(|| row.get("geo"))?;
-    if point.get("type").and_then(Value::as_str).is_some_and(|t| t != "point") {
+    if point
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t != "point")
+    {
         return None;
     }
     let lat = point.get("lat").and_then(Value::as_f64)?;
     let lon = point.get("lon").and_then(Value::as_f64)?;
-    (lat.is_finite() && lon.is_finite()
-        && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
-        && !(lat == 0.0 && lon == 0.0)).then_some(Coordinates { lat, lon })
+    (lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+        && !(lat == 0.0 && lon == 0.0))
+        .then_some(Coordinates { lat, lon })
 }
 
 fn normalize(row: &Value, kind: &'static str) -> Option<PublicRecord> {
@@ -175,13 +191,19 @@ fn normalize(row: &Value, kind: &'static str) -> Option<PublicRecord> {
         upstream_source: field(row, "source").map(str::to_owned),
         original_source_url: source_url.map(str::to_owned),
         status: field(row, "status").map(str::to_owned),
-        event_at: timeline.and_then(|v| field(v, "happened_at"))
+        event_at: timeline
+            .and_then(|v| field(v, "happened_at"))
             .or_else(|| field(row, "created_at"))
-            .or_else(|| field(row, "published_at")).map(str::to_owned),
-        time_precision: timeline.and_then(|v| field(v, "time_precision")).map(str::to_owned),
+            .or_else(|| field(row, "published_at"))
+            .map(str::to_owned),
+        time_precision: timeline
+            .and_then(|v| field(v, "time_precision"))
+            .map(str::to_owned),
         asserted_tip_count: if kind == "case" {
             row.get("tip_count").and_then(Value::as_u64)
-        } else { None },
+        } else {
+            None
+        },
         geo: geo(row),
         evidence_status: if kind == "official_reward" {
             "official_reference_status_requires_source_recheck"
@@ -195,18 +217,33 @@ fn parse_rows(value: &Value, resource: &Resource) -> Result<Vec<PublicRecord>, &
     let mut rows = Vec::new();
     match resource {
         Resource::Search(_) => {
-            let cases = value.get("cases").and_then(Value::as_array).ok_or("missing cases array")?;
+            let cases = value
+                .get("cases")
+                .and_then(Value::as_array)
+                .ok_or("missing cases array")?;
             rows.extend(cases.iter().filter_map(|row| normalize(row, "case")));
         }
         Resource::Case(_) => {
             let case = value.get("case").ok_or("missing case object")?;
-            if let Some(rec) = normalize(case, "case") { rows.push(rec); }
-            let tips = value.get("tips").and_then(Value::as_array).ok_or("missing tips array")?;
+            if let Some(rec) = normalize(case, "case") {
+                rows.push(rec);
+            }
+            let tips = value
+                .get("tips")
+                .and_then(Value::as_array)
+                .ok_or("missing tips array")?;
             rows.extend(tips.iter().filter_map(|row| normalize(row, "tip")));
         }
         Resource::OfficialRewards => {
-            let rewards = value.get("rewards").and_then(Value::as_array).ok_or("missing rewards array")?;
-            rows.extend(rewards.iter().filter_map(|row| normalize(row, "official_reward")));
+            let rewards = value
+                .get("rewards")
+                .and_then(Value::as_array)
+                .ok_or("missing rewards array")?;
+            rows.extend(
+                rewards
+                    .iter()
+                    .filter_map(|row| normalize(row, "official_reward")),
+            );
         }
         Resource::OnchainStats => {
             if value.get("metrics").and_then(Value::as_object).is_none() {
@@ -276,14 +313,18 @@ pub fn retrieve<T: Transport + ?Sized>(
             && response.outcome.retry_after_secs.is_some_and(|s| s <= 2)
         {
             let pause = response.outcome.retry_after_secs.unwrap_or(0);
-            if pause > 0 { std::thread::sleep(Duration::from_secs(pause)); }
+            if pause > 0 {
+                std::thread::sleep(Duration::from_secs(pause));
+            }
             response = attempt().map_err(|e| e.to_string())?;
         }
-        crate::fetch::answer(&response, "h1dr4").map_err(|e| format!("H1DR4 source outcome: {}", e.kind.as_str()))?;
+        crate::fetch::answer(&response, "h1dr4")
+            .map_err(|e| format!("H1DR4 source outcome: {}", e.kind.as_str()))?;
         let body = crate::fetch::whole_response(&response, "h1dr4")
             .map_err(|e| format!("H1DR4 incomplete response: {}", e.kind.as_str()))?;
         let raw = std::str::from_utf8(&body.body)
-            .map_err(|_| "H1DR4 response is not UTF-8")?.to_owned();
+            .map_err(|_| "H1DR4 response is not UTF-8")?
+            .to_owned();
         let digest = hex32(&sha256(&body.body));
         let value = serde_json::from_slice::<Value>(&body.body);
         let parsed = value.as_ref().ok().map(|v| parse_rows(v, resource));
@@ -301,9 +342,9 @@ pub fn retrieve<T: Transport + ?Sized>(
             }
         }
         if let Ok(v) = &value {
-            report.upstream_total_available = report.upstream_total_available.or_else(
-                || v.get("total_available").and_then(Value::as_u64)
-            );
+            report.upstream_total_available = report
+                .upstream_total_available
+                .or_else(|| v.get("total_available").and_then(Value::as_u64));
         }
         report.pages.push(RawPage {
             request_url,
@@ -331,8 +372,8 @@ pub fn retrieve<T: Transport + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::{Cell, RefCell};
     use crate::http::{Response, TransportFailure};
+    use std::cell::{Cell, RefCell};
 
     struct Fake {
         body: Vec<u8>,
@@ -352,14 +393,24 @@ mod tests {
         }
     }
     fn fake(body: &str) -> Fake {
-        Fake { body: body.as_bytes().to_vec(), calls: Cell::new(0), urls: RefCell::new(Vec::new()) }
+        Fake {
+            body: body.as_bytes().to_vec(),
+            calls: Cell::new(0),
+            urls: RefCell::new(Vec::new()),
+        }
     }
 
     #[test]
     fn preserves_raw_unknown_fields_and_detects_stalled_pagination() {
         let raw = r#"{"cases":[{"id":"dossier-1","title":"Unverified lead","tip_count":140,"unknown":{"keep":[1,2,3]}}]}"#;
         let t = fake(raw);
-        let r = retrieve(&t, &Resource::Search("testing".into()), Bounds { pages: 3, limit: 1 }, 100).unwrap();
+        let r = retrieve(
+            &t,
+            &Resource::Search("testing".into()),
+            Bounds { pages: 3, limit: 1 },
+            100,
+        )
+        .unwrap();
         assert_eq!(r.pages.len(), 2);
         assert_eq!(r.pages[0].original_json, raw);
         assert_eq!(r.records.len(), 1);
@@ -372,7 +423,13 @@ mod tests {
     fn scoped_tip_counts_are_never_reported_as_complete() {
         let raw = r#"{"case":{"id":"dossier-1","tip_count":1},"tips":[{"id":617,"raw":{"timeline":{"time_precision":"date_only","happened_at":"2026-09-01T00:00:00Z"}}}]}"#;
         let t = fake(raw);
-        let r = retrieve(&t, &Resource::Case("dossier-1".into()), Bounds { pages: 1, limit: 1 }, 100).unwrap();
+        let r = retrieve(
+            &t,
+            &Resource::Case("dossier-1".into()),
+            Bounds { pages: 1, limit: 1 },
+            100,
+        )
+        .unwrap();
         assert_eq!(r.records.len(), 2);
         assert_eq!(r.records[0].asserted_tip_count, Some(1));
         assert_eq!(r.records[1].source_record_id, "617");
@@ -385,20 +442,50 @@ mod tests {
         let record = normalize(&r, "case").unwrap();
         assert!(record.geo.is_none());
         assert_eq!(record.evidence_status, "third_party_unverified_assertion");
-        assert!(normalize(&serde_json::json!({"id":"x","geo":{"lat":-26.8,"lon":152.9}}), "case").unwrap().geo.is_some());
+        assert!(
+            normalize(
+                &serde_json::json!({"id":"x","geo":{"lat":-26.8,"lon":152.9}}),
+                "case"
+            )
+            .unwrap()
+            .geo
+            .is_some()
+        );
     }
     #[test]
     fn rejects_unsafe_identifiers_without_a_request() {
         let t = fake("{}");
-        assert!(retrieve(&t, &Resource::Case("../private".into()), Bounds { pages: 1, limit: 1 }, 100).is_err());
-        assert!(retrieve(&t, &Resource::Search("x".into()), Bounds { pages: 4, limit: 1 }, 100).is_err());
+        assert!(
+            retrieve(
+                &t,
+                &Resource::Case("../private".into()),
+                Bounds { pages: 1, limit: 1 },
+                100
+            )
+            .is_err()
+        );
+        assert!(
+            retrieve(
+                &t,
+                &Resource::Search("x".into()),
+                Bounds { pages: 4, limit: 1 },
+                100
+            )
+            .is_err()
+        );
         assert_eq!(t.calls.get(), 0);
     }
     #[test]
     fn malformed_json_keeps_the_original_response() {
         let raw = "<!doctype html>error";
         let t = fake(raw);
-        let r = retrieve(&t, &Resource::Search("test".into()), Bounds { pages: 1, limit: 1 }, 100).unwrap();
+        let r = retrieve(
+            &t,
+            &Resource::Search("test".into()),
+            Bounds { pages: 1, limit: 1 },
+            100,
+        )
+        .unwrap();
         assert_eq!(r.pages[0].original_json, raw);
         assert!(r.pages[0].schema_warning.is_some());
         assert!(r.records.is_empty());
