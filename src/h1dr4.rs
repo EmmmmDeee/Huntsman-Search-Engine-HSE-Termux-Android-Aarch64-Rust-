@@ -69,6 +69,9 @@ pub struct PublicRecord {
     pub status: Option<String>,
     pub event_at: Option<String>,
     pub time_precision: Option<String>,
+    pub record_synced_at: Option<String>,
+    pub record_last_seen_at: Option<String>,
+    pub explicitly_test_record: bool,
     pub asserted_tip_count: Option<u64>,
     pub geo: Option<Coordinates>,
     pub evidence_status: &'static str,
@@ -94,6 +97,9 @@ pub struct Report {
     pub pages: Vec<RawPage>,
     pub records: Vec<PublicRecord>,
     pub upstream_total_available: Option<u64>,
+    pub stale_upstream_sources: Vec<String>,
+    pub upstream_fetch_errors: Vec<Value>,
+    pub upstream_fetched_at: Option<String>,
     pub returned_count: usize,
     pub pagination_stalled: bool,
     pub complete_dataset_verified: bool,
@@ -199,6 +205,11 @@ fn normalize(row: &Value, kind: &'static str) -> Option<PublicRecord> {
         time_precision: timeline
             .and_then(|v| field(v, "time_precision"))
             .map(str::to_owned),
+        record_synced_at: field(row, "last_synced_at").map(str::to_owned),
+        record_last_seen_at: field(row, "last_seen_at").map(str::to_owned),
+        explicitly_test_record: row.get("test").and_then(Value::as_bool) == Some(true)
+            || row.get("is_test").and_then(Value::as_bool) == Some(true)
+            || field(row, "status") == Some("test"),
         asserted_tip_count: if kind == "case" {
             row.get("tip_count").and_then(Value::as_u64)
         } else {
@@ -283,6 +294,9 @@ pub fn retrieve<T: Transport + ?Sized>(
         pages: Vec::new(),
         records: Vec::new(),
         upstream_total_available: None,
+        stale_upstream_sources: Vec::new(),
+        upstream_fetch_errors: Vec::new(),
+        upstream_fetched_at: None,
         returned_count: 0,
         pagination_stalled: false,
         complete_dataset_verified: false,
@@ -345,6 +359,19 @@ pub fn retrieve<T: Transport + ?Sized>(
             report.upstream_total_available = report
                 .upstream_total_available
                 .or_else(|| v.get("total_available").and_then(Value::as_u64));
+            if let Some(sources) = v.get("stale_sources").and_then(Value::as_array) {
+                for source in sources.iter().filter_map(Value::as_str) {
+                    if !report.stale_upstream_sources.iter().any(|s| s == source) {
+                        report.stale_upstream_sources.push(source.to_owned());
+                    }
+                }
+            }
+            if let Some(errors) = v.get("errors").and_then(Value::as_array) {
+                report.upstream_fetch_errors.extend(errors.iter().cloned());
+            }
+            if report.upstream_fetched_at.is_none() {
+                report.upstream_fetched_at = field(v, "fetched_at").map(str::to_owned);
+            }
         }
         report.pages.push(RawPage {
             request_url,
@@ -474,6 +501,18 @@ mod tests {
             .is_err()
         );
         assert_eq!(t.calls.get(), 0);
+    }
+    #[test]
+    fn keeps_stale_source_failures_separate_from_valid_cache() {
+        let raw = r#"{"ok":true,"rewards":[{"id":"old","source":"fbi","last_synced_at":"2026-07-04T13:31:17Z"}],"total_available":1234,"stale_sources":["fbi"],"errors":[{"source":"fbi","error":"FBI_HTTP_403"}],"cache":{"stale":false},"fetched_at":"2026-11-07T16:21:27Z"}"#;
+        let t = fake(raw);
+        let r = retrieve(&t, &Resource::OfficialRewards, Bounds { pages: 1, limit: 1 }, 100).unwrap();
+        assert_eq!(r.pages[0].original_json, raw);
+        assert_eq!(r.stale_upstream_sources, vec!["fbi"]);
+        assert_eq!(r.upstream_fetch_errors.len(), 1);
+        assert_eq!(r.records[0].record_synced_at.as_deref(), Some("2026-07-04T13:31:17Z"));
+        assert_eq!(r.upstream_total_available, Some(1234));
+        assert!(!r.complete_dataset_verified);
     }
     #[test]
     fn malformed_json_keeps_the_original_response() {
