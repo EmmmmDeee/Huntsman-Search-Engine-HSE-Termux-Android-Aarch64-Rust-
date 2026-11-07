@@ -747,6 +747,12 @@ mod tests {
             "Dushanbe; Tajikistan"
         );
         assert!(rows[1].historical_context.is_empty());
+        let mut output = Vec::new();
+        let mut summary = AuditSummary::default();
+        emit_person(&mut output, &mut summary, &rows[1]).unwrap();
+        assert_eq!(summary.with_birthplace_claim, 1);
+        assert_eq!(summary.with_ambiguous_compound_birthplace_claims, 1);
+        assert_eq!(summary.with_conflicting_birthplace_claims, 0);
     }
 
     #[test]
