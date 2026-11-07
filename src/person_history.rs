@@ -28,7 +28,7 @@ pub struct HistoricalContext {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct BirthClaim {
     pub value: String,
-    /// Exact saved attribute text, before separating Evidence::with_attr values.
+    /// Exact saved attribute text, before separating `Evidence::with_attr` values.
     pub raw_attribute_value: String,
     pub attribute: String,
     pub source: String,
