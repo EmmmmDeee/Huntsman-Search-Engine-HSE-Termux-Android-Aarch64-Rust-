@@ -31,6 +31,10 @@ pub struct BirthClaim {
     /// Exact saved attribute text, before separating `Evidence::with_attr` values.
     pub raw_attribute_value: String,
     pub attribute: String,
+    /// Zero-based position in this Person entity's saved evidence array.
+    pub evidence_index: usize,
+    /// Original evidence summary; no reconstructed or inferred description.
+    pub evidence_summary: String,
     pub source: String,
     pub source_scan_id: Option<String>,
     pub recorded_at_unix: u64,
@@ -99,7 +103,7 @@ const PLACE_KEYS: &[&str] = &[
 ];
 const DATE_KEYS: &[&str] = &["date_of_birth", "birth_date", "dob"];
 
-fn facts(evidence: &Evidence, keys: &[&str]) -> Vec<BirthClaim> {
+fn facts(evidence: &Evidence, evidence_index: usize, keys: &[&str]) -> Vec<BirthClaim> {
     let mut facts = Vec::new();
     for (key, raw) in &evidence.attributes {
         if !keys.iter().any(|wanted| key.eq_ignore_ascii_case(wanted)) {
@@ -112,6 +116,8 @@ fn facts(evidence: &Evidence, keys: &[&str]) -> Vec<BirthClaim> {
                 value: value.to_owned(),
                 raw_attribute_value: raw.clone(),
                 attribute: key.clone(),
+                evidence_index,
+                evidence_summary: evidence.summary.clone(),
                 source: evidence.provenance.source.clone(),
                 source_scan_id: evidence.provenance.scan_id.clone(),
                 recorded_at_unix: evidence.provenance.recorded_at_unix,
@@ -300,9 +306,9 @@ fn people_in_scan(scan: &ScanRecord, results: Option<&ScanResults>) -> Vec<Perso
                 "person_entity",
             );
             row.entity_uids.push(entity.uid.clone());
-            for evidence in &entity.evidence {
-                let places = facts(evidence, PLACE_KEYS);
-                let dates = facts(evidence, DATE_KEYS);
+            for (evidence_index, evidence) in entity.evidence.iter().enumerate() {
+                let places = facts(evidence, evidence_index, PLACE_KEYS);
+                let dates = facts(evidence, evidence_index, DATE_KEYS);
                 push_context(&mut row, &places, &dates);
                 row.place_of_birth_claims.extend(places);
                 row.date_of_birth_claims.extend(dates);
@@ -511,6 +517,8 @@ mod tests {
             .find(|row| row.occurrence_id == "person_entity:0")
             .unwrap();
         assert_eq!(entity.place_of_birth_claims[0].source, "public_registry");
+        assert_eq!(entity.place_of_birth_claims[0].evidence_index, 0);
+        assert_eq!(entity.place_of_birth_claims[0].evidence_summary, "birth claim");
         assert_eq!(
             entity.place_of_birth_claims[0].raw_attribute_value,
             "Dushanbe, Tajikistan"
@@ -582,6 +590,8 @@ mod tests {
             value: "Dushanbe".into(),
             raw_attribute_value: "Dushanbe".into(),
             attribute: "pob".into(),
+            evidence_index: 0,
+            evidence_summary: "birthplace claim".into(),
             source: "source_a".into(),
             source_scan_id: None,
             recorded_at_unix: 1,
@@ -654,6 +664,8 @@ mod tests {
         let rows = people_in_scan(&record(), Some(&result));
         assert_eq!(rows[1].historical_context.len(), 1);
         assert_eq!(rows[1].historical_context[0].date_claim, None);
+        assert_eq!(rows[1].place_of_birth_claims[0].evidence_index, 0);
+        assert_eq!(rows[1].date_of_birth_claims[0].evidence_index, 1);
     }
 
     #[test]
