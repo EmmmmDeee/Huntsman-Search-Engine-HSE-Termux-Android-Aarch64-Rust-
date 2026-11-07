@@ -1201,6 +1201,7 @@ fn a_failed_refresh_is_not_a_current_copy_even_when_its_body_is_kept() {
 #[test]
 fn all_download_responses_keep_original_bytes_and_legacy_copies() {
     let dir = scratch("original-http-evidence");
+    std::fs::create_dir_all(&dir).expect("archive test directory");
     let feed = FEEDS
         .iter()
         .find(|feed| feed.id == "greensnow")
