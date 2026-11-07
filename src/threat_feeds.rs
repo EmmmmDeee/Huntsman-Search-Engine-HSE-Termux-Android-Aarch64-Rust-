@@ -548,11 +548,19 @@ pub(crate) fn load(
     now_unix: u64,
 ) -> Result<Copy, Failure> {
     let path = dir.map(|dir| dir.join(feed.id));
+    // Preserve the complete pre-upgrade cache, even if it is HTML or cannot be parsed,
+    // before a refresh can replace it. Repeat reads verify the same immutable bytes.
+    let existing = path.as_deref().and_then(read_copy);
+    if let (Some(dir), Some((body, fetched))) = (dir, existing.as_ref()) {
+        crate::feed_archive::backfill(dir, feed.id, body, *fetched).map_err(|error| {
+            (
+                SourceOutcomeKind::Inconclusive,
+                format!("existing original feed could not be archived ({error})"),
+            )
+        })?;
+    }
     // A page an earlier version kept in the list's place is no copy of the list.
-    let kept = path
-        .as_deref()
-        .and_then(read_copy)
-        .filter(|(body, _)| !is_page_for(body, feed.xml_root));
+    let kept = existing.filter(|(body, _)| !is_page_for(body, feed.xml_root));
     let kept_date = match (path.as_deref(), &kept) {
         (Some(path), Some((body, _))) => read_updated(path, body),
         _ => KeptDate::Missing,
