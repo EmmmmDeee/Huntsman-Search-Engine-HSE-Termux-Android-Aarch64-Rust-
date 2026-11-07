@@ -5,12 +5,12 @@
 //! never evidence of birth, ethnicity, nationality, citizenship or parentage.
 //! No network requests, provider keys, raw-record rewrites or new dependencies.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io::Write;
 
 use serde::Serialize;
 
-use crate::entity::{EntityKind, Evidence};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
 use crate::scan_store::{ScanRecord, ScanResults, ScanStore};
 
 const DUSHANBE_HISTORY_SOURCE: &str = "https://www.iranicaonline.org/articles/dushanbe/";
@@ -28,9 +28,13 @@ pub struct HistoricalContext {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct BirthClaim {
     pub value: String,
+    /// Exact saved attribute text, before separating Evidence::with_attr values.
+    pub raw_attribute_value: String,
     pub attribute: String,
     pub source: String,
+    pub source_scan_id: Option<String>,
     pub recorded_at_unix: u64,
+    pub merged_provenance: Vec<EvidenceProvenance>,
     pub operator_seed: bool,
     pub inferred: bool,
 }
@@ -43,8 +47,11 @@ pub struct PersonHistoryRow {
     pub scan_target: String,
     pub scan_target_type: String,
     pub person_name: String,
+    /// Unique within the saved scan, not a real-world person identifier.
+    pub occurrence_id: String,
     /// UIDs are evidence pointers, not a global assertion of real-world identity.
     pub entity_uids: Vec<String>,
+    pub element_id: Option<String>,
     pub discovered_as: Vec<String>,
     pub flagged_false_positive: bool,
     pub place_of_birth_claims: Vec<BirthClaim>,
@@ -97,9 +104,12 @@ fn facts(evidence: &Evidence, keys: &[&str]) -> Vec<BirthClaim> {
         for value in raw.split("; ").map(str::trim).filter(|v| !v.is_empty()) {
             facts.push(BirthClaim {
                 value: value.to_owned(),
+                raw_attribute_value: raw.clone(),
                 attribute: key.clone(),
                 source: evidence.provenance.source.clone(),
+                source_scan_id: evidence.provenance.scan_id.clone(),
                 recorded_at_unix: evidence.provenance.recorded_at_unix,
+                merged_provenance: evidence.merged_provenance.clone(),
                 operator_seed: evidence.is_operator_seed(),
                 inferred: evidence.is_inferred,
             });
@@ -125,17 +135,25 @@ fn birth_date(date: &str) -> Option<(i32, Option<&str>)> {
     if date.len() == 4 {
         return Some((year, None));
     }
-    let iso = date.get(..10)?;
-    let bytes = iso.as_bytes();
-    if bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {
+    if date.len() != 10 || date.as_bytes().get(4) != Some(&b'-')
+        || date.as_bytes().get(7) != Some(&b'-')
+    {
         return None;
     }
-    let month = iso.get(5..7)?.parse::<u8>().ok()?;
-    let day = iso.get(8..10)?.parse::<u8>().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    let month = date.get(5..7)?.parse::<u8>().ok()?;
+    let day = date.get(8..10)?.parse::<u8>().ok()?;
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day == 0 || day > days {
         return None;
     }
-    Some((year, Some(iso)))
+    Some((year, Some(date)))
 }
 
 /// Historically attested names are only applied to a *claimed* birthplace.
@@ -206,106 +224,118 @@ fn distinct_values(claims: &[BirthClaim]) -> usize {
         .len()
 }
 
-fn people_in_scan(scan: &ScanRecord, results: Option<&ScanResults>) -> Vec<PersonHistoryRow> {
-    let mut found = BTreeMap::<String, PersonHistoryRow>::new();
+fn new_row(
+    scan: &ScanRecord,
+    name: &str,
+    occurrence_id: String,
+    discovered_as: &str,
+) -> PersonHistoryRow {
+    PersonHistoryRow {
+        record_type: "person",
+        scan_id: scan.id.clone(),
+        scan_created_ms: scan.created,
+        scan_target: scan.target.clone(),
+        scan_target_type: scan.target_type.clone(),
+        person_name: name.to_owned(),
+        occurrence_id,
+        entity_uids: Vec::new(),
+        element_id: None,
+        discovered_as: vec![discovered_as.to_owned()],
+        flagged_false_positive: false,
+        place_of_birth_claims: Vec::new(),
+        date_of_birth_claims: Vec::new(),
+        birthplace_status: "not_recorded",
+        historical_context: Vec::new(),
+        identity_status: "unverified_name_association",
+    }
+}
 
-    let mut add = |name: &str, source: &str| {
-        if name.trim().is_empty() {
-            return;
-        }
-        let index = key(name);
-        let row = found.entry(index).or_insert_with(|| PersonHistoryRow {
-            record_type: "person",
-            scan_id: scan.id.clone(),
-            scan_created_ms: scan.created,
-            scan_target: scan.target.clone(),
-            scan_target_type: scan.target_type.clone(),
-            person_name: name.trim().to_owned(),
-            entity_uids: Vec::new(),
-            discovered_as: Vec::new(),
-            flagged_false_positive: false,
-            place_of_birth_claims: Vec::new(),
-            date_of_birth_claims: Vec::new(),
-            birthplace_status: "not_recorded",
-            historical_context: Vec::new(),
-            identity_status: "unverified_name_association",
-        });
-        if !row.discovered_as.iter().any(|part| part == source) {
-            row.discovered_as.push(source.to_owned());
+fn push_context(row: &mut PersonHistoryRow, places: &[BirthClaim], dates: &[BirthClaim]) {
+    let mut insert = |place: &BirthClaim, date: Option<&BirthClaim>| {
+        let context = dushanbe(&place.value, date.map(|date| date.value.as_str()));
+        if let Some(context) = context {
+            if !row.historical_context.contains(&context) {
+                row.historical_context.push(context);
+            }
         }
     };
-
-    if scan.kind == "people" || scan.target_type == "HUMAN_NAME" {
-        add(&scan.target, "scan_target");
+    for place in places {
+        // Date claims are only paired with places within the SAME Evidence.
+        // Never take a Cartesian product of unrelated sources or identities.
+        if dates.is_empty() {
+            insert(place, None);
+        } else {
+            for date in dates {
+                insert(place, Some(date));
+            }
+        }
     }
-    if let Some(results) = results {
-        for entity in &results.entities {
-            if entity.kind == EntityKind::Person {
-                add(&entity.raw_value, "person_entity");
-            }
-        }
-        for element in &results.elements {
-            if element.kind == "HUMAN_NAME" {
-                add(&element.data, "human_name_element");
-            }
-        }
-        drop(add);
+}
 
-        for entity in &results.entities {
-            if entity.kind != EntityKind::Person {
+fn people_in_scan(scan: &ScanRecord, results: Option<&ScanResults>) -> Vec<PersonHistoryRow> {
+    let mut rows = Vec::new();
+
+    if (scan.kind == "people" || scan.target_type == "HUMAN_NAME")
+        && !scan.target.trim().is_empty()
+    {
+        rows.push(new_row(
+            scan,
+            &scan.target,
+            "scan_target".to_owned(),
+            "scan_target",
+        ));
+    }
+
+    if let Some(results) = results {
+        for (index, entity) in results.entities.iter().enumerate() {
+            if entity.kind != EntityKind::Person || entity.raw_value.trim().is_empty() {
                 continue;
             }
-            if let Some(row) = found.get_mut(&key(&entity.raw_value)) {
-                if !row.entity_uids.contains(&entity.uid) {
-                    row.entity_uids.push(entity.uid.clone());
-                }
-                for evidence in &entity.evidence {
-                    row.place_of_birth_claims
-                        .extend(facts(evidence, PLACE_KEYS));
-                    row.date_of_birth_claims.extend(facts(evidence, DATE_KEYS));
-                }
+            let mut row = new_row(
+                scan,
+                &entity.raw_value,
+                format!("person_entity:{index}"),
+                "person_entity",
+            );
+            row.entity_uids.push(entity.uid.clone());
+            for evidence in &entity.evidence {
+                let places = facts(evidence, PLACE_KEYS);
+                let dates = facts(evidence, DATE_KEYS);
+                push_context(&mut row, &places, &dates);
+                row.place_of_birth_claims.extend(places);
+                row.date_of_birth_claims.extend(dates);
             }
+            rows.push(row);
         }
-        for element in &results.elements {
-            if element.kind == "HUMAN_NAME" && element.fp {
-                if let Some(row) = found.get_mut(&key(&element.data)) {
-                    row.flagged_false_positive = true;
-                }
+
+        for (index, element) in results.elements.iter().enumerate() {
+            if element.kind != "HUMAN_NAME" || element.data.trim().is_empty() {
+                continue;
             }
+            let mut row = new_row(
+                scan,
+                &element.data,
+                format!("human_name_element:{index}"),
+                "human_name_element",
+            );
+            row.flagged_false_positive = element.fp;
+            row.element_id = Some(element.id.clone());
+            if let Some(uid) = &element.entity {
+                row.entity_uids.push(uid.clone());
+            }
+            rows.push(row);
         }
-    } else {
-        drop(add);
     }
 
-    for row in found.values_mut() {
-        let unique = distinct_values(&row.place_of_birth_claims);
-        row.birthplace_status = match unique {
+    for row in &mut rows {
+        row.birthplace_status = match distinct_values(&row.place_of_birth_claims) {
             0 => "not_recorded",
             1 => "reported_unverified",
             _ => "conflicting_claims",
         };
-        let mut seen = BTreeSet::new();
-        for place in &row.place_of_birth_claims {
-            if row.date_of_birth_claims.is_empty() {
-                if let Some(context) = dushanbe(&place.value, None) {
-                    let token = (context.location.clone(), context.date_claim.clone());
-                    if seen.insert(token) {
-                        row.historical_context.push(context);
-                    }
-                }
-            }
-            for dob in &row.date_of_birth_claims {
-                if let Some(context) = dushanbe(&place.value, Some(&dob.value)) {
-                    let token = (context.location.clone(), context.date_claim.clone());
-                    if seen.insert(token) {
-                        row.historical_context.push(context);
-                    }
-                }
-            }
-        }
     }
 
-    found.into_values().collect()
+    rows
 }
 
 fn emit<T: Serialize>(writer: &mut impl Write, row: &T) -> Result<(), String> {
@@ -433,17 +463,13 @@ mod tests {
             termination: None,
         };
         let rows = people_in_scan(&record(), Some(&results));
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].place_of_birth_claims[0].source, "public_registry");
-        assert_eq!(
-            rows[0].historical_context[0].contemporary_place_name,
-            "Dushanbe"
-        );
-        assert!(
-            rows[0].historical_context[0]
-                .contemporary_jurisdiction
-                .contains("USSR")
-        );
+        assert_eq!(rows.len(), 2);
+        let entity = rows.iter().find(|row| row.occurrence_id == "person_entity:0").unwrap();
+        assert_eq!(entity.place_of_birth_claims[0].source, "public_registry");
+        assert_eq!(entity.place_of_birth_claims[0].raw_attribute_value, "Dushanbe, Tajikistan");
+        assert_eq!(entity.historical_context[0].contemporary_place_name, "Dushanbe");
+        assert!(entity.historical_context[0].contemporary_jurisdiction.contains("USSR"));
+        assert!(rows[0].historical_context.is_empty());
     }
 
     #[test]
@@ -499,9 +525,12 @@ mod tests {
     fn distinct_birthplaces_are_retained_as_conflict() {
         let a = BirthClaim {
             value: "Dushanbe".into(),
+            raw_attribute_value: "Dushanbe".into(),
             attribute: "pob".into(),
             source: "source_a".into(),
+            source_scan_id: None,
             recorded_at_unix: 1,
+            merged_provenance: Vec::new(),
             operator_seed: false,
             inferred: false,
         };
@@ -509,4 +538,77 @@ mod tests {
         b.value = "Tashkent".into();
         assert_eq!(distinct_values(&[a, b]), 2);
     }
+    #[test]
+    fn same_name_is_not_a_verified_identity_join() {
+        let mut a = Entity::new(EntityKind::Person, "Jane Citizen", 0.5, "0123456789abcdef");
+        let mut b = a.clone();
+        a.evidence.clear();
+        b.evidence.clear();
+        a.add_evidence(
+            Evidence::new(EvidenceProvenance::new("registry_a"), "first claimant")
+                .with_attr("place_of_birth", "Dushanbe")
+                .with_attr("date_of_birth", "1988"),
+        );
+        b.add_evidence(
+            Evidence::new(EvidenceProvenance::new("registry_b"), "second claimant")
+                .with_attr("place_of_birth", "Tashkent")
+                .with_attr("date_of_birth", "1990"),
+        );
+        let result = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: record().id,
+            text: String::new(),
+            entities: vec![a, b],
+            outcomes: Vec::new(),
+            elements: Vec::new(),
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        let rows = people_in_scan(&record(), Some(&result));
+        assert_eq!(rows.len(), 3); // target and two separate person occurrences
+        assert_eq!(rows[1].place_of_birth_claims[0].value, "Dushanbe");
+        assert_eq!(rows[2].place_of_birth_claims[0].value, "Tashkent");
+        assert_eq!(rows[1].birthplace_status, "reported_unverified");
+        assert_eq!(rows[2].birthplace_status, "reported_unverified");
+        assert!(rows[2].historical_context.is_empty());
+    }
+
+    #[test]
+    fn dates_from_unrelated_evidence_never_become_a_birthplace_fact() {
+        let mut person = Entity::new(EntityKind::Person, "Jane Citizen", 0.5, "0123456789abcdef");
+        person.add_evidence(
+            Evidence::new(EvidenceProvenance::new("registry_a"), "place only")
+                .with_attr("birthplace", "Dushanbe"),
+        );
+        person.add_evidence(
+            Evidence::new(EvidenceProvenance::new("registry_b"), "date only")
+                .with_attr("date_of_birth", "1988-01-01"),
+        );
+        let result = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: record().id,
+            text: String::new(),
+            entities: vec![person],
+            outcomes: Vec::new(),
+            elements: Vec::new(),
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        let rows = people_in_scan(&record(), Some(&result));
+        assert_eq!(rows[1].historical_context.len(), 1);
+        assert_eq!(rows[1].historical_context[0].date_claim, None);
+    }
+
+    #[test]
+    fn malformed_dates_do_not_claim_a_precise_historical_year() {
+        for date in ["1900-02-29", "2000-02-30", "1991-13-01", "1991-00-00",
+            "1991-09-09junk", "1985-02-31", "1985-12-00", "2026-04-31"] {
+            assert!(birth_date(date).is_none(), "{date}");
+        }
+        assert!(birth_date("2000-02-29").is_some());
+        assert!(birth_date("1991-09-09").is_some());
+    }
+
 }
