@@ -29,7 +29,7 @@ use crate::wikidata;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, SEC EDGAR, the OFAC and UN sanctions lists (kept on the device), ICIJ Offshore Leaks nodes and FBI wanted notices that name every word of NAME. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, SEC EDGAR, the OFAC, UN and EU sanctions lists (kept on the device), ICIJ Offshore Leaks nodes and FBI wanted notices that name every word of NAME. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
@@ -84,7 +84,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
 }
 
 /// [`run`], also matching the name against the consolidated sanctions lists `lists` keeps on
-/// the device (OFAC SDN and UN Security Council); [`crate::sanctions::Lists::none`] consults none.
+/// the device (OFAC SDN, UN Security Council and EU); [`crate::sanctions::Lists::none`] consults none.
 #[must_use]
 pub fn run_with_lists<T: Transport + ?Sized>(
     transport: &T,

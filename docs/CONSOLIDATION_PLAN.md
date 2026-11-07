@@ -430,6 +430,7 @@ same files.
 | B27 | A breach row attributes only when it names the searched value | See-Know rows must carry the selector in a field of its kind (domain: host on it); other rows attribute nothing and are counted in the outcome |
 | B28 | A person scan checks ICIJ Offshore Leaks | `icij_offshore` is a registered Corporate module and people leg; nodes kept only when their name carries every query word, as Document leads |
 | B29 | A person scan checks the OFAC and UN sanctions lists | `sanctions` downloads both lists through the shared feed cache (one authority, `CachedList`) and matches every name word locally; an XML list declares its root so it is not mistaken for a page |
+| B29b | The EU sanctions list joins OFAC and UN | `sanctions.eu_fsf` reads the EU consolidated CSV through the same cache, grouping its rows by subject; the shared CSV splitter takes a separator |
 | B30 | A DeHashed domain search works against the live API | Domain is sent unquoted (the API refuses a quoted domain with 400); email and username stay quoted (unquoted email is fuzzy). Opt-in live test proves decode, fidelity and masking against the raw answer |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.

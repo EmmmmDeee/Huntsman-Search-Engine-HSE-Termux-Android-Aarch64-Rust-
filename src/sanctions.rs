@@ -1,6 +1,6 @@
 //! Consolidated sanctions lists, read offline from copies kept on the device: the US Treasury
-//! OFAC Specially Designated Nationals list (with its alias table) and the UN Security Council
-//! Consolidated List.
+//! OFAC Specially Designated Nationals list (with its alias table), the UN Security Council
+//! Consolidated List and the EU Financial Sanctions consolidated list.
 //!
 //! Each list is one keyless public download, kept in the list directory and downloaded again
 //! once a day through the same download-and-keep machinery as the threat feeds
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::http::Transport;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::threat_feeds::{CachedList, csv_fields, load};
+use crate::threat_feeds::{CachedList, csv_fields, delimited_fields, load};
 
 /// The module that selects every sanctions list.
 pub const SOURCE: &str = "sanctions";
@@ -24,6 +24,8 @@ pub const SOURCE: &str = "sanctions";
 pub const OFAC: &str = "sanctions.ofac_sdn";
 /// The UN Security Council Consolidated List's outcome label.
 pub const UN: &str = "sanctions.un_sc";
+/// The EU Financial Sanctions consolidated list's outcome label.
+pub const EU: &str = "sanctions.eu_fsf";
 
 /// A name match on a sanctions list: a strong lead, below a confirmed identity.
 const LISTED_CONFIDENCE: f64 = 0.6;
@@ -43,6 +45,15 @@ const OFAC_ALT: CachedList = CachedList {
     id: "sanctions-ofac-alt.csv",
     source: OFAC,
     url: "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/ALT.CSV",
+    max_age: MAX_AGE,
+    xml_root: None,
+};
+/// The EU's consolidated list: one `;`-separated row per name, address, birth date, document and
+/// citizenship of each subject, about 25 MB. Its token is a fixed public value, not a credential.
+const EU_FSF: CachedList = CachedList {
+    id: "sanctions-eu-fsf.csv",
+    source: EU,
+    url: "https://webgate.ec.europa.eu/fsd/fsf/public/files/csvFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw",
     max_age: MAX_AGE,
     xml_root: None,
 };
@@ -125,6 +136,7 @@ pub fn check(
     for (label, read) in [
         (OFAC, read_ofac(transport, dir, now_unix)),
         (UN, read_un(transport, dir, now_unix)),
+        (EU, read_eu(transport, dir, now_unix)),
     ] {
         outcomes.push(match read {
             Ok((listings, note)) => {
@@ -202,6 +214,7 @@ fn record_matches(
 const fn list_title(label: &str) -> &'static str {
     match label.as_bytes() {
         b"sanctions.ofac_sdn" => "OFAC Specially Designated Nationals list",
+        b"sanctions.eu_fsf" => "EU Financial Sanctions consolidated list",
         _ => "UN Security Council Consolidated List",
     }
 }
@@ -273,6 +286,130 @@ fn read_un(
         ));
     }
     Ok((listings, note))
+}
+
+/// The EU list's subjects.
+fn read_eu(
+    transport: &(dyn Transport + Send + Sync),
+    dir: Option<&Path>,
+    now_unix: u64,
+) -> Result<(Vec<Listing>, Option<String>), crate::threat_feeds::Failure> {
+    let (csv, note) = copy_of(transport, dir, &EU_FSF, now_unix)?;
+    let listings = parse_eu(&csv);
+    if listings.is_empty() {
+        return Err((
+            SourceOutcomeKind::ProtocolDrift,
+            format!("no subject could be read in {} bytes", csv.len()),
+        ));
+    }
+    Ok((listings, note))
+}
+
+/// The EU list's columns kept for the evidence, by header name, and the attribute each becomes.
+const EU_FIELDS: [(&str, &str); 16] = [
+    ("Entity_EU_ReferenceNumber", "reference_number"),
+    ("Entity_SubjectType", "subject_type"),
+    ("Entity_Remark", "remarks"),
+    ("Entity_Regulation_Programme", "program"),
+    ("Entity_Regulation_NumberTitle", "regulation"),
+    ("Entity_Regulation_PublicationDate", "listed_on"),
+    ("Entity_Regulation_PublicationUrl", "regulation_url"),
+    ("NameAlias_Function", "function"),
+    ("NameAlias_Title", "title"),
+    ("NameAlias_Gender", "gender"),
+    ("BirthDate_BirthDate", "date_of_birth"),
+    ("BirthDate_Year", "birth_year"),
+    ("BirthDate_City", "place_of_birth"),
+    ("BirthDate_CountryDescription", "country_of_birth"),
+    ("Citizenship_CountryDescription", "nationality"),
+    ("Identification_Remark", "identification"),
+];
+
+/// Every subject on the EU list. The file holds one row per combination of a subject's names,
+/// addresses, birth dates, documents and citizenships, so rows are grouped by
+/// `Entity_LogicalId` and each value is kept once, in file order. **Pure.**
+fn parse_eu(csv: &str) -> Vec<Listing> {
+    let mut lines = csv.trim_start_matches('\u{feff}').lines();
+    let Some(header) = lines.next() else {
+        return Vec::new();
+    };
+    let header = delimited_fields(header, ';');
+    let column = |name: &str| header.iter().position(|h| h == name);
+    let (Some(id_at), Some(whole_at)) = (column("Entity_LogicalId"), column("NameAlias_WholeName"))
+    else {
+        return Vec::new();
+    };
+    let parts_at = [
+        column("NameAlias_FirstName"),
+        column("NameAlias_MiddleName"),
+        column("NameAlias_LastName"),
+    ];
+    let kept: Vec<(usize, &'static str)> = EU_FIELDS
+        .iter()
+        .filter_map(|(name, key)| column(name).map(|at| (at, *key)))
+        .collect();
+    let mut order: Vec<String> = Vec::new();
+    let mut subjects: std::collections::HashMap<String, Listing> = std::collections::HashMap::new();
+    for line in lines {
+        let fields = delimited_fields(line.trim_end_matches('\r'), ';');
+        if fields.len() != header.len() {
+            continue;
+        }
+        let id = fields[id_at].trim();
+        if id.is_empty() {
+            continue;
+        }
+        let listing = subjects.entry(id.to_owned()).or_insert_with(|| {
+            order.push(id.to_owned());
+            Listing {
+                url: String::new(),
+                names: Vec::new(),
+                fields: vec![("eu_logical_id", id.to_owned())],
+            }
+        });
+        let whole = fields[whole_at].trim();
+        let name = if whole.is_empty() {
+            parts_at
+                .iter()
+                .filter_map(|at| at.map(|at| fields[at].trim()))
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            whole.to_owned()
+        };
+        if !name.is_empty() && !listing.names.contains(&name) {
+            listing.names.push(name);
+        }
+        for (at, key) in &kept {
+            let value = fields[*at].trim();
+            if !value.is_empty() && !listing.fields.iter().any(|(k, v)| k == key && v == value) {
+                listing.fields.push((key, value.to_owned()));
+            }
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|id| subjects.remove(&id))
+        .filter(|listing| !listing.names.is_empty())
+        .map(|mut listing| {
+            let reference = listing
+                .fields
+                .iter()
+                .find(|(k, _)| *k == "reference_number")
+                .map_or_else(
+                    || {
+                        listing
+                            .fields
+                            .first()
+                            .map_or_else(String::new, |(_, id)| format!("id-{id}"))
+                    },
+                    |(_, r)| r.clone(),
+                );
+            listing.url = format!("https://webgate.ec.europa.eu/fsd/fsf/public/files/csvFullSanctionsList_1_1/content#{reference}");
+            listing
+        })
+        .collect()
 }
 
 /// OFAC's "no value" marker.

@@ -237,7 +237,7 @@ scan_store	runtime	private on-disk saved-scan store with crash recovery read by 
 scan_uncertainty	runtime	read-only evidence-derived scan uncertainty register used by the scan API and mobile Summary view
 search	diagnostic	local search utility
 icij_offshore	adapter	keyless ICIJ Offshore Leaks reconciliation client folded into a people scan as a lead (nodes kept only when their name carries every word of the person's name; each a Document keyed by node URL)
-sanctions	adapter	keyless OFAC SDN and UN Security Council consolidated sanctions lists, kept on the device through the threat feeds' download-and-keep machinery and matched locally in a people scan (listings that carry every word of the name, as Document leads)
+sanctions	adapter	keyless OFAC SDN, UN Security Council and EU consolidated sanctions lists, kept on the device through the threat feeds' download-and-keep machinery and matched locally in a people scan (listings that carry every word of the name, as Document leads)
 sec_edgar	adapter	keyless SEC EDGAR full-text and submissions client folded into a people scan as a candidate lead (US issuers and insiders; LEI joins gleif, website into domain recon, addresses into geocode)
 securitytrails	adapter	SecurityTrails subdomain leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 seeknow	adapter	SeekNow/See-Know source client

@@ -17,12 +17,21 @@ const UN_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CONSOLIDATED_
 <REFERENCE_NUMBER>QDe.004</REFERENCE_NUMBER><ENTITY_ALIAS><ALIAS_NAME>THE BASE</ALIAS_NAME></ENTITY_ALIAS>\
 </ENTITY></ENTITIES></CONSOLIDATED_LIST>";
 
+/// Rows shaped like the live EU export on 2026-11-07: a byte-order mark, `;` separators and one
+/// row per name and birth date of a subject. Eric Badege's two rows are one subject; KHARBOUTLI
+/// holds the letters "bout" without the word.
+const EU_CSV: &str = "\u{feff}fileGenerationDate;Entity_LogicalId;Entity_EU_ReferenceNumber;Entity_SubjectType;Entity_Regulation_Programme;NameAlias_FirstName;NameAlias_LastName;NameAlias_WholeName;BirthDate_BirthDate;Citizenship_CountryDescription\r\n\
+07/11/2026;7200;EU.3606.65;P;COD;Eric;Badege;Eric Badege;1971-01-01;Democratic Republic of the Congo\r\n\
+07/11/2026;7200;EU.3606.65;P;COD;;;Eric BADEGE;1971-01-01;Democratic Republic of the Congo\r\n\
+07/11/2026;110142;EU.3843.7;P;SYR;;;Mohammed Zahir KHARBOUTLI;;Syria\r\n";
+
 fn lists() -> Lists {
     Lists::new(
         Box::new(RoutedTransport::new(&[
             (OFAC_SDN.url, 200, SDN),
             (OFAC_ALT.url, 200, ALT),
             (UN_SC.url, 200, UN_XML),
+            (EU_FSF.url, 200, EU_CSV),
         ])),
         None,
     )
@@ -46,11 +55,13 @@ fn a_listing_matches_only_when_it_carries_every_word_of_the_name() {
         Some("DPRK3")
     );
     assert!(evidence.attributes["remarks"].contains("DOB 08 Jan 1984"));
-    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes.len(), 3);
     assert_eq!(outcomes[0].module, OFAC);
     assert_eq!(outcomes[0].kind, SourceOutcomeKind::Success);
     assert_eq!(outcomes[1].module, UN);
     assert_eq!(outcomes[1].kind, SourceOutcomeKind::ValidZero);
+    assert_eq!(outcomes[2].module, EU);
+    assert_eq!(outcomes[2].kind, SourceOutcomeKind::ValidZero);
     // A namesake carrying only some of the words is never a match.
     let (none, _) = check(&lists(), "Kim Jong Il", "scan", 1);
     assert!(none.is_empty(), "{:?}", values(&none));
@@ -74,11 +85,15 @@ fn an_alias_matches_and_the_whole_listing_is_kept() {
 #[test]
 fn the_un_list_is_read_with_its_name_parts_entities_and_escapes() {
     let (entities, outcomes) = check(&lists(), "Eric Badege", "scan", 1);
+    let un: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.raw_value.starts_with("https://scsanctions.un.org/"))
+        .collect();
     assert_eq!(
-        values(&entities),
+        un.iter().map(|e| e.raw_value.as_str()).collect::<Vec<_>>(),
         ["https://scsanctions.un.org/resources/xml/en/consolidated.xml#CDi.001"]
     );
-    let evidence = &entities[0].evidence[0];
+    let evidence = &un[0].evidence[0];
     assert_eq!(
         evidence.attributes.get("nationality").map(String::as_str),
         Some("Democratic Republic of the Congo")
@@ -106,7 +121,7 @@ fn no_lists_consults_nothing_and_a_failed_download_is_never_a_clean_zero() {
     let silent = Lists::new(Box::new(RoutedTransport::new(&[])), None);
     let (entities, outcomes) = check(&silent, "Kim Jong Un", "scan", 1);
     assert!(entities.is_empty());
-    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes.len(), 3);
     for outcome in outcomes {
         assert_ne!(outcome.kind, SourceOutcomeKind::ValidZero, "{outcome:?}");
         assert_ne!(outcome.kind, SourceOutcomeKind::Success, "{outcome:?}");
@@ -117,4 +132,48 @@ fn no_lists_consults_nothing_and_a_failed_download_is_never_a_clean_zero() {
 fn a_single_word_name_asks_nothing() {
     let (entities, outcomes) = check(&lists(), "Kim", "scan", 1);
     assert!(entities.is_empty() && outcomes.is_empty());
+}
+
+#[test]
+fn the_eu_list_groups_a_subject_s_rows_and_matches_only_whole_words() {
+    let (entities, outcomes) = check(&lists(), "Eric Badege", "scan", 1);
+    let eu: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.raw_value.ends_with("#EU.3606.65"))
+        .collect();
+    assert_eq!(eu.len(), 1, "two rows of one subject are one listing");
+    assert_eq!(
+        eu[0].evidence.len(),
+        1,
+        "one record per subject, not one per row"
+    );
+    let evidence = &eu[0].evidence[0];
+    assert_eq!(
+        evidence.attributes.get("alias").map(String::as_str),
+        Some("Eric BADEGE"),
+        "every name a subject's rows carry is kept on its one listing"
+    );
+    assert_eq!(
+        evidence.attributes.get("program").map(String::as_str),
+        Some("COD")
+    );
+    assert_eq!(
+        evidence.attributes.get("date_of_birth").map(String::as_str),
+        Some("1971-01-01"),
+        "a value repeated across a subject's rows is kept once"
+    );
+    assert_eq!(outcomes[2].kind, SourceOutcomeKind::Success);
+    // The fixture lists him on the UN and EU lists (the live OFAC list names him too).
+    assert_eq!(
+        entities.len(),
+        2,
+        "one listing per authority that names him"
+    );
+    // "Viktor Bout" carries the letters of KHARBOUTLI but not its words: never a match.
+    let (bout, _) = check(&lists(), "Viktor Bout", "scan", 1);
+    assert!(
+        bout.iter().all(|e| !e.raw_value.contains("EU.3843.7")),
+        "{:?}",
+        values(&bout)
+    );
 }

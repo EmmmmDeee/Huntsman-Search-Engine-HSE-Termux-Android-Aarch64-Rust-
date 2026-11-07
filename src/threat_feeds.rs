@@ -932,6 +932,11 @@ fn host_name(raw: &str) -> Option<String> {
 /// The fields of one CSV line: commas separate them, and a field in double quotes may hold commas
 /// and doubled quotes.
 pub(crate) fn csv_fields(line: &str) -> Vec<String> {
+    delimited_fields(line, ',')
+}
+
+/// [`csv_fields`] with `separator` between the fields (the EU list separates them with `;`).
+pub(crate) fn delimited_fields(line: &str, separator: char) -> Vec<String> {
     let mut fields = Vec::new();
     let mut field = String::new();
     let mut quoted = false;
@@ -943,7 +948,7 @@ pub(crate) fn csv_fields(line: &str) -> Vec<String> {
                 chars.next();
             }
             ('"', _) => quoted = !quoted,
-            (',', false) => fields.push(std::mem::take(&mut field)),
+            (c, false) if c == separator => fields.push(std::mem::take(&mut field)),
             _ => field.push(c),
         }
     }
