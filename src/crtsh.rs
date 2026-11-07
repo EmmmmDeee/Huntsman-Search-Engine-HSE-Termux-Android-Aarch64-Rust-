@@ -10,7 +10,7 @@
 //! earliest start and latest end of validity, and when the first and newest were logged.
 //!
 //! crt.sh is slow and flaps: healthy JSON was measured at ~5–11 s, so requests get a
-//! 30 s timeout. HTTP 502 / 503 / 429 keep their bounded retry budget; one transient
+//! 75 s timeout. HTTP 502 / 503 / 429 keep their bounded retry budget; one transient
 //! transport failure (connect, TTFB timeout, or body timeout) is also retried once with
 //! the same fixed pause. Challenge pages, DNS/TLS failures, 404/500, truncated or
 //! malformed 2xx bodies still fail once, typed.
@@ -33,9 +33,11 @@ use crate::tags;
 const SRC: &str = "crtsh";
 const ENDPOINT: &str = "https://crt.sh/";
 
-/// Per-request timeout. Healthy CT JSON from crt.sh lands in ~5–11 s; 8 s timed
-/// out live while the same request still returned a full array seconds later.
-pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// Per-request timeout. Healthy CT JSON from crt.sh lands in ~5–11 s for most domains; 8 s timed
+/// out live while the same request still returned a full array seconds later. A large
+/// organisation's history takes far longer: `telstra.com.au` (1.5 MB) began answering after 39 s
+/// on 2026-11-07, so 30 s lost every certificate it holds.
+pub const TIMEOUT: Duration = Duration::from_secs(75);
 /// Body cap for one CT answer. A popular apex returns several MiB of JSON; a
 /// larger body is reported as truncated, never parsed as a partial answer.
 pub const MAX_BODY: usize = 16 * 1024 * 1024;
@@ -154,7 +156,7 @@ pub struct CrtShReport {
     pub attempts: u32,
 }
 
-/// Transport settings for crt.sh: the 30 s timeout and the CT body cap.
+/// Transport settings for crt.sh: the 75 s timeout and the CT body cap.
 #[must_use]
 pub fn transport_config() -> TransportConfig {
     TransportConfig {
