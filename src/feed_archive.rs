@@ -112,10 +112,12 @@ pub(crate) fn backfill(
     match fs::symlink_metadata(&path) {
         Ok(_) => {
             let bound = u64::try_from(body.len()).map_err(|e| e.to_string())?;
-            let previous = crate::fsio::read_bounded(&path, bound)
-                .map_err(|e| e.to_string())?;
+            let previous = crate::fsio::read_bounded(&path, bound).map_err(|e| e.to_string())?;
             if previous != body {
-                return Err(format!("{}: existing archived bytes differ", path.display()));
+                return Err(format!(
+                    "{}: existing archived bytes differ",
+                    path.display()
+                ));
             }
             Ok(())
         }
@@ -157,7 +159,10 @@ mod tests {
         assert_ne!(one, two);
         let archive = dir.join("originals/test.csv");
         assert_eq!(fs::read(archive.join(format!("{one}.raw"))).unwrap(), first);
-        assert_eq!(fs::read(archive.join(format!("{two}.raw"))).unwrap(), second);
+        assert_eq!(
+            fs::read(archive.join(format!("{two}.raw"))).unwrap(),
+            second
+        );
         let receipts = fs::read_dir(&archive)
             .unwrap()
             .filter_map(Result::ok)
