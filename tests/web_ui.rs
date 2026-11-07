@@ -1136,6 +1136,8 @@ fn spiderfoot_inspired_workbench_retains_live_scan_and_passive_radar_contracts()
     assert!(PAGE.contains("ROOTLESS TERMUX / RADIO INTELLIGENCE"));
     assert!(PAGE.contains("Explicit reads only"));
     assert!(PAGE.contains("radar-scope-caption"));
+    assert!(PAGE.contains("id=\"radar-observed\""));
+    assert!(script.contains("$('radar-observed').textContent=String(observations.length)"));
     assert!(PAGE.contains("nav-footer"));
     assert!(PAGE.contains("id=\"skip-content\""));
     assert!(script.contains("event.preventDefault();$('workspace').focus()"));
