@@ -1,0 +1,2 @@
+- Validate APK signer dates with the existing X.509 calendar rule instead of printing impossible dates.
+- Keep certificate identity and readable fields when a validity value is unreadable; that date is empty rather than dropping the entire signer. This is metadata parsing, not certificate trust verification.

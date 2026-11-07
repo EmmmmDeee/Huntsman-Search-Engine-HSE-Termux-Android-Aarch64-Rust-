@@ -564,6 +564,8 @@ files. Every line reference is to that commit.
   - `circuit`'s `host_of` tests pass unchanged.
 
 **C3. One DER reader for X.509 and the APK signer.** Declared change B6.
+- **Calendar/identity correction in place separately.** The signer delegates validity rendering to `x509::time`, rejecting impossible dates. An unreadable validity value becomes an empty string without discarding the certificate, its raw-DER digest, public-key digest or other readable fields. Valid certificate output and the existing leap-second policy stay unchanged. The DER/name-reader consolidation remains queued; this correction does not claim G9.
+- **Measured root-cause correction, not a pure dedupe:** same-path Rust 1.99 host release is 17,211,904 to 17,214,696 bytes (+2,792). The output change is limited to malformed certificate validity: unknown dates are empty and otherwise readable signer identities are retained. No raw APK bytes or stored reports are rewritten.
 - **Duplication.**
   - `src/x509.rs` reads DER with `Der` (`:171`). `src/apk_intel/signer.rs` reads it with its own `Tlv` and `tlv` (`:82`, `:91`) and `children`.
   - Each has its own distinguished-name reader: `x509::name` (`:241`) and `signer::name` (`:160`).

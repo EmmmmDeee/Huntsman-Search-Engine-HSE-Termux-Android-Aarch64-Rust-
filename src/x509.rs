@@ -441,7 +441,8 @@ fn is_ca(value: &[u8]) -> bool {
 }
 
 /// A `UTCTime` or `GeneralizedTime` in whole seconds as `YYYY-MM-DDTHH:MM:SSZ`. **Pure.**
-fn time((tag, content): (u8, &[u8])) -> Option<String> {
+#[inline]
+pub(crate) fn time((tag, content): (u8, &[u8])) -> Option<String> {
     let text = std::str::from_utf8(content).ok()?.strip_suffix('Z')?;
     if !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
