@@ -1280,8 +1280,15 @@ fn invalid_install_modes_are_refused_before_state_or_network_changes() {
         let out = t.run(&env, BUILT_REV);
         assert!(!out.status.success(), "{message}: {:?}", out.status);
         assert!(stderr(&out).contains(message), "{}", stderr(&out));
-        assert!(t.calls().is_empty(), "unexpected side effects: {}", t.calls());
-        assert!(!t.temp.join(".huntsman").exists(), "state created on rejection");
+        assert!(
+            t.calls().is_empty(),
+            "unexpected side effects: {}",
+            t.calls()
+        );
+        assert!(
+            !t.temp.join(".huntsman").exists(),
+            "state created on rejection"
+        );
         t.assert_untouched(prior, &out);
     }
 }
