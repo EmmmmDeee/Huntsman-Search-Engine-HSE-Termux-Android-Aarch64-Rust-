@@ -833,6 +833,8 @@ pub struct ScanService {
     rules: Vec<Rule>,
     rule_errors: Vec<RuleError>,
     state: Mutex<State>,
+    // Separate mutex: stop() logs while holding state, so failures cannot re-lock state.
+    log_failures: Mutex<BTreeMap<String, String>>,
     // Per-instance ownership is distinct from PID. Kept outside state so start_or_join
     // can register a scan while holding the state lock without re-locking it.
     owned_scans: Mutex<BTreeSet<String>>,
@@ -881,6 +883,7 @@ impl ScanService {
                 graph_cancellations: BTreeMap::new(),
                 status_failures: BTreeMap::new(),
             }),
+            log_failures: Mutex::new(BTreeMap::new()),
             owned_scans: Mutex::new(BTreeSet::new()),
             freed: Condvar::new(),
             admission: Arc::new(LookupAdmission::default()),
@@ -899,6 +902,11 @@ impl ScanService {
         let mut record = self.store.get(id)?;
         self.store
             .reconcile(&mut record, clock::unix_now_millis())?;
+        // The detail API must not report a successful scan when its log evidence
+        // failed to persist. A list view can still enumerate the other scans.
+        if let Some(error) = self.log_failure(id) {
+            return Err(ServiceError::Store(error));
+        }
         Ok(record)
     }
 
@@ -1015,9 +1023,18 @@ impl ScanService {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn log_failure(&self, id: &str) -> Option<String> {
+        self.log_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
     fn log(&self, id: &str, component: &str, level: LogLevel, message: impl Into<String>) {
-        // A log the store cannot write must not stop the scan; the row still records the outcome.
-        let _ = self.store.append_log(
+        // Preserve the persistence failure for run/wait without printing from library code.
+        // The worker continues; a later successful status write cannot clear missing evidence.
+        if let Err(error) = self.store.append_log(
             id,
             &LogEntry {
                 time: clock::unix_now_millis(),
@@ -1025,7 +1042,18 @@ impl ScanService {
                 level,
                 message: message.into(),
             },
-        );
+        ) {
+            {
+                let mut failures = self
+                    .log_failures
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                failures
+                    .entry(id.to_owned())
+                    .or_insert_with(|| format!("scan {id}: unable to persist log entry: {error}"));
+            }
+            self.freed.notify_all();
+        }
     }
 
     /// Save a `CREATED` scan for `request`.
@@ -1215,8 +1243,13 @@ impl ScanService {
             // A scan saves its final status before it takes this lock to give up its place and
             // notify `freed`, so a row read under the lock cannot miss that notice.
             let state = self.state();
-            if let Some(error) = state.status_failures.get(id) {
-                return Err(ServiceError::Store(error.clone()));
+            if let Some(error) = state
+                .status_failures
+                .get(id)
+                .cloned()
+                .or_else(|| self.log_failure(id))
+            {
+                return Err(ServiceError::Store(error));
             }
             let record = self.store.get(id)?;
             let now = Instant::now();
@@ -1237,9 +1270,16 @@ impl ScanService {
     pub fn run(&self, request: &ScanRequest) -> Result<ScanRecord, ServiceError> {
         let (record, plan) = self.create(request)?;
         self.execute(&record.id, &plan);
-        if let Some(error) = self.state().status_failures.get(&record.id) {
-            return Err(ServiceError::Store(error.clone()));
+        let state = self.state();
+        if let Some(error) = state
+            .status_failures
+            .get(&record.id)
+            .cloned()
+            .or_else(|| self.log_failure(&record.id))
+        {
+            return Err(ServiceError::Store(error));
         }
+        drop(state);
         Ok(self.store.get(&record.id)?)
     }
 
@@ -1901,6 +1941,10 @@ impl ScanService {
         let mut state = self.state();
         self.owned().remove(id);
         state.status_failures.remove(id);
+        self.log_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
         Ok(())
     }
 

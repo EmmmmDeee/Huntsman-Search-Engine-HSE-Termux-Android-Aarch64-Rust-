@@ -631,6 +631,12 @@ fn read_member<'a>(
             "{name} would pass the {MAX_APK_INFLATED_BYTES}-byte budget for one APK"
         ));
     }
+    // Charge the declared inflation size before attempting decompression. A malformed
+    // member must not get unlimited retries against the per-APK work budget.
+    // Unsupported methods remain free because no decompression is attempted.
+    if member.method == 8 || member.method == 0 || member.payload_len == member.size {
+        *budget -= member.size;
+    }
     let raw = &data[member.payload_start..member.payload_start + member.payload_len];
     let (bytes, quirk) = match member.method {
         8 => (
@@ -659,7 +665,6 @@ fn read_member<'a>(
     if crc32fast::hash(&bytes) != member.crc {
         return Err(format!("{name} fails its ZIP CRC-32 check"));
     }
-    *budget -= member.size;
     Ok((bytes, quirk))
 }
 
@@ -2290,6 +2295,26 @@ mod tests {
         );
         assert_eq!(report.analysis.evasion_indicators.len(), 1);
         assert!(report.analysis.evasion_indicators[0].contains("compression method 25345"));
+    }
+
+    #[test]
+    fn failed_member_read_consumes_attempt_budget() {
+        let (bytes, ..) = field_apk(8);
+        let (_, archive) = walk(&bytes).expect("archive");
+        let manifest = archive.manifest.as_ref().expect("manifest");
+        let size = manifest.size;
+        let start = manifest.payload_start;
+        let len = manifest.payload_len;
+        assert!(len > 0);
+        // A corrupted compressed payload must not receive a free retry.
+        let mut corrupted = bytes.clone();
+        corrupted[start..start + len].fill(0xff);
+        let mut budget = size;
+        assert!(read_member(&corrupted, manifest, MAX_APK_MANIFEST_BYTES, &mut budget).is_err());
+        assert_eq!(budget, 0, "failed inflation consumes its reserved budget");
+        let refused = read_member(&corrupted, manifest, MAX_APK_MANIFEST_BYTES, &mut budget)
+            .expect_err("no budget remains");
+        assert!(refused.contains("budget"), "{refused}");
     }
 
     #[test]
