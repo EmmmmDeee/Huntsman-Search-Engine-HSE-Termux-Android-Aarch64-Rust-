@@ -631,6 +631,7 @@ mod tests {
         assert!(birth_date("2000-02-29").is_some());
         assert!(birth_date("1991-09-09").is_some());
     }
+
     #[test]
     fn persisted_audit_round_trip_preserves_every_original_byte() {
         use crate::sf_elements::DataElement;
@@ -706,5 +707,4 @@ mod tests {
         assert_eq!(fs::read(&result_file).unwrap(), before_results);
         fs::remove_dir_all(&path).unwrap();
     }
-
 }
