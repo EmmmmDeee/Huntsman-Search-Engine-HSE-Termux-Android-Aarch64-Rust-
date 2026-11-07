@@ -1197,10 +1197,13 @@ fn a_failed_refresh_is_not_a_current_copy_even_when_its_body_is_kept() {
     );
     assert!(make(true, KeptDate::Missing, None).current_for(1_001, 100));
     // A newly downloaded old revision is not a clean negative.
-    assert!(!make(true, KeptDate::Kept(Some(1_000)), None)
-        .current_for(1_000 + 31 * 86_400, 40 * 86_400));
-    assert!(make(true, KeptDate::Kept(Some(1_000)), None)
-        .current_for(1_000 + 2 * 86_400, 40 * 86_400));
+    assert!(
+        !make(true, KeptDate::Kept(Some(1_000)), None)
+            .current_for(1_000 + 31 * 86_400, 40 * 86_400)
+    );
+    assert!(
+        make(true, KeptDate::Kept(Some(1_000)), None).current_for(1_000 + 2 * 86_400, 40 * 86_400)
+    );
     // A publisher timestamp in the future does not prove freshness.
     assert!(!make(true, KeptDate::Kept(Some(1_100)), None).current_for(1_001, 100));
 }
