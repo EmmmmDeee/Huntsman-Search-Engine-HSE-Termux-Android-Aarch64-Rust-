@@ -457,14 +457,14 @@ fn read_data(body: &[u8], kind: u16, start: usize, end: usize) -> Result<Data, W
     })
 }
 
-/// The name a record's data holds at `start`, which must end by the data's `end`: one that runs
-/// on past it reads bytes outside the record. **Pure.**
+/// The one name a record's data holds at `start`, consuming exactly the declared RDATA.
+/// Compression targets may lie elsewhere, but inline suffix bytes are not another field. **Pure.**
 fn name_within(body: &[u8], start: usize, end: usize) -> Result<String, WireError> {
     if start >= end {
         return Err(WireError::Truncated);
     }
     let (name, next) = read_name(body, start)?;
-    if next > end {
+    if next != end {
         return Err(WireError::Truncated);
     }
     Ok(name)
@@ -475,7 +475,7 @@ fn read_soa(body: &[u8], start: usize, end: usize) -> Result<Data, WireError> {
     let (rname, at) = read_name(body, at)?;
     let numbers = body
         .get(at..at + 20)
-        .filter(|_| at + 20 <= end)
+        .filter(|_| at + 20 == end)
         .ok_or(WireError::Truncated)?;
     let number =
         |i: usize| u32::from_be_bytes([numbers[i], numbers[i + 1], numbers[i + 2], numbers[i + 3]]);
