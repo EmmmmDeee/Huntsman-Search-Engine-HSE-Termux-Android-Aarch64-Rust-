@@ -359,7 +359,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check(`${scheme}: passive Radar illustration never claims an active sweep`,
         await page.isVisible('.radar-scope') &&
         (await page.textContent('.radar-scope-caption')).includes('ON DEMAND') &&
-        (await page.textContent('.radar-flags')).includes('Explicit reads only'), 'passive radar contract missing');
+        (await page.textContent('.radar-flags')).includes('Live OS-cache monitoring'), 'passive radar contract missing');
       check(`${scheme}: Radar never queries the sensor merely because it opened`, radarCalls === 0, radarCalls);
       check(`${scheme}: radar scope is unset before the first explicit cache read`,
         (await page.textContent('#radar-observed')).trim() === '—',
@@ -454,6 +454,32 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         (await page.textContent('#rcsummary')).includes('neighbours by PCI/PSC only: 1 (lte 44 -108 dBm)') &&
         await page.isVisible('#rcaudit') && auditText.includes('serving_2g_while_4g_5g_heard') &&
         auditText.includes('none of these detects an IMSI catcher'), { cellsText, auditText });
+      // A running Radar actually makes repeated guarded cache reads of BOTH adapters,
+      // and never writes a tracking sweep or starts a network investigation itself.
+      let liveWifiCalls = 0;
+      await page.route('**/api/radar/wifi', route => {
+        liveWifiCalls++;
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(radarFixture) });
+      });
+      const cellsBeforeLive = cellCalls, tracksBeforeLive = trackCalls;
+      await page.click('#rlive');
+      await page.waitForFunction(() => document.getElementById('rlive-status').textContent.includes('Monitoring active'), null, { timeout: 10000 }).catch(() => {});
+      check(`${scheme}: Start live makes guarded Wi-Fi and cellular reads without logging a sweep`,
+        liveWifiCalls === 1 && cellCalls === cellsBeforeLive + 1 &&
+        trackCalls === tracksBeforeLive && sensorHeaders &&
+        (await page.textContent('#rlive-status')).includes('Monitoring active') &&
+        await page.isEnabled('#rstop'), { liveWifiCalls, cellCalls, tracksBeforeLive, trackCalls });
+      check(`${scheme}: live plot uses real cached observations rather than invented bearings`,
+        await page.locator('#radar-points .radar-point').count() === 1 &&
+        (await page.textContent('#radar-observed')).trim() === '1' &&
+        (await page.textContent('.radar-flags')).includes('Hardware scans not triggered'),
+        await page.locator('#radar-points .radar-point').count());
+      await page.click('#rstop');
+      check(`${scheme}: Stop live disarms monitoring without clearing evidence`,
+        await page.isEnabled('#rlive') && await page.isDisabled('#rstop') &&
+        await page.locator('#rrows tr').count() > 0 &&
+        (await page.getAttribute('#rlive', 'aria-pressed')) === 'false', 'live stop state');
+      await page.unroute('**/api/radar/wifi');
       await page.click('#rcrows button');
       await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 });
       const cellHandoff = await page.evaluate(() => ({
