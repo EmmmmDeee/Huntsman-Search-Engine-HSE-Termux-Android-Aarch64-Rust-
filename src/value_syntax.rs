@@ -109,6 +109,10 @@ pub enum PhoneE164Error {
     Length(usize),
 }
 
+/// How many digits an E.164 number holds after its `+`: at most 15, and at least 8, the length
+/// of a six-digit Australian `13` number (`+61132200`) and of the shortest national plans.
+pub const E164_DIGITS: std::ops::RangeInclusive<usize> = 8..=15;
+
 #[must_use]
 pub fn phone_e164_error(value: &str) -> Option<PhoneE164Error> {
     if !value.starts_with('+') {
@@ -121,7 +125,7 @@ pub fn phone_e164_error(value: &str) -> Option<PhoneE164Error> {
     if digits.starts_with('0') {
         return Some(PhoneE164Error::CountryCodeLeadingZero);
     }
-    if !(10..=15).contains(&digits.len()) {
+    if !E164_DIGITS.contains(&digits.len()) {
         return Some(PhoneE164Error::Length(digits.len()));
     }
     None
@@ -174,11 +178,16 @@ pub fn is_domain_label(label: &str) -> bool {
 }
 
 /// One AU national-significant-number rule shared by every input shape:
-/// nine digits with a geographic/mobile lead, or a 1300/1800 service number.
+/// nine digits with a geographic/mobile lead, a 1300/1800/190x service number, or a six-digit
+/// `13` local-rate number: every range `address_au::au_phone_line_type` gives a line type.
 fn au_national_key(national: &str) -> Option<String> {
     let bytes = national.as_bytes();
     let ok = (bytes.len() == 9 && matches!(bytes[0], b'2' | b'3' | b'4' | b'5' | b'7' | b'8'))
-        || (bytes.len() == 10 && (national.starts_with("1300") || national.starts_with("1800")));
+        || (bytes.len() == 10
+            && (national.starts_with("1300")
+                || national.starts_with("1800")
+                || national.starts_with("190")))
+        || (bytes.len() == 6 && national.starts_with("13"));
     let candidate = format!("+61{national}");
     (ok && phone_e164_error(&candidate).is_none()).then_some(candidate)
 }
@@ -270,7 +279,7 @@ pub fn western_digits(raw: &str) -> std::borrow::Cow<'_, str> {
 ///   refused: dropping the marker would join the extension onto the number.
 /// - A `+61` number is Australian or none, keeping no trunk zero (`+61 (0)4…` is `+614…`).
 /// - A `+1` number written after an international prefix has the North American plan's ten
-///   digits after the `1`. Any `+` number holds 10 to 15 digits, its country code not starting
+///   digits after the `1`. Any `+` number holds 8 to 15 digits, its country code not starting
 ///   with `0`, and one `+` only. The country of a bare non-Australian national number is never
 ///   guessed.
 #[must_use]
@@ -631,6 +640,33 @@ fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
             tokens
         })
         .filter(|token| !token.is_empty())
+}
+
+#[cfg(test)]
+mod au_plan_agreement {
+    use super::normalise_au_phone;
+    use crate::address_au::au_phone_line_type;
+
+    /// The canonicaliser accepts exactly the Australian numbers the numbering plan types: a
+    /// `13 22 00` local-rate or `1900` premium number the plan knows is never refused upstream.
+    #[test]
+    fn every_number_the_au_plan_types_canonicalises() {
+        for (raw, e164) in [
+            ("13 22 00", Some("+61132200")),
+            ("132200", Some("+61132200")),
+            ("+61 13 22 00", Some("+61132200")),
+            ("1300 368 387", Some("+611300368387")),
+            ("1800 813 191", Some("+611800813191")),
+            ("1900 123 456", Some("+611900123456")),
+            ("03 8647 4838", Some("+61386474838")),
+            ("0412 345 678", Some("+61412345678")),
+            ("0612 345 678", None),
+            ("14 22 00", None),
+        ] {
+            assert_eq!(normalise_au_phone(raw).as_deref(), e164, "{raw}");
+            assert_eq!(au_phone_line_type(raw).is_some(), e164.is_some(), "{raw}");
+        }
+    }
 }
 
 #[cfg(test)]
