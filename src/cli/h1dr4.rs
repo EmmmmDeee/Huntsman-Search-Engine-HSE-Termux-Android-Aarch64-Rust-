@@ -104,9 +104,14 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 .push("Requested tip not found in this bounded page; absence is not established");
         }
     }
-    let output = match terminal_json_pretty(&report) {
-        Ok(value) => value,
-        Err(_) => return fail(EX_DATAERR, "cannot serialize the H1DR4 report"),
+    render_report(&report, save, tip_id.is_some())
+}
+
+/// Render and optionally save the complete source-backed response without
+/// discarding raw pages or treating an incomplete upstream page as a zero.
+fn render_report(report: &h1dr4::Report, save: Option<&str>, requested_tip: bool) -> ExitCode {
+    let Ok(output) = terminal_json_pretty(report) else {
+        return fail(EX_DATAERR, "cannot serialize the H1DR4 report");
     };
     if let Some(path) = save {
         let path = Path::new(path);
@@ -126,7 +131,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     if report.pages.iter().any(|p| p.schema_warning.is_some()) || report.pagination_stalled {
         return ExitCode::from(EX_UNAVAILABLE);
     }
-    if tip_id.is_some() && !report.records.iter().any(|r| r.kind == "tip") {
+    if requested_tip && !report.records.iter().any(|r| r.kind == "tip") {
         return ExitCode::from(EX_UNAVAILABLE);
     }
     ExitCode::SUCCESS
