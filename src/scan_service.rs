@@ -1016,8 +1016,9 @@ impl ScanService {
     }
 
     fn log(&self, id: &str, component: &str, level: LogLevel, message: impl Into<String>) {
-        // A log the store cannot write must not stop the scan; the row still records the outcome.
-        let _ = self.store.append_log(
+        // A log write failure must not stop the scan, but must never be silent.
+        // Preserve the reason on stderr even when the scan's own log is unwritable.
+        if let Err(error) = self.store.append_log(
             id,
             &LogEntry {
                 time: clock::unix_now_millis(),
@@ -1025,7 +1026,9 @@ impl ScanService {
                 level,
                 message: message.into(),
             },
-        );
+        ) {
+            eprintln!("huntsman scan {id}: unable to persist log entry: {error}");
+        }
     }
 
     /// Save a `CREATED` scan for `request`.
