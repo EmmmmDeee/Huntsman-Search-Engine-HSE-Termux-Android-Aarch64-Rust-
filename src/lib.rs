@@ -253,6 +253,7 @@ pub mod scan_retention;
 pub mod scan_route;
 pub mod scan_search;
 pub mod scan_service;
+pub mod person_history;
 pub mod scan_store;
 pub mod scan_uncertainty;
 pub mod search;
