@@ -49,6 +49,9 @@ pub struct CodeUrls {
     pub urls_omitted: usize,
     /// The distinct registrable-looking hosts of those URLs, lowercased.
     pub hosts: Vec<String>,
+    /// True when host collection reached its limit and additional candidates were observed.
+    /// This flag does not claim an exact number of distinct omitted hosts.
+    pub hosts_truncated: bool,
     /// The third-party SDKs the DEX code references, by their package signatures.
     pub trackers: Vec<Tracker>,
     #[serde(skip)]
@@ -129,8 +132,12 @@ impl CodeUrls {
             } else {
                 self.urls_omitted = self.urls_omitted.saturating_add(1);
             }
-            if self.host_set.len() < MAX_TRACKED_HOSTS && self.host_set.insert(host.clone()) {
-                self.hosts.push(host);
+            if self.host_set.len() < MAX_TRACKED_HOSTS {
+                if self.host_set.insert(host.clone()) {
+                    self.hosts.push(host);
+                }
+            } else if !self.host_set.contains(&host) {
+                self.hosts_truncated = true;
             }
         }
     }
@@ -222,6 +229,7 @@ pub(super) mod tests {
         assert_eq!(found.host_set.len(), MAX_TRACKED_HOSTS);
         assert_eq!(found.urls.len(), MAX_LISTED);
         assert_eq!(found.hosts.len(), MAX_TRACKED_HOSTS);
+        assert!(found.hosts_truncated);
         assert!(found.urls_omitted >= 32);
     }
 
