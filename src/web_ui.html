@@ -128,7 +128,7 @@ tbody tr:hover{background:var(--hover)}
  main{max-width:1600px;margin:0 0 0 var(--workbench-rail);padding:calc(90px + env(safe-area-inset-top)) 25px 45px}
 }
 </style>
-<a class="skip-link" href="#workspace">Skip to content</a>
+<a class="skip-link" id="skip-content" href="#workspace">Skip to content</a>
 <header class="appbar">
 <a class="brand" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
 <span class="appbar-context" aria-hidden="true">INVESTIGATIONS / LOCAL WORKBENCH</span>
@@ -144,7 +144,7 @@ tbody tr:hover{background:var(--hover)}
 <a class="navlink" data-view="settings" href="#/settings"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg><span>Settings</span></a>
 <div class="nav-footer" aria-hidden="true">ROOTLESS · ANDROID AARCH64<br><small>Local-first intelligence</small></div>
 </nav>
-<main id="workspace">
+<main id="workspace" tabindex="-1">
 <p class="alert warn" id="authnote" role="alert" hidden></p>
 <p class="alert warn upgrade" id="upgraded" role="alert" hidden><span>Huntsman was updated while this page was open. Reload to use the new version.</span><button class="btn" id="reload" type="button">Reload</button></p>
 <section id="view-scans" hidden>
@@ -583,6 +583,7 @@ function pill(text,tone){$('state').textContent=text;$('state').className='pill 
 let retry=0;
 const PAGE_ID=(document.querySelector('meta[name=huntsman-page]')||{}).content||'';
 $('reload').onclick=()=>location.reload();
+$('skip-content').addEventListener('click',event=>{event.preventDefault();$('workspace').focus()});
 async function health(){
   clearTimeout(retry);
   let open=true;
