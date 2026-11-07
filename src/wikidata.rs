@@ -605,8 +605,10 @@ fn rendered_value(value: &Value) -> Option<String> {
 }
 
 /// A statement may generate a current-looking entity only when it is not deprecated and carries
-/// no qualifiers. Qualifiers can restrict time, jurisdiction, or applicability; without interpreting
-/// them, suppressing the pivot is safer than presenting it as current. **Pure.**
+/// no qualifiers, or, for an account identifier, only ones that describe the account
+/// ([`eligible_for_account_pivot`]). Qualifiers can
+/// restrict time, jurisdiction, or applicability; an uninterpreted one suppresses the pivot rather
+/// than presenting the value as current. **Pure.**
 fn eligible_rank(statement: &Value) -> bool {
     matches!(
         statement.get("rank").and_then(Value::as_str),
@@ -615,41 +617,66 @@ fn eligible_rank(statement: &Value) -> bool {
 }
 
 fn eligible_for_pivot(statement: &Value) -> bool {
-    eligible_rank(statement)
-        && statement
-            .get("qualifiers")
-            .is_none_or(|qualifiers| match qualifiers {
-                Value::Object(entries) => entries.is_empty(),
-                Value::Array(entries) => entries.is_empty(),
-                _ => false,
-            })
+    eligible_rank(statement) && qualifiers_all(statement, |_, _| false)
+}
+
+/// An external account identifier (an [`Pivot::External`] property) may pivot with qualifiers
+/// that only describe the account ([`describes_without_restricting`]); Wikidata records a public
+/// figure's social handles with follower counts, so the strict rule would drop every one. **Pure.**
+fn eligible_for_account_pivot(statement: &Value) -> bool {
+    eligible_rank(statement) && qualifiers_all(statement, describes_without_restricting)
+}
+
+/// Qualifiers that describe a still-current account without limiting when or where the
+/// statement holds: statement is subject of (`P805`), a follower count (`P3744`) and the time it
+/// was counted (`P585`), the account's start (`P580`, with no end time), the X numeric user id
+/// (`P6552`), and `P1552` only when it says "verified account" (`Q28378282`). An end time, a
+/// jurisdiction, a reason for deprecation or any other qualifier still suppresses the pivot.
+/// **Pure.**
+fn describes_without_restricting(pid: &str, value: &Value) -> bool {
+    match pid {
+        "P805" | "P3744" | "P585" | "P580" | "P6552" => true,
+        "P1552" => value.get("content").and_then(Value::as_str) == Some("Q28378282"),
+        _ => false,
+    }
 }
 
 /// P805 (statement is subject of) is non-restrictive. Wikibase REST v1 exposes qualifiers
-/// as a list of {property, value} pairs; older fixture/Action shapes use property-keyed maps.
+/// as an array of `{property:{id}, value}` objects; older/other envelopes use a PID map.
 /// Both forms permit only P805 for P31 classification, never temporal or unknown qualifiers.
 fn eligible_for_classification(statement: &Value) -> bool {
-    eligible_rank(statement)
-        && statement
-            .get("qualifiers")
-            .is_none_or(|qualifiers| match qualifiers {
-                Value::Object(entries) => entries.iter().all(|(pid, values)| {
-                    pid == "P805" && values.as_array().is_some_and(|items| !items.is_empty())
-                }),
-                Value::Array(entries) => entries.iter().all(|entry| {
-                    entry
-                        .get("property")
-                        .and_then(|property| property.get("id"))
-                        .and_then(Value::as_str)
-                        == Some("P805")
-                        && entry
-                            .get("value")
-                            .and_then(|value| value.get("type"))
-                            .and_then(Value::as_str)
-                            == Some("value")
-                }),
-                _ => false,
-            })
+    eligible_rank(statement) && qualifiers_all(statement, |pid, _| pid == "P805")
+}
+
+/// Whether every qualifier of `statement` is a real value that `allowed` accepts; a statement
+/// with no qualifiers passes, an unreadable qualifier shape fails. **Pure.**
+fn qualifiers_all(statement: &Value, allowed: impl Fn(&str, &Value) -> bool) -> bool {
+    let is_value = |value: &Value| value.get("type").and_then(Value::as_str) == Some("value");
+    statement
+        .get("qualifiers")
+        .is_none_or(|qualifiers| match qualifiers {
+            Value::Object(entries) => entries.iter().all(|(pid, values)| {
+                values.as_array().is_some_and(|items| {
+                    !items.is_empty()
+                        && items.iter().all(|item| {
+                            let value = item.get("value").unwrap_or(item);
+                            allowed(pid, value)
+                        })
+                })
+            }),
+            Value::Array(entries) => entries.iter().all(|entry| {
+                let pid = entry
+                    .get("property")
+                    .and_then(|property| property.get("id"))
+                    .and_then(Value::as_str);
+                let value = entry.get("value");
+                match (pid, value) {
+                    (Some(pid), Some(value)) => is_value(value) && allowed(pid, value),
+                    _ => false,
+                }
+            }),
+            _ => false,
+        })
 }
 
 /// Share the bounded value decoder while retaining property-specific eligibility.
@@ -672,8 +699,12 @@ fn values_filtered(
 }
 
 /// Only unqualified, non-deprecated values seed friendly attributes and automatic pivots.
-fn values(statements: Option<&serde_json::Map<String, Value>>, pid: &str) -> Vec<String> {
-    values_filtered(statements, pid, eligible_for_pivot)
+fn values(statements: Option<&serde_json::Map<String, Value>>, property: &Property) -> Vec<String> {
+    let eligible = match property.pivot {
+        Pivot::External { .. } => eligible_for_account_pivot,
+        _ => eligible_for_pivot,
+    };
+    values_filtered(statements, property.pid, eligible)
 }
 
 /// Classify an item from current P31 values, including non-restrictive P805 annotations.
@@ -774,7 +805,7 @@ fn decode(
     // Every curated property keeps a friendly, named attribute.
     let mut pivots: Vec<(EntityKind, String, String)> = Vec::new();
     for property in PROPERTIES {
-        let found = values(statements, property.pid);
+        let found = values(statements, property);
         for value in &found {
             evidence = evidence.with_attr(property.attr, value.clone());
             collect_pivots(property, value, &label, qid, &mut pivots);
@@ -1378,5 +1409,85 @@ mod tests {
             "qualifiers":[]
         });
         assert!(eligible_for_pivot(&empty));
+    }
+
+    /// An X handle as Wikidata publishes it for a public figure: follower counts with the time
+    /// each was counted, the account's start, its numeric id and "verified account".
+    fn handle_with(extra: &[serde_json::Value]) -> serde_json::Value {
+        let q = |pid: &str, content: serde_json::Value| serde_json::json!({"property":{"id":pid},"value":{"type":"value","content":content}});
+        let mut qualifiers = vec![
+            q("P3744", serde_json::json!({"amount":"+9135405","unit":"1"})),
+            q(
+                "P585",
+                serde_json::json!({"time":"+2023-01-01T00:00:00Z","precision":11}),
+            ),
+            q(
+                "P580",
+                serde_json::json!({"time":"+2009-06-03T00:00:00Z","precision":11}),
+            ),
+            q("P6552", serde_json::json!("12345")),
+            q("P1552", serde_json::json!("Q28378282")),
+        ];
+        qualifiers.extend(extra.iter().cloned());
+        serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"ExampleHandle"},
+            "qualifiers":qualifiers
+        })
+    }
+
+    #[test]
+    fn descriptive_qualifiers_keep_a_handle_pivot_and_restrictive_ones_suppress_it() {
+        assert!(eligible_for_account_pivot(&handle_with(&[])));
+        let q = |pid: &str, content: serde_json::Value| serde_json::json!({"property":{"id":pid},"value":{"type":"value","content":content}});
+        let ended = q(
+            "P582",
+            serde_json::json!({"time":"+2020-01-01T00:00:00Z","precision":11}),
+        );
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[ended])),
+            "an end time"
+        );
+        let other = q("P1552", serde_json::json!("Q1"));
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[other])),
+            "another characteristic"
+        );
+        let unknown = q("P9999", serde_json::json!("x"));
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[unknown])),
+            "an uninterpreted qualifier"
+        );
+        let novalue = serde_json::json!({"property":{"id":"P3744"},"value":{"type":"novalue"}});
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[novalue])),
+            "a non-value qualifier"
+        );
+        // A website keeps the strict rule, and classification still accepts P805 alone.
+        assert!(!eligible_for_pivot(&handle_with(&[])));
+        let mut typed = handle_with(&[]);
+        typed["value"]["content"] = serde_json::json!("Q5");
+        assert!(!eligible_for_classification(&typed));
+    }
+
+    #[test]
+    fn a_verified_handle_with_follower_counts_becomes_a_pivot() {
+        let mut item = serde_json::json!({
+            "type":"item","id":"Q44","labels":{"en":"Example Ruler"},
+            "statements":{"P31":[{"value":{"type":"value","content":"Q5"}}]}
+        });
+        item["statements"]["P2002"] = serde_json::json!([handle_with(&[])]);
+        let report = decode(&item, "Q44", None, "scan-wd", 1, 200);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.raw_value == "ExampleHandle"),
+            "{:?}",
+            report
+                .entities
+                .iter()
+                .map(|e| &e.raw_value)
+                .collect::<Vec<_>>()
+        );
     }
 }

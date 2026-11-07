@@ -424,6 +424,7 @@ same files.
 | B21 | Every keyed leg without its key leaves `not_configured` | VirusTotal, AbuseIPDB and Hunter rows appear in `ip` and `domain` |
 | B22 | A depth scan's frontier is fair across pivot kinds | A kind takes at most half a generation; dispatch is round-robin by kind |
 | B23 | An FBI notice attaches only to the person it names | A notice is kept only when its title or an alias contains every name token of the query; otherwise the leg is `valid_zero` |
+| B24 | A public figure's Wikidata X handle becomes a pivot | Account identifiers accept qualifiers that only describe the account (follower count, its time, start, numeric id, verified); restrictive or unknown qualifiers still suppress |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 
