@@ -613,6 +613,32 @@ The listener bounds the request line and headers to 33 KiB, enough for the large
 On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no root and no port below 1024: run `huntsman-recon serve` and open `http://127.0.0.1:8080/` in the phone's browser. If another server already holds 8080, pass `--bind 127.0.0.1:0` and use the address on the `serving=` line; [Keep serve running on Android](INSTALL.md#keep-serve-running-on-android) covers that and keeping the server alive in the background. Keys come from the same environment and `~/.huntsman.env` chain as the CLI, so export them in the Termux session before `serve`. The legacy monolith's other endpoints are not rebuilt.
 
 
+### SpiderFoot-inspired investigation workbench and Android Radar
+
+Run `huntsman-recon serve` in **rootless Termux on Android AArch64**, then open
+`http://127.0.0.1:8080/#/scans` in the same phone's browser. The redesigned console uses
+a compact bottom navigation on phones and a left investigation rail on larger screens
+(1024 pixels and wider). It keeps SpiderFoot's familiar **New Scan**, **Scans**, and per-scan
+**Summary / Correlations / Browse / Graph / Scan Settings / Log** workflow, alongside
+Huntsman's **Analysis**, **Inspect**, and **Radar** features. The scan dashboard reads its
+counts from saved scan records rather than fabricating activity. No external JavaScript
+framework, font, image service, root privilege or runtime language model is required.
+
+The dedicated `/#/radar` workbench is **passive and explicitly initiated**: opening it
+does **not** query the phone's radios. Select **Read OS scan cache**, **Read cells**, or
+**Log a sweep** to invoke the existing guarded Rust/Termux:API adapters. The displayed
+radar scope is a *decorative UI guide*, not live active RF scanning or geographic
+positioning. Android permissions and the separate Termux:API companion app are required
+for the corresponding OS-provided cached observations; a 404, refusal or empty cache
+does not prove that no signal exists. Any **Investigate** pivot pre-fills the existing
+scan form without starting network egress or spending a provider key.
+
+The entire single-file interface is embedded in the Rust binary. Its inline style and
+script continue to use automatically derived CSP hashes. The updated 160 KiB served
+page budget and both 360-pixel phone and desktop layout assertions are exercised in
+`tests/web_ui.rs` and `tools/web-ui-check/check.cjs`; passing CI is not equivalent
+to testing on a physical phone.
+
 ### Batch scan input
 
 `scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR]` accepts UTF-8 files up to 1 MiB with one target per line. Blank lines and lines whose trimmed form starts with `#` are ignored; exact duplicate seeds keep only their first occurrence. A batch is capped at 1000 unique seeds, every accepted seed is attempted even after an earlier failure, and the process exits non-zero after completion if any seed failed. Batch `--save` is refused; `--save-dir DIR` writes one ledger per seed instead, named by the seed's position and the seed reduced to safe filename characters (`0001-<seed>.json`), so no seed can overwrite another seed's ledger.
