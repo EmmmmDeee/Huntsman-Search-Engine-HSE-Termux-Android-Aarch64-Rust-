@@ -28,6 +28,8 @@
 //! name-matched filer as a visible lead but never auto-dispatches it onto a potentially unrelated
 //! third party, whatever the operator's expansion floor.
 
+use std::collections::BTreeSet;
+
 use crate::textnorm::nonblank as trimmed;
 use serde::Deserialize;
 
@@ -142,8 +144,18 @@ struct EftsResp {
 
 #[derive(Debug, Deserialize)]
 struct EftsHits {
+    // EDGAR's own count of all documents matching the search, which routinely exceeds the one
+    // page of hits it returns. It is the authoritative signal that filings were left unscanned.
+    #[serde(default)]
+    total: Option<EftsTotal>,
     // A missing hits array is schema drift, not an observed empty index.
     hits: Option<Vec<EftsHit>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EftsTotal {
+    #[serde(default)]
+    value: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,6 +244,21 @@ struct MatchedFiler {
     display_name: String,
 }
 
+/// What the full-text search yielded, with the counts that keep a capped or partly-named result
+/// from reading as complete: the distinct name-matched filers, EDGAR's own total of matching
+/// documents, how many hit rows were actually scanned, and how many scanned filers named someone
+/// other than the query.
+struct Searched {
+    filers: Vec<MatchedFiler>,
+    /// EDGAR's `hits.total.value`: all documents matching the search, often beyond the page scanned.
+    reported_total: usize,
+    /// Hit rows examined: `min(hits.len(), MAX_HITS)`.
+    scanned_hits: usize,
+    /// Distinct filer names in the scanned hits that did not name the query (co-filers, namesakes
+    /// of a different name). Counted, never attributed.
+    others: usize,
+}
+
 fn request(url: String, user_agent: &str) -> Request {
     Request::get(url)
         .header("accept", "application/json")
@@ -318,16 +345,50 @@ fn lookup_with_agent<T: Transport + ?Sized>(
         SOURCE,
         now_unix,
     )?;
-    let filers = match interpret_search(&searched, name, now_unix) {
-        Ok(filers) => filers,
+    let search = match interpret_search(&searched, name, now_unix) {
+        Ok(search) => search,
         Err(outcome) => return Ok(Report::miss(outcome)),
     };
-    if filers.is_empty() {
-        return Ok(Report::miss(
-            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(200),
-        ));
+    // EDGAR returns one page of hits while reporting the full match count; filings past that page,
+    // and matched filers past MAX_FILERS, are never read. Count them so a zero can never read as a
+    // verified "no SEC presence" and a success can never read as the whole of EDGAR.
+    let unexamined = search.reported_total.saturating_sub(search.scanned_hits);
+    let filers_beyond_cap = search.filers.len().saturating_sub(MAX_FILERS);
+    if search.filers.is_empty() {
+        // No scanned filing named the query. If EDGAR reported matching filings beyond the page we
+        // scanned, the subject could be among them: inconclusive, never a clean "not in EDGAR".
+        let outcome = if unexamined > 0 {
+            let mut inconclusive = SourceExecutionOutcome::failed(
+                SOURCE,
+                now_unix,
+                SourceOutcomeKind::Inconclusive,
+                Some(200),
+                format!(
+                    "no scanned EDGAR filing named the query; {unexamined} more matching filing(s) were not scanned"
+                ),
+            );
+            if search.others > 0 {
+                inconclusive = inconclusive.with_detail(format!(
+                    "{} filer(s) the search returned name other filers; {unexamined} more matching filing(s) were not scanned",
+                    search.others
+                ));
+            }
+            inconclusive
+        } else {
+            let mut zero =
+                SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(200);
+            if search.others > 0 {
+                zero = zero.with_detail(format!(
+                    "{} filer(s) the search returned name other filers",
+                    search.others
+                ));
+            }
+            zero
+        };
+        return Ok(Report::miss(outcome));
     }
 
+    let filers = search.filers;
     let mut entities = Vec::new();
     // The real verdict of the last matched filer whose submissions profile could not be read, so an
     // all-unreadable result reports the true status and kind (a 429, 503, challenge or timeout keeps
@@ -359,7 +420,29 @@ fn lookup_with_agent<T: Transport + ?Sized>(
     }
 
     let outcome = if !entities.is_empty() {
-        SourceExecutionOutcome::success(SOURCE, now_unix, entities.len()).with_http_status(200)
+        let mut remarks = Vec::new();
+        if filers_beyond_cap > 0 {
+            remarks.push(format!(
+                "{filers_beyond_cap} more matched filer(s) beyond the first {MAX_FILERS} were not fetched"
+            ));
+        }
+        if unexamined > 0 {
+            remarks.push(format!(
+                "{unexamined} more matching EDGAR filing(s) were not scanned"
+            ));
+        }
+        if search.others > 0 {
+            remarks.push(format!(
+                "{} filer(s) the search returned name other filers",
+                search.others
+            ));
+        }
+        let mut outcome =
+            SourceExecutionOutcome::success(SOURCE, now_unix, entities.len()).with_http_status(200);
+        if !remarks.is_empty() {
+            outcome = outcome.with_detail(remarks.join("; "));
+        }
+        outcome
     } else if let Some(outcome) = unreadable {
         // A matched filer whose submissions profile could not be read: the real per-request verdict
         // (its own status and kind) stands, so a 429/503/challenge/timeout is never a fabricated 200.
@@ -377,7 +460,7 @@ fn interpret_search(
     fetched: &Fetched,
     query: &str,
     now_unix: u64,
-) -> Result<Vec<MatchedFiler>, SourceExecutionOutcome> {
+) -> Result<Searched, SourceExecutionOutcome> {
     if let Some(response) = &fetched.response {
         if response.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx {
             return Err(SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
@@ -387,7 +470,16 @@ fn interpret_search(
     let response = whole_response(fetched, "EDGAR search")?;
     answer(fetched, "EDGAR search")?;
     let resp: EftsResp = decode_json(response, SOURCE, now_unix, "EDGAR search")?;
-    let Some(hits) = resp.hits.and_then(|h| h.hits) else {
+    let hits_envelope = resp.hits;
+    let reported_total = usize::try_from(
+        hits_envelope
+            .as_ref()
+            .and_then(|h| h.total.as_ref())
+            .and_then(|t| t.value)
+            .unwrap_or(0),
+    )
+    .unwrap_or(usize::MAX);
+    let Some(hits) = hits_envelope.and_then(|h| h.hits) else {
         return Err(SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
@@ -396,7 +488,8 @@ fn interpret_search(
             "EDGAR search response lacked the required hits array",
         ));
     };
-    matched_filers(&hits, query).map_err(|detail| {
+    let scanned_hits = hits.len().min(MAX_HITS);
+    let (filers, others) = matched_filers(&hits, query).map_err(|detail| {
         SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
@@ -404,6 +497,15 @@ fn interpret_search(
             Some(response.status),
             detail,
         )
+    })?;
+    // EDGAR's total is never less than the rows it returned; keep the invariant so "unexamined"
+    // below can never underflow when a fixture or a terse response omits total.
+    let reported_total = reported_total.max(hits.len());
+    Ok(Searched {
+        filers,
+        reported_total,
+        scanned_hits,
+        others,
     })
 }
 
@@ -411,8 +513,12 @@ fn interpret_search(
 /// filing's entities as index-aligned `ciks` and `display_names`; only an entity whose published
 /// name matches the queried name as whole words is kept, so a co-filed issuer or an unrelated
 /// full-text rank is never attributed to the query. **Pure.**
-fn matched_filers(hits: &[EftsHit], query: &str) -> Result<Vec<MatchedFiler>, &'static str> {
+fn matched_filers(
+    hits: &[EftsHit],
+    query: &str,
+) -> Result<(Vec<MatchedFiler>, usize), &'static str> {
     let mut filers: Vec<MatchedFiler> = Vec::new();
+    let mut others: BTreeSet<String> = BTreeSet::new();
     for hit in hits.iter().take(MAX_HITS) {
         let source = hit
             .source
@@ -432,6 +538,9 @@ fn matched_filers(hits: &[EftsHit], query: &str) -> Result<Vec<MatchedFiler>, &'
             };
             let name = filer_name(display_name);
             if !whole_word_token_match(name, query) {
+                // A co-filed issuer or a differently-named filer: never attributed, but counted
+                // once per distinct CIK so the outcome can say how many the search named.
+                others.insert(cik);
                 continue;
             }
             if filers.iter().any(|existing| existing.cik == cik) {
@@ -443,7 +552,7 @@ fn matched_filers(hits: &[EftsHit], query: &str) -> Result<Vec<MatchedFiler>, &'
             });
         }
     }
-    Ok(filers)
+    Ok((filers, others.len()))
 }
 
 /// `cik` as a canonical 10-digit CIK when it is one (EDGAR already zero-pads them), else `None`.
@@ -968,6 +1077,54 @@ mod tests {
         let report = lookup(&transport, "nobody atall", "scan-edgar", 1).expect("runs");
         assert!(report.entities.is_empty());
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
+    }
+
+    /// EDGAR returns one page of hits but reports its full match total. When no scanned filing
+    /// names the query yet more matching filings were left unscanned, the subject could be among
+    /// them, so the leg is inconclusive, never a clean "not in EDGAR" that a page cap manufactured.
+    #[test]
+    fn unscanned_filings_block_a_clean_zero() {
+        // 50 filings matched the query; only this one page (naming a different person) was scanned.
+        let capped = r#"{"hits":{"total":{"value":50,"relation":"eq"},"hits":[
+            {"_source":{"ciks":["0000111111"],"display_names":["Brown Michael  (CIK 0000111111)"],"form":"4","file_date":"2026-01-01"}}
+        ]}}"#;
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(capped))]);
+        let report = lookup(&transport, "Jane Investor", "scan-edgar", 1).expect("runs");
+        assert!(report.entities.is_empty(), "{:?}", report.entities);
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not scanned"),
+            "detail must report the unscanned filings: {:?}",
+            report.outcome.detail
+        );
+    }
+
+    /// A match is attributed, but EDGAR reported more matching filings than the one page scanned.
+    /// The success detail must count the shortfall so the result never reads as the whole of EDGAR.
+    #[test]
+    fn a_match_with_more_filings_unscanned_reports_the_shortfall() {
+        let more = r#"{"hits":{"total":{"value":25,"relation":"eq"},"hits":[
+            {"_source":{"ciks":["0001494730"],"display_names":["Musk Elon  (CIK 0001494730)"],"form":"4","file_date":"2026-06-11"}}
+        ]}}"#;
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(more)), Ok(json_ok(PERSON))]);
+        let report = lookup(&transport, "elon musk", "scan-edgar", 1).expect("runs");
+        assert!(!report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not scanned"),
+            "success must report the unscanned filings: {:?}",
+            report.outcome.detail
+        );
     }
 
     #[test]
