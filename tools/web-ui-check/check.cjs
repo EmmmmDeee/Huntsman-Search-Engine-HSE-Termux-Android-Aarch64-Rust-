@@ -311,6 +311,12 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check('desktop Radar renders an explicitly passive OS-cache instrument',
         await page.isVisible('.radar-scope') &&
         (await page.textContent('.radar-scope-caption')).includes('ON DEMAND'), 'radar scope missing');
+      const skip = await page.evaluate(() => {
+        document.getElementById('skip-content').click();
+        return { hash: location.hash, focus: document.activeElement.id };
+      });
+      check('skip navigation moves focus without abandoning the active investigation',
+        skip.hash === '#/radar' && skip.focus === 'workspace', skip);
       await ctx.close();
     }
 
