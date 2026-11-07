@@ -531,12 +531,11 @@ impl Copy {
     /// This does not change whether the historical listing is preserved and searchable.
     pub(crate) fn current_for(&self, now_unix: u64, max_age: u64) -> bool {
         let verified_copy = self.downloaded || matches!(self.date, KeptDate::Kept(_));
-        let refresh_failed = self.note.as_deref().is_some_and(|note| {
-            note.starts_with("could not be downloaded again (")
-        });
-        verified_copy
-            && !refresh_failed
-            && now_unix.saturating_sub(self.fetched) < max_age
+        let refresh_failed = self
+            .note
+            .as_deref()
+            .is_some_and(|note| note.starts_with("could not be downloaded again ("));
+        verified_copy && !refresh_failed && now_unix.saturating_sub(self.fetched) < max_age
     }
 }
 
