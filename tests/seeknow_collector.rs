@@ -944,8 +944,9 @@ fn a_bulk_export_imports_offline_through_the_live_row_rules() {
     assert_eq!(export.results.len(), 3);
     let import = collect_from_export(&export, &CollectionLimits::default(), 1);
 
-    // Dubai and dubai are one target, read once; the empty block is a clean zero.
-    assert_eq!(import.outcomes.len(), 2, "{:?}", import.outcomes);
+    // Both spellings are independent export blocks: no source record may be skipped.
+    // Entities with the same canonical identity are still merged after attribution.
+    assert_eq!(import.outcomes.len(), 3, "{:?}", import.outcomes);
     assert!(import.outcomes.iter().all(|o| o.module == EXPORT_MODULE));
     let first = import.outcomes[0].detail.clone().unwrap_or_default();
     assert!(first.contains("bulk export test-export sha256 "), "{first}");
@@ -957,13 +958,14 @@ fn a_bulk_export_imports_offline_through_the_live_row_rules() {
         first.contains("the provider reported 3 rows; the export holds 2"),
         "{first}"
     );
-    assert_eq!(import.outcomes[1].kind, SourceOutcomeKind::ValidZero);
+    assert_eq!(import.outcomes[1].kind, SourceOutcomeKind::Success);
+    assert_eq!(import.outcomes[2].kind, SourceOutcomeKind::ValidZero);
 
     let values: Vec<&str> = import.entities.iter().map(|e| e.value.as_str()).collect();
     assert!(values.contains(&"owner@example.com"), "{values:?}");
     // A stranger's row is not ATTRIBUTED to the target (not an entity)...
     assert!(!values.contains(&"stranger@example.com"), "{values:?}");
-    // ...but every row is PRESERVED as a record: the two Dubai rows plus the duplicate-target
+    // ...but every row is PRESERVED as a record: the two Dubai rows plus the repeated-target
     // block's row = 3 rows kept, the stranger row among them with its fields verbatim.
     assert_eq!(import.records.len(), 3, "every row preserved");
     let records = serde_json::to_string(&import.records).expect("json");
