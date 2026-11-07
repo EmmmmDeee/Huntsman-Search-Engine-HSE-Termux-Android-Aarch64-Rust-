@@ -1250,6 +1250,49 @@ fn prebuilt_only_rejects_explicit_source_build_even_when_release_exists() {
     assert!(!t.calls().contains("cargo"), "{}", t.calls());
 }
 
+/// Incorrect install-mode input must fail before any package/network work or
+/// persistent filesystem change. An unknown `FROM_SOURCE` mode cannot silently
+/// install a prebuilt binary instead of honoring the operator's intention.
+#[test]
+fn invalid_install_modes_are_refused_before_state_or_network_changes() {
+    let t = Prebuilt::new();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    let prior = b"existing accepted binary";
+    fs::write(t.installed(), prior).unwrap();
+    let cases: [(Vec<(&str, &str)>, &str); 3] = [
+        (
+            vec![("HUNTSMAN_FROM_SOURCE", "yes")],
+            "HUNTSMAN_FROM_SOURCE must be 0 or 1",
+        ),
+        (
+            vec![("HUNTSMAN_REQUIRE_PREBUILT", "always")],
+            "HUNTSMAN_REQUIRE_PREBUILT must be 0 or 1",
+        ),
+        (
+            vec![
+                ("HUNTSMAN_REQUIRE_PREBUILT", "1"),
+                ("HUNTSMAN_FROM_SOURCE", "1"),
+            ],
+            "conflicts with HUNTSMAN_FROM_SOURCE=1",
+        ),
+    ];
+    for (env, message) in cases {
+        let out = t.run(&env, BUILT_REV);
+        assert!(!out.status.success(), "{message}: {:?}", out.status);
+        assert!(stderr(&out).contains(message), "{}", stderr(&out));
+        assert!(
+            t.calls().is_empty(),
+            "unexpected side effects: {}",
+            t.calls()
+        );
+        assert!(
+            !t.temp.join(".huntsman").exists(),
+            "state created on rejection"
+        );
+        t.assert_untouched(prior, &out);
+    }
+}
+
 #[test]
 fn prebuilt_only_does_not_fall_back_to_published_ancestor_of_main() {
     let t = Prebuilt::new();

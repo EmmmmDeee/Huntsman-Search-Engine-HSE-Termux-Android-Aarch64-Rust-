@@ -124,6 +124,21 @@ if is_hse_update; then
   exit 0
 fi
 
+# Reject invalid or conflicting install modes before creating persistent state,
+# taking an install lock, updating packages or making a network request.
+# An unknown FROM_SOURCE value used to be silently treated as "off".
+case "${HUNTSMAN_FROM_SOURCE:-0}" in
+  0|1) ;;
+  *) die "HUNTSMAN_FROM_SOURCE must be 0 or 1" ;;
+esac
+case "${HUNTSMAN_REQUIRE_PREBUILT:-0}" in
+  0|1) ;;
+  *) die "HUNTSMAN_REQUIRE_PREBUILT must be 0 or 1" ;;
+esac
+if [[ "${HUNTSMAN_REQUIRE_PREBUILT:-0}" == 1 && "${HUNTSMAN_FROM_SOURCE:-0}" == 1 ]]; then
+  die "HUNTSMAN_REQUIRE_PREBUILT=1 conflicts with HUNTSMAN_FROM_SOURCE=1"
+fi
+
 STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
 mkdir -p "$STATE_DIR"
 chmod 0700 "$STATE_DIR"
@@ -472,14 +487,8 @@ build_from_source() {
 #
 # Opt-in prebuilt-only mode is for safe, low-resource Android upgrades.
 # It refuses an unpublished exact revision instead of invoking Cargo or
-# silently installing an older release. Existing default behaviour is kept.
-case "${HUNTSMAN_REQUIRE_PREBUILT:-0}" in
-  0|1) ;;
-  *) die "HUNTSMAN_REQUIRE_PREBUILT must be 0 or 1" ;;
-esac
-if [[ "${HUNTSMAN_REQUIRE_PREBUILT:-0}" == 1 && "${HUNTSMAN_FROM_SOURCE:-0}" == 1 ]]; then
-  die "HUNTSMAN_REQUIRE_PREBUILT=1 conflicts with HUNTSMAN_FROM_SOURCE=1"
-fi
+# silently installing an older release. The modes were preflight-checked
+# before any state or system changes.
 
 install_source=""
 if [[ "${HUNTSMAN_FROM_SOURCE:-}" == 1 ]]; then
