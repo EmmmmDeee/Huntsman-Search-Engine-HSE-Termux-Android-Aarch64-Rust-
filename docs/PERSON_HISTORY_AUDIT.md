@@ -21,7 +21,7 @@ huntsman-recon scans people-audit > "$HOME/person-history-audit.jsonl"
 huntsman-recon scans people-audit --dir "$HOME/.huntsman/scans"
 ```
 
-The last JSONL line is a summary of **scan-person occurrences**, including explicitly unverified or absent birthplace information. Each unreadable scan produces an explicit `scan_read_error` record, increments `scans_unreadable` and makes the command exit nonzero, without discarding records from other scans.
+The last JSONL line reconciles **scan-person occurrences** across independently counted search targets, Person entities and HUMAN_NAME elements (including false positives), and records unreadable scans, scans missing results, scans not finished and missing or conflicting birthplace claims. It is a completeness ledger for readable saved records, not a count of unique people or a guarantee that every provider finished. Each unreadable scan produces an explicit `scan_read_error` record, increments `scans_unreadable` and makes the command exit nonzero, without discarding records from other scans.
 
 ## Scope and limits
 
