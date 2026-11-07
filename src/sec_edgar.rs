@@ -156,6 +156,8 @@ struct EftsHits {
 struct EftsTotal {
     #[serde(default)]
     value: Option<u64>,
+    #[serde(default)]
+    relation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,15 +472,19 @@ fn interpret_search(
     let response = whole_response(fetched, "EDGAR search")?;
     answer(fetched, "EDGAR search")?;
     let resp: EftsResp = decode_json(response, SOURCE, now_unix, "EDGAR search")?;
+
+    // Extract total information before moving hits_envelope
+    let (is_incomplete, total_value) = resp
+        .hits
+        .as_ref()
+        .and_then(|h| h.total.as_ref())
+        .map(|t| {
+            let incomplete = t.value.is_none() || t.relation.as_deref() == Some("gte");
+            (incomplete, t.value)
+        })
+        .unwrap_or((false, None));
+
     let hits_envelope = resp.hits;
-    let reported_total = usize::try_from(
-        hits_envelope
-            .as_ref()
-            .and_then(|h| h.total.as_ref())
-            .and_then(|t| t.value)
-            .unwrap_or(0),
-    )
-    .unwrap_or(usize::MAX);
     let Some(hits) = hits_envelope.and_then(|h| h.hits) else {
         return Err(SourceExecutionOutcome::failed(
             SOURCE,
@@ -498,6 +504,14 @@ fn interpret_search(
             detail,
         )
     })?;
+
+    let reported_total = if is_incomplete {
+        // When total count is a lower bound or missing, report unexamined results to force
+        // Inconclusive classification and prevent false clean zeros.
+        scanned_hits.saturating_add(1).max(usize::from(u16::MAX))
+    } else {
+        usize::try_from(total_value.unwrap_or(0)).unwrap_or(usize::MAX)
+    };
     // EDGAR's total is never less than the rows it returned; keep the invariant so "unexamined"
     // below can never underflow when a fixture or a terse response omits total.
     let reported_total = reported_total.max(hits.len());
@@ -837,6 +851,24 @@ mod tests {
         "phone":"(408) 996-1010","formerNames":[{"name":"APPLE COMPUTER INC"}],
         "addresses":{"business":{"street1":"ONE APPLE PARK WAY","street2":null,"city":"CUPERTINO","stateOrCountry":"CA","zipCode":"95014","countryCode":null},
         "mailing":{"street1":"ONE APPLE PARK WAY","street2":null,"city":"CUPERTINO","stateOrCountry":"CA","zipCode":"95014","countryCode":null}}}"#;
+
+    // Missing total.value: EDGAR sometimes returns a hit but no explicit total count.
+    // This should be treated as incomplete, forcing Inconclusive rather than ValidZero.
+    const SEARCH_MISSING_TOTAL_VALUE: &str = r#"{"hits":{"total":{"relation":"eq"},"hits":[
+        {"_index":"edgar_file","_id":"a:1.xml","_source":{
+            "ciks":["0001234567"],
+            "display_names":["Smith John  (CIK 0001234567)"],
+            "form":"4","file_date":"2026-06-11"}}
+    ]}}"#;
+
+    // Relation="gte": EDGAR returns a lower-bound count when results exceed index limits.
+    // This indicates more matching filings exist beyond the page we scanned, forcing Inconclusive.
+    const SEARCH_RELATION_GTE: &str = r#"{"hits":{"total":{"value":1000,"relation":"gte"},"hits":[
+        {"_index":"edgar_file","_id":"a:1.xml","_source":{
+            "ciks":["0001234567"],
+            "display_names":["Smith John  (CIK 0001234567)"],
+            "form":"4","file_date":"2026-06-11"}}
+    ]}}"#;
 
     fn has(report: &Report, kind: &EntityKind, value: &str) -> bool {
         report
@@ -1243,6 +1275,54 @@ mod tests {
         assert_eq!(
             search_url("Elon Musk"),
             "https://efts.sec.gov/LATEST/search-index?q=%22Elon%20Musk%22&forms=3,4,5"
+        );
+    }
+
+    #[test]
+    fn missing_total_value_fails_closed_to_inconclusive_not_validzero() {
+        // When total.value is missing, we cannot verify a clean zero, so results with hits but no
+        // matched filers should be Inconclusive, not ValidZero.
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(SEARCH_MISSING_TOTAL_VALUE))]);
+        let report = lookup(&transport, "elon musk", "scan-edgar", 1).expect("runs");
+        assert_eq!(
+            report.outcome.kind,
+            SourceOutcomeKind::Inconclusive,
+            "missing total.value should fail closed as Inconclusive, not ValidZero: {:#?}",
+            report.outcome
+        );
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .map(|d| d.contains("not scanned"))
+                .unwrap_or(false),
+            "detail should indicate unexamined filings: {:#?}",
+            report.outcome
+        );
+    }
+
+    #[test]
+    fn relation_gte_fails_closed_to_inconclusive_not_validzero() {
+        // When relation="gte", the count is a lower bound, indicating more results beyond pagination.
+        // Results with hits but no matched filers should be Inconclusive, not ValidZero.
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(SEARCH_RELATION_GTE))]);
+        let report = lookup(&transport, "elon musk", "scan-edgar", 1).expect("runs");
+        assert_eq!(
+            report.outcome.kind,
+            SourceOutcomeKind::Inconclusive,
+            "relation=gte should fail closed as Inconclusive, not ValidZero: {:#?}",
+            report.outcome
+        );
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .map(|d| d.contains("not scanned"))
+                .unwrap_or(false),
+            "detail should indicate unexamined filings: {:#?}",
+            report.outcome
         );
     }
 }
