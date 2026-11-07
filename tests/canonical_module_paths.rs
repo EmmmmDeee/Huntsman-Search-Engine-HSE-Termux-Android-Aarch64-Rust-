@@ -12,7 +12,10 @@ fn every_public_library_module_resolves_to_one_canonical_source_path() {
     let mut checked = 0_usize;
 
     for statement in lib.split(';') {
-        let statement = statement.trim();
+        // Declarations may share a line, and the first declaration follows
+        // crate attributes and comments. Inspect the final line of each
+        // semicolon-delimited segment rather than its entire prefix.
+        let statement = statement.rsplit('\n').next().unwrap_or("").trim();
         // The library root declares public modules with 'pub mod name;'.
         let Some(name) = statement.strip_prefix("pub mod ") else {
             continue;
@@ -35,5 +38,8 @@ fn every_public_library_module_resolves_to_one_canonical_source_path() {
         );
         checked += 1;
     }
-    assert!(checked > 0, "no public modules checked; parser or library layout changed");
+    assert!(
+        checked >= 200,
+        "only {checked} public modules checked; parser or library layout may have changed"
+    );
 }
