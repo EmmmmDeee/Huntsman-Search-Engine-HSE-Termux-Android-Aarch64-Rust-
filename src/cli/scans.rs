@@ -404,7 +404,7 @@ fn people_audit(parsed: &Parsed) -> ExitCode {
             "scans people-audit: saved scan directory does not exist",
         );
     }
-    let store = match ScanStore::open(&dir) {
+    let store = match ScanStore::open_existing_readonly(&dir) {
         Ok(store) => store,
         Err(error) => return fail(EX_IOERR, &format!("scans people-audit: {error}")),
     };
