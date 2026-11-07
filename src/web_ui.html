@@ -644,7 +644,7 @@ function radarPlot(observations){
     if(!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(mac))continue;
     let code=0;for(const c of mac)code=(Math.imul(code,33)^c.charCodeAt(0))>>>0;
     const angle=(code%360)*Math.PI/180;
-    const dbm=Number(o.sighting?.signal_dbm);
+    const rawDbm=o.sighting?.signal_dbm,dbm=rawDbm==null?NaN:Number(rawDbm);
     const radius=Number.isFinite(dbm)?Math.max(.16,Math.min(.82,(Math.abs(dbm)-20)/90)):.82;
     const point=el('span','radar-point'+(o.freshness==='fresh'?'':' stale'));
     point.style.left=(50+Math.cos(angle)*radius*44).toFixed(1)+'%';
