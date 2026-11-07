@@ -328,6 +328,20 @@ pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSumm
         ..AuditSummary::default()
     };
     for scan in scans {
+        // The store list may substitute an error placeholder for unreadable
+        // scan.json. Detect it rather than misreporting complete coverage.
+        if let Err(error) = store.get(&scan.id) {
+            summary.scans_unreadable += 1;
+            emit(
+                writer,
+                &ScanReadError {
+                    record_type: "scan_read_error",
+                    scan_id: scan.id,
+                    error: error.to_string(),
+                },
+            )?;
+            continue;
+        }
         let results = match store.results(&scan.id) {
             Ok(results) => results,
             Err(error) => {
