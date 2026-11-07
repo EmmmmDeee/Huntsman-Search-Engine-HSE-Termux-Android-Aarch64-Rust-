@@ -135,7 +135,8 @@ fn birth_date(date: &str) -> Option<(i32, Option<&str>)> {
     if date.len() == 4 {
         return Some((year, None));
     }
-    if date.len() != 10 || date.as_bytes().get(4) != Some(&b'-')
+    if date.len() != 10
+        || date.as_bytes().get(4) != Some(&b'-')
         || date.as_bytes().get(7) != Some(&b'-')
     {
         return None;
@@ -275,8 +276,7 @@ fn push_context(row: &mut PersonHistoryRow, places: &[BirthClaim], dates: &[Birt
 fn people_in_scan(scan: &ScanRecord, results: Option<&ScanResults>) -> Vec<PersonHistoryRow> {
     let mut rows = Vec::new();
 
-    if (scan.kind == "people" || scan.target_type == "HUMAN_NAME")
-        && !scan.target.trim().is_empty()
+    if (scan.kind == "people" || scan.target_type == "HUMAN_NAME") && !scan.target.trim().is_empty()
     {
         rows.push(new_row(
             scan,
@@ -464,11 +464,24 @@ mod tests {
         };
         let rows = people_in_scan(&record(), Some(&results));
         assert_eq!(rows.len(), 2);
-        let entity = rows.iter().find(|row| row.occurrence_id == "person_entity:0").unwrap();
+        let entity = rows
+            .iter()
+            .find(|row| row.occurrence_id == "person_entity:0")
+            .unwrap();
         assert_eq!(entity.place_of_birth_claims[0].source, "public_registry");
-        assert_eq!(entity.place_of_birth_claims[0].raw_attribute_value, "Dushanbe, Tajikistan");
-        assert_eq!(entity.historical_context[0].contemporary_place_name, "Dushanbe");
-        assert!(entity.historical_context[0].contemporary_jurisdiction.contains("USSR"));
+        assert_eq!(
+            entity.place_of_birth_claims[0].raw_attribute_value,
+            "Dushanbe, Tajikistan"
+        );
+        assert_eq!(
+            entity.historical_context[0].contemporary_place_name,
+            "Dushanbe"
+        );
+        assert!(
+            entity.historical_context[0]
+                .contemporary_jurisdiction
+                .contains("USSR")
+        );
         assert!(rows[0].historical_context.is_empty());
     }
 
@@ -603,12 +616,19 @@ mod tests {
 
     #[test]
     fn malformed_dates_do_not_claim_a_precise_historical_year() {
-        for date in ["1900-02-29", "2000-02-30", "1991-13-01", "1991-00-00",
-            "1991-09-09junk", "1985-02-31", "1985-12-00", "2026-04-31"] {
+        for date in [
+            "1900-02-29",
+            "2000-02-30",
+            "1991-13-01",
+            "1991-00-00",
+            "1991-09-09junk",
+            "1985-02-31",
+            "1985-12-00",
+            "2026-04-31",
+        ] {
             assert!(birth_date(date).is_none(), "{date}");
         }
         assert!(birth_date("2000-02-29").is_some());
         assert!(birth_date("1991-09-09").is_some());
     }
-
 }
