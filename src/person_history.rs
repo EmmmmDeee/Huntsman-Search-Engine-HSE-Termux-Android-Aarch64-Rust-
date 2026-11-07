@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
 use crate::scan_store::{ScanRecord, ScanResults, ScanStore};
 
-const DUSHANBE_HISTORY_SOURCE: &str = "https://www.iranicaonline.org/articles/dushanbe/";
+const DUSHANBE_HISTORY_CITATION: &str = "https://www.iranicaonline.org/articles/dushanbe/";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct HistoricalContext {
@@ -218,7 +218,7 @@ fn dushanbe(place: &str, date: Option<&str>) -> Option<HistoricalContext> {
         date_claim: date.map(str::to_owned),
         contemporary_place_name: name.to_owned(),
         contemporary_jurisdiction: jurisdiction.to_owned(),
-        source_url: DUSHANBE_HISTORY_SOURCE,
+        source_url: DUSHANBE_HISTORY_CITATION,
         qualification: "Conditional historical context only: neither the person's birthplace nor citizenship is verified",
     })
 }
