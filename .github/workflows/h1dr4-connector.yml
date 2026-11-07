@@ -8,6 +8,9 @@ on:
       - 'src/h1dr4.rs'
       - 'src/cli/h1dr4.rs'
       - 'src/cli/mod.rs'
+      - 'src/web_server.rs'
+      - 'src/web_server/lookup.rs'
+      - 'src/web_ui.html'
       - 'src/cli/help.rs'
       - 'src/lib.rs'
       - '.github/workflows/h1dr4-connector.yml'
@@ -26,7 +29,7 @@ jobs:
       - name: Show necessary rustfmt edits (diagnostic, no commit)
         run: |
           cargo fmt --all
-          git diff -- src/h1dr4.rs src/cli/h1dr4.rs src/cli/mod.rs
+          git diff -- src/h1dr4.rs src/cli/h1dr4.rs src/cli/mod.rs src/web_server/lookup.rs src/web_server.rs
       - name: Check all targets
         run: cargo check --locked --all-targets
       - name: Test H1DR4
