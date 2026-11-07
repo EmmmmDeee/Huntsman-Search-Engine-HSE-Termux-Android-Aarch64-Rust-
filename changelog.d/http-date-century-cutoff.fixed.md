@@ -1,0 +1,1 @@
+- Apply the documented RFC850 fifty-year century window to the complete date and clock, not just the year. Obsolete past Retry-After dates at that boundary no longer become future rate-limit pauses. Keep century arithmetic wide so supported extreme clocks do not panic or wrap; ordinary dates, delta-seconds, leap-second handling and stored evidence are unchanged.
