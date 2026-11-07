@@ -26,7 +26,10 @@ fn ensure_private_dir(path: &Path) -> Result<(), String> {
     }
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !meta.is_dir() || meta.file_type().is_symlink() {
-        return Err(format!("{}: archive directory is not a real directory", path.display()));
+        return Err(format!(
+            "{}: archive directory is not a real directory",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -38,7 +41,10 @@ fn write_once(path: &Path, body: &[u8]) -> Result<(), String> {
     let verify = || {
         let existing = crate::fsio::read_bounded(path, bound).map_err(|e| e.to_string())?;
         if existing != body {
-            return Err(format!("{}: existing archived bytes differ", path.display()));
+            return Err(format!(
+                "{}: existing archived bytes differ",
+                path.display()
+            ));
         }
         Ok(())
     };
@@ -49,8 +55,7 @@ fn write_once(path: &Path, body: &[u8]) -> Result<(), String> {
     }
     let name = crate::entity::scan_id("feed-archive-stage", "write");
     let staged = path.with_file_name(format!(".{name}.pending"));
-    crate::fsio::write_atomic_private(&staged, body, bound)
-        .map_err(|error| error.to_string())?;
+    crate::fsio::write_atomic_private(&staged, body, bound).map_err(|error| error.to_string())?;
     let installed = fs::hard_link(&staged, path);
     let _ = fs::remove_file(&staged);
     match installed {
@@ -73,7 +78,10 @@ pub(crate) fn store(
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let dir_meta = fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
     if !dir_meta.is_dir() || dir_meta.file_type().is_symlink() {
-        return Err(format!("{}: refusing linked cache directory", dir.display()));
+        return Err(format!(
+            "{}: refusing linked cache directory",
+            dir.display()
+        ));
     }
     let root = dir.join("originals");
     ensure_private_dir(&root)?;
