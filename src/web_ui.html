@@ -127,6 +127,13 @@ tbody tr:hover{background:var(--hover)}
  .nav-footer small{font-size:10px;font-weight:400}
  main{max-width:1600px;margin:0 0 0 var(--workbench-rail);padding:calc(90px + env(safe-area-inset-top)) 25px 45px}
 }
+
+/* Actual cache readings populate the plot; no bearing, distance or geographic claim. */
+#radar-points{position:absolute;inset:0;pointer-events:none}
+.radar-point{position:absolute;z-index:1;transform:translate(-50%,-50%);height:9px;width:9px;background:var(--acc);border:1px solid var(--fg);border-radius:50%;box-shadow:0 0 7px var(--acc)}
+.radar-point.stale{background:var(--warn);opacity:.45;box-shadow:none}
+#rlive[aria-pressed=true]{border-color:var(--ok);color:var(--ok);background:var(--okd)}
+#rlive-status{padding:9px 13px;background:var(--el2);border-left:3px solid var(--acc);border-radius:6px}
 </style>
 <a class="skip-link" id="skip-content" href="#workspace">Skip to content</a>
 <header class="appbar">
@@ -221,12 +228,13 @@ tbody tr:hover{background:var(--hover)}
 </section>
 <section id="view-radar" hidden>
 <div class="radar-workbench">
-<div class="radar-scope" role="status" aria-label="Successful OS-cache observation count"><span class="radar-count" id="radar-observed">—</span><span class="radar-scope-caption">OS CACHE / ON DEMAND</span></div>
+<div class="radar-scope" role="status" aria-label="OS-cache record count; dots are signal-strength symbols, not positions"><span id="radar-points" aria-hidden="true"></span><span class="radar-count" id="radar-observed">—</span><span class="radar-scope-caption">OS CACHE / ON DEMAND</span></div>
 <div class="radar-intro"><span class="eyebrow">ROOTLESS TERMUX / RADIO INTELLIGENCE</span><h1>Radar</h1>
 <p class="help">Reads Android's last cached Wi-Fi scan and the cells it reports through Termux:API; nothing here triggers an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location. Log a sweep now and then as you move to notice a device that moves with you.</p>
-<div class="radar-flags"><span>OS-cached data</span><span>Explicit reads only</span><span>No root required</span></div>
+<div class="radar-flags"><span>Live OS-cache monitoring</span><span>Hardware scans not triggered</span><span>No root required</span></div>
 </div></div>
-<div class="toolbar"><button class="btn btn-primary" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rcread" type="button">Read cells</button><button class="btn" id="rtrack" type="button">Log a sweep</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
+<div class="toolbar"><button class="btn btn-primary" id="rlive" type="button" aria-pressed="false">Start live monitoring</button><button class="btn" id="rstop" type="button" disabled>Stop monitoring</button><button class="btn" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rcread" type="button">Read cells</button><button class="btn" id="rtrack" type="button">Log a sweep</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
+<p class="note" id="rlive-status" role="status">Monitoring off. Start to refresh Wi-Fi and cells every 45 seconds while this tab is visible. Android may return unchanged cached observations.</p>
 <p class="alert" id="rerror" role="alert" hidden></p>
 <p class="note" id="rstatus" role="status">No observations requested. Termux:API and Android location permission are required on the phone.</p>
 <div class="panel" id="rresult" hidden>
@@ -566,7 +574,7 @@ function route(){
   const parts=location.hash.replace(/^#\/?/,'').split('/').map(p=>{try{return decodeURIComponent(p)}catch(_){return p}});
   let v=({lookup:'newscan',status:'about'})[parts[0]]||parts[0];
   if(!VIEWS.includes(v)||(v==='scan'&&!parts[1])||(v==='compare'&&!parts[2]))v='scans';
-  gen++;clearTimeout(timer);resume=null;view=v;dropGraph();
+  gen++;clearTimeout(timer);resume=null;if(v!=='radar')stopRadarLive();view=v;dropGraph();
   for(const x of VIEWS)$('view-'+x).hidden=x!==v;
   const nav=v==='scan'||v==='compare'?'scans':v;
   for(const a of document.querySelectorAll('.navlink,#nav-about')){const on=(a.dataset.view||'about')===nav;a.classList.toggle('active',on);if(on)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')}
@@ -617,6 +625,60 @@ async function details(){
     }catch(e){$(id).textContent=String(e);detailed=false}
   }));
 }
+
+// Live monitoring requests the same bounded Rust handlers as the manual controls.
+// Termux:API reads the Android OS cache: a request is NOT a new radio scan.
+const RADAR_LIVE_INTERVAL=45000;
+let radarLive=false,radarTimer=0,radarSession=0;
+function stopRadarLive(){
+  radarLive=false;radarSession++;clearTimeout(radarTimer);radarTimer=0;
+  $('rlive').disabled=false;$('rlive').setAttribute('aria-pressed','false');
+  $('rstop').disabled=true;
+  $('rlive-status').textContent='Monitoring stopped. Existing observations remain displayed; they may be stale.';
+}
+function radarPlot(observations){
+  const layer=$('radar-points');layer.replaceChildren();
+  for(const o of observations.slice(0,48)){
+    const mac=o.sighting?.network_id||'';
+    if(!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(mac))continue;
+    let code=0;for(const c of mac)code=(Math.imul(code,33)^c.charCodeAt(0))>>>0;
+    const angle=(code%360)*Math.PI/180;
+    const dbm=Number(o.sighting?.signal_dbm);
+    const radius=Number.isFinite(dbm)?Math.max(.16,Math.min(.82,(Math.abs(dbm)-20)/90)):.82;
+    const point=el('span','radar-point'+(o.freshness==='fresh'?'':' stale'));
+    point.style.left=(50+Math.cos(angle)*radius*44).toFixed(1)+'%';
+    point.style.top=(50+Math.sin(angle)*radius*44).toFixed(1)+'%';
+    layer.append(point);
+  }
+}
+async function radarLiveTick(session){
+  if(!radarLive||session!==radarSession)return;
+  if(view!=='radar'||document.hidden){stopRadarLive();return}
+  if($('rread').disabled||$('rcread').disabled){
+    $('rlive-status').textContent='Waiting for the current sensor request to finish.';
+  }else{
+    $('rlive-status').textContent='Refreshing cached Wi-Fi and cellular observations…';
+    await $('rread').onclick();
+    if(!radarLive||session!==radarSession)return;
+    await $('rcread').onclick();
+    if(!radarLive||session!==radarSession)return;
+    if(!$('rerror').hidden){
+      stopRadarLive();
+      $('rlive-status').textContent='Monitoring stopped after a sensor error. Earlier observations remain available; investigate the error before restarting.';
+      return;
+    }
+    $('rlive-status').textContent='Monitoring active · last cache reads '+new Date().toLocaleTimeString()+' · next reads in 45 seconds. Repeated Android results are not new captures.';
+  }
+  if(radarLive&&session===radarSession)radarTimer=setTimeout(()=>radarLiveTick(session),RADAR_LIVE_INTERVAL);
+}
+$('rlive').onclick=()=>{
+  if(radarLive)return;
+  radarLive=true;const session=++radarSession;
+  $('rlive').disabled=true;$('rlive').setAttribute('aria-pressed','true');$('rstop').disabled=false;
+  radarLiveTick(session);
+};
+$('rstop').onclick=stopRadarLive;
+
 let radarLast=null,radarReadAt=null;
 function radarPivot(o){
   const bssid=o.sighting?.network_id||'';
@@ -635,6 +697,7 @@ $('rread').onclick=async()=>{
     radarLast=scan;radarReadAt=new Date();$('rdownload').disabled=false;$('rresult').hidden=false;
     const observations=Array.isArray(scan.observations)?scan.observations:[];
     $('radar-observed').textContent=String(observations.length);
+    radarPlot(observations);
     fill('rrows',observations,o=>[
       o.sighting?.network_id||'',
       o.sighting?.name||'(hidden)',
@@ -1842,6 +1905,6 @@ function liveStream(){
   stream.onerror=()=>{};// the browser reconnects on its own after the bounded stream closes
 }
 const started=health();route();liveStream();
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopRadarLive();else{health();if(resume){clearTimeout(timer);resume()}}});
 </script>
 </html>
