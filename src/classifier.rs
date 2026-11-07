@@ -14,6 +14,10 @@ pub const ACTIONABLE_FLOOR: f64 = 0.50;
 /// Company words. A marker qualifies a name, so it counts only as a whole word, in a value
 /// of two or more words.
 const COMPANY_WORDS: &[&str] = &[
+    "limited",
+    "ltd",
+    "plc",
+    "llp",
     "llc",
     "inc",
     "incorporated",
@@ -815,6 +819,15 @@ mod tests {
         assert_eq!(classify("Acme Pty Ltd").kind, EntityKind::Organisation);
         assert_eq!(classify("Acme Inc.").kind, EntityKind::Organisation);
         assert_eq!(classify("Acme Corporation").kind, EntityKind::Organisation);
+        // An Australian or British public company ends in Limited, Ltd or PLC.
+        for raw in [
+            "Telstra Group Limited",
+            "Acme Ltd",
+            "Acme Holdings PLC",
+            "Acme LLP",
+        ] {
+            assert_eq!(classify(raw).kind, EntityKind::Organisation, "{raw}");
+        }
     }
 
     #[test]
