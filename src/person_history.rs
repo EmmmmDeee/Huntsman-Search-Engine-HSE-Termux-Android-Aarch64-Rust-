@@ -345,12 +345,43 @@ fn emit<T: Serialize>(writer: &mut impl Write, row: &T) -> Result<(), String> {
     writer.write_all(b"\n").map_err(|error| error.to_string())
 }
 
-/// Stream a read-only JSONL record for *every* retained person occurrence.
+fn emit_person(
+    writer: &mut impl Write,
+    summary: &mut AuditSummary,
+    row: &PersonHistoryRow,
+) -> Result<(), String> {
+    summary.person_scan_records += 1;
+    match row.discovered_as.first().map(String::as_str) {
+        Some("scan_target") => summary.person_targets += 1,
+        Some("person_entity") => summary.person_entities += 1,
+        Some("human_name_element") => {
+            summary.human_name_elements += 1;
+            if row.flagged_false_positive {
+                summary.false_positive_name_elements += 1;
+            }
+        }
+        _ => {}
+    }
+    match row.birthplace_status {
+        "not_recorded" => summary.without_birthplace_claim += 1,
+        "conflicting_claims" => {
+            summary.with_birthplace_claim += 1;
+            summary.with_conflicting_birthplace_claims += 1;
+        }
+        _ => summary.with_birthplace_claim += 1,
+    }
+    emit(writer, row)
+}
+
+/// Stream a read-only JSONL record for every retained person occurrence.
 /// A summary is emitted last; unreadable scans produce explicit error records.
 ///
 /// The store's saved-scan listing has a 4096-scan cap and excludes deleted,
 /// pruned and unsaved direct lookups; the output never claims more coverage.
 /// Memory stays bounded to one scan's saved results rather than all scans.
+///
+/// # Errors
+/// Reports an unreadable listing or a write failure without changing source files.
 pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSummary, String> {
     let scans = store.list().map_err(|error| error.to_string())?;
     let mut summary = AuditSummary {
@@ -359,21 +390,24 @@ pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSumm
         history_scope: "retained_saved_scans_only",
         ..AuditSummary::default()
     };
-    for scan in scans {
-        // The store list may substitute an error placeholder for unreadable
-        // scan.json. Detect it rather than misreporting complete coverage.
-        if let Err(error) = store.get(&scan.id) {
-            summary.scans_unreadable += 1;
-            emit(
-                writer,
-                &ScanReadError {
-                    record_type: "scan_read_error",
-                    scan_id: scan.id,
-                    error: error.to_string(),
-                },
-            )?;
-            continue;
-        }
+    for listed in scans {
+        // list() can substitute an error placeholder for an unreadable row.
+        // Use the real row from get(), not a possibly stale listing snapshot.
+        let scan = match store.get(&listed.id) {
+            Ok(scan) => scan,
+            Err(error) => {
+                summary.scans_unreadable += 1;
+                emit(
+                    writer,
+                    &ScanReadError {
+                        record_type: "scan_read_error",
+                        scan_id: listed.id,
+                        error: error.to_string(),
+                    },
+                )?;
+                continue;
+            }
+        };
         let results = match store.results(&scan.id) {
             Ok(results) => results,
             Err(error) => {
@@ -382,10 +416,15 @@ pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSumm
                     writer,
                     &ScanReadError {
                         record_type: "scan_read_error",
-                        scan_id: scan.id,
+                        scan_id: scan.id.clone(),
                         error: error.to_string(),
                     },
                 )?;
+                // Keep the independently readable search target despite corrupt
+                // or unreadable results, without claiming to have examined them.
+                for row in people_in_scan(&scan, None) {
+                    emit_person(writer, &mut summary, &row)?;
+                }
                 continue;
             }
         };
@@ -397,27 +436,7 @@ pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSumm
             summary.scans_not_finished += 1;
         }
         for row in people_in_scan(&scan, results.as_ref()) {
-            summary.person_scan_records += 1;
-            match row.discovered_as.first().map(String::as_str) {
-                Some("scan_target") => summary.person_targets += 1,
-                Some("person_entity") => summary.person_entities += 1,
-                Some("human_name_element") => {
-                    summary.human_name_elements += 1;
-                    if row.flagged_false_positive {
-                        summary.false_positive_name_elements += 1;
-                    }
-                }
-                _ => {}
-            }
-            match row.birthplace_status {
-                "not_recorded" => summary.without_birthplace_claim += 1,
-                "conflicting_claims" => {
-                    summary.with_birthplace_claim += 1;
-                    summary.with_conflicting_birthplace_claims += 1;
-                }
-                _ => summary.with_birthplace_claim += 1,
-            }
-            emit(writer, &row)?;
+            emit_person(writer, &mut summary, &row)?;
         }
     }
     // Enumeration alone is not complete investigative coverage when any saved
@@ -682,6 +701,49 @@ mod tests {
         }
         assert!(birth_date("2000-02-29").is_some());
         assert!(birth_date("1991-09-09").is_some());
+    }
+
+    #[test]
+    fn unreadable_results_keep_an_independently_saved_person_target() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir()
+            .join(format!("hse-person-corrupt-{}-{stamp}", std::process::id()));
+        let store = ScanStore::open(&path).unwrap();
+        let row = record();
+        store.create(&row).unwrap();
+        let saved = path.join(&row.id).join("scan.json");
+        let results = path.join(&row.id).join("results.json");
+        fs::write(&results, b"{corrupt").unwrap();
+        let before_row = fs::read(&saved).unwrap();
+        let before_results = fs::read(&results).unwrap();
+
+        let mut output = Vec::new();
+        let summary = audit_all(&store, &mut output).unwrap();
+        let lines: Vec<serde_json::Value> = output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(summary.scans_read, 0);
+        assert_eq!(summary.scans_unreadable, 1);
+        assert_eq!(summary.person_targets, 1);
+        assert_eq!(summary.person_scan_records, 1);
+        assert!(!summary.complete_for_retained_scans);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["record_type"], "scan_read_error");
+        assert_eq!(lines[1]["record_type"], "person");
+        assert_eq!(lines[1]["person_name"], "Jane Citizen");
+        assert_eq!(lines[1]["occurrence_id"], "scan_target");
+        assert_eq!(lines[2]["record_type"], "summary");
+        assert_eq!(fs::read(&saved).unwrap(), before_row);
+        assert_eq!(fs::read(&results).unwrap(), before_results);
+        fs::remove_dir_all(&path).unwrap();
     }
 
     #[test]
