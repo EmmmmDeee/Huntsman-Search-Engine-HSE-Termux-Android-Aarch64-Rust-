@@ -228,6 +228,23 @@
 <p class="alert" id="txerror" role="alert" hidden></p>
 <div class="table-wrap" id="txresult" hidden><table><thead><tr><th>kind</th><th>value</th><th>confidence</th><th>signal</th></tr></thead><tbody id="txentities"></tbody></table></div>
 </div></div>
+<div class="panel" id="h1dr4panel">
+<div class="panel-heading">H1DR4 — public evidence (read-only)</div>
+<div class="panel-body">
+<p class="help">Keyless public results only. Case allegations are unverified third-party assertions. Returned counts may not be complete; official records may be stale. All retrieved upstream response bodies remain in the downloadable evidence JSON.</p>
+<form class="row" id="h1dr4form">
+<label class="fl" for="h1dr4mode">Public source</label>
+<select id="h1dr4mode" aria-label="H1DR4 source"><option value="search">Search public cases</option><option value="case">Retrieve case with tips (by ID)</option><option value="rewards">Official reward references (verify at issuing agency)</option><option value="onchain-stats">On-chain registry totals (not wallet identities)</option></select>
+<label class="fl" for="h1dr4query">Search term or case ID</label>
+<input id="h1dr4query" type="search" maxlength="160" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Public search term or dossier ID">
+<button class="btn btn-primary" id="h1dr4run" type="submit">Retrieve public evidence</button>
+</form>
+<p class="note" role="status" id="h1dr4status">No H1DR4 request sent. External requests run only when you select Retrieve.</p>
+<p class="alert" role="alert" id="h1dr4error" hidden></p>
+<div class="toolbar"><button class="btn" id="h1dr4save" type="button" disabled>Export full evidence JSON</button></div>
+<pre class="osint-report" id="h1dr4result" aria-label="H1DR4 source-backed results"></pre>
+</div>
+</div>
 <div class="panel" id="rhinser-sources-panel">
 <div class="panel-heading">Rhinser public-source directory <span class="badge" id="rhinser-source-list-n">0</span></div>
 <div class="panel-body">
@@ -410,6 +427,38 @@ function download(blob,name){
   setTimeout(()=>URL.revokeObjectURL(url),60000);
 }
 function save(body,name){download(new Blob([JSON.stringify(body,null,2)],{type:'application/json'}),name+'-'+Date.now()+'.json')}
+// Optional public H1DR4 adapter: the browser never sends keys, wallets or writes.
+let h1dr4Last=null;
+function h1dr4ModeChanged(){
+  const need=$('h1dr4mode').value==='search'||$('h1dr4mode').value==='case';
+  $('h1dr4query').disabled=!need;
+  $('h1dr4query').required=need;
+  $('h1dr4query').placeholder=$('h1dr4mode').value==='case'?'dossier-...':'Public search term';
+}
+$('h1dr4mode').addEventListener('change',h1dr4ModeChanged);
+h1dr4ModeChanged();
+$('h1dr4save').onclick=()=>{if(h1dr4Last)save(h1dr4Last,'h1dr4-public-evidence')};
+$('h1dr4form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const kind=$('h1dr4mode').value,q=$('h1dr4query').value.trim();
+  if((kind==='search'||kind==='case')&&!q){fail('h1dr4error','Enter a search term or public case ID.');return}
+  $('h1dr4error').hidden=true;$('h1dr4run').disabled=true;
+  $('h1dr4status').textContent='Fetching bounded public source evidence…';
+  $('h1dr4result').textContent='';$('h1dr4save').disabled=true;h1dr4Last=null;
+  try{
+    const limit=kind==='case'?200:kind==='onchain-stats'?1:20;
+    const data=await api('/api/h1dr4?kind='+enc(kind)+'&limit='+limit+'&pages=1'+((kind==='search'||kind==='case')?'&q='+enc(q):''));
+    h1dr4Last=data;$('h1dr4save').disabled=false;
+    $('h1dr4status').textContent=(data.returned_count||0)+' normalized leads; '+((data.pages||[]).length)+' original source pages preserved. Dataset completeness unverified.';
+    $('h1dr4result').textContent=JSON.stringify({
+      records:data.records,limitations:data.limitations,
+      pagination_stalled:data.pagination_stalled,
+      upstream_total_available:data.upstream_total_available,
+      raw_pages:(data.pages||[]).map(p=>({url:p.request_url,sha256:p.sha256,http_status:p.http_status,schema_warning:p.schema_warning}))
+    },null,2);
+  }catch(err){fail('h1dr4error',err.message||String(err));$('h1dr4status').textContent='Public H1DR4 request failed; no absence claim.'}
+  finally{$('h1dr4run').disabled=false}
+});
 const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
 const pad=n=>String(n).padStart(2,'0');
 function when(ms){if(!ms)return '';const d=new Date(Number(ms));return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())}
