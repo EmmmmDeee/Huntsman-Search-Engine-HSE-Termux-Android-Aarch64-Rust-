@@ -735,9 +735,7 @@ impl ScanStore {
                     .saturating_add(marker_line.len() as u64)
                     <= MAX_LOG_BYTES
             }) {
-                return file
-                    .write_all(bytes)
-                    .map_err(|error| io_error(&path, &error));
+                return append_durable(&mut file, &path, bytes);
             }
         }
 
@@ -761,16 +759,13 @@ impl ScanStore {
         // Write the archived original first. If this fails, report failure and do not
         // add the primary-log marker falsely claiming that the entry was preserved.
         let mut overflow = checked_open_for_append(&overflow_path)?;
-        overflow
-            .write_all(&archived)
-            .map_err(|error| io_error(&overflow_path, &error))?;
+        append_durable(&mut overflow, &overflow_path, &archived)?;
 
         if !has_overflow
             && size.saturating_add(marker_line.len() as u64) <= MAX_LOG_BYTES
             && !log_is_full(&path)
         {
-            file.write_all(&marker_line)
-                .map_err(|error| io_error(&path, &error))?;
+            append_durable(&mut file, &path, &marker_line)?;
         }
         Ok(())
     }
@@ -981,6 +976,14 @@ fn other_process_alive(pid: u32, started: Option<u64>) -> bool {
 /// file and that its opened inode is the inode checked before the open.
 /// Creation uses `create_new`, so an attacker cannot plant a symlink in the
 /// missing-file window and have it followed.
+// A successfully reported append must reach the filesystem's durability boundary,
+// not merely the kernel page cache. The caller retains the append lock throughout.
+fn append_durable(file: &mut std::fs::File, path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    file.write_all(bytes)
+        .map_err(|error| io_error(path, &error))?;
+    file.sync_data().map_err(|error| io_error(path, &error))
+}
+
 fn checked_open_for_append(path: &Path) -> Result<std::fs::File, StoreError> {
     checked_open_for_append_with(path, || {})
 }
