@@ -1,0 +1,1 @@
+- Do not turn non-finite or overflowing numeric evidence flags into positive reputation verdicts in SpiderFoot-compatible elements. Original evidence values remain visible; finite positive counters and existing boolean flags retain their meaning.

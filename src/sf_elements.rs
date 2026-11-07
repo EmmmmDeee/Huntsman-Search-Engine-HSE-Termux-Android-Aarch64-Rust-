@@ -261,11 +261,14 @@ fn items(value: &str) -> impl Iterator<Item = &str> {
         .filter(|item| !item.is_empty())
 }
 
+/// True flags or finite positive counters, never infinity from a malformed/overflowed value.
 fn positive(value: &str) -> bool {
     let value = value.trim();
     value.eq_ignore_ascii_case("true")
         || value.eq_ignore_ascii_case("yes")
-        || value.parse::<f64>().is_ok_and(|number| number > 0.0)
+        || value
+            .parse::<f64>()
+            .is_ok_and(|number| number.is_finite() && number > 0.0)
 }
 
 /// Whether one evidence record says its entity is malicious, by the attributes the reputation
@@ -2530,5 +2533,79 @@ mod tests {
         assert_eq!(first, second);
         let ids: BTreeSet<&str> = first.iter().map(|element| element.id.as_str()).collect();
         assert_eq!(ids.len(), first.len());
+    }
+
+    #[test]
+    fn non_finite_reputation_counters_do_not_manufacture_malicious_observations() {
+        for key in [
+            "malicious",
+            "malicious_scans",
+            "pulse_count",
+            "total_reports",
+        ] {
+            for raw in ["inf", "+inf", "Infinity", "1e999"] {
+                let item = entity(
+                    EntityKind::IpAddress,
+                    "203.0.113.9",
+                    "virustotal",
+                    &[(key, raw)],
+                );
+                let found = elements(DOMAIN, &[item], 1_700_000_200);
+                assert!(
+                    of_type(&found, "MALICIOUS_IPADDR").is_empty(),
+                    "{key}={raw}"
+                );
+                assert!(
+                    found.iter().any(|element| {
+                        element
+                            .raw
+                            .pointer(&format!("/evidence/attributes/{key}"))
+                            .and_then(Value::as_str)
+                            == Some(raw)
+                    }),
+                    "the original {key}={raw} must remain readable as evidence"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_reputation_counts_and_boolean_flags_keep_their_existing_meaning() {
+        for (raw, expected) in [
+            ("true", true),
+            (" TRUE ", true),
+            ("yes", true),
+            (" YeS ", true),
+            ("1", true),
+            ("0.5", true),
+            ("1e308", true),
+            ("5e-324", true),
+            ("0", false),
+            ("-0", false),
+            ("-1", false),
+            ("false", false),
+            ("no", false),
+            ("NaN", false),
+            ("-inf", false),
+            ("unknown", false),
+        ] {
+            let item = entity(
+                EntityKind::IpAddress,
+                "203.0.113.9",
+                "virustotal",
+                &[("malicious_scans", raw)],
+            );
+            let before = serde_json::to_value(&item).expect("original evidence");
+            let found = elements(DOMAIN, std::slice::from_ref(&item), 1_700_000_200);
+            assert_eq!(
+                !of_type(&found, "MALICIOUS_IPADDR").is_empty(),
+                expected,
+                "{raw}"
+            );
+            assert_eq!(
+                serde_json::to_value(&item).expect("retained evidence"),
+                before
+            );
+        }
     }
 }
