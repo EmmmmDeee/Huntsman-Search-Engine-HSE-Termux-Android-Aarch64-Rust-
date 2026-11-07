@@ -240,7 +240,11 @@ fn copy_of(
         note.push_str("; ");
         note.push_str(&extra);
     }
-    Ok((String::from_utf8_lossy(&copy.body).into_owned(), Some(note), current))
+    Ok((
+        String::from_utf8_lossy(&copy.body).into_owned(),
+        Some(note),
+        current,
+    ))
 }
 
 /// OFAC's SDN rows joined with their aliases.
@@ -254,7 +258,11 @@ fn read_ofac(
     // a complete negative verdict: the queried name might occur only in an alias.
     let (alt, alt_note, alt_current) = match copy_of(transport, dir, &OFAC_ALT, now_unix) {
         Ok((alt, _, current)) => (alt, None, current),
-        Err((_, why)) => (String::new(), Some(format!("aliases unavailable ({why})")), false),
+        Err((_, why)) => (
+            String::new(),
+            Some(format!("aliases unavailable ({why})")),
+            false,
+        ),
     };
     let listings = parse_ofac(&sdn, &alt);
     if listings.is_empty() {
