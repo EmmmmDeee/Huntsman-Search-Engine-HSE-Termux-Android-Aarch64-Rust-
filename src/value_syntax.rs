@@ -642,6 +642,74 @@ fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
         .filter(|token| !token.is_empty())
 }
 
+/// Path segments of `t.me` that are Telegram's own routes, never a public name.
+const TELEGRAM_RESERVED: &[&str] = &[
+    "s",
+    "c",
+    "joinchat",
+    "addstickers",
+    "addemoji",
+    "addtheme",
+    "addlist",
+    "share",
+    "proxy",
+    "socks",
+    "login",
+    "setlanguage",
+    "iv",
+    "boost",
+    "giftcode",
+    "invoice",
+    "contact",
+    "confirmphone",
+    "bg",
+];
+
+/// Whether `handle` is a shape Telegram keys a public name on: 5 to 32 ASCII letters, digits or
+/// underscores, starting with a letter, no trailing or doubled underscore. **Pure.**
+#[must_use]
+pub fn valid_telegram_handle(handle: &str) -> bool {
+    (5..=32).contains(&handle.len())
+        && handle
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+        && !handle.ends_with('_')
+        && !handle.contains("__")
+        && handle
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && !TELEGRAM_RESERVED.contains(&handle.to_ascii_lowercase().as_str())
+}
+
+/// The Telegram name a `t.me` or `telegram.me` link names, or `None` for any other link, a
+/// Telegram route, an invite or a post-free path that names nothing. A link to one post of a name
+/// (`t.me/name/123`) or its preview (`t.me/s/name`) names that name. **Pure.**
+#[must_use]
+pub fn telegram_handle_from_link(link: &str) -> Option<String> {
+    let rest = link
+        .trim()
+        .strip_prefix("https://")
+        .or_else(|| link.trim().strip_prefix("http://"))
+        .unwrap_or(link.trim());
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    if host != "t.me" && host != "telegram.me" {
+        return None;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or_default();
+    let mut segments = path.split('/').filter(|s| !s.is_empty());
+    let first = segments.next()?;
+    let name = if first.eq_ignore_ascii_case("s") {
+        segments.next()?
+    } else {
+        first
+    };
+    let name = name.trim_start_matches('@');
+    valid_telegram_handle(name).then(|| name.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod au_plan_agreement {
     use super::normalise_au_phone;

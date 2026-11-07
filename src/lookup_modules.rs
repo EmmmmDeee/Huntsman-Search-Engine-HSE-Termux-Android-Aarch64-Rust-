@@ -92,6 +92,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             wikipedia::SRC,
             crate::mastodon_user::SRC,
             tiktok_public_contact::SRC,
+            crate::telegram::SRC,
             crate::npm_author::SRC,
             crate::crates_io::SRC,
             crate::hacker_news::SRC,

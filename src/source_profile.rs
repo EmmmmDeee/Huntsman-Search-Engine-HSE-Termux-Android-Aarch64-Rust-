@@ -252,6 +252,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("stopforumspam", C::Infra, None),
     row("submd", C::Other, None),
     row("surbl", C::Other, None),
+    row("telegram", C::Other, Some(C::Social)),
     row("threatfox", C::Infra, None),
     row("tiktok_public_contact", C::Other, Some(C::Social)),
     row("torexits", C::Other, None),

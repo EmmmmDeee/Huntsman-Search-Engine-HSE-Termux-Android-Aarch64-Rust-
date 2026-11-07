@@ -605,6 +605,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public TikTok profile bio contact candidates, never private registration emails",
     },
     ReachableModule {
+        name: "telegram",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001", "T1589.002"],
+        description: "public Telegram channel, group, bot or profile page; unowned and private handles stay inconclusive",
+    },
+    ReachableModule {
         name: "keybase",
         command: "username HANDLE",
         access: "keyless",

@@ -291,6 +291,7 @@ pub mod stopforumspam;
 pub mod store;
 pub mod submd;
 pub mod tags;
+pub mod telegram;
 pub mod temporal_consistency;
 pub mod termination;
 pub mod textnorm;
