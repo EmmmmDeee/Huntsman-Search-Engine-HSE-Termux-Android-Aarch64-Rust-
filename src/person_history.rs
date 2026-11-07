@@ -527,7 +527,10 @@ mod tests {
             .unwrap();
         assert_eq!(entity.place_of_birth_claims[0].source, "public_registry");
         assert_eq!(entity.place_of_birth_claims[0].evidence_index, 0);
-        assert_eq!(entity.place_of_birth_claims[0].evidence_summary, "birth claim");
+        assert_eq!(
+            entity.place_of_birth_claims[0].evidence_summary,
+            "birth claim"
+        );
         assert_eq!(entity.historical_context[0].evidence_index, Some(0));
         assert_eq!(
             entity.place_of_birth_claims[0].raw_attribute_value,
