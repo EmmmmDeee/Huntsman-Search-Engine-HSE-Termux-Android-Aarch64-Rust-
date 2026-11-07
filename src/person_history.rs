@@ -631,4 +631,80 @@ mod tests {
         assert!(birth_date("2000-02-29").is_some());
         assert!(birth_date("1991-09-09").is_some());
     }
+    #[test]
+    fn persisted_audit_round_trip_preserves_every_original_byte() {
+        use crate::sf_elements::DataElement;
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "hse-person-audit-{}-{stamp}",
+            std::process::id()
+        ));
+        let store = ScanStore::open(&path).unwrap();
+        let row = record();
+        store.create(&row).unwrap();
+
+        let mut person = Entity::new(EntityKind::Person, "Jane Citizen", 0.7, &row.id);
+        person.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("registry_a", &row.id), "claim")
+                .with_attr("birth_place", "Dushanbe")
+                .with_attr("dob", "1980"),
+        );
+        let results = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: row.id.clone(),
+            text: "original collector data".into(),
+            entities: vec![person],
+            outcomes: Vec::new(),
+            elements: vec![DataElement {
+                id: "test-name-element".into(),
+                kind: "HUMAN_NAME".into(),
+                data: "Jane Citizen".into(),
+                source: None,
+                module: "test_registry".into(),
+                confidence: 80,
+                created: 1,
+                fp: true,
+                entity: None,
+                raw: serde_json::Value::Null,
+            }],
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        store.save_results(&results).unwrap();
+
+        let row_file = path.join(&row.id).join("scan.json");
+        let result_file = path.join(&row.id).join("results.json");
+        let before_row = fs::read(&row_file).unwrap();
+        let before_results = fs::read(&result_file).unwrap();
+        let mut out = Vec::new();
+        let summary = audit_all(&store, &mut out).unwrap();
+        let lines: Vec<serde_json::Value> = out
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+
+        assert_eq!(summary.scans_read, 1);
+        assert_eq!(summary.scans_unreadable, 0);
+        assert_eq!(summary.person_scan_records, 3);
+        assert!(summary.complete_for_retained_scans);
+        assert_eq!(lines.len(), 4); // target, entity, element, summary
+        assert_eq!(lines[0]["occurrence_id"], "scan_target");
+        assert_eq!(lines[1]["occurrence_id"], "person_entity:0");
+        assert_eq!(lines[1]["place_of_birth_claims"][0]["source"], "registry_a");
+        assert_eq!(lines[2]["occurrence_id"], "human_name_element:0");
+        assert_eq!(lines[2]["flagged_false_positive"], true);
+        assert_eq!(lines[3]["record_type"], "summary");
+        assert_eq!(fs::read(&row_file).unwrap(), before_row);
+        assert_eq!(fs::read(&result_file).unwrap(), before_results);
+        fs::remove_dir_all(&path).unwrap();
+    }
+
 }
