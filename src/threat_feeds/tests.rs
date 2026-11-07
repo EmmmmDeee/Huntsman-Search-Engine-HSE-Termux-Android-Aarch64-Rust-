@@ -1208,6 +1208,9 @@ fn all_download_responses_keep_original_bytes_and_legacy_copies() {
         .cached();
     let old = b"legacy bytes\r\n";
     std::fs::write(dir.join(feed.id), old).expect("old mutable cache");
+    let old_sidecar = b"previous-publisher-date-raw\n";
+    std::fs::write(updated_path(&dir.join(feed.id)), old_sidecar)
+        .expect("old publisher-date sidecar");
     let net = Net::serving();
     let transport = Shared(Arc::clone(&net));
     let initial = b"194.180.49.70\r\n";
@@ -1226,6 +1229,13 @@ fn all_download_responses_keep_original_bytes_and_legacy_copies() {
             bytes
         );
     }
+
+    let old_hash = crate::sha256::hex32(&crate::sha256::sha256(old));
+    assert_eq!(
+        std::fs::read(originals.join(format!("{old_hash}.updated"))).unwrap(),
+        old_sidecar,
+        "the original publisher-date sidecar must survive replacement"
+    );
 
     // A later network failure is also a first-class archived HTTP response. It must
     // not replace either the live mutable copy or any original bytes.
