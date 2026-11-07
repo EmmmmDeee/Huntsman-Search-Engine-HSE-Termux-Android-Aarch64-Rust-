@@ -525,6 +525,21 @@ pub(crate) struct Copy {
     pub(crate) note: Option<String>,
 }
 
+impl Copy {
+    /// A fresh download, or an integrity-checked kept copy within the refresh interval, can
+    /// answer a current absence query. A copy used only because its refresh failed cannot.
+    /// This does not change whether the historical listing is preserved and searchable.
+    pub(crate) fn current_for(&self, now_unix: u64, max_age: u64) -> bool {
+        let verified_copy = self.downloaded || matches!(self.date, KeptDate::Kept(_));
+        let refresh_failed = self.note.as_deref().is_some_and(|note| {
+            note.starts_with("could not be downloaded again (")
+        });
+        verified_copy
+            && !refresh_failed
+            && now_unix.saturating_sub(self.fetched) < max_age
+    }
+}
+
 /// The feed's body: the copy in `dir` while it is younger than the feed's age, else a download
 /// (kept in `dir`), else the old copy.
 pub(crate) fn load(
