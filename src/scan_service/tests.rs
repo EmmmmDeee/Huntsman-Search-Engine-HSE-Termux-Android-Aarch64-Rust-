@@ -26,7 +26,11 @@ fn failed_scan_log_write_remains_observable_after_successful_status_update() {
         std::fs::remove_file(&log).unwrap();
     }
     std::fs::create_dir(&log).unwrap();
+    // stop() owns the state lock while logging; a failed append must not
+    // acquire that same mutex a second time and deadlock.
+    let state = service.state();
     service.log(&record.id, "test", LogLevel::Info, "must be retained");
+    drop(state);
     let error = service.wait(&record.id, Instant::now()).unwrap_err();
     assert!(
         matches!(error, ServiceError::Store(message) if message.contains("unable to persist log entry"))
@@ -38,13 +42,13 @@ fn failed_scan_log_write_remains_observable_after_successful_status_update() {
             Some(clock::unix_now_millis()),
         )
         .unwrap();
-    assert!(service.state().log_failures.contains_key(&record.id));
+    assert!(service.log_failure(&record.id).is_some());
 
     // Restoring the path does not retroactively recover the missing entry.
     std::fs::remove_dir(&log).unwrap();
     assert!(service.wait(&record.id, Instant::now()).is_err());
     service.delete(&record.id).unwrap();
-    assert!(!service.state().log_failures.contains_key(&record.id));
+    assert!(!service.log_failure(&record.id).is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
