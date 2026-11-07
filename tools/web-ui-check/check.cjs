@@ -474,7 +474,22 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         (await page.textContent('#radar-observed')).trim() === '1' &&
         (await page.textContent('.radar-flags')).includes('Hardware scans not triggered'),
         await page.locator('#radar-points .radar-point').count());
+      // Execute a second scheduled cycle without sleeping for the production
+      // 45-second interval: confirm that monitoring actually repeats both reads.
+      await page.evaluate(async () => {
+        clearTimeout(radarTimer);
+        await radarLiveTick(radarSession);
+      });
+      check(`${scheme}: active Radar repeats BOTH guarded cache reads without creating evidence`,
+        liveWifiCalls === 2 && cellCalls === cellsBeforeLive + 2 &&
+        trackCalls === tracksBeforeLive && await page.isEnabled('#rstop'),
+        { liveWifiCalls, cellCalls, cellsBeforeLive, trackCalls });
       await page.click('#rstop');
+      await page.evaluate(async () => radarLiveTick(radarSession));
+      check(`${scheme}: stopped Radar cannot issue another sensor read`,
+        liveWifiCalls === 2 && cellCalls === cellsBeforeLive + 2 &&
+        trackCalls === tracksBeforeLive,
+        { liveWifiCalls, cellCalls, trackCalls });
       check(`${scheme}: Stop live disarms monitoring without clearing evidence`,
         await page.isEnabled('#rlive') && await page.isDisabled('#rstop') &&
         await page.locator('#rrows tr').count() > 0 &&
