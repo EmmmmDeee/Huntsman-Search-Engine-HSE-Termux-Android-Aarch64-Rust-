@@ -552,7 +552,11 @@ pub(crate) fn load(
     // before a refresh can replace it. Repeat reads verify the same immutable bytes.
     let existing = path.as_deref().and_then(read_copy);
     if let (Some(dir), Some((body, fetched))) = (dir, existing.as_ref()) {
-        crate::feed_archive::backfill(dir, feed.id, body, *fetched).map_err(|error| {
+        let sidecar = path.as_deref().and_then(|path| {
+            crate::fsio::read_bounded(&updated_path(path), UPDATED_BYTES).ok()
+        });
+        crate::feed_archive::backfill(dir, feed.id, body, *fetched, sidecar.as_deref())
+            .map_err(|error| {
             (
                 SourceOutcomeKind::Inconclusive,
                 format!("existing original feed could not be archived ({error})"),
