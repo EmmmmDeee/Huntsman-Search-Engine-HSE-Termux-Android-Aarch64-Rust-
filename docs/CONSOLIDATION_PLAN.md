@@ -438,6 +438,7 @@ same files.
 | B34 | The ICIJ and FBI-notice collectors count every match and row they leave out | An over-cap or unreadable ICIJ node, or an FBI page whose `total` exceeds the rows fetched, makes an unmatched result `inconclusive` and reports the shortfall on a match, never a clean `valid_zero` that reads as the whole corpus |
 | B35 | SeekNow's key is supplyable by its own private file like DeHashed's and HIBP's | `~/.config/seeknow/api_key` joins `PROVIDER_KEY_FILES`; the credential builder and both run gates read it through the slot rule, so a Termux install driven through the web UI needs no persistent env var |
 | B36 | The SEC EDGAR leg counts the filings a page cap leaves unscanned | EDGAR's reported match total is read; a zero with filings unscanned beyond the page is `inconclusive`, and a match reports filers past the cap, filings unscanned and filers naming others, so neither reads as the whole of EDGAR |
+| B37 | The FBI-wanted module is documented in ARCHITECTURE.md | `fbi_wanted` was registered in module.rs but lacked its L5 clause; added to the module list and described as a keyless collector folded into people scan, keyed by notice URL, reporting incomplete pages and unread content as inconclusive (not clean zero), not overshadowed by the `public_osint` parent module |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 
