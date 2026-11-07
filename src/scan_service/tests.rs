@@ -6,6 +6,49 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[test]
+fn failed_scan_log_write_remains_observable_after_successful_status_update() {
+    let (service, dir) = with_lookup(
+        "log-persistence-error",
+        Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+    );
+    let (record, _) = service
+        .create(&ScanRequest {
+            target: "1.1.1.1".into(),
+            ..ScanRequest::default()
+        })
+        .unwrap();
+
+    // A directory at the log path fails writes regardless of runner privileges.
+    // The scan row is still writable, so subsequent status updates must not
+    // conceal the earlier evidence-persistence failure.
+    let log = dir.join(&record.id).join("log.jsonl");
+    if log.is_file() {
+        std::fs::remove_file(&log).unwrap();
+    }
+    std::fs::create_dir(&log).unwrap();
+    service.log(&record.id, "test", LogLevel::Info, "must be retained");
+    let error = service.wait(&record.id, Instant::now()).unwrap_err();
+    assert!(
+        matches!(error, ServiceError::Store(message) if message.contains("unable to persist log entry"))
+    );
+    service
+        .set_status(
+            &record.id,
+            ScanStatus::ErrorFailed,
+            Some(clock::unix_now_millis()),
+        )
+        .unwrap();
+    assert!(service.state().log_failures.contains_key(&record.id));
+
+    // Restoring the path does not retroactively recover the missing entry.
+    std::fs::remove_dir(&log).unwrap();
+    assert!(service.wait(&record.id, Instant::now()).is_err());
+    service.delete(&record.id).unwrap();
+    assert!(!service.state().log_failures.contains_key(&record.id));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_failed_checkpoint_retries_identical_progress_after_storage_recovers() {
     let (service, dir) = with_lookup(
         "checkpoint-retry",
