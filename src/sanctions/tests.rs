@@ -151,7 +151,11 @@ fn a_failed_refresh_preserves_historical_matches_without_current_clearance() {
     for outcome in &outcomes {
         assert_eq!(outcome.kind, SourceOutcomeKind::Inconclusive, "{outcome:?}");
         assert!(
-            outcome.detail.as_deref().unwrap_or("").contains("could not be downloaded again"),
+            outcome
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("could not be downloaded again"),
             "{outcome:?}"
         );
     }
@@ -174,7 +178,11 @@ fn missing_ofac_aliases_cannot_prove_absence() {
     assert_eq!(outcomes[0].module, OFAC);
     assert_eq!(outcomes[0].kind, SourceOutcomeKind::Inconclusive);
     assert!(
-        outcomes[0].detail.as_deref().unwrap_or("").contains("aliases unavailable")
+        outcomes[0]
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("aliases unavailable")
     );
     assert_eq!(outcomes[1].kind, SourceOutcomeKind::ValidZero);
 }
