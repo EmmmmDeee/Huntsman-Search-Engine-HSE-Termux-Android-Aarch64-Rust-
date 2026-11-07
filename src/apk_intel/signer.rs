@@ -20,8 +20,6 @@ const SET: u8 = 0x31;
 const INTEGER: u8 = 0x02;
 const OID: u8 = 0x06;
 const CONTEXT_0: u8 = 0xa0;
-const UTC_TIME: u8 = 0x17;
-const GENERALIZED_TIME: u8 = 0x18;
 const SIGNED_DATA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02];
 /// A certificate name value longer than this is cut, with a marker.
 const MAX_NAME_VALUE: usize = 256;
@@ -178,32 +176,9 @@ fn name(data: &[u8], name: Tlv) -> Option<String> {
     Some(parts.join(", "))
 }
 
-/// A `UTCTime` or `GeneralizedTime` as `YYYY-MM-DDTHH:MM:SSZ`. Only ASCII digits before the `Z`
-/// are read, so every slice below falls on a character boundary: a crafted time holding a
-/// multi-byte character is refused, never a panic.
+/// Certificate validity uses the same calendar and ASCII rule as the X.509 reader.
 fn time(data: &[u8], time: Tlv) -> Option<String> {
-    let text = std::str::from_utf8(&data[time.start..time.end]).ok()?;
-    let digits = text.strip_suffix('Z')?;
-    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let full = match (time.tag, digits.len()) {
-        (UTC_TIME, 12) => {
-            let year: u32 = digits[..2].parse().ok()?;
-            format!("{}{digits}", if year < 50 { "20" } else { "19" })
-        }
-        (GENERALIZED_TIME, 14) => digits.to_owned(),
-        _ => return None,
-    };
-    Some(format!(
-        "{}-{}-{}T{}:{}:{}Z",
-        &full[..4],
-        &full[4..6],
-        &full[6..8],
-        &full[8..10],
-        &full[10..12],
-        &full[12..14]
-    ))
+    crate::x509::time((time.tag, data.get(time.start..time.end)?))
 }
 
 /// The summary of the X.509 certificate `der`, or `None` if it is not one.
@@ -240,8 +215,8 @@ pub(super) fn certificate(der: &[u8], scheme: &str) -> Option<Certificate> {
         issuer: name(der, *issuer)?,
         subject: subject_name,
         serial: crate::base64::base16_lower(&der[serial.start..serial.end]),
-        not_before: time(der, not_before)?,
-        not_after: time(der, not_after)?,
+        not_before: time(der, not_before).unwrap_or_default(),
+        not_after: time(der, not_after).unwrap_or_default(),
     })
 }
 
@@ -716,6 +691,9 @@ pub(super) fn sdk_signers(value: &[u8], scheme: &str) -> Vec<SdkSigner> {
 
 #[cfg(test)]
 pub(super) mod tests {
+    const UTC_TIME: u8 = 0x17;
+    const GENERALIZED_TIME: u8 = 0x18;
+
     use super::*;
 
     fn element(tag: u8, contents: &[u8]) -> Vec<u8> {
@@ -1131,5 +1109,87 @@ pub(super) mod tests {
         }
         assert_eq!(read(GENERALIZED_TIME, "2050\u{e9}0100000Z"), None);
         assert_eq!(read(UTC_TIME, "2001010000+0Z"), None);
+    }
+
+    fn certificate_with_times(before: &[u8], after: &[u8]) -> Vec<u8> {
+        let mut der = certificate_der("Validity fixture");
+        for (old, replacement) in [
+            (b"200101000000Z".as_slice(), before),
+            (b"20500101000000Z".as_slice(), after),
+        ] {
+            assert_eq!(old.len(), replacement.len(), "keep DER lengths unchanged");
+            let at = der
+                .windows(old.len())
+                .position(|bytes| bytes == old)
+                .expect("fixture time");
+            der[at..at + old.len()].copy_from_slice(replacement);
+        }
+        der
+    }
+
+    #[test]
+    fn a_certificate_time_outside_the_calendar_is_not_printed_as_a_date() {
+        for before in [
+            b"991340256161Z",
+            b"230229000000Z",
+            b"000230000000Z",
+            b"200100000000Z",
+            b"200101240000Z",
+            b"200101006000Z",
+            b"200101000061Z",
+        ] {
+            let der = certificate_with_times(before, b"20500101000000Z");
+            let cert = certificate(&der, "v1").expect("retain the certificate identity");
+            assert_eq!(cert.not_before, "", "{before:?}");
+            assert_eq!(cert.not_after, "2050-01-01T00:00:00Z");
+            assert_eq!(cert.sha256, hex32(&sha256(&der)));
+            assert_eq!(cert.subject, "CN=Validity fixture, O=Example Pty Ltd, C=AU");
+        }
+        for after in [b"20500230000000Z", b"19000229000000Z", b"20500101240000Z"] {
+            let der = certificate_with_times(b"200101000000Z", after);
+            let cert = certificate(&der, "v1").expect("retain the certificate identity");
+            assert_eq!(cert.not_before, "2020-01-01T00:00:00Z");
+            assert_eq!(cert.not_after, "", "{after:?}");
+        }
+    }
+
+    #[test]
+    fn unreadable_certificate_validity_keeps_the_other_date_and_signer_identity() {
+        let original = certificate(&certificate_der("Validity fixture"), "v1").expect("fixture");
+        for before in [
+            b"20010100000xZ".as_slice(),
+            b"2001010000\xc3\xa9Z".as_slice(),
+        ] {
+            let der = certificate_with_times(before, b"20500101000000Z");
+            let cert =
+                certificate(&der, "v1").expect("an unreadable date must not discard a signer");
+            assert_eq!(cert.not_before, "");
+            assert_eq!(cert.not_after, original.not_after);
+            assert_eq!(cert.public_key_sha256, original.public_key_sha256);
+            assert_eq!(cert.subject, original.subject);
+            assert_eq!(cert.issuer, original.issuer);
+            assert_eq!(cert.serial, original.serial);
+            assert_eq!(cert.scheme, original.scheme);
+            assert_eq!(cert.sha256, hex32(&sha256(&der)));
+        }
+    }
+
+    #[test]
+    fn shared_validity_keeps_the_year_pivot_leap_day_and_existing_leap_second_rule() {
+        for (before, expected) in [
+            (b"491231235959Z", "2049-12-31T23:59:59Z"),
+            (b"500101000000Z", "1950-01-01T00:00:00Z"),
+            (b"000229000000Z", "2000-02-29T00:00:00Z"),
+            (b"161231235960Z", "2016-12-31T23:59:60Z"),
+        ] {
+            let der = certificate_with_times(before, b"20000229000000Z");
+            let cert = certificate(&der, "v1").expect("valid certificate summary");
+            assert_eq!(cert.not_before, expected);
+            assert_eq!(cert.not_after, "2000-02-29T00:00:00Z");
+        }
+        let der = certificate_with_times(b"20010100000xZ", b"2050010100000xZ");
+        let cert = certificate(&der, "v1").expect("both unreadable dates still retain the signer");
+        assert!(cert.not_before.is_empty() && cert.not_after.is_empty());
+        assert_eq!(cert.sha256, hex32(&sha256(&der)));
     }
 }
