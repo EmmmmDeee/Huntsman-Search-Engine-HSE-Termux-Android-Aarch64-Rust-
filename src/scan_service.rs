@@ -1225,7 +1225,11 @@ impl ScanService {
             // A scan saves its final status before it takes this lock to give up its place and
             // notify `freed`, so a row read under the lock cannot miss that notice.
             let state = self.state();
-            if let Some(error) = state.status_failures.get(id).or_else(|| state.log_failures.get(id)) {
+            if let Some(error) = state
+                .status_failures
+                .get(id)
+                .or_else(|| state.log_failures.get(id))
+            {
                 return Err(ServiceError::Store(error.clone()));
             }
             let record = self.store.get(id)?;
