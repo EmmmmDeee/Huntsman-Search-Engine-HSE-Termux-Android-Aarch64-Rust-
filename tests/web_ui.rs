@@ -1115,6 +1115,9 @@ fn spiderfoot_inspired_workbench_retains_live_scan_and_passive_radar_contracts()
         "id=\"w-running\"",
         "id=\"w-finished\"",
         "id=\"w-elements\"",
+        "id=\"rlive\"",
+        "id=\"rstop\"",
+        "id=\"radar-points\"",
         "id=\"rread\"",
         "id=\"rcread\"",
         "id=\"rtrack\"",
@@ -1134,8 +1137,16 @@ fn spiderfoot_inspired_workbench_retains_live_scan_and_passive_radar_contracts()
         );
     }
     assert!(PAGE.contains("ROOTLESS TERMUX / RADIO INTELLIGENCE"));
-    assert!(PAGE.contains("Explicit reads only"));
+    assert!(PAGE.contains("Live OS-cache monitoring"));
+    assert!(PAGE.contains("Hardware scans not triggered"));
     assert!(PAGE.contains("radar-scope-caption"));
+    assert!(script.contains("const RADAR_LIVE_INTERVAL=45000;"));
+    assert!(script.contains("await $('rread').onclick()"));
+    assert!(script.contains("await $('rcread').onclick()"));
+    assert!(script.contains("if(document.hidden)stopRadarLive()"));
+    assert!(script.contains("if(v!=='radar')stopRadarLive()"));
+    assert!(script.contains("function radarPlot(observations)"));
+    assert!(PAGE.contains("Hardware scans not triggered"));
     assert!(PAGE.contains("id=\"radar-observed\""));
     assert!(script.contains("$('radar-observed').textContent=String(observations.length)"));
     assert!(PAGE.contains("nav-footer"));
