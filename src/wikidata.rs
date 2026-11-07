@@ -352,7 +352,213 @@ pub fn lookup<T: Transport + ?Sized>(
     let mut report = interpret(&fetched, &qid, search_label.as_deref(), scan_id, now_unix)
         .unwrap_or_else(Report::miss);
     label_claims(transport, &base, &qid, &mut report, now_unix);
+    classify_positions(transport, &base, &qid, &mut report, now_unix);
     Ok(report)
+}
+
+/// Position held (`P39`): the offices and roles an item records.
+const POSITION_HELD: &str = "P39";
+/// End time (`P582`): a position statement carrying it is a former one.
+const END_TIME: &str = "P582";
+/// The most positions one item's classification looks up.
+const MAX_POSITIONS: usize = 20;
+/// `P31` types that make a position a public office: public office (`Q294414`) and elective
+/// office (`Q17279032`). The generic "position" (`Q4164871`) is not one: Wikidata gives it to a
+/// company's "president" and "director" as well as to heads of state.
+const PUBLIC_OFFICE_TYPES: &[&str] = &["Q294414", "Q17279032"];
+/// `P279` classes a public office is a subclass of: head of state (`Q48352`), head of
+/// government (`Q2285706`), minister (`Q83307`), prime minister (`Q14212`), emir (`Q166382`),
+/// member of parliament (`Q486839`), legislator (`Q4175034`) and mayor (`Q30185`).
+const PUBLIC_OFFICE_CLASSES: &[&str] = &[
+    "Q48352", "Q2285706", "Q83307", "Q14212", "Q166382", "Q486839", "Q4175034", "Q30185",
+];
+
+/// One held position read from a kept `P39` statement: its item and whether it has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeldPosition {
+    qid: String,
+    former: bool,
+}
+
+/// The positions the item's kept `P39` statements name, deprecated ones left out, at most
+/// [`MAX_POSITIONS`], each once. **Pure.**
+fn held_positions(evidence: &Evidence) -> Vec<HeldPosition> {
+    let mut held: Vec<HeldPosition> = Vec::new();
+    for statement in evidence.attr_values("statement_json") {
+        let Some(json) = statement
+            .strip_prefix(POSITION_HELD)
+            .and_then(|rest| rest.strip_prefix('='))
+        else {
+            continue;
+        };
+        let Ok(statement) = serde_json::from_str::<Value>(json) else {
+            continue;
+        };
+        if !eligible_rank(&statement) {
+            continue;
+        }
+        let Some(position) = statement
+            .get("value")
+            .and_then(|v| v.get("content"))
+            .and_then(Value::as_str)
+            .filter(|id| is_qid(id) && id.starts_with('Q'))
+        else {
+            continue;
+        };
+        let former = statement
+            .get("qualifiers")
+            .and_then(Value::as_array)
+            .is_some_and(|qualifiers| {
+                qualifiers.iter().any(|q| {
+                    q.get("property")
+                        .and_then(|p| p.get("id"))
+                        .and_then(Value::as_str)
+                        == Some(END_TIME)
+                })
+            });
+        if let Some(known) = held.iter_mut().find(|h| h.qid == position) {
+            // A position held once and ended, then held again, is current if any holding is.
+            known.former &= former;
+        } else if held.len() < MAX_POSITIONS {
+            held.push(HeldPosition {
+                qid: position.to_owned(),
+                former,
+            });
+        }
+    }
+    held
+}
+
+/// The item ids a `wbgetentities` claim list names under `pid`. **Pure.**
+fn claim_targets<'a>(entity: &'a Value, pid: &str) -> Vec<&'a str> {
+    entity
+        .get("claims")
+        .and_then(|claims| claims.get(pid))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|claim| {
+            claim
+                .get("mainsnak")?
+                .get("datavalue")?
+                .get("value")?
+                .get("id")?
+                .as_str()
+        })
+        .collect()
+}
+
+/// Whether a position's own record types it as a public office. **Pure.**
+fn is_public_office(position: &Value) -> bool {
+    claim_targets(position, "P31")
+        .iter()
+        .any(|t| PUBLIC_OFFICE_TYPES.contains(t))
+        || claim_targets(position, "P279")
+            .iter()
+            .any(|c| PUBLIC_OFFICE_CLASSES.contains(c))
+}
+
+/// The `wbgetentities` URL that reads the claims of the positions in `ids`. **Pure.**
+#[must_use]
+pub fn positions_url(base: &str, ids: &[String]) -> String {
+    format!(
+        "{base}/w/api.php?action=wbgetentities&ids={}&props=claims&format=json",
+        percent_encode_unreserved(&ids.join("|"))
+    )
+}
+
+/// Classify the positions the item holds (`P39`) with one bounded request for their records: a
+/// position typed as a public office makes the person politically exposed, current or former, and
+/// the person entity is tagged `politically-exposed`. Positions are only ever recorded as found:
+/// none typed as public offices is said as such, never as "not exposed", and a failed request only
+/// records why, never changing the findings or the outcome.
+fn classify_positions<T: Transport + ?Sized>(
+    transport: &T,
+    base: &str,
+    qid: &str,
+    report: &mut Report,
+    now_unix: u64,
+) {
+    let Some(evidence) = item_evidence(report, qid) else {
+        return;
+    };
+    let held = held_positions(evidence);
+    if held.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = held.iter().map(|h| h.qid.clone()).collect();
+    let records = fetch(
+        transport,
+        request(positions_url(base, &ids)),
+        None,
+        &FetchOptions::no_redirects().paced(),
+        SOURCE,
+        now_unix,
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|fetched| {
+        let response = whole_response(&fetched, "Wikidata positions").map_err(why)?;
+        answer(&fetched, "Wikidata positions").map_err(why)?;
+        decode_json::<Value>(response, SOURCE, now_unix, "Wikidata positions").map_err(why)
+    });
+    let mut updated = std::mem::replace(
+        evidence,
+        Evidence::new(EvidenceProvenance::for_scan(SOURCE, ""), String::new()),
+    );
+    let mut exposed = false;
+    match records {
+        Ok(body) => {
+            let entities = body.get("entities");
+            let mut offices = 0usize;
+            for position in &held {
+                let Some(record) = entities.and_then(|e| e.get(&position.qid)) else {
+                    continue;
+                };
+                if is_public_office(record) {
+                    offices += 1;
+                    updated = updated.with_attr(
+                        "public_office",
+                        format!(
+                            "{} ({})",
+                            position.qid,
+                            if position.former { "former" } else { "current" }
+                        ),
+                    );
+                }
+            }
+            if offices > 0 {
+                exposed = true;
+                updated = updated.with_attr(
+                    "politically_exposed",
+                    format!(
+                        "yes: {offices} of {} positions held (P39) are typed as public offices; review before relying on it",
+                        held.len()
+                    ),
+                );
+            } else {
+                updated = updated.with_attr(
+                    "public_office_checked",
+                    format!(
+                        "{} positions held (P39), none typed as a public office",
+                        held.len()
+                    ),
+                );
+            }
+        }
+        Err(reason) => {
+            updated = updated.with_attr("public_office_unavailable", reason);
+        }
+    }
+    *evidence = updated;
+    if exposed {
+        if let Some(entity) = report.entities.iter_mut().find(|entity| {
+            entity.evidence.iter().any(|ev| {
+                ev.attr_values("qid").any(|q| q == qid) && ev.attributes.contains_key("claim")
+            })
+        }) {
+            entity.tag("politically-exposed");
+        }
+    }
 }
 
 /// The most ids one `wbgetentities` request names (the Action API's own limit).
@@ -419,14 +625,9 @@ fn why(outcome: SourceExecutionOutcome) -> String {
 /// Name the properties and items the item's claims cite, with one bounded request. Readable
 /// labels are presentation: a failed lookup leaves the claims as they were, records why in
 /// `claim_labels_unavailable`, and never changes the report's outcome or entities.
-fn label_claims<T: Transport + ?Sized>(
-    transport: &T,
-    base: &str,
-    qid: &str,
-    report: &mut Report,
-    now_unix: u64,
-) {
-    let Some(evidence) = report
+/// The item's own evidence record in `report`: the one that carries its `qid` and its claims.
+fn item_evidence<'a>(report: &'a mut Report, qid: &str) -> Option<&'a mut Evidence> {
+    report
         .entities
         .iter_mut()
         .flat_map(|entity| entity.evidence.iter_mut())
@@ -434,7 +635,16 @@ fn label_claims<T: Transport + ?Sized>(
             evidence.attr_values("qid").any(|q| q == qid)
                 && evidence.attributes.contains_key("claim")
         })
-    else {
+}
+
+fn label_claims<T: Transport + ?Sized>(
+    transport: &T,
+    base: &str,
+    qid: &str,
+    report: &mut Report,
+    now_unix: u64,
+) {
+    let Some(evidence) = item_evidence(report, qid) else {
         return;
     };
     let ids = claim_ids(evidence);
@@ -1672,5 +1882,97 @@ mod tests {
                 .any(|e| e.kind == EntityKind::Username
                     && (e.raw_value == "example-exec" || e.raw_value == "UCabc123"))
         );
+    }
+
+    /// An item holding a current public office (typed directly), a former one (subclass of head
+    /// of state, ended by P582) and a corporate role, as the live records type them.
+    const OFFICE_HOLDER: &str = r#"{"type":"item","id":"Q46","labels":{"en":"Example Ruler"},
+      "statements":{
+        "P31":[{"value":{"type":"value","content":"Q5"}}],
+        "P39":[
+          {"id":"Q46$a","rank":"normal","value":{"type":"value","content":"Q110964267"},"qualifiers":[]},
+          {"id":"Q46$b","rank":"normal","value":{"type":"value","content":"Q955006"},
+           "qualifiers":[{"property":{"id":"P582"},"value":{"type":"value","content":{"time":"+2020-01-01T00:00:00Z"}}}]},
+          {"id":"Q46$c","rank":"normal","value":{"type":"value","content":"Q484876"},"qualifiers":[]},
+          {"id":"Q46$d","rank":"deprecated","value":{"type":"value","content":"Q30101519"},"qualifiers":[]}
+        ]}}"#;
+    const POSITIONS: &str = r#"{"entities":{
+      "Q110964267":{"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q294414"}}}}]}},
+      "Q955006":{"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q4164871"}}}}],
+                           "P279":[{"mainsnak":{"datavalue":{"value":{"id":"Q48352"}}}}]}},
+      "Q484876":{"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q28640"}}}}]}}
+    },"success":1}"#;
+
+    #[test]
+    fn a_public_office_held_marks_the_person_politically_exposed_current_and_former() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(OFFICE_HOLDER)),
+            Ok(crate::test_support::json_ok(LABELS)),
+            Ok(crate::test_support::json_ok(POSITIONS)),
+        ]);
+        let report = lookup(&transport, "Q46", "scan-wd", 1).expect("lookup");
+        let seen = transport.seen.borrow();
+        assert_eq!(seen.len(), 3, "item, labels, then one positions request");
+        assert!(seen[2].url.contains("props=claims"), "{}", seen[2].url);
+        assert!(
+            !seen[2].url.contains("Q30101519"),
+            "a deprecated position is not looked up"
+        );
+        let person = entity(&report, &EntityKind::Person, "Example Ruler");
+        assert!(person.tags.iter().any(|t| t == "politically-exposed"));
+        let evidence = item_evidence_of(&report);
+        let offices: Vec<&str> = evidence.attr_values("public_office").collect();
+        assert_eq!(offices, ["Q110964267 (current)", "Q955006 (former)"]);
+        assert!(evidence.attributes["politically_exposed"].starts_with("yes: 2 of 3"));
+    }
+
+    #[test]
+    fn a_corporate_role_alone_is_never_a_public_office_and_a_failure_changes_nothing() {
+        let ceo = r#"{"type":"item","id":"Q47","labels":{"en":"Example Executive"},
+          "statements":{"P31":[{"value":{"type":"value","content":"Q5"}}],
+          "P39":[{"rank":"normal","value":{"type":"value","content":"Q484876"},"qualifiers":[]}]}}"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(ceo)),
+            Ok(crate::test_support::json_ok(LABELS)),
+            Ok(crate::test_support::json_ok(POSITIONS)),
+        ]);
+        let report = lookup(&transport, "Q47", "scan-wd", 1).expect("lookup");
+        let person = entity(&report, &EntityKind::Person, "Example Executive");
+        assert!(!person.tags.iter().any(|t| t == "politically-exposed"));
+        let evidence = item_evidence_of(&report);
+        assert!(!evidence.attributes.contains_key("politically_exposed"));
+        assert_eq!(
+            evidence
+                .attributes
+                .get("public_office_checked")
+                .map(String::as_str),
+            Some("1 positions held (P39), none typed as a public office")
+        );
+
+        // The positions request fails: the findings stand, the reason is kept, nothing is claimed.
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(OFFICE_HOLDER)),
+            Ok(crate::test_support::json_ok(LABELS)),
+        ]);
+        let report = lookup(&transport, "Q46", "scan-wd", 1).expect("lookup");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        let person = entity(&report, &EntityKind::Person, "Example Ruler");
+        assert!(!person.tags.iter().any(|t| t == "politically-exposed"));
+        let evidence = item_evidence_of(&report);
+        assert!(
+            evidence
+                .attributes
+                .contains_key("public_office_unavailable")
+        );
+        assert!(!evidence.attributes.contains_key("public_office_checked"));
+    }
+
+    fn item_evidence_of(report: &Report) -> &Evidence {
+        report
+            .entities
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .find(|ev| ev.attributes.contains_key("claim"))
+            .expect("item evidence")
     }
 }

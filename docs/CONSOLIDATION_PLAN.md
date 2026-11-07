@@ -432,6 +432,7 @@ same files.
 | B29 | A person scan checks the OFAC and UN sanctions lists | `sanctions` downloads both lists through the shared feed cache (one authority, `CachedList`) and matches every name word locally; an XML list declares its root so it is not mistaken for a page |
 | B29b | The EU sanctions list joins OFAC and UN | `sanctions.eu_fsf` reads the EU consolidated CSV through the same cache, grouping its rows by subject; the shared CSV splitter takes a separator |
 | B30 | A DeHashed domain search works against the live API | Domain is sent unquoted (the API refuses a quoted domain with 400); email and username stay quoted (unquoted email is fuzzy). Opt-in live test proves decode, fidelity and masking against the raw answer |
+| B31 | A public-office holder is flagged politically exposed | P39 positions classified by their own P31/P279 records (public/elective office, head of state or government, minister, legislator, ...), never the generic "position" type; current or former kept per office |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 
