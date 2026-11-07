@@ -15,8 +15,9 @@ keep every Termux plugin on the same distribution source. On an ARM64 handset,
 run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh -o "$TMPDIR/huntsman-install.sh"
-bash "$TMPDIR/huntsman-install.sh"
+installer="${TMPDIR:-$PREFIX/tmp}/huntsman-install.sh"
+curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh -o "$installer"
+bash "$installer"
 ```
 
 For a **strict low-memory, prebuilt-only upgrade**, use the same installer with
@@ -25,8 +26,21 @@ fall back to an older published revision, and leaves an existing installation
 unchanged when the requested revision's prebuilt is not yet published:
 
 ```sh
-HUNTSMAN_REQUIRE_PREBUILT=1 bash "$TMPDIR/huntsman-install.sh"
+HUNTSMAN_REQUIRE_PREBUILT=1 bash "$installer"
 ```
+
+To force a source build of the pinned revision instead, use
+`HUNTSMAN_FROM_SOURCE=1 bash "$installer"`. Both `HUNTSMAN_FROM_SOURCE`
+and `HUNTSMAN_REQUIRE_PREBUILT` accept only `0` or `1`; setting both
+to `1` is invalid. All invalid combinations are rejected *before* the
+installer creates state, locks installation, updates packages or fetches
+code. The legacy `hse` channel is dispatched separately and unchanged.
+
+The current `main` channel publishes releases tagged `main-<sha7>`.
+Do not use the repository's stable `v1.41.0` release as a proxy for the
+latest `huntsman-recon` binary. The installer verifies the chosen
+revision, release checksum, embedded `build-sha`, offline acceptance and
+post-install provenance before reporting its result.
 
 To pin an exact main commit, also set `HUNTSMAN_REV` to its full 40-digit SHA.
 `HUNTSMAN_REQUIRE_PREBUILT=1` conflicts with `HUNTSMAN_FROM_SOURCE=1` and
@@ -46,14 +60,14 @@ resolves `main` once to a full immutable commit SHA (unless `HUNTSMAN_REV`
 already names one). Then it installs, in this order:
 
 1. **The verified prebuilt build of that commit**, when CI published one as the
-   `main-<sha7>` pre-release: about 5 MB, no compiler. The download must match
+   `main-<sha7>` pre-release: binary size varies by revision, no compiler. The download must match
    the release's SHA-256 file, `build-sha` must print the commit, and `check`
    plus ledger verification must pass, all before the binary is staged next to
    `$PREFIX/bin/huntsman-recon`, re-checked there and renamed into place.
 2. **The newest published build of `main`**, when the head of `main` has none
    yet (CI is still building it, or a newer push superseded it) and no
    `HUNTSMAN_REV` was given: the installer walks back from the head, at most 30
-   commits, through the GitHub API.
+   predecessor commits (29 checked at most), through the GitHub API.
 3. **A source build**, only when no published build fits, or when
    `HUNTSMAN_FROM_SOURCE=1` asks for one. It installs `rust clang`, aligns the
    Termux Rust compiler with its host `rust-std-<target>` package, compiles a
