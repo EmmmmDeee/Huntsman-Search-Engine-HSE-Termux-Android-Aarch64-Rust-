@@ -23,15 +23,21 @@ fn every_public_library_module_resolves_to_one_canonical_source_path() {
         let name = name.trim();
         assert!(
             !name.is_empty()
-                && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
             "noncanonical public module name: {name}"
         );
-        assert!(names.insert(name.to_owned()), "duplicate public module: {name}");
+        assert!(
+            names.insert(name.to_owned()),
+            "duplicate public module: {name}"
+        );
         let file = root.join(format!("src/{name}.rs"));
         let directory = root.join(format!("src/{name}/mod.rs"));
         let count = usize::from(file.is_file()) + usize::from(directory.is_file());
         assert_eq!(
-            count, 1,
+            count,
+            1,
             "module {name} must resolve to exactly one canonical source file ({} or {})",
             file.display(),
             directory.display()
