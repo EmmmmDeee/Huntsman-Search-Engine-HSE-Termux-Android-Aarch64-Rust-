@@ -88,6 +88,53 @@ pub fn page_url(handle: &str) -> String {
     format!("{PAGE_BASE}/{handle}")
 }
 
+/// One handle as Telegram's public pages show it: the confirmed page and, for a channel, its
+/// post preview (or why the preview was not read); or the outcome of a handle with no readable
+/// public page.
+#[derive(Debug, Clone)]
+pub struct Observed {
+    pub page: Page,
+    pub preview: Option<Result<Preview, String>>,
+    pub status: u16,
+}
+
+/// Read one handle's public page and, for a channel, its post preview. A page that confirms
+/// nothing is the `Err` outcome, never a page.
+///
+/// # Errors
+/// Returns a network-boundary error when the guarded fetch refuses a URL.
+pub fn observe<T: Transport + ?Sized>(
+    transport: &T,
+    handle: &str,
+    now_unix: u64,
+) -> Result<Result<Observed, SourceExecutionOutcome>, Error> {
+    if !valid_handle(handle) {
+        return Ok(Err(SourceExecutionOutcome::inconclusive(
+            SRC,
+            now_unix,
+            "selector is not a valid Telegram handle",
+        )));
+    }
+    let fetched = get_page(transport, &page_url(handle), now_unix)?;
+    let (page, status) = match interpret(&fetched, handle, now_unix) {
+        Ok(found) => found,
+        Err(outcome) => return Ok(Err(outcome)),
+    };
+    // Only a channel has a public post preview. A preview that cannot be read keeps the confirmed
+    // page and says so; it never turns the channel into a miss.
+    let preview = if page.kind == Kind::Channel {
+        let fetched = get_page(transport, &preview_url(handle), now_unix)?;
+        Some(read_preview(&fetched, handle))
+    } else {
+        None
+    };
+    Ok(Ok(Observed {
+        page,
+        preview,
+        status,
+    }))
+}
+
 /// Look up one Telegram public page, keyless.
 ///
 /// # Errors
@@ -99,30 +146,14 @@ pub fn lookup<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Report, Error> {
     let handle = username.trim().trim_start_matches('@');
-    if !valid_handle(handle) {
-        return Ok(empty(SourceExecutionOutcome::inconclusive(
-            SRC,
-            now_unix,
-            "selector is not a valid Telegram handle",
-        )));
-    }
-    let fetched = get_page(transport, &page_url(handle), now_unix)?;
-    let (page, status) = match interpret(&fetched, handle, now_unix) {
-        Ok(found) => found,
+    let observed = match observe(transport, handle, now_unix)? {
+        Ok(observed) => observed,
         Err(outcome) => return Ok(empty(outcome)),
     };
-    // Only a channel has a public post preview. A preview that cannot be read keeps the confirmed
-    // page and says so; it never turns the channel into a miss.
-    let preview = if page.kind == Kind::Channel {
-        let fetched = get_page(transport, &preview_url(handle), now_unix)?;
-        Some(read_preview(&fetched, handle))
-    } else {
-        None
-    };
-    let entities = build_entities(&page, preview.as_ref(), handle, scan_id);
-    let mut outcome =
-        SourceExecutionOutcome::success(SRC, now_unix, entities.len()).with_http_status(status);
-    if let Some(Err(reason)) = &preview {
+    let entities = build_entities(&observed.page, observed.preview.as_ref(), handle, scan_id);
+    let mut outcome = SourceExecutionOutcome::success(SRC, now_unix, entities.len())
+        .with_http_status(observed.status);
+    if let Some(Err(reason)) = &observed.preview {
         outcome = outcome.with_detail(format!("channel post preview not read: {reason}"));
     }
     Ok(Report { entities, outcome })

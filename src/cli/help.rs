@@ -110,6 +110,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "security-tools" => super::security_tools::HELP,
         "crypto" => huntsman_recon::crypto_cli::CRYPTO_HELP,
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
+        "telegram-network" => huntsman_recon::telegram_network::HELP,
         "wikidata" => huntsman_recon::wikidata_cli::WIKIDATA_HELP,
         "gleif" => huntsman_recon::gleif_cli::GLEIF_HELP,
         "company" => huntsman_recon::company_cli::COMPANY_HELP,

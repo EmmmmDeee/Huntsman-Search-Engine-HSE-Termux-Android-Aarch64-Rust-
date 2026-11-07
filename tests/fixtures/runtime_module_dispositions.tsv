@@ -130,6 +130,7 @@ keys	leaf	credential file handling
 mastodon_user	adapter	public Mastodon account source client reached through username_cli from username, scan and /api/lookup
 tiktok_public_contact	adapter	keyless public TikTok bio contact client, reached from username_cli and bounded by same guarded transport
 telegram	adapter	keyless public Telegram page client (t.me/HANDLE), reached from username_cli by the username command and username scans, bounded by the same guarded transport
+telegram_network	adapter	bounded keyless map of public Telegram channels reached by the telegram-network command over telegram::observe and the same guarded transport
 web	runtime	Stage 2 directory shim re-exporting serve/API listener leaves
 wikidata	adapter	Wikidata entity source client reached through wikidata_cli from the wikidata command and folded into a people scan as a candidate lead
 wikidata_cli	adapter	wikidata query front-end reached from the wikidata command

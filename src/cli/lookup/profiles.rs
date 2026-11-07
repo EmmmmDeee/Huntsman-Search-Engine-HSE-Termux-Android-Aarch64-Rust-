@@ -48,6 +48,7 @@ use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::seeknow_collector::LookupLeg;
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceRun};
 use huntsman_recon::stolen_tax;
+use huntsman_recon::telegram_network;
 use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::threat_feeds::{self, Feeds};
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
@@ -755,6 +756,21 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+pub(in crate::cli) fn telegram_network_cmd(args: &[String]) -> ExitCode {
+    let parsed = match telegram_network::Args::parse(args) {
+        Ok(p) => p,
+        Err(e) => return fail(EX_USAGE, &format!("{e}\n{}", telegram_network::USAGE)),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match telegram_network::crawl(&transport, &parsed.seed, parsed.limits, clock::unix_now()) {
+        Ok(network) => {
+            print!("{}", telegram_network::render(&network));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_UNAVAILABLE, &e.to_string()),
     }
 }
 
