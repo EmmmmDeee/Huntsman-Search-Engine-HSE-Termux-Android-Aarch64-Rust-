@@ -6,9 +6,9 @@ The read-only `huntsman-recon scans people-audit` command walks **every retained
 - every Person entity in other scans;
 - every SpiderFoot `HUMAN_NAME` data element, including those marked false positive.
 
-Each output includes scan ID, time, name, entity UIDs, origin categories, false-positive state, source-attributed POB / DOB claims and conflicts, plus **conditional** historical jurisdiction context when the recorded birthplace is recognisably Dushanbe / Stalinabad / Dyushambe. Source citations embedded in context are background documentation, not proof about that person's birth.
+Each output includes scan ID, time, name, an occurrence identifier (scan target, numbered Person entity or numbered HUMAN_NAME element), optional entity UID and element ID, the element's false-positive state, source-attributed POB / DOB claims and conflicts, plus **conditional** historical jurisdiction context when the recorded birthplace is recognisably Dushanbe / Stalinabad / Dyushambe. A Person entity and the similarly named search target are separate rows; the output counts occurrences, **not resolved unique humans**. Source citations embedded in context are background documentation, not proof about that person's birth.
 
-Unknown POB and DOB remain unknown. The audit makes **no nationality, ethnicity, citizenship, family, migration or identity assertions** from a birthplace string. Names are **not** resolved across distinct scan IDs merely because they match. Original scan files, raw claims, timestamps and provenance are never modified; no internet access, API keys, provider requests or runtime LLM are used.
+Unknown POB and DOB remain unknown. The audit makes **no nationality, ethnicity, citizenship, family, migration or identity assertions** from a birthplace string. Names are **never** joined merely because they match, even within one scan. Birthplace and birth-date claims are linked for historical contextualisation **only when both come from the same saved Evidence record**; separately sourced facts are not silently cross-joined. The exact original attribute text and merged source provenance are retained beside any parsed attribute values. A historical label is not proof that the underlying source's assertions are true. Original scan files, raw claims, timestamps and provenance are never modified; no internet access, API keys, provider requests or runtime LLM are used.
 
 ## Android Termux usage
 
@@ -21,12 +21,12 @@ huntsman-recon scans people-audit > "$HOME/person-history-audit.jsonl"
 huntsman-recon scans people-audit --dir "$HOME/.huntsman/scans"
 ```
 
-The last JSONL line is a summary. Each unreadable scan produces an explicit `scan_read_error` record, increments `scans_unreadable` and makes the command exit nonzero, without discarding records from other scans.
+The last JSONL line is a summary of **scan-person occurrences**, including explicitly unverified or absent birthplace information. Each unreadable scan produces an explicit `scan_read_error` record, increments `scans_unreadable` and makes the command exit nonzero, without discarding records from other scans.
 
 ## Scope and limits
 
 "Every" means **every person occurrence in every retained, readable saved scan**, **not** every person ever looked up on the machine. Direct `people NAME` calls made without saving, past deleted/pruned scans, other installations and remote copies cannot be recovered from the retained scan store. The scan store currently lists at most 4,096 scans; exceeding that cap fails explicitly rather than returning a deceptive partial list. Results are processed one scan at a time to avoid loading the entire collection into phone memory.
 
-This is an **evidence coverage audit**, not automatic independent verification. It does not add missing birthplaces by guessing from names, IP geolocation, languages, surnames or ethnic statistics. The current jurisdiction reference rule applies only to Dushanbe historical names; all other places remain un-enriched pending an independently validated, dated historical gazetteer. No automatically derived context upgrades a source's evidence grade.
+This is an **evidence coverage audit**, not automatic independent verification. A source that omits the birthplace is never replaced with guessed demographic data. Date parsing validates calendar boundaries (including leap years) before choosing a historical period. It does not add missing birthplaces by guessing from names, IP geolocation, languages, surnames or ethnic statistics. The current jurisdiction reference rule applies only to Dushanbe historical names; all other places remain un-enriched pending an independently validated, dated historical gazetteer. No automatically derived context upgrades a source's evidence grade.
 
 Recommended further work after compiling and on-device acceptance: expose bounded server-side pagination in the Web UI, add validated authoritative historical gazetteers with date-effective boundaries for more locations, and ingest previously exported or backed-up scans through explicit, non-destructive import provenance.
