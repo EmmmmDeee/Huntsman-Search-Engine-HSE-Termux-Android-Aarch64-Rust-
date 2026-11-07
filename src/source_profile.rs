@@ -234,6 +234,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("registry_policy", C::Other, None),
     row("ripestat", C::Infra, None),
     row("robtex", C::Infra, None),
+    row("sanctions", C::Other, Some(C::IdentityRegistry)),
     row("saucenao", C::Other, Some(C::Search)),
     row("sec_edgar", C::Other, Some(C::IdentityRegistry)),
     row("securitytrails", C::Infra, None),

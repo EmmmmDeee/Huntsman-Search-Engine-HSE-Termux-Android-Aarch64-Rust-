@@ -154,8 +154,14 @@ fn people(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Ref
     let keys = crate::cli::credentials::lookup_keys();
     let (run, seeknow) = concurrent::pair(
         || {
+            // The sanctions lists download over the threat feeds' large-body transport and are
+            // kept beside the feeds, so a lookup within a list's age reads its copy.
+            let lists = huntsman_recon::sanctions::Lists::new(
+                Box::new(transport(&threat_feeds::transport_config(), chosen)),
+                crate::cli::scans::default_feed_dir(),
+            );
             let transport = transport(&TransportConfig::default(), chosen);
-            people_cli::run(&transport, selector, now)
+            people_cli::run_with_lists(&transport, &lists, selector, now)
         },
         || seeknow_leg(EntityKind::Person, selector, (&keys, chosen), now),
     );

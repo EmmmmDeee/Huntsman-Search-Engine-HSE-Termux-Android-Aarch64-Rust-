@@ -1159,3 +1159,18 @@ fn a_list_is_the_list_however_it_reads_and_a_kept_page_is_no_copy() {
     );
     std::fs::remove_dir_all(&dir).expect("cleanup");
 }
+
+/// An XML list opens with its root element, which [`is_page`] alone would read as a page; a list
+/// that declares that root is read as itself, and still refuses a real page served in its place.
+#[test]
+fn a_declared_xml_root_is_the_list_and_a_page_is_still_a_page() {
+    let list =
+        "\u{feff}<?xml version=\"1.0\"?>\n<CONSOLIDATED_LIST><INDIVIDUALS/></CONSOLIDATED_LIST>";
+    assert!(
+        is_page(list.as_bytes()),
+        "undeclared, an XML root reads as a page"
+    );
+    assert!(!is_page_for(list.as_bytes(), Some("CONSOLIDATED_LIST")));
+    let page = "<!DOCTYPE html><html><body>moved</body></html>";
+    assert!(is_page_for(page.as_bytes(), Some("CONSOLIDATED_LIST")));
+}

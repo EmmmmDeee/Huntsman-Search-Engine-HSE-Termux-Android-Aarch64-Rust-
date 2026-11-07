@@ -240,6 +240,7 @@ pub mod roi;
 pub mod routing_context;
 pub mod run_history;
 pub mod runtime;
+pub mod sanctions;
 pub mod scan_alert;
 pub mod scan_api;
 pub mod scan_artifact;

@@ -94,6 +94,35 @@ pub struct Feed {
     pub stale_after: u64,
 }
 
+/// What the download-and-keep machinery needs of a public list: its copy's name in the list
+/// directory, the source label its downloads are recorded under, where it is downloaded from, and
+/// how long a copy is read before it is downloaded again. A [`Feed`] is one; so is each
+/// consolidated sanctions list (`crate::sanctions`), which share this one implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CachedList {
+    pub id: &'static str,
+    pub source: &'static str,
+    pub url: &'static str,
+    pub max_age: u64,
+    /// The root element an XML list opens with (`CONSOLIDATED_LIST`), so the list is never read as
+    /// a page served in its place; `None` for a list that is not XML.
+    pub xml_root: Option<&'static str>,
+}
+
+impl Feed {
+    /// This feed as a [`CachedList`]. **Pure.**
+    #[must_use]
+    pub const fn cached(&self) -> CachedList {
+        CachedList {
+            id: self.id,
+            source: self.source,
+            url: self.url,
+            max_age: self.max_age,
+            xml_root: None,
+        }
+    }
+}
+
 /// Spiderfoot's cache period for its feeds.
 const SPIDERFOOT_CACHE: u64 = 18 * 3_600;
 
@@ -415,7 +444,7 @@ pub fn check(
 }
 
 /// Why a feed could not be read: the kind of failure and why.
-type Failure = (SourceOutcomeKind, String);
+pub(crate) type Failure = (SourceOutcomeKind, String);
 
 /// What one feed said about the subjects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,7 +478,7 @@ fn read_feed(
     subjects: &[Subject],
     now_unix: u64,
 ) -> Result<Read, Failure> {
-    let copy = load(transport, dir, feed, now_unix)?;
+    let copy = load(transport, dir, &feed.cached(), now_unix)?;
     let text = String::from_utf8_lossy(&copy.body);
     let listed = index(feed.format, &text);
     if listed.entries == 0 {
@@ -487,21 +516,21 @@ fn read_feed(
 
 /// A feed's body as read: when it was downloaded, whether by this lookup, and anything its row
 /// should say about it.
-struct Copy {
-    body: Vec<u8>,
-    fetched: u64,
+pub(crate) struct Copy {
+    pub(crate) body: Vec<u8>,
+    pub(crate) fetched: u64,
     /// Its publisher's date: as the download said, or as kept beside the copy.
     date: KeptDate,
-    downloaded: bool,
-    note: Option<String>,
+    pub(crate) downloaded: bool,
+    pub(crate) note: Option<String>,
 }
 
 /// The feed's body: the copy in `dir` while it is younger than the feed's age, else a download
 /// (kept in `dir`), else the old copy.
-fn load(
+pub(crate) fn load(
     transport: &(dyn Transport + Send + Sync),
     dir: Option<&Path>,
-    feed: &Feed,
+    feed: &CachedList,
     now_unix: u64,
 ) -> Result<Copy, Failure> {
     let path = dir.map(|dir| dir.join(feed.id));
@@ -509,7 +538,7 @@ fn load(
     let kept = path
         .as_deref()
         .and_then(read_copy)
-        .filter(|(body, _)| !is_page(body));
+        .filter(|(body, _)| !is_page_for(body, feed.xml_root));
     let kept_date = match (path.as_deref(), &kept) {
         (Some(path), Some((body, _))) => read_updated(path, body),
         _ => KeptDate::Missing,
@@ -559,7 +588,13 @@ fn load(
 /// error's `<br />`), and a list with an entry, a comment line or a header row. The one tag a list
 /// is known to open with is the `<pre>` VX Vault wraps its list in, so that list is the list
 /// whatever its entries spell, and Tor's Onionoo answer, JSON, is never a page. **Pure.**
+#[cfg(test)]
 fn is_page(body: &[u8]) -> bool {
+    is_page_for(body, None)
+}
+
+/// [`is_page`], except that a body opening with `xml_root` is the list it was asked for. **Pure.**
+fn is_page_for(body: &[u8], xml_root: Option<&str>) -> bool {
     let mut rest = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
     loop {
         rest = rest.trim_ascii_start();
@@ -586,7 +621,15 @@ fn is_page(body: &[u8]) -> bool {
         .iter()
         .position(|byte| !byte.is_ascii_alphanumeric())
         .unwrap_or(tag.len());
-    !tag[..name_len].eq_ignore_ascii_case(b"pre")
+    // An XML element name may hold `_`, `-`, `.` and `:` (`CONSOLIDATED_LIST`).
+    let xml_name_len = tag
+        .iter()
+        .position(|byte| {
+            !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+        })
+        .unwrap_or(tag.len());
+    !(tag[..name_len].eq_ignore_ascii_case(b"pre")
+        || xml_root.is_some_and(|root| tag[..xml_name_len].eq_ignore_ascii_case(root.as_bytes())))
 }
 
 /// Where the publisher's date of the copy at `copy` is kept: beside it, with the copy's length
@@ -655,7 +698,7 @@ fn read_copy(path: &Path) -> Option<(Vec<u8>, u64)> {
 /// when the answer says.
 fn download(
     transport: &(dyn Transport + Send + Sync),
-    feed: &Feed,
+    feed: &CachedList,
     now_unix: u64,
 ) -> Result<(Vec<u8>, Option<u64>), Failure> {
     let request = Request::get(feed.url).with_timeout(FEED_TIMEOUT);
@@ -676,17 +719,19 @@ fn download(
         )),
         // A page served in the list's place is a failed download, never kept, so the copy kept
         // before it still answers; it is a challenge when the fetch read it as one.
-        Some(response) if response.status == 200 && is_page(&response.body) => Err((
-            if fetched.outcome.kind == SourceOutcomeKind::BotWaf {
-                SourceOutcomeKind::BotWaf
-            } else {
-                SourceOutcomeKind::ProtocolDrift
-            },
-            format!(
-                "an HTML page of {} bytes in place of the list",
-                response.body.len()
-            ),
-        )),
+        Some(response) if response.status == 200 && is_page_for(&response.body, feed.xml_root) => {
+            Err((
+                if fetched.outcome.kind == SourceOutcomeKind::BotWaf {
+                    SourceOutcomeKind::BotWaf
+                } else {
+                    SourceOutcomeKind::ProtocolDrift
+                },
+                format!(
+                    "an HTML page of {} bytes in place of the list",
+                    response.body.len()
+                ),
+            ))
+        }
         Some(response) if response.status == 200 => {
             let updated = response
                 .header_value("last-modified")
@@ -886,7 +931,7 @@ fn host_name(raw: &str) -> Option<String> {
 
 /// The fields of one CSV line: commas separate them, and a field in double quotes may hold commas
 /// and doubled quotes.
-fn csv_fields(line: &str) -> Vec<String> {
+pub(crate) fn csv_fields(line: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let mut field = String::new();
     let mut quoted = false;

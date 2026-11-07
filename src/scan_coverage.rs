@@ -14,7 +14,7 @@ use crate::termination::TerminationReason;
 /// Concrete provider executions that a people lookup can record, and the module
 /// selection that gates each one, in execution order. ASIC people uses one parent
 /// selector for seven legs; `wikidata` runs beside the registers as a candidate lead.
-const PEOPLE_LEGS: [(&str, &str); 14] = [
+const PEOPLE_LEGS: [(&str, &str); 16] = [
     ("asic_persons.banned", crate::asic_persons::SRC),
     ("asic_persons.advisers", crate::asic_persons::SRC),
     ("asic_persons.credit", crate::asic_persons::SRC),
@@ -26,6 +26,8 @@ const PEOPLE_LEGS: [(&str, &str); 14] = [
     (crate::wikidata::SOURCE, crate::wikidata::SOURCE),
     (crate::acnc::SRC, crate::acnc::SRC),
     (crate::sec_edgar::SOURCE, crate::sec_edgar::SOURCE),
+    (crate::sanctions::OFAC, crate::sanctions::SOURCE),
+    (crate::sanctions::UN, crate::sanctions::SOURCE),
     (crate::icij_offshore::SOURCE, crate::icij_offshore::SOURCE),
     (crate::public_osint::NOTICES, crate::public_osint::NOTICES),
     (
@@ -214,13 +216,13 @@ mod tests {
             SourceExecutionOutcome::not_configured("seeknow", 1),
         ]);
         let coverage = derive(&record(), Some(&observations)).unwrap();
-        assert_eq!(coverage.catalogued_sources, 14);
-        assert_eq!(coverage.selected_sources, 14);
+        assert_eq!(coverage.catalogued_sources, 16);
+        assert_eq!(coverage.selected_sources, 16);
         assert_eq!(coverage.accepted_sources, 7);
         assert_eq!(coverage.not_configured_sources, 1);
-        // The four registers, the ICIJ leg and the FBI notices leg this scan predates were never
-        // asked: not observed, never absent.
-        assert_eq!(coverage.not_observed_sources, 6);
+        // The four registers, the two sanctions lists, the ICIJ leg and the FBI notices leg this
+        // scan predates were never asked: not observed, never absent.
+        assert_eq!(coverage.not_observed_sources, 8);
         assert!(!coverage.complete_within_catalogue);
         assert_eq!(coverage.discovery_completeness, "unverified");
     }
@@ -234,8 +236,8 @@ mod tests {
         rows.pop();
         rows.push(SourceExecutionOutcome::not_configured("seeknow", 1));
         let coverage = derive(&record(), Some(&results(rows))).unwrap();
-        assert_eq!(coverage.catalogued_sources, 14);
-        assert_eq!(coverage.accepted_sources, 13);
+        assert_eq!(coverage.catalogued_sources, 16);
+        assert_eq!(coverage.accepted_sources, 15);
         assert_eq!(coverage.not_configured_sources, 1);
         assert_eq!(coverage.not_observed_sources, 0);
     }
@@ -245,7 +247,7 @@ mod tests {
         let observations = results(vec![SourceExecutionOutcome::valid_zero("asic_director", 1)]);
         let coverage = derive(&record(), Some(&observations)).unwrap();
         assert_eq!(coverage.accepted_sources, 1);
-        assert_eq!(coverage.not_observed_sources, 13);
+        assert_eq!(coverage.not_observed_sources, 15);
         assert!(!coverage.complete_within_catalogue);
         assert_eq!(coverage.sources[0].status, PeopleSourceStatus::NotObserved);
     }
@@ -258,7 +260,7 @@ mod tests {
         let coverage = derive(&chosen, Some(&observations)).unwrap();
         assert_eq!(coverage.selected_sources, 1);
         assert_eq!(coverage.accepted_sources, 1);
-        assert_eq!(coverage.excluded_sources.len(), 13);
+        assert_eq!(coverage.excluded_sources.len(), 15);
         assert!(coverage.complete_within_catalogue);
         assert_eq!(coverage.discovery_completeness, "unverified");
     }
@@ -339,7 +341,7 @@ mod tests {
         assert_eq!(coverage.accepted_sources, 5);
         assert_eq!(coverage.unresolved_sources, 1);
         assert_eq!(coverage.not_configured_sources, 2);
-        assert_eq!(coverage.not_observed_sources, 6);
+        assert_eq!(coverage.not_observed_sources, 8);
         assert!(coverage.frontier_exhausted);
         assert!(!coverage.complete_within_catalogue);
     }

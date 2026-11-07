@@ -29,7 +29,7 @@ use crate::wikidata;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, SEC EDGAR, ICIJ Offshore Leaks nodes and FBI wanted notices that name every word of NAME. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, SEC EDGAR, the OFAC and UN sanctions lists (kept on the device), ICIJ Offshore Leaks nodes and FBI wanted notices that name every word of NAME. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
@@ -80,6 +80,18 @@ pub const SKIP_LINE: &str = "people: skipped (need two alphabetic tokens)\n";
 /// A single-token name prints the skip line and makes no request.
 #[must_use]
 pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> PeopleRun {
+    run_with_lists(transport, &crate::sanctions::Lists::none(), name, now_unix)
+}
+
+/// [`run`], also matching the name against the consolidated sanctions lists `lists` keeps on
+/// the device (OFAC SDN and UN Security Council); [`crate::sanctions::Lists::none`] consults none.
+#[must_use]
+pub fn run_with_lists<T: Transport + ?Sized>(
+    transport: &T,
+    lists: &crate::sanctions::Lists,
+    name: &str,
+    now_unix: u64,
+) -> PeopleRun {
     let name = canonical_name(name);
     if name_tokens(&name).len() < 2 {
         return PeopleRun::Printed {
@@ -149,6 +161,11 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         );
     }
 
+    // The consolidated sanctions lists, matched locally against copies kept on the device: each
+    // listing that carries every word of the name is a Document lead keyed by the listing.
+    let (listed, list_outcomes) = crate::sanctions::check(lists, &name, &scan_id, now_unix);
+    report.entities.extend(listed);
+    report.outcomes.extend(list_outcomes);
     if transport.runs_module(crate::icij_offshore::SOURCE) {
         // ICIJ Offshore Leaks: nodes whose name carries every word of NAME, each a Document keyed
         // by its node URL, so a leaked record never merges into a same-named person elsewhere.

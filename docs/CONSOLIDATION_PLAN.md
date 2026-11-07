@@ -429,6 +429,7 @@ same files.
 | B26 | A person scan checks FBI wanted notices | `fbi_wanted` is a registered module and a people leg (CLI, web UI, scans, coverage, matrix); notices must name the person (B23) |
 | B27 | A breach row attributes only when it names the searched value | See-Know rows must carry the selector in a field of its kind (domain: host on it); other rows attribute nothing and are counted in the outcome |
 | B28 | A person scan checks ICIJ Offshore Leaks | `icij_offshore` is a registered Corporate module and people leg; nodes kept only when their name carries every query word, as Document leads |
+| B29 | A person scan checks the OFAC and UN sanctions lists | `sanctions` downloads both lists through the shared feed cache (one authority, `CachedList`) and matches every name word locally; an XML list declares its root so it is not mistaken for a page |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 

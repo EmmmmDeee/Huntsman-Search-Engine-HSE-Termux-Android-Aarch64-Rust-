@@ -380,6 +380,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "SEC EDGAR filer lookup",
     },
     ReachableModule {
+        name: "sanctions",
+        command: "people NAME",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1593"],
+        description: "OFAC SDN and UN Security Council sanctions listings that name every word of the person's name, matched on the device",
+    },
+    ReachableModule {
         name: "icij_offshore",
         command: "people NAME",
         access: "keyless",
