@@ -277,11 +277,15 @@ pub fn parse_bulk_export(bytes: &[u8]) -> Result<BulkExport, String> {
         let query_type = query_type_named(&type_name).ok_or_else(|| {
             format!("result block {index} names an unknown query type {type_name:?}")
         })?;
-        let rows = result.get("rows").and_then(Value::as_array);
-        let all = rows.map_or(0, Vec::len);
+        // A missing or malformed rows array is schema drift, not a clean
+        // zero-result export. Keep actual empty arrays distinguishable.
+        let rows = result
+            .get("rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("result block {index} has no rows array"))?;
+        let all = rows.len();
         let read: Vec<SeekNowRow> = rows
-            .into_iter()
-            .flatten()
+            .iter()
             .take(MAX_EXPORT_ROWS_PER_RESULT)
             .filter_map(normalize_row)
             .collect();

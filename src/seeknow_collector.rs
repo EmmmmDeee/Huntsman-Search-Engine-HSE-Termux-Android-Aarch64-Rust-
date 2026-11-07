@@ -182,7 +182,7 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
 pub const EXPORT_MODULE: &str = "seeknow_export";
 
 /// What one bulk export yields: its entities (merged by identity across blocks), one outcome per
-/// target, and the pivots its kept rows offer.
+/// result block, and the pivots its kept rows offer.
 #[derive(Debug, Clone, Default)]
 pub struct ExportImport {
     pub entities: Vec<Entity>,
@@ -213,8 +213,10 @@ const fn selector_kind(query_type: SeekNowQueryType) -> Option<EntityKind> {
 
 /// Import a `SeekNow` bulk export offline through the same row rules as a live search: a row
 /// attributes only when it names its block's target in a field of the target's kind (B27), credential
-/// fields never leave the parser, and every row keeps the export's digest, id and line. Blocks for
-/// the same target (`Dubai` and `dubai`) are read once. Nothing is sent anywhere. **Pure.**
+/// fields never leave the parser, and every row keeps the export's digest, id and line.
+/// Repeated target blocks each contribute observations; only resulting entity identities are
+/// merged. Skipping later blocks would silently lose their independently supplied evidence.
+/// Nothing is sent anywhere. **Pure.**
 #[must_use]
 pub fn collect_from_export(
     export: &crate::seeknow::BulkExport,
@@ -222,7 +224,6 @@ pub fn collect_from_export(
     now_unix: u64,
 ) -> ExportImport {
     let mut import = ExportImport::default();
-    let mut seen = std::collections::BTreeSet::new();
     for block in &export.results {
         // Preserve every row of every block, before any attribution decision, so the full
         // uploaded dataset survives import whether or not a row names its target.
@@ -241,15 +242,23 @@ pub fn collect_from_export(
         };
         let scan_id = crate::entity::scan_id(&kind.to_string(), &block.target);
         let selector = Entity::new(kind, block.target.clone(), 1.0, scan_id);
-        if !seen.insert(selector.uid.clone()) {
-            continue;
-        }
         let search = SeekNowSearch {
             query: block.target.clone(),
             query_type: block.query_type,
             limit: crate::seeknow::SEARCH_LIMIT_MAX,
         };
-        let mut outcome = if block.rows.is_empty() {
+        // A positive upstream total with no exported rows is incomplete,
+        // never a verified absence. Likewise, rows rejected by the bounded
+        // parser cannot justify a clean negative result.
+        let incomplete_empty = block.rows.is_empty()
+            && (block.reported_total.is_some_and(|total| total > 0) || block.rows_not_read > 0);
+        let mut outcome = if incomplete_empty {
+            SourceExecutionOutcome::inconclusive(
+                EXPORT_MODULE,
+                now_unix,
+                "export has no readable rows despite reported or unread records",
+            )
+        } else if block.rows.is_empty() {
             SourceExecutionOutcome::valid_zero(EXPORT_MODULE, now_unix)
         } else {
             SourceExecutionOutcome::success(EXPORT_MODULE, now_unix, block.rows.len())
@@ -269,6 +278,9 @@ pub fn collect_from_export(
         }
         if block.rows_not_read > 0 {
             notes.push(format!("{} rows were not read", block.rows_not_read));
+        }
+        if incomplete_empty {
+            notes.push("no readable rows: cannot establish a valid zero".to_owned());
         }
         outcome.detail = Some(notes.join("; "));
         let result = crate::seeknow::SeekNowSearchResult {
