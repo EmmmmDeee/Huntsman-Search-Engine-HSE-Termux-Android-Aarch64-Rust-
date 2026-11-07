@@ -232,6 +232,7 @@ tbody tr:hover{background:var(--hover)}
 <div class="radar-intro"><span class="eyebrow">ROOTLESS TERMUX / RADIO INTELLIGENCE</span><h1>Radar</h1>
 <p class="help">Reads Android's last cached Wi-Fi scan and the cells it reports through Termux:API; nothing here triggers an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location. Log a sweep now and then as you move to notice a device that moves with you.</p>
 <div class="radar-flags"><span>Live OS-cache monitoring</span><span>Hardware scans not triggered</span><span>No root required</span></div>
+<p class="help">Radar dots represent returned Wi-Fi records: radial spacing reflects signal strength, but angles are artificial. Neither indicates direction, distance or location.</p>
 </div></div>
 <div class="toolbar"><button class="btn btn-primary" id="rlive" type="button" aria-pressed="false">Start live monitoring</button><button class="btn" id="rstop" type="button" disabled>Stop monitoring</button><button class="btn" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rcread" type="button">Read cells</button><button class="btn" id="rtrack" type="button">Log a sweep</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
 <p class="note" id="rlive-status" role="status">Monitoring off. Start to refresh Wi-Fi and cells every 45 seconds while this tab is visible. Android may return unchanged cached observations.</p>
