@@ -48,6 +48,8 @@ pub const ID_LEN: usize = 16;
 const ROW_FILE: &str = "scan.json";
 const RESULTS_FILE: &str = "results.json";
 const LOG_FILE: &str = "log.jsonl";
+/// Entries after the bounded primary log are kept separately, never silently dropped.
+const LOG_OVERFLOW_FILE: &str = "log-overflow.jsonl";
 
 // Serializes appends across ScanStore instances in one process. No cross-process guarantee.
 static LOG_APPEND_LOCK: Mutex<()> = Mutex::new(());
@@ -671,42 +673,42 @@ impl ScanStore {
         Ok((Some(results), charged))
     }
 
-    /// Append one entry to a scan's log. Past [`MAX_LOG_BYTES`] the entry is dropped, after a
-    /// single entry saying the log is full.
+    /// Append one entry to a scan's log. Keep the primary log bounded for phone operation;
+    /// when it fills, append the complete entry to a separate, private overflow log.
+    /// Previously a full log returned success after silently discarding later entries.
     ///
     /// # Errors
-    /// [`StoreError::NotFound`] when no scan row exists; [`StoreError::Io`] on a write
-    /// failure, an unreadable scan row or a symlink in place of the log.
+    /// [`StoreError::NotFound`] for no scan row; [`StoreError::Io`] on write failure,
+    /// an unsafe log path or an entry too large to encode under the saved-artifact budget.
     pub fn append_log(&self, id: &str, entry: &LogEntry) -> Result<(), StoreError> {
-        // The lock applies to every store instance in this process and covers
-        // both the size decision and the append. Another process must still
-        // coordinate separately: std has no portable cross-process append lock
-        // on the project's Rust 1.87 baseline.
+        // Applies across instances in this process; cross-process writers need their own lock.
         let _guard = LOG_APPEND_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // An orphaned scan directory must not accept logs as if it were a scan.
         self.require_row(id)?;
-        let path = self.scan_dir(id)?.join(LOG_FILE);
+        let dir = self.scan_dir(id)?;
+        let path = dir.join(LOG_FILE);
+        let overflow_path = dir.join(LOG_OVERFLOW_FILE);
+        // A planted symlink, directory or inaccessible overflow file is never ignored.
+        // This also identifies the first overflow: after it exists, all later entries
+        // append there to preserve their order relative to the primary log.
+        let has_overflow = match fs::symlink_metadata(&overflow_path) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => true,
+            Ok(_) => {
+                return Err(StoreError::Io(format!(
+                    "{}: not a regular overflow log",
+                    overflow_path.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(io_error(&overflow_path, &error)),
+        };
         let mut file = checked_open_for_append(&path)?;
         let size = file
             .metadata()
             .map_err(|error| io_error(&path, &error))?
             .len();
 
-        let full = LogEntry {
-            time: entry.time,
-            component: "huntsman".into(),
-            level: LogLevel::Warning,
-            message: format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept"),
-        };
-        let mut full_line =
-            serde_json::to_vec(&full).map_err(|error| StoreError::Invalid(error.to_string()))?;
-        full_line.push(b'\n');
-
-        // A very large log message must not allocate an unbounded encoded
-        // string merely to be discarded. A single oversized entry consumes
-        // only the log-full marker, if room is available.
         let limit = usize::try_from(MAX_LOG_BYTES).unwrap_or(usize::MAX);
         let mut line = crate::json::to_bounded_json(entry, limit, false)
             .map_err(|error| StoreError::Invalid(error.to_string()))?
@@ -715,22 +717,57 @@ impl ScanStore {
             bytes.push(b'\n');
         }
 
-        let selected = if let Some(bytes) = line.as_ref().filter(|bytes| {
-            size.saturating_add(bytes.len() as u64)
-                .saturating_add(full_line.len() as u64)
-                <= MAX_LOG_BYTES
-        }) {
-            bytes.as_slice()
-        } else if size.saturating_add(full_line.len() as u64) <= MAX_LOG_BYTES
+        let marker = LogEntry {
+            time: entry.time,
+            component: "huntsman".into(),
+            level: LogLevel::Warning,
+            message: format!(
+                "log full at {MAX_LOG_BYTES} bytes; later entries archived in {LOG_OVERFLOW_FILE}"
+            ),
+        };
+        let mut marker_line =
+            serde_json::to_vec(&marker).map_err(|error| StoreError::Invalid(error.to_string()))?;
+        marker_line.push(b'\n');
+
+        if !has_overflow {
+            if let Some(bytes) = line.as_ref().filter(|bytes| {
+                size.saturating_add(bytes.len() as u64)
+                    .saturating_add(marker_line.len() as u64)
+                    <= MAX_LOG_BYTES
+            }) {
+                return append_durable(&mut file, &path, bytes);
+            }
+        }
+
+        // Serialise before writing a marker. An oversized entry must fail explicitly
+        // and must never be reported as saved. The overflow is intentionally not
+        // truncated or pruned; storage exhaustion is surfaced as a write failure.
+        let archive_limit = usize::try_from(MAX_RESULTS_BYTES).unwrap_or(usize::MAX);
+        let mut archived = match crate::json::to_bounded_json(entry, archive_limit, false)
+            .map_err(|error| StoreError::Invalid(error.to_string()))?
+        {
+            Ok(bytes) => bytes,
+            Err(required) => {
+                return Err(StoreError::Io(format!(
+                    "{}: log entry requires {required} bytes, exceeding {MAX_RESULTS_BYTES}; not saved",
+                    overflow_path.display()
+                )));
+            }
+        };
+        archived.push(b'\n');
+
+        // Write the archived original first. If this fails, report failure and do not
+        // add the primary-log marker falsely claiming that the entry was preserved.
+        let mut overflow = checked_open_for_append(&overflow_path)?;
+        append_durable(&mut overflow, &overflow_path, &archived)?;
+
+        if !has_overflow
+            && size.saturating_add(marker_line.len() as u64) <= MAX_LOG_BYTES
             && !log_is_full(&path)
         {
-            full_line.as_slice()
-        } else {
-            return Ok(());
-        };
-
-        file.write_all(selected)
-            .map_err(|error| io_error(&path, &error))
+            append_durable(&mut file, &path, &marker_line)?;
+        }
+        Ok(())
     }
 
     /// A scan's log, oldest first. A line that does not parse is kept as an `ERROR` entry
@@ -743,10 +780,23 @@ impl ScanStore {
         let dir = self.scan_dir(id)?;
         self.require_row(id)?;
         let path = dir.join(LOG_FILE);
-        if optional_file_missing(&path, fs::symlink_metadata(&path))? {
-            return Ok(Vec::new());
+        let mut bytes = if optional_file_missing(&path, fs::symlink_metadata(&path))? {
+            Vec::new()
+        } else {
+            crate::fsio::read_bounded(&path, MAX_LOG_BYTES).map_err(|e| fsio_error(&e))?
+        };
+        let overflow_path = dir.join(LOG_OVERFLOW_FILE);
+        if !optional_file_missing(&overflow_path, fs::symlink_metadata(&overflow_path))? {
+            // Keep the existing Vec-returning API bounded. Never return a silently
+            // truncated history: larger archives remain on disk and produce an error.
+            let remaining = MAX_RESULTS_BYTES.saturating_sub(bytes.len() as u64);
+            let extra =
+                crate::fsio::read_bounded(&overflow_path, remaining).map_err(|e| fsio_error(&e))?;
+            if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+                bytes.push(b'\n');
+            }
+            bytes.extend_from_slice(&extra);
         }
-        let bytes = crate::fsio::read_bounded(&path, MAX_LOG_BYTES).map_err(|e| fsio_error(&e))?;
         Ok(String::from_utf8_lossy(&bytes)
             .lines()
             .enumerate()
@@ -926,6 +976,14 @@ fn other_process_alive(pid: u32, started: Option<u64>) -> bool {
 /// file and that its opened inode is the inode checked before the open.
 /// Creation uses `create_new`, so an attacker cannot plant a symlink in the
 /// missing-file window and have it followed.
+// A successfully reported append must reach the filesystem's durability boundary,
+// not merely the kernel page cache. The caller retains the append lock throughout.
+fn append_durable(file: &mut std::fs::File, path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    file.write_all(bytes)
+        .map_err(|error| io_error(path, &error))?;
+    file.sync_data().map_err(|error| io_error(path, &error))
+}
+
 fn checked_open_for_append(path: &Path) -> Result<std::fs::File, StoreError> {
     checked_open_for_append_with(path, || {})
 }
@@ -987,12 +1045,14 @@ fn log_is_full(path: &Path) -> bool {
     let Ok(bytes) = crate::fsio::read_bounded(path, MAX_LOG_BYTES) else {
         return false;
     };
-    let marker = format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept");
+    let old_marker = format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept");
+    let new_marker =
+        format!("log full at {MAX_LOG_BYTES} bytes; later entries archived in {LOG_OVERFLOW_FILE}");
     bytes.split(|byte| *byte == b'\n').any(|line| {
         serde_json::from_slice::<LogEntry>(line).is_ok_and(|entry| {
             entry.component == "huntsman"
                 && entry.level == LogLevel::Warning
-                && entry.message == marker
+                && (entry.message == old_marker || entry.message == new_marker)
         })
     })
 }
@@ -1839,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_entry_writes_one_marker_and_never_overshoots_budget() {
+    fn oversized_primary_log_entry_is_archived_not_discarded() {
         let dir = scratch("oversized-log-message");
         let store = ScanStore::open(&dir).unwrap();
         let record = record(&new_id("large-log", 31, 0), 31, ScanStatus::Running);
@@ -1853,15 +1913,77 @@ mod tests {
         store.append_log(&record.id, &enormous).unwrap();
         store.append_log(&record.id, &enormous).unwrap();
         let log = store.log(&record.id).unwrap();
-        assert_eq!(log.len(), 1);
+        assert_eq!(log.len(), 3);
         assert_eq!(log[0].level, LogLevel::Warning);
-        assert!(log[0].message.starts_with("log full at"));
-        assert!(
-            fs::metadata(dir.join(&record.id).join(LOG_FILE))
-                .unwrap()
-                .len()
-                <= MAX_LOG_BYTES
-        );
+        assert!(log[0].message.contains("archived"));
+        for entry in &log[1..] {
+            assert_eq!(entry.message, enormous.message);
+            assert_eq!(entry.component, "source");
+        }
+        let saved = dir.join(&record.id);
+        assert!(fs::metadata(saved.join(LOG_FILE)).unwrap().len() <= MAX_LOG_BYTES);
+        assert!(fs::metadata(saved.join(LOG_OVERFLOW_FILE)).unwrap().len() > MAX_LOG_BYTES);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overflow_keeps_all_entries_in_original_order() {
+        let dir = scratch("overflow-order");
+        let store = ScanStore::open(&dir).unwrap();
+        let record = record(&new_id("overflow", 39, 0), 39, ScanStatus::Running);
+        store.create(&record).unwrap();
+        let first = LogEntry {
+            time: 1,
+            component: "source".into(),
+            level: LogLevel::Info,
+            message: "a".repeat(usize::try_from(MAX_LOG_BYTES / 2).unwrap()),
+        };
+        let second = LogEntry {
+            time: 2,
+            component: "source".into(),
+            level: LogLevel::Info,
+            message: "b".repeat(usize::try_from(MAX_LOG_BYTES / 2).unwrap()),
+        };
+        let third = LogEntry {
+            time: 3,
+            component: "source".into(),
+            level: LogLevel::Info,
+            message: "last original entry".into(),
+        };
+        store.append_log(&record.id, &first).unwrap();
+        store.append_log(&record.id, &second).unwrap();
+        store.append_log(&record.id, &third).unwrap();
+        let logs = store.log(&record.id).unwrap();
+        assert_eq!(logs.len(), 4);
+        assert_eq!(logs[0].message, first.message);
+        assert_eq!(logs[1].level, LogLevel::Warning);
+        assert_eq!(logs[2].message, second.message);
+        assert_eq!(logs[3].message, third.message);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn overflow_refuses_symlink_without_touching_its_target() {
+        let dir = scratch("overflow-symlink");
+        let store = ScanStore::open(&dir).unwrap();
+        let record = record(&new_id("overflow-link", 40, 0), 40, ScanStatus::Running);
+        store.create(&record).unwrap();
+        let unrelated = dir.join("unrelated");
+        fs::write(&unrelated, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&unrelated, dir.join(&record.id).join(LOG_OVERFLOW_FILE))
+            .unwrap();
+        let entry = LogEntry {
+            time: 40,
+            component: "source".into(),
+            level: LogLevel::Info,
+            message: "cannot silently vanish".into(),
+        };
+        assert!(matches!(
+            store.append_log(&record.id, &entry),
+            Err(StoreError::Io(_))
+        ));
+        assert_eq!(fs::read(&unrelated).unwrap(), b"untouched");
         let _ = fs::remove_dir_all(&dir);
     }
 
