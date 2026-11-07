@@ -1,0 +1,1 @@
+- Decode RDAP AS-number strings with the canonical ASN parser instead of stripping arbitrary leading A/S letters. Malformed prefixes and signs no longer invent numeric ranges; canonical prefix whitespace is accepted consistently with queries. Keep u32 bounds, existing missing-end fallback, other record fields and the entire raw response unchanged.
