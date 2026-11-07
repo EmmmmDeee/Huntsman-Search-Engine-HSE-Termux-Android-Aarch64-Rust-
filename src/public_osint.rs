@@ -402,7 +402,9 @@ fn classify_document(
         _ => "articles",
     };
     match parse(source, document, query, scan_id) {
-        Ok(parsed) if !parsed.entities.is_empty() => classify_match(label, unit, total, now, parsed),
+        Ok(parsed) if !parsed.entities.is_empty() => {
+            classify_match(label, unit, total, now, parsed)
+        }
         Ok(parsed) => classify_zero(label, unit, total, now, &parsed),
         Err(why) => (
             Vec::new(),
