@@ -1001,7 +1001,8 @@ fn utc(raw: &str) -> Option<String> {
 
 /// One `routing-history` body: every origin with at least one announcement `covers` accepts,
 /// its first and last window and its peak visibility, most recently seen first. An origin that
-/// is not an AS number, or a window whose times are not `RIPEstat`'s shape, is drift. **Pure.**
+/// is not an AS number, a window whose times are not `RIPEstat`'s shape, or an announcement/query
+/// interval ending before it starts is drift. Equal bounds are accepted. **Pure.**
 ///
 /// # Errors
 /// [`LegError::Decode`] for any of those, or a body that is not an `ok` envelope with data.
@@ -1031,6 +1032,11 @@ pub fn decode_routing_history(
                         "routing-history window time is not RIPEstat's shape".into(),
                     ));
                 };
+                if end < start {
+                    return Err(LegError::Decode(
+                        "routing-history window ends before it starts".into(),
+                    ));
+                }
                 let peers = window
                     .full_peers_seeing
                     .filter(|n| n.is_finite())
@@ -1065,7 +1071,14 @@ pub fn decode_routing_history(
         data.query_starttime.as_deref().and_then(utc),
         data.query_endtime.as_deref().and_then(utc),
     ) {
-        (Some(start), Some(end)) => Some(format!("{start}..{end}")),
+        (Some(start), Some(end)) => {
+            if end < start {
+                return Err(LegError::Decode(
+                    "routing-history query ends before it starts".into(),
+                ));
+            }
+            Some(format!("{start}..{end}"))
+        }
         _ => None,
     };
     Ok(RoutingHistory { origins, window })
@@ -1123,6 +1136,88 @@ pub(crate) mod tests {
         assert_eq!(
             history.origins[1].line(),
             "AS226 1.1.1.0/24 2016-02-05T00:00:00Z..2016-02-28T23:59:59Z peak 45.7 peers"
+        );
+    }
+
+    fn one_history_window(start: &str, end: &str) -> Value {
+        serde_json::json!({"status":"ok","data":{"by_origin":[{"origin":226,
+        "prefixes":[{"prefix":"1.1.1.0/24","timelines":[{
+            "starttime":start,"endtime":end,"full_peers_seeing":40.0
+        }]}]}]}})
+    }
+
+    #[test]
+    fn routing_history_reversed_timeline_is_failure_not_origin_evidence() {
+        let body = one_history_window("2016-02-05T00:00:00", "2016-02-04T23:59:59");
+        let history =
+            decode_routing_history(&serde_json::to_vec(&body).unwrap(), covers_one_one_one_one);
+        let routing = Routing {
+            prefix: Some("1.1.1.0/24".into()),
+            announced: true,
+            ..Routing::default()
+        };
+        let (record, tag) = crate::routing_context::history_record(
+            &routing,
+            &history,
+            "containing the address",
+            |summary| {
+                crate::entity::Evidence::new(
+                    crate::entity::EvidenceProvenance::new(SOURCE),
+                    summary,
+                )
+            },
+        );
+        assert!(
+            tag.is_none(),
+            "a reversed interval cannot establish past-origin evidence"
+        );
+        assert!(
+            record
+                .attr_values("routing_history_check")
+                .next()
+                .unwrap()
+                .starts_with("failed:")
+        );
+        assert!(record.attr_values("past_origins").next().is_none());
+        assert!(
+            record.attr_values("past_origin_count").next().is_none(),
+            "a failed read is not a valid zero"
+        );
+        assert!(matches!(history, Err(LegError::Decode(_))));
+    }
+
+    #[test]
+    fn routing_history_reversed_query_window_is_refused() {
+        let mut body = one_history_window("2016-02-05T00:00:00", "2016-02-16T23:59:59");
+        body["data"]["query_starttime"] = "2016-03-01T00:00:00".into();
+        body["data"]["query_endtime"] = "2016-02-01T00:00:00".into();
+        assert!(matches!(
+            decode_routing_history(&serde_json::to_vec(&body).unwrap(), covers_one_one_one_one),
+            Err(LegError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn routing_history_keeps_equal_bounds_and_ignores_noncovering_windows() {
+        let instant = "2016-02-05T00:00:00";
+        let mut body = one_history_window(instant, instant);
+        body["data"]["query_starttime"] = instant.into();
+        body["data"]["query_endtime"] = instant.into();
+        let history =
+            decode_routing_history(&serde_json::to_vec(&body).unwrap(), covers_one_one_one_one)
+                .unwrap();
+        assert_eq!(history.origins.len(), 1);
+        assert_eq!(history.origins[0].first_seen, history.origins[0].last_seen);
+        assert_eq!(
+            history.window.as_deref(),
+            Some("2016-02-05T00:00:00Z..2016-02-05T00:00:00Z")
+        );
+        let body = one_history_window("2016-02-05T00:00:00", "2016-02-04T00:00:00");
+        assert!(
+            decode_routing_history(&serde_json::to_vec(&body).unwrap(), |_| false)
+                .unwrap()
+                .origins
+                .is_empty()
         );
     }
 

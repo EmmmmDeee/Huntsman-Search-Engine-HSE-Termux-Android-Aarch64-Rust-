@@ -1,0 +1,1 @@
+- RIPEstat routing history now reports reversed announcement or query intervals as decode failures instead of producing past-origin evidence or a backwards query window. Equal bounds and noncovering-prefix filtering stay unchanged; stored evidence is not rewritten.
