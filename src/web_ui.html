@@ -660,6 +660,7 @@ async function radarLiveTick(session){
     $('rlive-status').textContent='Refreshing cached Wi-Fi and cellular observations…';
     await $('rread').onclick();
     if(!radarLive||session!==radarSession)return;
+    if(!$('rerror').hidden){stopRadarLive();$('rlive-status').textContent='Monitoring stopped: Wi-Fi cache read failed. Previous observations remain available.';return}
     await $('rcread').onclick();
     if(!radarLive||session!==radarSession)return;
     if(!$('rerror').hidden){
