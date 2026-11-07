@@ -251,8 +251,7 @@ pub fn collect_from_export(
         // never a verified absence. Likewise, rows rejected by the bounded
         // parser cannot justify a clean negative result.
         let incomplete_empty = block.rows.is_empty()
-            && (block.reported_total.is_some_and(|total| total > 0)
-                || block.rows_not_read > 0);
+            && (block.reported_total.is_some_and(|total| total > 0) || block.rows_not_read > 0);
         let mut outcome = if incomplete_empty {
             SourceExecutionOutcome::inconclusive(
                 EXPORT_MODULE,
