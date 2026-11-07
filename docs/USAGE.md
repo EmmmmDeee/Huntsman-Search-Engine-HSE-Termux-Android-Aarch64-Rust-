@@ -613,6 +613,47 @@ The listener bounds the request line and headers to 33 KiB, enough for the large
 On Termux (Android, aarch64, no root) the default bind `127.0.0.1:8080` needs no root and no port below 1024: run `huntsman-recon serve` and open `http://127.0.0.1:8080/` in the phone's browser. If another server already holds 8080, pass `--bind 127.0.0.1:0` and use the address on the `serving=` line; [Keep serve running on Android](INSTALL.md#keep-serve-running-on-android) covers that and keeping the server alive in the background. Keys come from the same environment and `~/.huntsman.env` chain as the CLI, so export them in the Termux session before `serve`. The legacy monolith's other endpoints are not rebuilt.
 
 
+### SpiderFoot-inspired investigation workbench and Android Radar
+
+Run `huntsman-recon serve` in **rootless Termux on Android AArch64**, then open
+`http://127.0.0.1:8080/#/scans` in the same phone's browser. The redesigned console uses
+a compact bottom navigation on phones and a left investigation rail on larger screens
+(1024 pixels and wider). It keeps SpiderFoot's familiar **New Scan**, **Scans**, and per-scan
+**Summary / Correlations / Browse / Graph / Scan Settings / Log** workflow, alongside
+Huntsman's **Analysis**, **Inspect**, and **Radar** features. The scan dashboard reads its
+counts from saved scan records rather than fabricating activity. No external JavaScript
+framework, font, image service, root privilege or runtime language model is required.
+
+The dedicated `/#/radar` workbench provides **active monitoring of Android's Wi-Fi
+scan cache and reported cellular observations**. Select **Start live monitoring** to
+read both through the existing guarded Rust/Termux:API adapters immediately, then
+refresh at 45-second intervals while the Radar tab remains visible. **Stop monitoring**
+ends the repeat cycle; leaving the tab or hiding the page also stops it. Individual
+**Read OS scan cache**, **Read cells** and **Log a sweep** actions remain available.
+Live monitoring never automatically writes a track sweep, initiates a target scan,
+or spends a provider key. Earlier readings remain visible after a failure, with
+the failure clearly reported.
+
+These are **active, repeated cache reads**, NOT guaranteed new Wi-Fi hardware scans.
+The `termux-wifi-scaninfo` command returns Android OS scan results; it does not
+call `WifiManager.startScan()`. On Android, hardware scans require an authorized
+app using the platform API and are subject to foreground/background throttling and
+permissions. Repeated cached values are not fresh acquisitions. The radar plot
+places BSSIDs at deterministic artificial angles and uses RSSI as relative
+radial distance, **not geographic position, physical bearing or a measured range**.
+The count and dots represent only actual returned cache records.
+
+Android permissions and the separate Termux:API companion app are needed for
+OS-provided observations; errors and empty caches do not establish an absence
+of nearby networks or cells. An **Investigate** pivot merely pre-fills a scan
+form; it does not automatically contact the selected target.
+
+The entire single-file interface is embedded in the Rust binary. Its inline style and
+script continue to use automatically derived CSP hashes. The updated 160 KiB served
+page budget and both 360-pixel phone and desktop layout assertions are exercised in
+`tests/web_ui.rs` and `tools/web-ui-check/check.cjs`; passing CI is not equivalent
+to testing on a physical phone.
+
 ### Batch scan input
 
 `scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR]` accepts UTF-8 files up to 1 MiB with one target per line. Blank lines and lines whose trimmed form starts with `#` are ignored; exact duplicate seeds keep only their first occurrence. A batch is capped at 1000 unique seeds, every accepted seed is attempted even after an earlier failure, and the process exits non-zero after completion if any seed failed. Batch `--save` is refused; `--save-dir DIR` writes one ledger per seed instead, named by the seed's position and the seed reduced to safe filename characters (`0001-<seed>.json`), so no seed can overwrite another seed's ledger.

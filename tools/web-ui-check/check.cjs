@@ -39,7 +39,7 @@ const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isM
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter; four more the
 // Radar tab's cell intelligence (PCI, site, timing advance, neighbours, anomaly indicators).
 // Six more KiB cover the read-only Rhinser source directory.
-const PAGE_BUDGET = 144 * 1024;
+const PAGE_BUDGET = 160 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -191,6 +191,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check('cold load asks only for the page, health, the scan list, icon and event stream', paths.every(p => ['/', '/api/health', '/api/scans', '/favicon.svg', '/api/events'].includes(p)) && paths.includes('/api/scans'), paths);
       check('server shown online', m.pill === 'online', m.pill);
       check('the scan list opens first and says there are no scans yet', m.empty, m);
+      const dashboard = await page.evaluate(() => ['w-total', 'w-running', 'w-finished', 'w-elements'].map(id => document.getElementById(id).textContent));
+      check('new workbench reports real empty scan totals rather than fabricated activity',
+        dashboard.length === 4 && dashboard.every(value => value === '0'), dashboard);
 
       // A tab with nothing running that comes back into view asks for health and nothing else.
       const again = await tabReturns(page, 3);
@@ -288,6 +291,35 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await ctx.close();
     }
 
+    // The SpiderFoot-inspired desktop workbench has a persistent left rail; the
+    // phone retains its accessible bottom navigation instead.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+      const page = await ctx.newPage();
+      await page.goto(base + '/#/scans', { waitUntil: 'networkidle' });
+      const layout = await page.evaluate(() => {
+        const nav = document.querySelector('.navbar').getBoundingClientRect();
+        const work = document.querySelector('main').getBoundingClientRect();
+        return { rail: nav.width, railEnd: nav.right, workspaceLeft: work.left,
+          hero: !!document.getElementById('workbench'), horizontalOverflow: document.documentElement.scrollWidth - innerWidth };
+      });
+      check('desktop workbench uses a persistent investigation rail without horizontal overflow',
+        layout.rail >= 220 && layout.workspaceLeft >= layout.railEnd - 2 &&
+        layout.hero && layout.horizontalOverflow === 0, layout);
+      await fits(page, 'desktop scans');
+      await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
+      check('desktop Radar renders an explicitly passive OS-cache instrument',
+        await page.isVisible('.radar-scope') &&
+        (await page.textContent('.radar-scope-caption')).includes('ON DEMAND'), 'radar scope missing');
+      const skip = await page.evaluate(() => {
+        document.getElementById('skip-content').click();
+        return { hash: location.hash, focus: document.activeElement.id };
+      });
+      check('skip navigation moves focus without abandoning the active investigation',
+        skip.hash === '#/radar' && skip.focus === 'workspace', skip);
+      await ctx.close();
+    }
+
     // Both system themes: colours, the browser bar, contrast in every view, the scan flows.
     for (const scheme of ['dark', 'light']) {
       const ctx = await browser.newContext({ ...PHONE, colorScheme: scheme });
@@ -324,13 +356,23 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       });
       await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
       check(`${scheme}: Radar is a reachable mobile view`, await page.isVisible('#view-radar'), 'missing');
+      check(`${scheme}: passive Radar illustration never claims an active sweep`,
+        await page.isVisible('.radar-scope') &&
+        (await page.textContent('.radar-scope-caption')).includes('ON DEMAND') &&
+        (await page.textContent('.radar-flags')).includes('Live OS-cache monitoring'), 'passive radar contract missing');
       check(`${scheme}: Radar never queries the sensor merely because it opened`, radarCalls === 0, radarCalls);
+      check(`${scheme}: radar scope is unset before the first explicit cache read`,
+        (await page.textContent('#radar-observed')).trim() === '—',
+        await page.textContent('#radar-observed'));
       await audit(page, `${scheme} radar`);
       await page.click('#rread');
       await page.waitForSelector('#rresult:not([hidden])', { timeout: 10000 }).catch(() => {});
       check(`${scheme}: Radar requests an OS-cache observation only once after explicit action`,
         radarCalls === 1 && lookupHeader, { radarCalls, lookupHeader });
       const radarText = await page.textContent('#rrows');
+      check(`${scheme}: radar scope count reflects received cache records only`,
+        (await page.textContent('#radar-observed')).trim() === '1',
+        await page.textContent('#radar-observed'));
       check(`${scheme}: Radar shows cached values and stale labels without inventing positions`,
         await page.isHidden('#rerror') && radarText.includes('3c:5a:b4:11:22:33') &&
         radarText.includes('900') && radarText.includes('stale') && await page.isEnabled('#rdownload'),
@@ -412,6 +454,47 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         (await page.textContent('#rcsummary')).includes('neighbours by PCI/PSC only: 1 (lte 44 -108 dBm)') &&
         await page.isVisible('#rcaudit') && auditText.includes('serving_2g_while_4g_5g_heard') &&
         auditText.includes('none of these detects an IMSI catcher'), { cellsText, auditText });
+      // A running Radar actually makes repeated guarded cache reads of BOTH adapters,
+      // and never writes a tracking sweep or starts a network investigation itself.
+      let liveWifiCalls = 0;
+      await page.route('**/api/radar/wifi', route => {
+        liveWifiCalls++;
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(radarFixture) });
+      });
+      const cellsBeforeLive = cellCalls, tracksBeforeLive = trackCalls;
+      await page.click('#rlive');
+      await page.waitForFunction(() => document.getElementById('rlive-status').textContent.includes('Monitoring active'), null, { timeout: 10000 }).catch(() => {});
+      check(`${scheme}: Start live makes guarded Wi-Fi and cellular reads without logging a sweep`,
+        liveWifiCalls === 1 && cellCalls === cellsBeforeLive + 1 &&
+        trackCalls === tracksBeforeLive && sensorHeaders &&
+        (await page.textContent('#rlive-status')).includes('Monitoring active') &&
+        await page.isEnabled('#rstop'), { liveWifiCalls, cellCalls, tracksBeforeLive, trackCalls });
+      check(`${scheme}: live plot uses real cached observations rather than invented bearings`,
+        await page.locator('#radar-points .radar-point').count() === 1 &&
+        (await page.textContent('#radar-observed')).trim() === '1' &&
+        (await page.textContent('.radar-flags')).includes('Hardware scans not triggered'),
+        await page.locator('#radar-points .radar-point').count());
+      // Execute a second scheduled cycle without sleeping for the production
+      // 45-second interval: confirm that monitoring actually repeats both reads.
+      await page.evaluate(async () => {
+        clearTimeout(radarTimer);
+        await radarLiveTick(radarSession);
+      });
+      check(`${scheme}: active Radar repeats BOTH guarded cache reads without creating evidence`,
+        liveWifiCalls === 2 && cellCalls === cellsBeforeLive + 2 &&
+        trackCalls === tracksBeforeLive && await page.isEnabled('#rstop'),
+        { liveWifiCalls, cellCalls, cellsBeforeLive, trackCalls });
+      await page.click('#rstop');
+      await page.evaluate(async () => radarLiveTick(radarSession));
+      check(`${scheme}: stopped Radar cannot issue another sensor read`,
+        liveWifiCalls === 2 && cellCalls === cellsBeforeLive + 2 &&
+        trackCalls === tracksBeforeLive,
+        { liveWifiCalls, cellCalls, trackCalls });
+      check(`${scheme}: Stop live disarms monitoring without clearing evidence`,
+        await page.isEnabled('#rlive') && await page.isDisabled('#rstop') &&
+        await page.locator('#rrows tr').count() > 0 &&
+        (await page.getAttribute('#rlive', 'aria-pressed')) === 'false', 'live stop state');
+      await page.unroute('**/api/radar/wifi');
       await page.click('#rcrows button');
       await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 });
       const cellHandoff = await page.evaluate(() => ({

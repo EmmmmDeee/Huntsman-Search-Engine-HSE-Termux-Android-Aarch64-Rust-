@@ -42,7 +42,9 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// Raised to 142 KiB for the Rhinser offline source directory in Multi-hop Analysis:
 /// 83 locally served catalogue references, on-page filtering, and explicit HTTPS link opening.
 /// Phone-browser runtime performance remains an independent acceptance gate.
-const PAGE_BUDGET: usize = 144 * 1024;
+/// Bound the redesigned SpiderFoot-style workbench, radar scope and mobile rail to 160 KiB.
+/// The phone browser separately measures load and rendering under throttled conditions.
+const PAGE_BUDGET: usize = 160 * 1024;
 /// The server fills the page's empty `huntsman-page` meta tag with a page id of this many hex
 /// digits (`src/web_server/page.rs`), so the page as served, which is what a phone downloads and
 /// the browser check weighs, is this much longer than the file.
@@ -1010,12 +1012,17 @@ fn the_analyze_tab_extracts_seeds_from_pasted_text() {
 fn a_returning_tab_asks_only_for_health_unless_a_scan_is_running() {
     let script = inline("script");
     assert!(script.contains(
-        "document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});"
+        "document.addEventListener('visibilitychange',()=>{if(document.hidden)stopRadarLive();else{health();if(resume){clearTimeout(timer);resume()}}});"
     ));
+    assert!(script.contains("if(v!=='radar')stopRadarLive()"));
     // A poll is set only while a scan runs (after 1, 2 and 4 s, then every 5 s), skipped while the
     // tab is hidden, and dropped when the view changes; a finished scan leaves nothing to resume.
     assert!(script.contains("function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}"));
-    assert!(script.contains("gen++;clearTimeout(timer);resume=null;view=v;"));
+    assert!(
+        script.contains(
+            "gen++;clearTimeout(timer);resume=null;if(v!=='radar')stopRadarLive();view=v;"
+        )
+    );
     assert!(script.contains("if(scans.some(s=>live(s.status)))later(loadScans);else resume=null;"));
     assert!(script.contains(
         "if(running)later(()=>loadScan(false),Math.min(5000,1000*2**polls++));else resume=null;"
@@ -1090,6 +1097,79 @@ fn the_scans_list_shows_each_scans_sources_and_unresolved_count() {
     assert!(script.contains("'none ran'"));
     assert!(script.contains("e+' unresolved'"));
     assert!(script.contains("none(tb,'No scan matches this filter.',9);"));
+}
+
+#[test]
+fn html_ids_are_unique_across_scan_detail_and_multihop_analysis() {
+    let mut seen = std::collections::BTreeSet::new();
+    for part in PAGE.split(" id=\"").skip(1) {
+        let id = part.split('"').next().expect("html id");
+        assert!(seen.insert(id), "duplicate HTML id: {id}");
+    }
+    assert!(PAGE.contains("id=\"anote\""));
+    assert!(PAGE.contains("id=\"anote-seeds\""));
+    assert!(inline("script").contains("$('anote-seeds').textContent=body.correlations.length"));
+}
+
+#[test]
+fn spiderfoot_inspired_workbench_retains_live_scan_and_passive_radar_contracts() {
+    let script = inline("script");
+    for control in [
+        "id=\"workbench\"",
+        "id=\"w-total\"",
+        "id=\"w-running\"",
+        "id=\"w-finished\"",
+        "id=\"w-elements\"",
+        "id=\"rlive\"",
+        "id=\"rstop\"",
+        "id=\"radar-points\"",
+        "id=\"rread\"",
+        "id=\"rcread\"",
+        "id=\"rtrack\"",
+        "id=\"rdownload\"",
+        "id=\"sctabs\"",
+        "id=\"runscan\"",
+    ] {
+        assert!(
+            PAGE.contains(control),
+            "missing functional control: {control}"
+        );
+    }
+    for metric in ["w-total", "w-running", "w-finished", "w-elements"] {
+        assert!(
+            script.contains(&format!("$('{metric}').textContent=")),
+            "dashboard metric must update from the saved scan list: {metric}"
+        );
+    }
+    assert!(PAGE.contains("ROOTLESS TERMUX / RADIO INTELLIGENCE"));
+    assert!(PAGE.contains("Live OS-cache monitoring"));
+    assert!(PAGE.contains("Hardware scans not triggered"));
+    assert!(PAGE.contains("radar-scope-caption"));
+    assert!(script.contains("const RADAR_LIVE_INTERVAL=45000;"));
+    assert!(script.contains("await $('rread').onclick()"));
+    assert!(script.contains("await $('rcread').onclick()"));
+    assert!(script.contains("if(document.hidden)stopRadarLive()"));
+    assert!(script.contains("if(v!=='radar')stopRadarLive()"));
+    assert!(script.contains("function radarPlot(observations)"));
+    assert!(PAGE.contains("Hardware scans not triggered"));
+    assert!(PAGE.contains("id=\"radar-observed\""));
+    assert!(script.contains("$('radar-observed').textContent=String(observations.length)"));
+    assert!(PAGE.contains("nav-footer"));
+    assert!(PAGE.contains("id=\"skip-content\""));
+    assert!(script.contains("event.preventDefault();$('workspace').focus()"));
+    assert!(PAGE.contains("@media (min-width:1024px)"));
+    assert!(PAGE.contains("href=\"#/newscan\""));
+    assert!(PAGE.contains("href=\"#/radar\""));
+
+    let start = script.find("function route(){").expect("route function");
+    let end = script[start..]
+        .find("addEventListener('hashchange',route);")
+        .expect("route end")
+        + start;
+    assert!(
+        !script[start..end].contains("/api/radar/"),
+        "opening Radar must not silently call a device sensor"
+    );
 }
 
 #[test]
