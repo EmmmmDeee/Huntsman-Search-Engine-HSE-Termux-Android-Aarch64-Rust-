@@ -182,11 +182,7 @@ fn push_sourced_entity(
     }
 }
 
-fn parse(
-    source: Source,
-    body: &Value,
-    scan_id: &str,
-) -> Result<(Vec<Entity>, usize), &'static str> {
+fn parse(source: Source, body: &Value, query: &str, scan_id: &str) -> Result<Parsed, &'static str> {
     let key = match source {
         Source::News => "articles",
         Source::Notices => "items",
@@ -199,6 +195,7 @@ fn parse(
     let mut entities = Vec::new();
     let mut seen = BTreeSet::new();
     let mut skipped = rows.len().saturating_sub(MAX_ROWS);
+    let mut other_people = 0;
     // A nonempty upstream result set with no validated rows is not a verified zero.
     // Preserve the count of omitted records for outcome classification.
 
@@ -226,10 +223,46 @@ fn parse(
             skipped += 1;
             continue;
         };
+        // The FBI's search is full text: it answers "Mohammed bin Rashid Al Maktoum" with every
+        // notice that shares a word. A notice is kept only when its title or one of its aliases
+        // names every word of the query; any other is a different person.
+        if source == Source::Notices && !notice_names_query(row, title, query) {
+            other_people += 1;
+            continue;
+        }
         push_sourced_entity(&mut entities, source, row, url, title, scan_id);
     }
     merge_by_uid(&mut entities);
-    Ok((entities, skipped))
+    Ok(Parsed {
+        entities,
+        skipped,
+        other_people,
+    })
+}
+
+/// What one answer's rows held: the kept entities, the rows that could not be validated (or were
+/// duplicates or over the limit), and the valid notices that name someone other than the query.
+struct Parsed {
+    entities: Vec<Entity>,
+    skipped: usize,
+    other_people: usize,
+}
+
+/// Whether a notice names every word of `query`, in its title or in one of its `aliases`.
+fn notice_names_query(row: &Value, title: &str, query: &str) -> bool {
+    let wanted = crate::textnorm::name_tokens(query);
+    if wanted.is_empty() {
+        return false;
+    }
+    let names_all = |name: &str| {
+        let have = crate::textnorm::name_tokens(name);
+        wanted.iter().all(|word| have.contains(word))
+    };
+    names_all(title)
+        || row
+            .get("aliases")
+            .and_then(Value::as_array)
+            .is_some_and(|aliases| aliases.iter().filter_map(Value::as_str).any(names_all))
 }
 
 /// GDELT's documented pacing notice, sent as a 429 body without a `retry-after` header.
@@ -343,19 +376,22 @@ fn collect<T: Transport + ?Sized>(
             ),
         );
     }
-    classify_document(source, &document, scan_id, now)
+    classify_document(source, &document, query, scan_id, now)
 }
 
 // Preserves source-level failures and refuses to convert schema drift into zero findings.
 fn classify_document(
     source: Source,
     document: &Value,
+    query: &str,
     scan_id: &str,
     now: u64,
 ) -> (Vec<Entity>, SourceExecutionOutcome) {
     let label = name(source);
-    match parse(source, document, scan_id) {
-        Ok((entities, skipped)) if !entities.is_empty() => {
+    match parse(source, document, query, scan_id) {
+        Ok(Parsed {
+            entities, skipped, ..
+        }) if !entities.is_empty() => {
             let mut outcome =
                 SourceExecutionOutcome::success(label, now, entities.len()).with_http_status(200);
             if skipped > 0 {
@@ -365,13 +401,20 @@ fn classify_document(
             }
             (entities, outcome)
         }
-        Ok((_, skipped)) => {
+        Ok(Parsed {
+            skipped,
+            other_people,
+            ..
+        }) => {
             let total = document.get("total").and_then(Value::as_u64).unwrap_or(0);
-            if skipped == 0 && total == 0 {
-                (
-                    Vec::new(),
-                    SourceExecutionOutcome::valid_zero(label, now).with_http_status(200),
-                )
+            if skipped == 0 && (total == 0 || other_people > 0) {
+                let mut zero = SourceExecutionOutcome::valid_zero(label, now).with_http_status(200);
+                if other_people > 0 {
+                    zero = zero.with_detail(format!(
+                        "{other_people} notices the search returned name other people"
+                    ));
+                }
+                (Vec::new(), zero)
             } else {
                 (
                     Vec::new(),
@@ -711,13 +754,38 @@ mod tests {
         assert!(!report.outcomes[1].kind.is_accepted());
     }
 
+    /// The FBI's full-text search answers a name with every notice sharing one of its words. Only
+    /// a notice whose title or an alias names every word of the query is kept: a head of state is
+    /// never shown beside another man's wanted notice because they share a first name.
+    #[test]
+    fn a_notice_is_kept_only_when_it_names_the_query() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"items":[
+              {"title":"MOHAMMED REZA SABAHI","url":"https://www.fbi.gov/wanted/cyber/a"},
+              {"title":"AHLAM AHMAD AL-TAMIMI","url":"https://www.fbi.gov/wanted/b"},
+              {"title":"JOHN DOE","aliases":["Mohammed bin Rashid Al Maktoum"],"url":"https://www.fbi.gov/wanted/c"}
+            ]}"#,
+        );
+        let report = search(
+            &fake,
+            Source::Notices,
+            "Mohammed bin Rashid Al Maktoum",
+            "s",
+            1,
+        )
+        .unwrap();
+        assert_eq!(report.entities.len(), 1, "{:?}", report.entities);
+        assert_eq!(report.entities[0].value, "https://www.fbi.gov/wanted/c");
+    }
+
     #[test]
     fn official_reward_is_claim_not_guarantee() {
         let fake = OneResponse::json(
             200,
             r#"{"items":[{"title":"Official notice","url":"https://www.fbi.gov/wanted/seeking-info/test","reward_text":"Up to $10,000"}]}"#,
         );
-        let report = search(&fake, Source::Notices, "test", "s", 1).unwrap();
+        let report = search(&fake, Source::Notices, "Official notice", "s", 1).unwrap();
         assert_eq!(report.entities[0].kind, EntityKind::Document);
         assert_eq!(
             report.entities[0].evidence[0]
