@@ -380,6 +380,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "SEC EDGAR filer lookup",
     },
     ReachableModule {
+        name: "icij_offshore",
+        command: "people NAME",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Corporate,
+        attack_techniques: &["T1591.002"],
+        description: "ICIJ Offshore Leaks nodes that name every word of the person's name",
+    },
+    ReachableModule {
         name: "fbi_wanted",
         command: "people NAME | public-osint notices QUERY",
         access: "keyless",

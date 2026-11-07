@@ -31,8 +31,9 @@ KIND is one of email, username, phone, ip, domain, person, url, machine_id.
 Adaptive mode uses /search first when that endpoint supports the selector, and spends
 a stealer request only when the selector is supported there and escalation is justified.
 seeknow import EXPORT.json [--json]
-Read a SeekNow bulk export offline (no key, no request): a row is attributed to its target only
-when it carries the target in a field of the target's kind; credential fields are never kept.";
+Read a SeekNow bulk export offline (no key, no request). Every row is kept as a record with its
+fields verbatim; a row is attributed to its target only when it carries the target in a field of
+the target's kind. Credential values alone are masked, each field named in sensitive_fields.";
 
 /// The largest bulk export `seeknow import` reads, the `/api/inspect` upload bound.
 pub const MAX_EXPORT_BYTES: u64 = 64 * 1024 * 1024;

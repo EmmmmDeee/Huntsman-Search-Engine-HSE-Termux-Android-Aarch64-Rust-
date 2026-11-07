@@ -133,6 +133,7 @@ pub mod http;
 pub mod hudsonrock;
 pub mod huggingface_user;
 pub mod hunter;
+pub mod icij_offshore;
 pub mod identity;
 pub mod identity_resolution;
 pub mod indicator_legs;

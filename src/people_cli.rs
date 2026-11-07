@@ -29,7 +29,7 @@ use crate::wikidata;
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, SEC EDGAR, and FBI wanted notices that name every word of NAME. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, SEC EDGAR, ICIJ Offshore Leaks nodes and FBI wanted notices that name every word of NAME. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
@@ -149,6 +149,17 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
         );
     }
 
+    if transport.runs_module(crate::icij_offshore::SOURCE) {
+        // ICIJ Offshore Leaks: nodes whose name carries every word of NAME, each a Document keyed
+        // by its node URL, so a leaked record never merges into a same-named person elsewhere.
+        collect(
+            crate::icij_offshore::SOURCE,
+            crate::icij_offshore::lookup(transport, &name, &scan_id, now_unix)
+                .map(|found| (found.entities, vec![found.outcome])),
+            now_unix,
+            &mut report,
+        );
+    }
     if transport.runs_module(crate::public_osint::NOTICES) {
         // FBI wanted notices: kept only when a notice's title or alias names every word of the
         // name (B23). Each is a Document keyed by its notice URL, so it never merges into a
@@ -594,8 +605,8 @@ mod tests {
 
     /// All seven people-source outcomes persist even if SEC EDGAR is not configured.
     /// An absent SEC operator contact suppresses its HTTP request but not its ledger row.
-    /// Every ASIC register, then ASIC Connect, Wikidata, ACNC, SEC EDGAR and FBI notices.
-    const PEOPLE_SOURCE_OUTCOMES: usize = REGISTERS.len() + 5;
+    /// Every ASIC register, then ASIC Connect, Wikidata, ACNC, SEC EDGAR, ICIJ and FBI notices.
+    const PEOPLE_SOURCE_OUTCOMES: usize = REGISTERS.len() + 6;
     const PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT: usize = PEOPLE_SOURCE_OUTCOMES - 1;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {

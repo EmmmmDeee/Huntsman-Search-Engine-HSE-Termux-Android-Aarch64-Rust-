@@ -175,6 +175,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("hudsonrock", C::Breach, None),
     row("huggingface_user", C::Code, None),
     row("hunter", C::EmailIntel, None),
+    row("icij_offshore", C::Other, Some(C::IdentityRegistry)),
     row("internetdb", C::Infra, None),
     row("ip_cli", C::Infra, None),
     row("ipinfo", C::Infra, None),
