@@ -5,9 +5,9 @@
 use serde::Serialize;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, LazyLock};
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+use std::sync::{Arc, LazyLock};
 use std::thread;
 use std::time::Instant;
 
@@ -25,10 +25,11 @@ use super::{
 
 /// H1DR4 runs only on deliberate guarded requests; no credentials or
 /// writable third-party API calls are ever issued.
-static H1DR4_ACTIVE: LazyLock<Arc<AtomicUsize>> =
-    LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
+static H1DR4_ACTIVE: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
 
-fn parse_h1dr4_request(raw: &str) -> Result<(crate::h1dr4::Resource, crate::h1dr4::Bounds), &'static str> {
+fn parse_h1dr4_request(
+    raw: &str,
+) -> Result<(crate::h1dr4::Resource, crate::h1dr4::Bounds), &'static str> {
     let pairs = crate::value_syntax::form_pairs(raw).ok_or("invalid H1DR4 query encoding")?;
     let mut kind = String::from("search");
     let mut query = String::new();
@@ -50,7 +51,10 @@ fn parse_h1dr4_request(raw: &str) -> Result<(crate::h1dr4::Resource, crate::h1dr
         "onchain-stats" if query.is_empty() => (crate::h1dr4::Resource::OnchainStats, 1),
         _ => return Err("invalid H1DR4 mode or missing case/search query"),
     };
-    let bounds = crate::h1dr4::Bounds { pages, limit: limit.unwrap_or(max) };
+    let bounds = crate::h1dr4::Bounds {
+        pages,
+        limit: limit.unwrap_or(max),
+    };
     bounds.checked(&resource)?;
     Ok((resource, bounds))
 }
