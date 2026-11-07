@@ -474,15 +474,14 @@ fn interpret_search(
     let resp: EftsResp = decode_json(response, SOURCE, now_unix, "EDGAR search")?;
 
     // Extract total information before moving hits_envelope
-    let (is_incomplete, total_value) = resp
-        .hits
-        .as_ref()
-        .and_then(|h| h.total.as_ref())
-        .map(|t| {
-            let incomplete = t.value.is_none() || t.relation.as_deref() == Some("gte");
-            (incomplete, t.value)
-        })
-        .unwrap_or((false, None));
+    let (is_incomplete, total_value) =
+        resp.hits
+            .as_ref()
+            .and_then(|h| h.total.as_ref())
+            .map_or((false, None), |t| {
+                let incomplete = t.value.is_none() || t.relation.as_deref() == Some("gte");
+                (incomplete, t.value)
+            });
 
     let hits_envelope = resp.hits;
     let Some(hits) = hits_envelope.and_then(|h| h.hits) else {
@@ -1295,8 +1294,7 @@ mod tests {
                 .outcome
                 .detail
                 .as_deref()
-                .map(|d| d.contains("not scanned"))
-                .unwrap_or(false),
+                .is_some_and(|d| d.contains("not scanned")),
             "detail should indicate unexamined filings: {:#?}",
             report.outcome
         );
@@ -1319,8 +1317,7 @@ mod tests {
                 .outcome
                 .detail
                 .as_deref()
-                .map(|d| d.contains("not scanned"))
-                .unwrap_or(false),
+                .is_some_and(|d| d.contains("not scanned")),
             "detail should indicate unexamined filings: {:#?}",
             report.outcome
         );
