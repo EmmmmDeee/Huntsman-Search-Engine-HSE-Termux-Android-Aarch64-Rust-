@@ -1122,7 +1122,10 @@ fn spiderfoot_inspired_workbench_retains_live_scan_and_passive_radar_contracts()
         "id=\"sctabs\"",
         "id=\"runscan\"",
     ] {
-        assert!(PAGE.contains(control), "missing functional control: {control}");
+        assert!(
+            PAGE.contains(control),
+            "missing functional control: {control}"
+        );
     }
     for metric in ["w-total", "w-running", "w-finished", "w-elements"] {
         assert!(
