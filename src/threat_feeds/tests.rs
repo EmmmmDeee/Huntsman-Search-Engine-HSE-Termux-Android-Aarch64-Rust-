@@ -1211,7 +1211,10 @@ fn all_download_responses_keep_original_bytes_and_legacy_copies() {
     let net = Net::serving();
     let transport = Shared(Arc::clone(&net));
     let initial = b"194.180.49.70\r\n";
-    net.set("greensnow", Reply::Body(String::from_utf8_lossy(initial).into_owned()));
+    net.set(
+        "greensnow",
+        Reply::Body(String::from_utf8_lossy(initial).into_owned()),
+    );
     let start = now();
     let downloaded = load(&transport, Some(&dir), &feed, start).expect("first fetch");
     assert_eq!(downloaded.body, initial);
@@ -1245,14 +1248,11 @@ fn all_download_responses_keep_original_bytes_and_legacy_copies() {
         .unwrap()
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .map(|entry| {
-            serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap()
-        })
+        .map(|entry| serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap())
         .collect();
     assert!(
         receipts.iter().any(|receipt| {
-            receipt["acquisition"]["response_status"] == 403
-                && receipt["sha256"] == challenge_hash
+            receipt["acquisition"]["response_status"] == 403 && receipt["sha256"] == challenge_hash
         }),
         "the error response and its status must remain inspectable"
     );
