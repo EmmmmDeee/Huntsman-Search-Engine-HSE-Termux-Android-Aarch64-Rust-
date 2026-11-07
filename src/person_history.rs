@@ -420,7 +420,11 @@ pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSumm
             emit(writer, &row)?;
         }
     }
-    summary.complete_for_retained_scans = summary.scans_unreadable == 0;
+    // Enumeration alone is not complete investigative coverage when any saved
+    // scan has unfinished collection or no results. Fail closed in the summary.
+    summary.complete_for_retained_scans = summary.scans_unreadable == 0
+        && summary.scans_without_results == 0
+        && summary.scans_not_finished == 0;
     emit(writer, &summary)?;
     Ok(summary)
 }
@@ -678,6 +682,34 @@ mod tests {
         }
         assert!(birth_date("2000-02-29").is_some());
         assert!(birth_date("1991-09-09").is_some());
+    }
+
+    #[test]
+    fn missing_saved_results_cannot_be_reported_as_complete_history() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "hse-person-incomplete-{}-{stamp}",
+            std::process::id()
+        ));
+        let store = ScanStore::open(&path).unwrap();
+        let row = record();
+        store.create(&row).unwrap();
+
+        let mut output = Vec::new();
+        let summary = audit_all(&store, &mut output).unwrap();
+        assert_eq!(summary.scans_retained, 1);
+        assert_eq!(summary.scans_read, 1);
+        assert_eq!(summary.scans_without_results, 1);
+        assert_eq!(summary.person_scan_records, 1);
+        assert!(!summary.complete_for_retained_scans);
+        assert_eq!(fs::read_dir(path.join(&row.id)).unwrap().count(), 1);
+        fs::remove_dir_all(&path).unwrap();
     }
 
     #[test]
