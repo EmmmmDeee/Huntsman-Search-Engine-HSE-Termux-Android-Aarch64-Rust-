@@ -131,11 +131,23 @@ impl Selector {
         &self.value
     }
 
-    /// The `DeHashed` field-search expression, e.g. `email:"a@example.com"`.
-    /// Safe to embed: validation has already excluded quotes and backslashes.
+    /// The `DeHashed` field-search expression: `email:"a@example.com"`, `username:"ada"`, and
+    /// `domain:example.com`. Safe to embed: validation has already excluded quotes, backslashes,
+    /// wildcards and whitespace.
+    ///
+    /// The live v2 API (observed 2026-11-07) treats each field differently: a quoted email is the
+    /// exact address (5,182 records for one address) where an unquoted one is a fuzzy match
+    /// (1,982,342), so email stays quoted; a quoted domain is refused outright with HTTP 400
+    /// "Issue with query format" while the unquoted domain is exact (a subdomain does not match
+    /// its parent), so domain is never quoted; a username answers the same either way.
     #[must_use]
     pub fn query(&self) -> String {
-        format!("{}:\"{}\"", self.field.as_str(), self.value)
+        match self.field {
+            Field::Domain => format!("{}:{}", self.field.as_str(), self.value),
+            Field::Email | Field::Username => {
+                format!("{}:\"{}\"", self.field.as_str(), self.value)
+            }
+        }
     }
 }
 
@@ -194,13 +206,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_exact_identifiers_and_renders_quoted_query() {
+    fn accepts_exact_identifiers_and_renders_each_field_as_the_api_reads_it() {
         let email = Selector::new(Field::Email, "a.b+tag@example.co.uk").unwrap();
         assert_eq!(email.query(), "email:\"a.b+tag@example.co.uk\"");
         let user = Selector::new(Field::Username, "ada_lovelace-1").unwrap();
         assert_eq!(user.query(), "username:\"ada_lovelace-1\"");
         let domain = Selector::new(Field::Domain, "Example.COM").unwrap();
-        assert_eq!(domain.query(), "domain:\"Example.COM\"");
+        // A quoted domain is refused by the live API (HTTP 400); the domain is never quoted.
+        assert_eq!(domain.query(), "domain:Example.COM");
         assert_eq!(domain.value(), "Example.COM");
     }
 
