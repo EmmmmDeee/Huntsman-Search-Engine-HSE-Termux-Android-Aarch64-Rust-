@@ -399,7 +399,10 @@ fn people_audit(parsed: &Parsed) -> ExitCode {
         );
     };
     if !dir.is_dir() {
-        return fail(EX_NOINPUT, "scans people-audit: saved scan directory does not exist");
+        return fail(
+            EX_NOINPUT,
+            "scans people-audit: saved scan directory does not exist",
+        );
     }
     let store = match ScanStore::open(&dir) {
         Ok(store) => store,
@@ -443,7 +446,10 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
     }
     if command == "people-audit" {
         if !rest.is_empty() || parsed.value("output").is_some() {
-            return fail(EX_USAGE, "scans people-audit takes no positional arguments and writes JSONL to stdout");
+            return fail(
+                EX_USAGE,
+                "scans people-audit takes no positional arguments and writes JSONL to stdout",
+            );
         }
         return people_audit(&parsed);
     }
