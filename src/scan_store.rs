@@ -395,6 +395,25 @@ impl ScanStore {
         })
     }
 
+    /// Inspect an already-existing scan store without creating directories or
+    /// changing filesystem permissions. Unlike `Self::open`, this constructor
+    /// does not have any intentional write-side effects.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] when the path is absent, not a directory or a symlink.
+    pub fn open_existing_readonly(dir: &Path) -> Result<Self, StoreError> {
+        let metadata = fs::symlink_metadata(dir).map_err(|error| io_error(dir, &error))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(StoreError::Io(format!(
+                "{}: not a regular directory",
+                dir.display()
+            )));
+        }
+        Ok(Self {
+            dir: dir.to_path_buf(),
+        })
+    }
+
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -1110,6 +1129,51 @@ mod tests {
             owner: None,
             owner_started: None,
         }
+    }
+
+    #[test]
+    fn read_only_inspection_never_creates_the_store_or_changes_its_mode() {
+        let dir = scratch("readonly");
+        assert!(matches!(
+            ScanStore::open_existing_readonly(&dir),
+            Err(StoreError::Io(_))
+        ));
+        assert!(!dir.exists());
+        fs::create_dir(&dir).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        let before = fs::metadata(&dir).unwrap().permissions();
+        let store = ScanStore::open_existing_readonly(&dir).unwrap();
+        assert!(store.list().unwrap().is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&dir).unwrap().permissions().mode(),
+                before.mode()
+            );
+        }
+        #[cfg(not(unix))]
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().readonly(),
+            before.readonly()
+        );
+
+        #[cfg(unix)]
+        {
+            let link = dir.with_extension("symlink");
+            std::os::unix::fs::symlink(&dir, &link).unwrap();
+            assert!(matches!(
+                ScanStore::open_existing_readonly(&link),
+                Err(StoreError::Io(_))
+            ));
+            fs::remove_file(&link).unwrap();
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

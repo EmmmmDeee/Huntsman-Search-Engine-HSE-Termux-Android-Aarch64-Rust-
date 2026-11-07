@@ -182,6 +182,7 @@ oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 pattern	leaf	linear-time regular expressions the Spiderfoot correlation rules run
 people_cli	diagnostic	ASIC people command front-end
+person_history	exporter	read-only source-attributed historical birthplace audit reached through scans people-audit; retains distinct name occurrences and raw source provenance
 people_discovery	adapter	bounded source-scoped keyless people discovery through the existing web_query engines, reached from people-discover and POST /api/people/discover
 phishstats	adapter	PhishStats leg reached through indicator_legs from ip, scan and /api/lookup
 phone_cli	diagnostic	offline phone enrichment command front-end
