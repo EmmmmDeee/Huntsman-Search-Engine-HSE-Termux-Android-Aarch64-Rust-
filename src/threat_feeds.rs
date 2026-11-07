@@ -530,12 +530,25 @@ impl Copy {
     /// answer a current absence query. A copy used only because its refresh failed cannot.
     /// This does not change whether the historical listing is preserved and searchable.
     pub(crate) fn current_for(&self, now_unix: u64, max_age: u64) -> bool {
+        const MAX_PUBLISHER_AGE: u64 = 30 * 86_400;
         let verified_copy = self.downloaded || matches!(self.date, KeptDate::Kept(_));
         let refresh_failed = self
             .note
             .as_deref()
             .is_some_and(|note| note.starts_with("could not be downloaded again ("));
-        verified_copy && !refresh_failed && now_unix.saturating_sub(self.fetched) < max_age
+        // Download time is not publication time. A publisher revision known to be
+        // older than the feed freshness policy cannot establish present-day absence.
+        // When Last-Modified is unavailable, retain the existing acquisition-age rule.
+        let publisher_current = match self.date {
+            KeptDate::Kept(Some(updated)) => {
+                updated <= now_unix && now_unix - updated <= MAX_PUBLISHER_AGE
+            }
+            KeptDate::Kept(None) | KeptDate::Missing => true,
+        };
+        verified_copy
+            && !refresh_failed
+            && publisher_current
+            && now_unix.saturating_sub(self.fetched) < max_age
     }
 }
 
