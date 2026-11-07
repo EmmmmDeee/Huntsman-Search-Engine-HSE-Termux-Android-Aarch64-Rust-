@@ -1,0 +1,1 @@
+- Refuse non-regular run-history write paths before opening them, preventing a FIFO present at the write-side check from blocking indefinitely. Existing regular-file, symlink and inode checks are preserved.
