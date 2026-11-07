@@ -385,7 +385,7 @@ fn without_api(command: &str, rest: &[&str], parsed: &Parsed) -> Option<ExitCode
     })
 }
 
-/// Audit every retained scan without starting the ScanService (which reconciles
+/// Audit every retained scan without starting the `ScanService` (which reconciles
 /// unfinished scans and may modify their status). No scan is re-run or changed.
 fn people_audit(parsed: &Parsed) -> ExitCode {
     let Some(dir) = parsed
