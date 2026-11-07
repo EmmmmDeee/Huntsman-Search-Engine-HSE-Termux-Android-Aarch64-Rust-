@@ -334,12 +334,30 @@ fn append_result(
     now_unix: u64,
 ) {
     let dataset = single_dataset(&result.rows);
+    let naming: Vec<bool> = result
+        .rows
+        .iter()
+        .map(|row| row_names_selector(row, selector))
+        .collect();
+    let elsewhere = naming.iter().filter(|names| !**names).count();
+    let mut outcome = result.outcome.clone();
+    if elsewhere > 0 {
+        let note = format!(
+            "{elsewhere} of {} rows matched the query outside a {} field and attribute nothing",
+            result.rows.len(),
+            selector.kind.as_str()
+        );
+        outcome.detail = Some(match outcome.detail.take() {
+            Some(detail) if !detail.is_empty() => format!("{detail}; {note}"),
+            _ => note,
+        });
+    }
     batch.receipts.push(ObservationReceipt {
         source: COLLECTOR_ID.into(),
         dataset,
         observed_at_unix: now_unix,
         response_sha256: result.meta.response_sha256.clone(),
-        outcome: result.outcome.clone(),
+        outcome,
         parsed_rows: result.rows.len(),
         truncated: result.meta.truncated || result.meta.normalized_rows_truncated,
         quota: ProviderQuota::reported(
@@ -366,6 +384,12 @@ fn append_result(
         observed_at_unix: now_unix,
     };
     for (row_index, row) in result.rows.iter().enumerate() {
+        // A full-text breach search answers "Dubai" with every row where the word appears, a
+        // city field included. Only a row that carries the searched value in a field of its own
+        // kind is about the selector; the others are strangers and attribute nothing.
+        if !naming[row_index] {
+            continue;
+        }
         append_row(
             batch,
             selector,
@@ -420,6 +444,52 @@ fn append_row(
     }
 }
 
+/// Whether `row` carries the selector's value in a field of the selector's kind, compared by the
+/// engine's canonical identity key. A domain is named by a domain field or by the host of a URL
+/// or email field at that domain or a subdomain of it; a URL also by a field on the same host.
+/// A row with no such field matched the query somewhere else. **Pure.**
+fn row_names_selector(row: &SeekNowRow, selector: &Entity) -> bool {
+    let fields = row_entities(row);
+    let host_of = |kind: &EntityKind, value: &str| -> Option<String> {
+        match kind {
+            EntityKind::Domain => crate::canonical::canonical_domain(value.trim_end_matches('.')),
+            EntityKind::Email => value
+                .rsplit_once('@')
+                .and_then(|(_, domain)| crate::canonical::canonical_domain(domain)),
+            EntityKind::Url => crate::entity::link_host(value)
+                .filter(|(kind, _)| *kind == EntityKind::Domain)
+                .map(|(_, host)| host),
+            _ => None,
+        }
+    };
+    let same_identity = |kind: &EntityKind, value: &str| {
+        *kind == selector.kind && Entity::new(kind.clone(), value, 0.0, "").uid == selector.uid
+    };
+    match selector.kind {
+        EntityKind::Domain => {
+            let Some(domain) = host_of(&EntityKind::Domain, &selector.value) else {
+                return false;
+            };
+            let suffix = format!(".{domain}");
+            fields.iter().any(|(kind, value)| {
+                host_of(kind, value).is_some_and(|host| host == domain || host.ends_with(&suffix))
+            })
+        }
+        EntityKind::Url => {
+            let wanted = host_of(&EntityKind::Url, &selector.value);
+            fields.iter().any(|(kind, value)| {
+                same_identity(kind, value)
+                    || (*kind == EntityKind::Url
+                        && wanted.is_some()
+                        && host_of(kind, value) == wanted)
+            })
+        }
+        _ => fields
+            .iter()
+            .any(|(kind, value)| same_identity(kind, value)),
+    }
+}
+
 fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
     let mut values = BTreeSet::<(EntityKind, String)>::new();
     for (key, value) in &row.fields {
@@ -444,7 +514,8 @@ fn entity_kind_for_field(key: &str) -> Option<EntityKind> {
     match base {
         "email" | "email_address" => Some(EntityKind::Email),
         "phone" | "phone_number" | "mobile" => Some(EntityKind::Phone),
-        "username" | "user" | "handle" => Some(EntityKind::Username),
+        // `pseudo` is the handle column of French-language breach exports.
+        "username" | "user" | "handle" | "pseudo" => Some(EntityKind::Username),
         "ip" | "ip_address" => Some(EntityKind::IpAddress),
         "domain" | "hostname" => Some(EntityKind::Domain),
         "name" | "full_name" | "fullname" => Some(EntityKind::Person),

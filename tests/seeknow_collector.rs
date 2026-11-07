@@ -359,7 +359,7 @@ fn entity_capacity_still_absorbs_evidence_for_existing_uid() {
         r#"{"success":true,"data":[
             {"email":"alice@example.com","dbname":"Dataset A","record_id":"r1"},
             {"email":"alice@example.com","dbname":"Dataset A","record_id":"r2"},
-            {"username":"overflow","dbname":"Dataset A","record_id":"r3"}
+            {"email":"alice@example.com","username":"overflow","dbname":"Dataset A","record_id":"r3"}
         ]}"#,
     )]);
     let limits = CollectionLimits {
@@ -379,7 +379,9 @@ fn entity_capacity_still_absorbs_evidence_for_existing_uid() {
     assert_eq!(batch.entities.len(), 1);
     assert_eq!(batch.entities[0].kind, EntityKind::Email);
     assert_eq!(batch.entities[0].value, "alice@example.com");
-    assert_eq!(batch.entities[0].evidence.len(), 2);
+    // Every row observes alice; the capped `overflow` handle is never added.
+    assert_eq!(batch.entities[0].evidence.len(), 3);
+    assert!(!batch.entities.iter().any(|e| e.value == "overflow"));
 }
 
 #[test]
@@ -840,4 +842,76 @@ fn exactly_two_remaining_credits_allow_adaptive_deep_search() {
     assert_eq!(batch.outcome, CollectionOutcome::ValidZero);
     assert_eq!(batch.receipts[0].quota.as_ref().unwrap().remaining, Some(2));
     assert_eq!(batch.receipts[1].quota.as_ref().unwrap().remaining, Some(0));
+}
+
+/// A full-text breach search for the handle "dubai" answers with rows where the word is only a
+/// city: those rows are strangers and attribute nothing; the row whose handle is the query is kept.
+#[test]
+fn rows_that_match_the_query_only_outside_its_kind_attribute_nothing() {
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"field_2":"stranger.one","email":"stranger.one@example.com","field_4":"Dubai","dbname":"Dataset A"},
+            {"pseudo":"Dubai","email":"owner@example.com","dbname":"Dataset B"},
+            {"username":"someone_else","field_5":"dubai","dbname":"Dataset C"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Username, "dubai"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        32,
+    )
+    .unwrap();
+    let values: Vec<&str> = batch.entities.iter().map(|e| e.value.as_str()).collect();
+    assert!(values.contains(&"owner@example.com"), "{values:?}");
+    for stranger in ["stranger.one@example.com", "someone_else"] {
+        assert!(
+            !values.iter().any(|v| v.eq_ignore_ascii_case(stranger)),
+            "{values:?}"
+        );
+        assert!(
+            !batch
+                .pivots
+                .iter()
+                .any(|p| p.value.eq_ignore_ascii_case(stranger)),
+            "a stranger is never a pivot"
+        );
+    }
+    let detail = batch.receipts[0].outcome.detail.clone().unwrap_or_default();
+    assert!(
+        detail.contains("2 of 3 rows matched the query outside a username field"),
+        "{detail}"
+    );
+}
+
+/// A domain is named by a stealer row's URL or email on that domain or a subdomain, never by an
+/// unrelated host that merely contains the word.
+#[test]
+fn a_domain_is_named_by_hosts_on_it_and_not_by_lookalikes() {
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"url":"https://login.example.com/auth","username":"keptbyurl","dbname":"Dataset A"},
+            {"email":"staff@example.com","username":"keptbyemail","dbname":"Dataset A"},
+            {"url":"https://example.com.evil.test/","username":"lookalike","dbname":"Dataset A"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Domain, "example.com"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        32,
+    )
+    .unwrap();
+    let values: Vec<&str> = batch.entities.iter().map(|e| e.value.as_str()).collect();
+    assert!(
+        values.contains(&"keptbyurl") && values.contains(&"keptbyemail"),
+        "{values:?}"
+    );
+    assert!(!values.contains(&"lookalike"), "{values:?}");
 }
