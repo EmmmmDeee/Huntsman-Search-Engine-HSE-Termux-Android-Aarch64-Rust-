@@ -235,9 +235,10 @@ pub fn parse_http_date(raw: &str, now_unix: u64) -> Option<i64> {
         return None;
     }
     let parts: Vec<&str> = rest.split_ascii_whitespace().collect();
-    let (year, month, day, clock) = match parts.as_slice() {
+    let mut obsolete_limit = None;
+    let (mut year, month, day, clock) = match parts.as_slice() {
         [day, month, year, clock, "GMT"] if raw.as_bytes()[3] == b',' && year.len() == 4 => {
-            (year.parse::<i32>().ok()?, *month, *day, *clock)
+            (year.parse::<i64>().ok()?, *month, *day, *clock)
         }
         [date, clock, "GMT"] if raw.as_bytes().get(weekday.len()) == Some(&b',') => {
             let mut fields = date.split('-');
@@ -245,17 +246,22 @@ pub fn parse_http_date(raw: &str, now_unix: u64) -> Option<i64> {
             if fields.next().is_some() || yy.len() != 2 {
                 return None;
             }
-            let yy: i32 = yy.parse().ok()?;
-            let now_year =
-                i32::try_from(civil_from_days(i64::try_from(now_unix / 86_400).ok()?).0).ok()?;
-            let mut year = now_year - now_year.rem_euclid(100) + yy;
-            if year > now_year + 50 {
-                year -= 100;
-            }
+            let yy: i64 = yy.parse().ok()?;
+            let (now_year, now_month, now_day) =
+                civil_from_days(i64::try_from(now_unix / 86_400).ok()?);
+            // Compare the complete anniversary only after the date and clock are parsed.
+            // Keep century selection wide: now_year + 50 can overflow an i32 clock year.
+            obsolete_limit = Some((
+                now_year + 50,
+                now_month,
+                now_day,
+                i64::try_from(now_unix % 86_400).ok()?,
+            ));
+            let year = now_year - now_year.rem_euclid(100) + yy;
             (year, month, day, *clock)
         }
         [month, day, clock, year] if raw.as_bytes()[3] == b' ' && year.len() == 4 => {
-            (year.parse::<i32>().ok()?, *month, *day, *clock)
+            (year.parse::<i64>().ok()?, *month, *day, *clock)
         }
         _ => return None,
     };
@@ -277,11 +283,16 @@ pub fn parse_http_date(raw: &str, now_unix: u64) -> Option<i64> {
     if hms.next().is_some() {
         return None;
     }
+    let clock_seconds = hour * 3_600 + minute * 60 + second;
+    if obsolete_limit.is_some_and(|limit| (year, month, day, clock_seconds) > limit) {
+        year -= 100;
+    }
+    let year = i32::try_from(year).ok()?;
     let days = days_from_civil(year, month, day);
     if civil_from_days(days) != (i64::from(year), month, day) {
         return None;
     }
-    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+    Some(days * 86_400 + clock_seconds)
 }
 
 #[cfg(test)]
