@@ -1918,12 +1918,8 @@ mod tests {
             assert_eq!(entry.component, "source");
         }
         let saved = dir.join(&record.id);
-        assert!(
-            fs::metadata(saved.join(LOG_FILE)).unwrap().len() <= MAX_LOG_BYTES
-        );
-        assert!(
-            fs::metadata(saved.join(LOG_OVERFLOW_FILE)).unwrap().len() > MAX_LOG_BYTES
-        );
+        assert!(fs::metadata(saved.join(LOG_FILE)).unwrap().len() <= MAX_LOG_BYTES);
+        assert!(fs::metadata(saved.join(LOG_OVERFLOW_FILE)).unwrap().len() > MAX_LOG_BYTES);
         let _ = fs::remove_dir_all(&dir);
     }
 
