@@ -126,6 +126,7 @@ pub mod graph;
 pub mod graph_exec;
 pub mod gravatar;
 pub mod greynoise;
+pub mod h1dr4;
 pub mod hacker_news;
 pub mod hackertarget;
 pub mod hibp;
