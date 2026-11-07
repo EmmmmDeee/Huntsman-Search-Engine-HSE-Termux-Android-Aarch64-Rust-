@@ -34,7 +34,7 @@ fn geolocation_out_of_range_coordinates_are_decode_failures() {
         }]));
         assert!(
             matches!(decode_geolocation(&bytes), Err(LegError::Decode(_))),
-            "out-of-range coordinates were accepted: {latitude},{longitude}"
+            "out-of-range coordinates were accepted"
         );
     }
 }
@@ -45,7 +45,7 @@ fn geolocation_out_of_range_coverage_is_not_place_evidence() {
         let bytes = body(&json!([{"country": "AU", "covered_percentage": share}]));
         assert!(
             matches!(decode_geolocation(&bytes), Err(LegError::Decode(_))),
-            "out-of-range percentage was accepted: {share}"
+            "out-of-range percentage was accepted"
         );
     }
 }
@@ -135,13 +135,13 @@ fn invalid_geolocation_cannot_reach_ip_or_netblock_evidence() {
                     .iter()
                     .flat_map(|entity| &entity.evidence)
                     .all(|evidence| { !evidence.attributes.contains_key("locations") }),
-                "invalid geolocation became positive evidence: {report:?}"
+                "invalid geolocation became positive evidence"
             );
             assert!(
                 report.outcomes.iter().any(|outcome| {
                     outcome.module == "ripestat" && outcome.kind == SourceOutcomeKind::SchemaDrift
                 }),
-                "invalid geolocation was not an explicit failed leg: {report:?}"
+                "invalid geolocation was not an explicit failed leg"
             );
         }
     }
