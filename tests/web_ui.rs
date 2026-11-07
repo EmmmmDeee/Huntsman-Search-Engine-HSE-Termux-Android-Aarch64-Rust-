@@ -1095,6 +1095,49 @@ fn the_scans_list_shows_each_scans_sources_and_unresolved_count() {
 }
 
 #[test]
+fn spiderfoot_inspired_workbench_retains_live_scan_and_passive_radar_contracts() {
+    let script = inline("script");
+    for control in [
+        "id=\"workbench\"",
+        "id=\"w-total\"",
+        "id=\"w-running\"",
+        "id=\"w-finished\"",
+        "id=\"w-elements\"",
+        "id=\"rread\"",
+        "id=\"rcread\"",
+        "id=\"rtrack\"",
+        "id=\"rdownload\"",
+        "id=\"sctabs\"",
+        "id=\"runscan\"",
+    ] {
+        assert!(PAGE.contains(control), "missing functional control: {control}");
+    }
+    for metric in ["w-total", "w-running", "w-finished", "w-elements"] {
+        assert!(
+            script.contains(&format!("$('{metric}').textContent=")),
+            "dashboard metric must update from the saved scan list: {metric}"
+        );
+    }
+    assert!(PAGE.contains("ROOTLESS TERMUX / RADIO INTELLIGENCE"));
+    assert!(PAGE.contains("Explicit reads only"));
+    assert!(PAGE.contains("radar-scope-caption"));
+    assert!(PAGE.contains("nav-footer"));
+    assert!(PAGE.contains("@media (min-width:1024px)"));
+    assert!(PAGE.contains("href=\"#/newscan\""));
+    assert!(PAGE.contains("href=\"#/radar\""));
+
+    let start = script.find("function route(){").expect("route function");
+    let end = script[start..]
+        .find("addEventListener('hashchange',route);")
+        .expect("route end")
+        + start;
+    assert!(
+        !script[start..end].contains("/api/radar/"),
+        "opening Radar must not silently call a device sensor"
+    );
+}
+
+#[test]
 fn the_page_stays_within_its_budget() {
     assert!(
         served_len() <= PAGE_BUDGET,
