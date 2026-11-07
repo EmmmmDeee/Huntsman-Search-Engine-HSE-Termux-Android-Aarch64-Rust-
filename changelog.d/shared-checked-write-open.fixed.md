@@ -1,0 +1,2 @@
+- Share checked in-place opens between scan logs and run history, preserving caller errors and creation permissions; reuse the existing Linux/Android nonblocking, no-follow open policy so a FIFO planted after the check cannot stall these writes on supported targets.
+- Isolate run-history test scratch paths per invocation: two symlink tests previously reused one path and could remove or replace each other's fixtures during parallel execution.

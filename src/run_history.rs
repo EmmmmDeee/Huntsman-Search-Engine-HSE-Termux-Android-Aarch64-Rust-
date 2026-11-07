@@ -6,11 +6,13 @@
 //! run against the one before it and reports a regression only on measured
 //! evidence: a new failure, or a suite that ran fewer tests than before.
 
-use std::fs::{File, Metadata, OpenOptions};
+#[cfg(test)]
+use std::fs::Metadata;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::fsio::{CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, REFUSED_SYMLINK, SymlinkRefusal};
+use crate::fsio::{CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, OpenRefusal, REFUSED_SYMLINK};
 
 /// Upper bound on a history file, in bytes, for every read of it.
 ///
@@ -38,57 +40,32 @@ fn refusal(path: &Path, reason: &str) -> HistoryError {
     HistoryError::Io(io::Error::other(format!("{}: {reason}", path.display())))
 }
 
-/// `lstat` the history before a write, through `fsio`'s write policy: a symlink is
-/// refused, since writing through a planted link would land in whatever file it
-/// points at. Existing non-regular files are refused before opening as well.
-/// `None` when the path does not exist yet.
-fn lstat_for_write(path: &Path) -> Result<Option<Metadata>, HistoryError> {
-    let linked = crate::fsio::check_not_symlink(path).map_err(|r| match r {
-        SymlinkRefusal::Linked => refusal(path, REFUSED_SYMLINK),
-        SymlinkRefusal::Unreadable(e) => HistoryError::Io(e),
-    })?;
-    // Reject special files before open: opening a FIFO for append can wait
-    // forever, so the descriptor-side check alone is too late.
-    if linked.as_ref().is_some_and(|meta| !meta.is_file()) {
-        return Err(refusal(path, NOT_REGULAR_FILE));
-    }
-    Ok(linked)
-}
-
-/// Open the history for an in-place write through a descriptor that is the file
-/// `lstat` saw. The path is checked, opened with `options`, and the descriptor
-/// compared with the check (same inode, regular file), so a link or a replacement
-/// planted between the check and the open is refused rather than written through.
-/// With `create`, a history that does not exist yet is created exclusively, which
-/// never follows a link planted after the check.
+/// Open an in-place history write through fsio's shared checked-file policy.
 fn open_checked(
     path: &Path,
     options: &mut OpenOptions,
     create: bool,
 ) -> Result<File, HistoryError> {
-    let linked = lstat_for_write(path)?;
-    if create && linked.is_none() {
-        options.create_new(true);
-    }
-    let file = options.open(path)?;
-    require_opened(path, linked.as_ref(), &file.metadata()?)?;
-    Ok(file)
+    crate::fsio::open_checked(path, options, create).map_err(|error| write_refusal(path, error))
 }
 
-/// The descriptor half of [`open_checked`]: `opened` must be the inode `linked`
-/// describes, when the path existed at the check, and a regular file.
+fn write_refusal(path: &Path, error: OpenRefusal) -> HistoryError {
+    match error {
+        OpenRefusal::Linked => refusal(path, REFUSED_SYMLINK),
+        OpenRefusal::Changed => refusal(path, CHANGED_WHILE_OPENING),
+        OpenRefusal::NotRegular => refusal(path, NOT_REGULAR_FILE),
+        OpenRefusal::Io(error) => HistoryError::Io(error),
+    }
+}
+
+/// Keep the original descriptor regression cases against the shared policy.
+#[cfg(test)]
 fn require_opened(
     path: &Path,
     linked: Option<&Metadata>,
     opened: &Metadata,
 ) -> Result<(), HistoryError> {
-    if linked.is_some_and(|linked| !crate::fsio::same_inode(linked, opened)) {
-        return Err(refusal(path, CHANGED_WHILE_OPENING));
-    }
-    if !opened.is_file() {
-        return Err(refusal(path, NOT_REGULAR_FILE));
-    }
-    Ok(())
+    crate::fsio::require_opened(linked, opened).map_err(|error| write_refusal(path, error))
 }
 
 use serde::{Deserialize, Serialize};
@@ -337,10 +314,28 @@ mod tests {
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("run-history-{name}-{}", std::process::id()));
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "run-history-{name}-{}-{sequence}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("runs.jsonl")
+    }
+
+    #[test]
+    fn scratch_paths_with_the_same_label_do_not_remove_each_others_records() {
+        let first = scratch("same-label");
+        std::fs::write(&first, b"preserved").unwrap();
+        let second = scratch("same-label");
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"preserved");
+        let _ = std::fs::remove_dir_all(first.parent().unwrap());
+        let _ = std::fs::remove_dir_all(second.parent().unwrap());
     }
 
     #[test]

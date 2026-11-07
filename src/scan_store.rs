@@ -1003,42 +1003,26 @@ fn checked_open_for_append_with(
         )));
     }
 
-    let checked = match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-            return Err(StoreError::Io(format!(
-                "{}: not a regular file",
-                path.display()
-            )));
-        }
-        Ok(meta) => Some(meta),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(io_error(path, &error)),
-    };
-    after_check();
-
     let mut options = OpenOptions::new();
     options.append(true);
-    if checked.is_none() {
-        options.create_new(true);
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options.open(path).map_err(|error| io_error(path, &error))?;
-    let opened = file.metadata().map_err(|error| io_error(path, &error))?;
-    if !opened.is_file()
-        || checked
-            .as_ref()
-            .is_some_and(|meta| !crate::fsio::same_inode(meta, &opened))
-    {
-        return Err(StoreError::Io(format!(
-            "{}: file changed between check and open",
-            path.display()
-        )));
-    }
-    Ok(file)
+    crate::fsio::open_checked_with(path, &mut options, true, after_check).map_err(|error| {
+        use crate::fsio::OpenRefusal;
+        match error {
+            OpenRefusal::Linked | OpenRefusal::NotRegular => {
+                StoreError::Io(format!("{}: not a regular file", path.display()))
+            }
+            OpenRefusal::Changed => StoreError::Io(format!(
+                "{}: file changed between check and open",
+                path.display()
+            )),
+            OpenRefusal::Io(error) => io_error(path, &error),
+        }
+    })
 }
 
 fn log_is_full(path: &Path) -> bool {
@@ -1838,6 +1822,59 @@ mod tests {
             before
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn append_does_not_block_when_a_fifo_replaces_the_checked_file() {
+        use std::os::unix::fs::FileTypeExt;
+
+        let dir = scratch("log-fifo-swap");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(LOG_FILE);
+        fs::write(&log, b"old\n").unwrap();
+        let writer_path = log.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let (prepared, ready) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let result = checked_open_for_append_with(&writer_path, || {
+                fs::remove_file(&writer_path).unwrap();
+                assert!(
+                    std::process::Command::new("mkfifo")
+                        .arg(&writer_path)
+                        .status()
+                        .expect("mkfifo available on Linux/Termux")
+                        .success()
+                );
+                prepared.send(()).unwrap();
+            });
+            send.send(result).unwrap();
+        });
+        // Start the open deadline only after the FIFO exists. In particular,
+        // failure cleanup must not accidentally open the old regular file.
+        ready
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("FIFO replacement setup must finish");
+        let result = receive.recv_timeout(std::time::Duration::from_secs(2));
+        let completed = result.is_ok();
+        // Release a broken blocking open before failing the assertion.
+        let reader = (!completed).then(|| {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&log)
+                .unwrap()
+        });
+        let result = result.unwrap_or_else(|_| receive.recv().unwrap());
+        writer.join().unwrap();
+        drop(reader);
+        assert!(fs::symlink_metadata(&log).unwrap().file_type().is_fifo());
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            completed,
+            "append open waited for a FIFO reader after the check"
+        );
+        assert!(matches!(result, Err(StoreError::Io(_))));
     }
 
     #[cfg(unix)]
