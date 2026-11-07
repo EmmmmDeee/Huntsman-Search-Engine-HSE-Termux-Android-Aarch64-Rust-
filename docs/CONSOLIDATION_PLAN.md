@@ -435,6 +435,8 @@ same files.
 | B31 | A public-office holder is flagged politically exposed | P39 positions classified by their own P31/P279 records (public/elective office, head of state or government, minister, legislator, ...), never the generic "position" type; current or former kept per office |
 | B32 | The sanctions lists count every match and row they leave out | A capped match is reported in the detail; unparseable rows make an unmatched list inconclusive, never a clean valid_zero |
 | B33 | The PEP check ignores deprecated office classifications and reports P39 truncation | Deprecated P31/P279 are filtered; the total positions held is kept and coverage past the 20-cap is called incomplete |
+| B34 | The ICIJ and FBI-notice collectors count every match and row they leave out | An over-cap or unreadable ICIJ node, or an FBI page whose `total` exceeds the rows fetched, makes an unmatched result `inconclusive` and reports the shortfall on a match, never a clean `valid_zero` that reads as the whole corpus |
+| B35 | SeekNow's key is supplyable by its own private file like DeHashed's and HIBP's | `~/.config/seeknow/api_key` joins `PROVIDER_KEY_FILES`; the credential builder and both run gates read it through the slot rule, so a Termux install driven through the web UI needs no persistent env var |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 

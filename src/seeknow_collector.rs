@@ -325,6 +325,12 @@ pub type LookupLeg = crate::lookup_report::LookupReport;
 /// credential's authority and wire form have one definition. `provenance` records which path
 /// approved it.
 ///
+/// The key is read by the same slot rule `credential-status`, the probe and the web UI's key
+/// settings report: the `HUNTSMAN_SEEKNOW_KEY` slot (keys file or environment), then `SeekNow`'s
+/// own private key file `~/.config/seeknow/api_key` ([`crate::keys::PROVIDER_KEY_FILES`]). Without
+/// that file a Termux install, driven through the web UI with no persistent shell environment, had
+/// no durable place to hold the key, unlike `DeHashed` and HIBP.
+///
 /// # Errors
 /// [`String`] when the key slot is unset, or the authority or credential cannot be built.
 pub fn operator_credential(
@@ -332,8 +338,7 @@ pub fn operator_credential(
     now_unix: u64,
     provenance: &str,
 ) -> Result<Credential, String> {
-    let secret = keys
-        .get(KEY_SLOT)
+    let secret = crate::provider_credentials::secret_for_slot(keys, KEY_SLOT)
         .ok_or_else(|| format!("credential {KEY_SLOT} is not configured"))?;
     let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
         provider_id: "seeknow".into(),
@@ -367,7 +372,7 @@ pub fn collect_for_lookup<T: Transport + ?Sized>(
     if !SeekNowCollector.accepts(&kind) {
         return None;
     }
-    if keys.get(KEY_SLOT).is_none() {
+    if crate::provider_credentials::secret_for_slot(keys, KEY_SLOT).is_none() {
         // Asked without a key: no request, and the row that says so, as every keyed leg leaves.
         return Some(LookupLeg {
             entities: Vec::new(),

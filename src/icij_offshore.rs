@@ -113,39 +113,13 @@ fn interpret(
             others += 1;
             continue;
         }
-        let node_type = node
-            .get("types")
-            .and_then(Value::as_array)
-            .and_then(|types| types.first())
-            .and_then(|t| t.get("name"))
-            .and_then(Value::as_str)
-            .unwrap_or("Node");
-        let mut evidence = Evidence::new(
-            EvidenceProvenance::for_scan(SOURCE, scan_id),
-            format!(
-                "ICIJ Offshore Leaks {node_type} node {id} ({node_name}) names every word of the query; a lead into leaked records, not proof it is the same person"
-            ),
-        )
-        .with_attr("dataset", "ICIJ Offshore Leaks")
-        .with_attr("node_id", &id)
-        .with_attr("node_name", node_name)
-        .with_attr("node_type", node_type);
-        if let Some(description) = node.get("description").and_then(Value::as_str) {
-            evidence = evidence.with_attr("description", description);
-        }
-        if let Some(score) = node.get("score").and_then(Value::as_f64) {
-            evidence = evidence.with_attr("icij_score", format!("{score:.1}"));
-        }
-        if let Some(matched) = node.get("match").and_then(Value::as_bool) {
-            evidence = evidence.with_attr("icij_match", matched.to_string());
-        }
         push_entity(
             &mut entities,
             EntityKind::Document,
             &format!("{NODE_URL}{id}"),
             NODE_CONFIDENCE,
             scan_id,
-            evidence,
+            node_evidence(node, &id, node_name, scan_id),
             &["icij", "offshore-leaks", "lead"],
         );
     }
@@ -164,16 +138,62 @@ fn interpret(
             nodes.len() - MAX_NODES
         ));
     }
-    let mut outcome = if entities.is_empty() {
-        SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
-    } else {
+    // A node that could not be read, or one past the cap that was never examined, may be the
+    // subject: an empty result with either is inconclusive, never a clean "not in the leaks".
+    let could_hide_a_match = unreadable > 0 || nodes.len() > MAX_NODES;
+    let mut outcome = if !entities.is_empty() {
         SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())
-    }
-    .with_http_status(response.status);
+            .with_http_status(response.status)
+    } else if could_hide_a_match {
+        SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::Inconclusive,
+            Some(response.status),
+            "no readable node matched, but nodes were unreadable or beyond the cap",
+        )
+    } else {
+        SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status)
+    };
     if !remarks.is_empty() {
-        outcome = outcome.with_detail(remarks.join("; "));
+        let detail = match outcome.detail.take() {
+            Some(base) if !base.is_empty() => format!("{base}; {}", remarks.join("; ")),
+            _ => remarks.join("; "),
+        };
+        outcome = outcome.with_detail(detail);
     }
     Ok(Report { entities, outcome })
+}
+
+/// The evidence for one matched node, keeping every field the node carried verbatim.
+fn node_evidence(node: &Value, id: &str, node_name: &str, scan_id: &str) -> Evidence {
+    let node_type = node
+        .get("types")
+        .and_then(Value::as_array)
+        .and_then(|types| types.first())
+        .and_then(|t| t.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("Node");
+    let mut evidence = Evidence::new(
+        EvidenceProvenance::for_scan(SOURCE, scan_id),
+        format!(
+            "ICIJ Offshore Leaks {node_type} node {id} ({node_name}) names every word of the query; a lead into leaked records, not proof it is the same person"
+        ),
+    )
+    .with_attr("dataset", "ICIJ Offshore Leaks")
+    .with_attr("node_id", id)
+    .with_attr("node_name", node_name)
+    .with_attr("node_type", node_type);
+    if let Some(description) = node.get("description").and_then(Value::as_str) {
+        evidence = evidence.with_attr("description", description);
+    }
+    if let Some(score) = node.get("score").and_then(Value::as_f64) {
+        evidence = evidence.with_attr("icij_score", format!("{score:.1}"));
+    }
+    if let Some(matched) = node.get("match").and_then(Value::as_bool) {
+        evidence = evidence.with_attr("icij_match", matched.to_string());
+    }
+    evidence
 }
 
 #[cfg(test)]
@@ -215,6 +235,54 @@ mod tests {
         assert!(detail.contains("1 nodes had no readable id"), "{detail}");
         let request = &transport.seen.borrow()[0];
         assert!(request.url.starts_with(ENDPOINT));
+    }
+
+    #[test]
+    fn an_unreadable_node_or_an_over_cap_result_is_inconclusive_not_a_clean_zero() {
+        use std::fmt::Write as _;
+        // The only node that names the subject has a non-numeric id: unreadable, no clean zero.
+        let unreadable = r#"{"q0":{"result":[
+          {"id":"1","name":"RUJA FM","types":[]},
+          {"id":"not-a-number","name":"Ruja Ignatova"}
+        ]}}"#;
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(unreadable))]);
+        let report = lookup(&transport, "Ruja Ignatova", "scan", 1).expect("lookup");
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("no readable id or name"),
+            "{:?}",
+            report.outcome
+        );
+
+        // 51 non-matching nodes: node 51 is never read, so a zero cannot be a clean negative.
+        let mut over = String::from(r#"{"q0":{"result":["#);
+        for id in 1000..1051 {
+            if id > 1000 {
+                over.push(',');
+            }
+            let _ = write!(over, r#"{{"id":"{id}","name":"Someone Else","types":[]}}"#);
+        }
+        over.push_str("]}}");
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(&over))]);
+        let report = lookup(&transport, "Ruja Ignatova", "scan", 1).expect("lookup");
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("beyond the first 50"),
+            "{:?}",
+            report.outcome
+        );
     }
 
     #[test]
