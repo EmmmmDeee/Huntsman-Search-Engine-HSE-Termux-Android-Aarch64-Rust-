@@ -40,12 +40,19 @@ fn refusal(path: &Path, reason: &str) -> HistoryError {
 
 /// `lstat` the history before a write, through `fsio`'s write policy: a symlink is
 /// refused, since writing through a planted link would land in whatever file it
-/// points at. `None` when the path does not exist yet.
+/// points at. Existing non-regular files are refused before opening as well.
+/// `None` when the path does not exist yet.
 fn lstat_for_write(path: &Path) -> Result<Option<Metadata>, HistoryError> {
-    crate::fsio::check_not_symlink(path).map_err(|r| match r {
+    let linked = crate::fsio::check_not_symlink(path).map_err(|r| match r {
         SymlinkRefusal::Linked => refusal(path, REFUSED_SYMLINK),
         SymlinkRefusal::Unreadable(e) => HistoryError::Io(e),
-    })
+    })?;
+    // Reject special files before open: opening a FIFO for append can wait
+    // forever, so the descriptor-side check alone is too late.
+    if linked.as_ref().is_some_and(|meta| !meta.is_file()) {
+        return Err(refusal(path, NOT_REGULAR_FILE));
+    }
+    Ok(linked)
 }
 
 /// Open the history for an in-place write through a descriptor that is the file
@@ -384,6 +391,54 @@ mod tests {
             b"",
             "the append followed the link and wrote through it"
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn checked_write_refuses_a_fifo_without_waiting_for_a_reader() {
+        use std::os::unix::fs::FileTypeExt;
+
+        // append's earlier read cannot protect this open when a FIFO appears
+        // after that read but before the write-side check.
+        let path = scratch("write-fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .expect("mkfifo available on Linux/Termux")
+                .success()
+        );
+        let writer_path = path.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let mut options = OpenOptions::new();
+            options.append(true);
+            send.send(open_checked(&writer_path, &mut options, false))
+                .unwrap();
+        });
+        let result = receive.recv_timeout(std::time::Duration::from_secs(2));
+        let completed = result.is_ok();
+        // Release a broken writer before failing, leaving no blocked thread.
+        let reader = (!completed).then(|| {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap()
+        });
+        let result = result.unwrap_or_else(|_| receive.recv().unwrap());
+        writer.join().unwrap();
+        drop(reader);
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_fifo()
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(completed, "write open waited for a FIFO reader");
+        let error = result.expect_err("a FIFO must be refused").to_string();
+        assert!(error.contains(NOT_REGULAR_FILE), "{error}");
     }
 
     #[cfg(unix)]
