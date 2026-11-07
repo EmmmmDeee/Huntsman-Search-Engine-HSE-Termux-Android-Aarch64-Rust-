@@ -23,7 +23,7 @@ Web UI: Analysis > Source-backed OSINT methods. APIs `POST /api/osint/case` and 
 - `huntsman-recon h1dr4 rewards --limit 10`: aggregator references; confirm wanted status, rewards and source freshness independently at the relevant official agency.
 - `huntsman-recon h1dr4 onchain-stats`: reads public registry aggregate counts, not wallet-owner identities.
 
-**Limits:** Upstream case-detail `tip_count` can reflect the response limit, not the true case total. A tested H1DR4 case ignored `offset` for tips; pagination is therefore not claimed complete. Every response body is preserved as `original_json` with its digest, even when normalized rows are missing or schema changes. No query ever creates cases, submits tips, pays fees, or uses an LLM. Web UI controls and regular event ingestion are not part of this first connector; this document is not evidence that those future integrations work.
+**Limits:** Upstream case-detail `tip_count` can reflect the response limit, not the true case total. A tested H1DR4 case ignored `offset` for tips; pagination is therefore not claimed complete. Every response body is preserved as `original_json` with its digest, even when normalized rows are missing or schema changes. No query ever creates cases, submits tips, pays fees, or uses an LLM. A dedicated opt-in H1DR4 panel is present in the Analyze Web UI and calls guarded read-only `GET /api/h1dr4`. The browser presents normalized unverified leads and offers a complete raw-response JSON export. It does not insert H1DR4 as an existing saved-scan kind. Regular partner-event ingestion, MCP write workflows and full graph correlation remain out of scope; this documentation is not a substitute for Android browser acceptance.
 
 ## Evidence and security boundaries
 
