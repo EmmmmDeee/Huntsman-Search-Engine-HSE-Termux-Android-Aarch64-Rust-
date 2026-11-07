@@ -1134,6 +1134,8 @@ fn spiderfoot_inspired_workbench_retains_live_scan_and_passive_radar_contracts()
     assert!(PAGE.contains("Explicit reads only"));
     assert!(PAGE.contains("radar-scope-caption"));
     assert!(PAGE.contains("nav-footer"));
+    assert!(PAGE.contains("id=\"skip-content\""));
+    assert!(script.contains("event.preventDefault();$('workspace').focus()"));
     assert!(PAGE.contains("@media (min-width:1024px)"));
     assert!(PAGE.contains("href=\"#/newscan\""));
     assert!(PAGE.contains("href=\"#/radar\""));
