@@ -22,14 +22,14 @@ use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::sec_edgar;
-use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 use crate::textnorm::name_tokens;
 use crate::wikidata;
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
 pub const PEOPLE_HELP: &str = "\
 people NAME [--save FILE]
-Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, and SEC EDGAR. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
+Look up NAME on the keyless ASIC people and director registers, Wikidata, the ACNC charity register, SEC EDGAR, and FBI wanted notices that name every word of NAME. Fewer than two alphabetic tokens makes no request. One source failure does not abort the others. --save FILE writes an unverified ledger that verify can reload; skip does not write.
 
 The lookup queries independent sources:
   1. ASIC people register (company associates and sole traders)
@@ -147,6 +147,31 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
             now_unix,
             &mut report,
         );
+    }
+
+    if transport.runs_module(crate::public_osint::NOTICES) {
+        // FBI wanted notices: kept only when a notice's title or alias names every word of the
+        // name (B23). Each is a Document keyed by its notice URL, so it never merges into a
+        // same-named person from another register.
+        match crate::public_osint::search(
+            transport,
+            crate::public_osint::Source::Notices,
+            &name,
+            &scan_id,
+            now_unix,
+        ) {
+            Ok(found) => {
+                report.entities.extend(found.entities);
+                report.outcomes.extend(found.outcomes);
+            }
+            Err(why) => report.outcomes.push(SourceExecutionOutcome::failed(
+                crate::public_osint::NOTICES,
+                now_unix,
+                SourceOutcomeKind::RefusedBeforeSending,
+                None,
+                why,
+            )),
+        }
     }
 
     // Entities with identical UIDs from different sources are merged: duplicate records
@@ -569,8 +594,8 @@ mod tests {
 
     /// All seven people-source outcomes persist even if SEC EDGAR is not configured.
     /// An absent SEC operator contact suppresses its HTTP request but not its ledger row.
-    /// Every ASIC register, then ASIC Connect, Wikidata, ACNC and SEC EDGAR.
-    const PEOPLE_SOURCE_OUTCOMES: usize = REGISTERS.len() + 4;
+    /// Every ASIC register, then ASIC Connect, Wikidata, ACNC, SEC EDGAR and FBI notices.
+    const PEOPLE_SOURCE_OUTCOMES: usize = REGISTERS.len() + 5;
     const PEOPLE_SOURCE_REQUESTS_WITHOUT_SEC_CONTACT: usize = PEOPLE_SOURCE_OUTCOMES - 1;
 
     fn empty_script() -> HashMap<String, Result<Response, TransportFailure>> {
@@ -764,6 +789,14 @@ mod tests {
                 let entities = &report.entities;
                 assert!(entities.is_empty(), "{entities:?}");
                 assert_eq!(report.outcomes.len(), PEOPLE_SOURCE_OUTCOMES);
+                assert!(
+                    report
+                        .outcomes
+                        .iter()
+                        .any(|outcome| outcome.module == crate::public_osint::NOTICES),
+                    "a people lookup asks the FBI notices leg: {:?}",
+                    report.outcomes
+                );
                 assert!(
                     report
                         .outcomes

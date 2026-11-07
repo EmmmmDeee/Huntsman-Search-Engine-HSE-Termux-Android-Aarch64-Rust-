@@ -426,6 +426,7 @@ same files.
 | B23 | An FBI notice attaches only to the person it names | A notice is kept only when its title or an alias contains every name token of the query; otherwise the leg is `valid_zero` |
 | B24 | A public figure's Wikidata X handle becomes a pivot | Account identifiers accept qualifiers that only describe the account (follower count, its time, start, numeric id, verified); restrictive or unknown qualifiers still suppress |
 | B25 | A Wikidata name search never picks one of several namesakes | Two or more exact-label hits make the leg `inconclusive` with the candidates named; one exact-label hit wins over rank |
+| B26 | A person scan checks FBI wanted notices | `fbi_wanted` is a registered module and a people leg (CLI, web UI, scans, coverage, matrix); notices must name the person (B23) |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 

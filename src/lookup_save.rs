@@ -115,6 +115,7 @@ fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
         "wikidata" => ("wikidata", "src/wikidata.rs"),
         "acnc" => ("acnc", "src/acnc.rs"),
         "sec_edgar" => ("sec_edgar", "src/sec_edgar.rs"),
+        "fbi_wanted" => ("fbi_wanted", "src/public_osint.rs"),
         _ => (module, "src/people_cli.rs"),
     }
 }

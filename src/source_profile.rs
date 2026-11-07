@@ -153,6 +153,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("eth_rpc", C::Other, None),
     row("exa", C::Search, None),
     row("exif", C::Other, None),
+    row("fbi_wanted", C::Other, Some(C::IdentityRegistry)),
     row("fixture", C::Other, None),
     row("geo_corroboration", C::Infra, None),
     row("geocode", C::Infra, None),

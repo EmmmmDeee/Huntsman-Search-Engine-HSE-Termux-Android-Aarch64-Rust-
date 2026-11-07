@@ -380,6 +380,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "SEC EDGAR filer lookup",
     },
     ReachableModule {
+        name: "fbi_wanted",
+        command: "people NAME | public-osint notices QUERY",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1593"],
+        description: "FBI wanted notices that name every word of the person's name",
+    },
+    ReachableModule {
         name: "email_parse",
         command: "email ADDR",
         access: "offline",

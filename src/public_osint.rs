@@ -16,7 +16,8 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 pub const MAX_PUBLIC_QUERY_BYTES: usize = 160;
 const MAX_ROWS: usize = 20;
 const NEWS: &str = "gdelt_doc";
-const NOTICES: &str = "fbi_wanted";
+/// The FBI wanted-notices leg, a module of its own in a people scan.
+pub const NOTICES: &str = "fbi_wanted";
 const GDELT_URL: &str = "https://api.gdeltproject.org/api/v2/doc/doc";
 const FBI_URL: &str = "https://api.fbi.gov/wanted/v1/list";
 
