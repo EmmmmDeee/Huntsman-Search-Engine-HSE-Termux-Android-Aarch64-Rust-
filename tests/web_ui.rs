@@ -1018,7 +1018,7 @@ fn a_returning_tab_asks_only_for_health_unless_a_scan_is_running() {
     // A poll is set only while a scan runs (after 1, 2 and 4 s, then every 5 s), skipped while the
     // tab is hidden, and dropped when the view changes; a finished scan leaves nothing to resume.
     assert!(script.contains("function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}"));
-    assert!(script.contains("gen++;clearTimeout(timer);resume=null;if(v!==\'radar\')stopRadarLive();view=v;"));
+    assert!(script.contains("gen++;clearTimeout(timer);resume=null;if(v!=='radar')stopRadarLive();view=v;"));
     assert!(script.contains("if(scans.some(s=>live(s.status)))later(loadScans);else resume=null;"));
     assert!(script.contains(
         "if(running)later(()=>loadScan(false),Math.min(5000,1000*2**polls++));else resume=null;"
