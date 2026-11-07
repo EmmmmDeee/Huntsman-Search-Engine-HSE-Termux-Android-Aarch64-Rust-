@@ -795,8 +795,8 @@ impl ScanStore {
             // Keep the existing Vec-returning API bounded. Never return a silently
             // truncated history: larger archives remain on disk and produce an error.
             let remaining = MAX_RESULTS_BYTES.saturating_sub(bytes.len() as u64);
-            let extra = crate::fsio::read_bounded(&overflow_path, remaining)
-                .map_err(|e| fsio_error(&e))?;
+            let extra =
+                crate::fsio::read_bounded(&overflow_path, remaining).map_err(|e| fsio_error(&e))?;
             if !bytes.is_empty() && !bytes.ends_with(b"\n") {
                 bytes.push(b'\n');
             }
@@ -1043,9 +1043,8 @@ fn log_is_full(path: &Path) -> bool {
         return false;
     };
     let old_marker = format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept");
-    let new_marker = format!(
-        "log full at {MAX_LOG_BYTES} bytes; later entries archived in {LOG_OVERFLOW_FILE}"
-    );
+    let new_marker =
+        format!("log full at {MAX_LOG_BYTES} bytes; later entries archived in {LOG_OVERFLOW_FILE}");
     bytes.split(|byte| *byte == b'\n').any(|line| {
         serde_json::from_slice::<LogEntry>(line).is_ok_and(|entry| {
             entry.component == "huntsman"
@@ -1973,11 +1972,8 @@ mod tests {
         store.create(&record).unwrap();
         let unrelated = dir.join("unrelated");
         fs::write(&unrelated, b"untouched").unwrap();
-        std::os::unix::fs::symlink(
-            &unrelated,
-            dir.join(&record.id).join(LOG_OVERFLOW_FILE),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(&unrelated, dir.join(&record.id).join(LOG_OVERFLOW_FILE))
+            .unwrap();
         let entry = LogEntry {
             time: 40,
             component: "source".into(),
