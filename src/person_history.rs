@@ -267,10 +267,15 @@ fn new_row(
 }
 
 fn push_context(row: &mut PersonHistoryRow, places: &[BirthClaim], dates: &[BirthClaim]) {
-    // A single Evidence record can hold multiple unpaired place/date claims.
-    // Assign a date only when it supplies exactly one of each. Preserve
-    // ambiguous values separately instead of manufacturing combinations.
-    let date = if places.len() == 1 && dates.len() == 1 {
+    // A semicolon-delimited source field is indistinguishable from values
+    // combined by Evidence::with_attr. Multiple places are ambiguous: emit
+    // every raw claim, but do not create historical geography from fragments.
+    if places.len() != 1 {
+        return;
+    }
+    // A single Evidence record can hold multiple unpaired birth dates.
+    // Context is undated rather than manufacturing a place/date pairing.
+    let date = if dates.len() == 1 {
         Some(dates[0].value.as_str())
     } else {
         None
@@ -698,8 +703,7 @@ mod tests {
         assert_eq!(rows[1].birthplace_status, "conflicting_claims");
         assert_eq!(rows[1].place_of_birth_claims.len(), 2);
         assert_eq!(rows[1].date_of_birth_claims.len(), 2);
-        assert_eq!(rows[1].historical_context.len(), 1);
-        assert_eq!(rows[1].historical_context[0].date_claim, None);
+        assert!(rows[1].historical_context.is_empty());
     }
 
     #[test]
