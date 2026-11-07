@@ -70,6 +70,11 @@ pub(crate) fn store(
     body: &[u8],
     context: &Value,
 ) -> Result<String, String> {
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let dir_meta = fs::symlink_metadata(dir).map_err(|e| e.to_string())?;
+    if !dir_meta.is_dir() || dir_meta.file_type().is_symlink() {
+        return Err(format!("{}: refusing linked cache directory", dir.display()));
+    }
     let root = dir.join("originals");
     ensure_private_dir(&root)?;
     let folder = root.join(feed_id);
