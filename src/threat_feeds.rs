@@ -570,7 +570,7 @@ pub(crate) fn load(
             });
         }
     }
-    match download(transport, feed, now_unix) {
+    match download(transport, dir, feed, now_unix) {
         Ok((body, updated)) => {
             let note = path
                 .and_then(|path| keep(&path, &body, updated).err())
@@ -712,6 +712,7 @@ fn read_copy(path: &Path) -> Option<(Vec<u8>, u64)> {
 /// when the answer says.
 fn download(
     transport: &(dyn Transport + Send + Sync),
+    dir: Option<&Path>,
     feed: &CachedList,
     now_unix: u64,
 ) -> Result<(Vec<u8>, Option<u64>), Failure> {
@@ -726,6 +727,27 @@ fn download(
     )
     // `fetch` errors only before anything is sent (a blocked egress, an unsendable URL).
     .map_err(|error| (SourceOutcomeKind::RefusedBeforeSending, error.to_string()))?;
+    // Archive the exact bytes and headers of every HTTP response, including HTML challenges,
+    // errors and truncated bodies. None of these may overwrite the operational cache.
+    if let (Some(dir), Some(response)) = (dir, fetched.response.as_ref()) {
+        let metadata = serde_json::json!({
+            "source": feed.source,
+            "request_method": "GET",
+            "request_url": feed.url,
+            "final_url": fetched.final_url,
+            "redirects": fetched.redirects,
+            "response_status": response.status,
+            "response_headers": response.headers,
+            "body_truncated": response.truncated,
+            "observed_at_unix": now_unix,
+        });
+        crate::feed_archive::store(dir, feed.id, &response.body, &metadata).map_err(|error| {
+            (
+                SourceOutcomeKind::Inconclusive,
+                format!("original HTTP response could not be preserved ({error})"),
+            )
+        })?;
+    }
     match fetched.response {
         Some(response) if response.truncated => Err((
             SourceOutcomeKind::ProtocolDrift,
