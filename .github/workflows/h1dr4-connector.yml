@@ -1,8 +1,5 @@
 name: H1DR4 connector verification
 on:
-  push:
-    branches:
-      - 'feat/h1dr4-keyless-raw-evidence'
   pull_request:
     paths:
       - 'src/h1dr4.rs'
@@ -18,6 +15,18 @@ on:
 permissions:
   contents: read
 jobs:
+  formatting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Show Rust formatting diff
+        run: |
+          cargo fmt --all
+          git diff -- src/h1dr4.rs src/cli/h1dr4.rs src/cli/mod.rs src/web_server/lookup.rs src/web_server.rs
   connector:
     runs-on: ubuntu-latest
     timeout-minutes: 25
