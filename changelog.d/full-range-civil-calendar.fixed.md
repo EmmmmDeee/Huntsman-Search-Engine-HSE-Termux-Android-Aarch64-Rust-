@@ -1,0 +1,1 @@
+- The public civil-day calendar conversion now handles every signed 64-bit day without an epoch-shift overflow, debug panic or wrapped release date. Ordinary timestamp formatting and parsing stay unchanged.

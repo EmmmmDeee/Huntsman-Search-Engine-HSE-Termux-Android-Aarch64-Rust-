@@ -27,9 +27,13 @@ pub fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 #[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // month 1..=12, day 1..=31
 pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
+    // Split into Gregorian eras before shifting the epoch: adding the offset directly
+    // can overflow at i64::MAX. The shifted remainder is only 719,468..=865,564;
+    // carrying its whole eras preserves the same calendar without widening or clamping.
+    let era = days.div_euclid(146_097);
+    let shifted = days.rem_euclid(146_097) + 719_468;
+    let era = era + shifted / 146_097;
+    let doe = shifted % 146_097;
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let mut year = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
@@ -304,6 +308,85 @@ mod tests {
             "Sun, 6 Nov 1994 8:49:37 GMT",
         ] {
             assert_eq!(parse_http_date(raw, now), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn civil_calendar_is_total_at_i64_boundaries() {
+        for (days, expected) in [
+            (i64::MAX, (25_252_734_927_768_524, 7, 27)),
+            (i64::MAX - 1, (25_252_734_927_768_524, 7, 26)),
+            (i64::MIN, (-25_252_734_927_764_585, 6, 7)),
+            (i64::MIN + 1, (-25_252_734_927_764_585, 6, 8)),
+            (i64::MAX - 719_468, (25_252_734_927_766_554, 9, 25)),
+            (i64::MAX - 719_467, (25_252_734_927_766_554, 9, 26)),
+        ] {
+            assert_eq!(civil_from_days(days), expected, "day {days}");
+        }
+    }
+
+    #[test]
+    fn full_range_calendar_matches_independent_january_reference() {
+        // January 1, 2000 is Unix day 10,957. Reduce to a whole 400-year cycle,
+        // then walk ordinary calendar years/months, independently of March-based inversion.
+        fn reference(days: i64) -> (i64, u32, u32) {
+            let shifted = i128::from(days) - 10_957;
+            let mut year = i64::try_from(2000 + shifted.div_euclid(146_097) * 400).unwrap();
+            let mut left = shifted.rem_euclid(146_097);
+            let leap = |year: i64| year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+            loop {
+                let length = 365 + i128::from(leap(year));
+                if left < length {
+                    break;
+                }
+                left -= length;
+                year += 1;
+            }
+            let months = [
+                31,
+                28 + i128::from(leap(year)),
+                31,
+                30,
+                31,
+                30,
+                31,
+                31,
+                30,
+                31,
+                30,
+                31,
+            ];
+            for (month, length) in months.into_iter().enumerate() {
+                if left < length {
+                    return (
+                        year,
+                        u32::try_from(month + 1).unwrap(),
+                        u32::try_from(left + 1).unwrap(),
+                    );
+                }
+                left -= length;
+            }
+            panic!("reference day must fit a calendar month");
+        }
+        for days in [
+            i64::MIN,
+            i64::MIN + 146_097,
+            -8_000_000_000_000_000_000,
+            -1_000_000_000_000_000,
+            -719_469,
+            -719_468,
+            -1,
+            0,
+            1,
+            10_957,
+            1_000_000_000_000_000,
+            i64::MAX - 719_469,
+            i64::MAX - 719_468,
+            i64::MAX - 719_467,
+            i64::MAX - 146_097,
+            i64::MAX,
+        ] {
+            assert_eq!(civil_from_days(days), reference(days), "day {days}");
         }
     }
 
