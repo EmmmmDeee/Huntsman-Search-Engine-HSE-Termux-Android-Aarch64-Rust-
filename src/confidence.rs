@@ -48,7 +48,9 @@ impl Classification {
     /// A non-finite value is `Candidate`, the conservative tier.
     #[must_use]
     pub fn from_effective(c_eff: f64) -> Self {
-        if c_eff >= VERIFIED_MIN {
+        if !c_eff.is_finite() {
+            Self::Candidate
+        } else if c_eff >= VERIFIED_MIN {
             Self::Verified
         } else if c_eff >= PROBABLE_MIN {
             Self::Probable
@@ -246,6 +248,33 @@ mod tests {
         }
         assert!(effective(0.05, 5) < PROBABLE_MIN);
         assert_eq!(effective(0.0, 1000), 0.0);
+    }
+
+    #[test]
+    fn non_finite_effective_confidence_stays_candidate() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                Classification::from_effective(value),
+                Classification::Candidate,
+                "non-finite effective confidence {value:?} must not establish a tier"
+            );
+        }
+    }
+
+    #[test]
+    fn finite_classification_boundaries_remain_unchanged() {
+        for (value, expected) in [
+            (f64::MIN, Classification::Candidate),
+            (0.0, Classification::Candidate),
+            (0.399_999, Classification::Candidate),
+            (PROBABLE_MIN, Classification::Probable),
+            (0.749_999, Classification::Probable),
+            (VERIFIED_MIN, Classification::Verified),
+            (1.0, Classification::Verified),
+            (f64::MAX, Classification::Verified),
+        ] {
+            assert_eq!(Classification::from_effective(value), expected, "{value}");
+        }
     }
 
     #[test]

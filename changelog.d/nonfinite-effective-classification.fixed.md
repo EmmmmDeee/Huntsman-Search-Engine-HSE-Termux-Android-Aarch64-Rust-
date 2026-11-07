@@ -1,0 +1,1 @@
+- Classifying non-finite effective confidence directly now stays Candidate, as documented, instead of treating positive infinity as Verified. Finite thresholds and confidence-calculation clamping remain unchanged.
