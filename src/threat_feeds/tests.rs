@@ -1174,3 +1174,26 @@ fn a_declared_xml_root_is_the_list_and_a_page_is_still_a_page() {
     let page = "<!DOCTYPE html><html><body>moved</body></html>";
     assert!(is_page_for(page.as_bytes(), Some("CONSOLIDATED_LIST")));
 }
+
+#[test]
+fn a_failed_refresh_is_not_a_current_copy_even_when_its_body_is_kept() {
+    let make = |downloaded, date, note: Option<&str>| Copy {
+        body: b"complete original".to_vec(),
+        fetched: 1_000,
+        date,
+        downloaded,
+        note: note.map(str::to_owned),
+    };
+    assert!(make(false, KeptDate::Kept(None), None).current_for(1_001, 100));
+    assert!(!make(false, KeptDate::Kept(None), None).current_for(1_100, 100));
+    assert!(!make(false, KeptDate::Missing, None).current_for(1_001, 100));
+    assert!(
+        !make(
+            false,
+            KeptDate::Kept(None),
+            Some("could not be downloaded again (connection refused)")
+        )
+        .current_for(1_001, 100)
+    );
+    assert!(make(true, KeptDate::Missing, None).current_for(1_001, 100));
+}
