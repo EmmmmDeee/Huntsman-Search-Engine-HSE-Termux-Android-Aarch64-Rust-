@@ -12,8 +12,6 @@
 //! returned URL is *never fetched* from its own site: it cannot redirect the scanner or
 //! reach a local/private host. The only network origin contacted is web.archive.org.
 
-use std::fmt::Write as _;
-
 use crate::archived_page::{self, Admission, Archive, Capture};
 use crate::canonical::canonical_domain;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -43,7 +41,7 @@ pub fn lookup<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Report, Error> {
     let Some(domain) = canonical_domain(domain) else {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SOURCE,
             now_unix,
             "invalid domain selector",
@@ -96,7 +94,7 @@ pub fn lookup<T: Transport + ?Sized>(
         primary
     };
 
-    let mut report = interpret(&fetched, &domain, scan_id, now_unix).unwrap_or_else(miss);
+    let mut report = interpret(&fetched, &domain, scan_id, now_unix).unwrap_or_else(Report::miss);
     if report.outcome.kind == SourceOutcomeKind::Success {
         read_contents(transport, &mut report, scan_id, now_unix);
     }
@@ -167,50 +165,13 @@ fn read_contents<T: Transport + ?Sized>(
     if captures.is_empty() && not_pages == 0 {
         return;
     }
-    let mut read = 0usize;
-    let mut found = Vec::new();
-    let mut unread = Vec::new();
-    for capture in &captures {
-        match read_capture(transport, capture, scan_id, now_unix) {
-            Ok(entities) => {
-                read += 1;
-                found.extend(entities);
-            }
-            Err(reason) => unread.push(reason),
-        }
-    }
-    let contacts = found
+    let reads = captures
         .iter()
-        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
-        .count();
-    let technologies = found.len() - contacts;
-    report.entities.extend(found);
-    merge_by_uid(&mut report.entities);
-    report.outcome.found = Some(report.entities.len());
-    let mut detail = format!(
-        "archived content: {read} of {} page(s) read, {contacts} contact detail(s) found",
-        captures.len()
-    );
-    if technologies > 0 {
-        let _ = write!(
-            detail,
-            "; {technologies} archived technology signal(s) found"
-        );
-    }
-    if !unread.is_empty() {
-        detail.push_str("; not read: ");
-        detail.push_str(&unread.join(", "));
-    }
-    if not_pages > 0 {
-        let _ = write!(
-            detail,
-            "; {not_pages} capture(s) the index recorded as no web page, not read"
-        );
-    }
-    report.outcome.detail = Some(match report.outcome.detail.take() {
-        Some(existing) => format!("{existing}; {detail}"),
-        None => detail,
-    });
+        .map(|capture| read_capture(transport, capture, scan_id, now_unix))
+        .collect();
+    let note = (not_pages > 0)
+        .then(|| format!("{not_pages} capture(s) the index recorded as no web page, not read"));
+    archived_page::record_reads(report, "archived content", reads, note.as_deref());
 }
 
 /// The e-mail addresses and phone numbers one archived page published, or why it was not read.
@@ -255,13 +216,6 @@ fn read_capture<T: Transport + ?Sized>(
     ))
 }
 
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
-
 fn interpret(
     fetched: &Fetched,
     domain: &str,
@@ -302,7 +256,7 @@ fn parse_response(
         ));
     }
     if rows.len() == 1 {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
         ));
     }

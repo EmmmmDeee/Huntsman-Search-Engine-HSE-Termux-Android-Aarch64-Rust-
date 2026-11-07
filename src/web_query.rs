@@ -1024,7 +1024,10 @@ fn anchor_href(html: &str, mut index: usize, end: usize) -> Option<&str> {
 /// every page, as they always were. Any other engine's hosts are chrome only on that
 /// engine's own page: a Bing result on `finance.yahoo.com` is a result.
 fn is_engine_or_navigation_url(url: &str, engine: &str) -> bool {
-    let Some(host) = host_of(url) else {
+    let Some(host) = crate::circuit::host_of(url)
+        .map(|host| host.trim_matches('.').to_owned())
+        .filter(|host| !host.is_empty())
+    else {
         return true;
     };
     const ENGINE_HOSTS: &[&str] = &[
@@ -1057,18 +1060,6 @@ fn own_hosts(engine: &str) -> &'static [&'static str] {
         "wiby" => &["wiby.me"],
         _ => &[],
     }
-}
-
-fn host_of(url: &str) -> Option<String> {
-    let (_, rest) = url.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit('@').next()?;
-    let host = host
-        .split(':')
-        .next()?
-        .trim_matches('.')
-        .to_ascii_lowercase();
-    (!host.is_empty()).then_some(host)
 }
 
 fn dedupe_hits(hits: &mut Vec<SearchHit>) {

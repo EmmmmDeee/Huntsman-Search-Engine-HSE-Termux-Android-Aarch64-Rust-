@@ -30,11 +30,7 @@ const CONF_PROFILE: f64 = 0.80;
 const CONF_PERSON: f64 = 0.60;
 const CONF_ADDRESS: f64 = 0.45;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct Envelope {

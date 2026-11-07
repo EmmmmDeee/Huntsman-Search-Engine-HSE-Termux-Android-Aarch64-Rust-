@@ -20,7 +20,7 @@ use crate::seeknow_collector::{SeekNowCollectionMode, collect_with_credential};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::escape_controls;
 
-pub const SEEKNOW_USAGE: &str = "usage: huntsman-recon seeknow [status | credits | search KIND VALUE [--deep | --fast-only]] [--keys FILE]";
+pub const SEEKNOW_USAGE: &str = "usage: huntsman-recon seeknow [status | credits | search KIND VALUE [--deep | --fast-only]] [--keys FILE] | seeknow import EXPORT.json [--json]";
 pub const SEEKNOW_HELP: &str = "\
 seeknow status [--keys FILE]
 seeknow credits [--keys FILE]
@@ -29,7 +29,84 @@ Use the operator-provided HUNTSMAN_SEEKNOW_KEY through the guarded HTTPS boundar
 KIND is one of email, username, phone, ip, domain, person, url, machine_id.
 --deep is retained as the CLI name for SeekNow's current /api/v1/stealer endpoint.
 Adaptive mode uses /search first when that endpoint supports the selector, and spends
-a stealer request only when the selector is supported there and escalation is justified.";
+a stealer request only when the selector is supported there and escalation is justified.
+seeknow import EXPORT.json [--json]
+Read a SeekNow bulk export offline (no key, no request). Every row is kept as a record with its
+fields verbatim; a row is attributed to its target only when it carries the target in a field of
+the target's kind. Credential values alone are masked, each field named in sensitive_fields.";
+
+/// The largest bulk export `seeknow import` reads, the `/api/inspect` upload bound.
+pub const MAX_EXPORT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The report of one imported bulk export: rendered text, its entities and its outcomes.
+///
+/// # Errors
+/// A message when the bytes are not a readable `SeekNow` bulk export.
+pub fn import_export(
+    bytes: &[u8],
+    now_unix: u64,
+) -> Result<crate::seeknow_collector::ExportImport, String> {
+    let export = crate::seeknow::parse_bulk_export(bytes)?;
+    Ok(crate::seeknow_collector::collect_from_export(
+        &export,
+        &CollectionLimits::default(),
+        now_unix,
+    ))
+}
+
+fn run_import(args: &[String], now_unix: u64) -> SeekNowCliRun {
+    let (json, paths): (Vec<&String>, Vec<&String>) =
+        args.iter().partition(|arg| arg.as_str() == "--json");
+    let ([path], json) = (paths.as_slice(), json.len()) else {
+        return SeekNowCliRun::Usage;
+    };
+    if json > 1 || path.starts_with('-') {
+        return SeekNowCliRun::Usage;
+    }
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > MAX_EXPORT_BYTES => {
+            return SeekNowCliRun::BadData(format!(
+                "{path} is {} bytes; at most {MAX_EXPORT_BYTES} are read",
+                meta.len()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => return SeekNowCliRun::Input(format!("cannot read {path}: {error}")),
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => return SeekNowCliRun::Input(format!("cannot read {path}: {error}")),
+    };
+    let import = match import_export(&bytes, now_unix) {
+        Ok(import) => import,
+        Err(message) => return SeekNowCliRun::BadData(message),
+    };
+    if json == 1 {
+        return match serde_json::to_string_pretty(&serde_json::json!({
+            "entities": import.entities,
+            "outcomes": import.outcomes,
+            "pivots": import.pivots.iter().map(|p| serde_json::json!({"kind": p.kind, "value": p.value})).collect::<Vec<_>>(),
+            // The complete uploaded dataset: every row of every block, all fields verbatim,
+            // credential values alone withheld (listed by name in each row's sensitive_fields).
+            "records": import.records,
+            "record_count": import.records.len(),
+        })) {
+            Ok(text) => SeekNowCliRun::Printed(text + "\n"),
+            Err(error) => SeekNowCliRun::BadData(error.to_string()),
+        };
+    }
+    match crate::lookup_report::render(&import.entities, &import.outcomes) {
+        Ok(mut text) => {
+            let _ = writeln!(
+                text,
+                "records_preserved={} (every row kept; use --json for the full dataset)",
+                import.records.len()
+            );
+            SeekNowCliRun::Printed(text)
+        }
+        Err(message) => SeekNowCliRun::BadData(message),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeekNowCliRun {
@@ -48,6 +125,10 @@ pub fn run<T: Transport + ?Sized>(
     home: Option<&OsStr>,
     now_unix: u64,
 ) -> SeekNowCliRun {
+    // An export is read offline: it needs no key and sends nothing.
+    if args.first().map(String::as_str) == Some("import") {
+        return run_import(&args[1..], now_unix);
+    }
     let Ok((command_args, explicit_keys)) = split_keys_arg(args) else {
         return SeekNowCliRun::Usage;
     };

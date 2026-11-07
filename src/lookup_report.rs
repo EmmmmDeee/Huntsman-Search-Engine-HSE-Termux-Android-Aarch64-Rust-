@@ -15,6 +15,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use serde::Serialize;
+
 use crate::entity::{Entity, Evidence, merge_by_uid};
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
@@ -24,10 +26,63 @@ use crate::textnorm::escape_controls;
 
 /// What a lookup found: its entities and each source's row. Every lookup front-end whose report
 /// holds just these two names this type as its `Report`, so the shape is defined once.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct LookupReport {
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+impl LookupReport {
+    /// Whether any of its sources was asked: a source skipped for lack of a key made no request
+    /// and carries only its `NotConfigured` row.
+    #[must_use]
+    pub fn asked(&self) -> bool {
+        !self.entities.is_empty()
+            || self
+                .outcomes
+                .iter()
+                .any(|outcome| outcome.kind != SourceOutcomeKind::NotConfigured)
+    }
+}
+
+/// What one source found: its entities and its one row. Every single-source collector names this
+/// type as its `Report`, so the shape and its empty form are defined once.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceReport {
+    pub entities: Vec<Entity>,
+    pub outcome: SourceExecutionOutcome,
+}
+
+impl SourceReport {
+    /// A report that found nothing, with the row that says why. **Pure.**
+    #[must_use]
+    pub const fn miss(outcome: SourceExecutionOutcome) -> Self {
+        Self {
+            entities: Vec::new(),
+            outcome,
+        }
+    }
+
+    /// A confirmed find: its entities, merged by UID, and a success row with their count and the
+    /// HTTP status that carried them.
+    #[must_use]
+    pub fn found(source: &str, mut entities: Vec<Entity>, status: u16, now_unix: u64) -> Self {
+        merge_by_uid(&mut entities);
+        Self {
+            outcome: SourceExecutionOutcome::success(source, now_unix, entities.len())
+                .with_http_status(status),
+            entities,
+        }
+    }
+}
+
+/// One leg of a lookup that runs several: its entities, and its row when the lookup asked its
+/// module (`None` when it did not run). A failed leg's row carries the failure, which the lookup
+/// reads through [`SourceReach`].
+#[derive(Debug, Default)]
+pub struct Leg {
+    pub entities: Vec<Entity>,
+    pub outcome: Option<SourceExecutionOutcome>,
 }
 
 /// Ends a lookup from what it found: its entities merged by UID, then a refusal (exit 77) or an

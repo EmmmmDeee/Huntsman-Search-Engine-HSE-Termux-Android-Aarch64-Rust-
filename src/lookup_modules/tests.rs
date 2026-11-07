@@ -296,7 +296,15 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
             }
             phone_cli::PhoneRun::Failed(why) => Verdict::Unavailable(why),
         },
-        ScanKind::People => match people_cli::run(&transport, target, now) {
+        ScanKind::People => match people_cli::run_with_lists(
+            &transport,
+            &crate::sanctions::Lists::new(
+                Box::new(Selected::new(net.clone(), chosen.clone())),
+                None,
+            ),
+            target,
+            now,
+        ) {
             people_cli::PeopleRun::Printed { report, .. } => {
                 Verdict::Printed(report.outcomes, report.entities)
             }

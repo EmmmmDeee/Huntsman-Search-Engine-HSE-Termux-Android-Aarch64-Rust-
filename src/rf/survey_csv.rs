@@ -135,6 +135,38 @@ pub(crate) fn optional_finite(raw: &str, low: f64, high: f64) -> Result<Option<f
         .ok_or(InvalidField)
 }
 
+/// The largest horizontal accuracy, in metres, a reported fix may claim: beyond 100 km the point
+/// says nothing about where a radio was heard.
+const MAX_FIX_ACCURACY_M: f64 = 100_000.0;
+
+/// A row's reported fix: its latitude, longitude and horizontal accuracy in metres, kept only when
+/// all three parse, the point is a real fix ([`crate::geohash::valid_fix`]: in range, and not the
+/// 0°, 0° a device writes when it has none) and the accuracy is finite, positive and at most
+/// 100 km. Otherwise none of the three is kept. Every Network Survey importer reads its location
+/// here. **Pure.**
+#[must_use]
+pub(crate) fn reported_fix(
+    latitude: &str,
+    longitude: &str,
+    accuracy: &str,
+) -> (Option<f64>, Option<f64>, Option<f64>) {
+    match (
+        latitude.parse::<f64>().ok(),
+        longitude.parse::<f64>().ok(),
+        accuracy.parse::<f64>().ok(),
+    ) {
+        (Some(lat), Some(lon), Some(accuracy))
+            if crate::geohash::valid_fix(lat, lon)
+                && accuracy.is_finite()
+                && accuracy > 0.0
+                && accuracy <= MAX_FIX_ACCURACY_M =>
+        {
+            (Some(lat), Some(lon), Some(accuracy))
+        }
+        _ => (None, None, None),
+    }
+}
+
 /// Optional text of at most `max_bytes`: `None` when `raw` is empty. **Pure.**
 pub(crate) fn optional_text(raw: &str, max_bytes: usize) -> Result<Option<String>, InvalidField> {
     if raw.len() > max_bytes {
@@ -209,6 +241,42 @@ pub(crate) fn csv_rows(input: &str) -> Result<Vec<Vec<String>>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reported fix is all three fields or none: a point that is not a real fix (out of range,
+    /// or the 0°, 0° a device writes without one) or an accuracy that is not finite, positive and
+    /// at most 100 km keeps no location at all.
+    #[test]
+    fn a_reported_fix_is_a_real_point_with_a_bounded_accuracy_or_nothing() {
+        let none = (None, None, None);
+        assert_eq!(
+            reported_fix("-27.4698", "153.0251", "22"),
+            (Some(-27.4698), Some(153.0251), Some(22.0))
+        );
+        assert_eq!(
+            reported_fix("-27.4698", "153.0251", "100000"),
+            (Some(-27.4698), Some(153.0251), Some(100_000.0))
+        );
+        for (lat, lon, accuracy) in [
+            ("0", "0", "22"),
+            ("0.0", "-0.0", "5"),
+            ("90.5", "0", "22"),
+            ("-27.4698", "180.5", "22"),
+            ("-27.4698", "153.0251", "0"),
+            ("-27.4698", "153.0251", "-5"),
+            ("-27.4698", "153.0251", "100000.5"),
+            ("-27.4698", "153.0251", "NaN"),
+            ("-27.4698", "153.0251", "inf"),
+            ("-27.4698", "153.0251", ""),
+            ("", "153.0251", "22"),
+            ("NaN", "153.0251", "22"),
+        ] {
+            assert_eq!(
+                reported_fix(lat, lon, accuracy),
+                none,
+                "{lat},{lon},{accuracy}"
+            );
+        }
+    }
 
     /// The field readers every importer shares: an empty field is absent, and a present one is
     /// read exactly or refused, never coerced.

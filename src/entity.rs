@@ -52,6 +52,7 @@ pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &[
     "name_intel",
     "oui",
     "payid",
+    "phone_ae",
     "phone_au",
     "phone_geo",
     "phone_intl",

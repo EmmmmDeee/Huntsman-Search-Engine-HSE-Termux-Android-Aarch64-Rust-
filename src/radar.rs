@@ -763,77 +763,19 @@ impl std::fmt::Display for TrackLogError {
     }
 }
 
-/// One cooperative cross-process lock for the complete read–modify–write cycle.
-/// A private adjacent file is created exclusively, so CLI and loopback Web UI
-/// writers cannot silently overwrite each other's sweeps. A crash can strand
-/// this file; fail closed rather than deleting a lock that might still be held.
-struct TrackWriteGuard {
-    path: std::path::PathBuf,
-    inode: std::fs::Metadata,
-}
+/// How long a track-log writer waits for another to finish. Shared CI runners can delay a dozen
+/// concurrent writers beyond one second even though each transaction is short.
+const TRACK_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-impl TrackWriteGuard {
-    fn acquire(log: &Path) -> Result<Self, TrackLogError> {
-        let mut name = log.as_os_str().to_os_string();
-        name.push(".lock");
-        let path = std::path::PathBuf::from(name);
-        let began = std::time::Instant::now();
-        loop {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(&path) {
-                Ok(mut file) => {
-                    let inode = file.metadata().map_err(|error| {
-                        let _ = std::fs::remove_file(&path);
-                        TrackLogError::Unwritable(format!("{}: {error}", path.display()))
-                    })?;
-                    if let Err(error) = std::io::Write::write_all(
-                        &mut file,
-                        std::process::id().to_string().as_bytes(),
-                    ) {
-                        let _ = std::fs::remove_file(&path);
-                        return Err(TrackLogError::Unwritable(format!(
-                            "{}: {error}",
-                            path.display()
-                        )));
-                    }
-                    return Ok(Self { path, inode });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // Shared CI runners can delay a dozen concurrent writers beyond one
-                    // second even though each transaction is short. Keep the retry bounded
-                    // without treating contention as stale or deleting another writer's lock.
-                    if began.elapsed() >= std::time::Duration::from_secs(5) {
-                        return Err(TrackLogError::Unwritable(format!(
-                            "tracking log is busy or has a stale lock at {}; no sweep was written; remove the lock only after verifying no Huntsman writer is running",
-                            path.display()
-                        )));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(error) => {
-                    return Err(TrackLogError::Unwritable(format!(
-                        "{}: {error}",
-                        path.display()
-                    )));
-                }
-            }
-        }
-    }
-}
-
-impl Drop for TrackWriteGuard {
-    fn drop(&mut self) {
-        // An externally replaced lock must not be removed by its old holder.
-        if std::fs::symlink_metadata(&self.path).is_ok_and(|current| {
-            current.is_file() && crate::fsio::same_inode(&self.inode, &current)
-        }) {
-            let _ = std::fs::remove_file(&self.path);
+/// The track log's wording for a lock it could not take.
+fn track_lock_refusal(refusal: crate::fsio::LockRefusal) -> TrackLogError {
+    match refusal {
+        crate::fsio::LockRefusal::Busy { lock } => TrackLogError::Unwritable(format!(
+            "tracking log is busy or has a stale lock at {}; no sweep was written; remove the lock only after verifying no Huntsman writer is running",
+            lock.display()
+        )),
+        crate::fsio::LockRefusal::Io { lock, error } => {
+            TrackLogError::Unwritable(format!("{}: {error}", lock.display()))
         }
     }
 }
@@ -850,7 +792,8 @@ pub fn record_sweep(log: &Path, sweep: LoggedSweep) -> Result<TrackReport, Track
     // Keep the directory creation and the lock within the same entry point so
     // all native CLI and browser handlers follow the same transaction boundary.
     private_parent(log).map_err(TrackLogError::Unwritable)?;
-    let _guard = TrackWriteGuard::acquire(log)?;
+    let _guard =
+        crate::fsio::ExclusiveLock::acquire(log, TRACK_LOCK_WAIT).map_err(track_lock_refusal)?;
     let existing = match std::fs::symlink_metadata(log) {
         Ok(_) => read_bounded(log, MAX_TRACK_LOG_BYTES)
             .map_err(|error| TrackLogError::Unreadable(error.to_string()))?,

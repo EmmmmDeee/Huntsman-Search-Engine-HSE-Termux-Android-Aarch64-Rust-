@@ -12,7 +12,7 @@
 //! source outcome is carried through in full; redaction, where it exists at all, is the caller's
 //! output concern, never the scan's.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -64,10 +64,7 @@ pub fn selector_identity(kind: ScanKind, selector: &str) -> String {
 /// What a collector observed for one target. A failed lookup still returns `outcomes` describing
 /// why (auth required, connect failure, …): the driver records every dispatch, so a source is
 /// never silently dropped from the recursion.
-pub struct Step {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Step = crate::lookup_report::LookupReport;
 
 /// Everything the crawl holds after one wave of lookups: what a checkpoint of a running scan
 /// saves, so a process that dies mid-crawl loses at most the wave in flight. The entities of the
@@ -421,6 +418,8 @@ pub fn lineage_links(report: &RecursionReport) -> Vec<LineageLink> {
 struct Frontier {
     seen: BTreeSet<(String, String)>,
     queue: Vec<Target>,
+    /// How many queued targets each lookup kind holds.
+    per_kind: BTreeMap<&'static str, usize>,
 }
 
 impl Frontier {
@@ -428,6 +427,7 @@ impl Frontier {
     /// Returns whether it was newly queued.
     fn push(&mut self, target: Target) -> bool {
         if self.seen.insert(target.owned_key()) {
+            *self.per_kind.entry(target.kind.command()).or_default() += 1;
             self.queue.push(target);
             true
         } else {
@@ -440,12 +440,40 @@ impl Frontier {
         self.seen.contains(key)
     }
 
-    fn len(&self) -> usize {
-        self.queue.len()
+    /// Whether a generation capped at `cap` targets has no room for one more of `kind`: it is
+    /// full, or `kind` already holds half of it. One kind's flood (a large domain's thousands of
+    /// certificate-log subdomains) then never crowds the addresses, emails and numbers it found
+    /// out of the next generation.
+    fn full_for(&self, kind: &str, cap: usize) -> bool {
+        self.queue.len() >= cap
+            || self.per_kind.get(kind).copied().unwrap_or(0) >= cap.div_ceil(2).max(1)
     }
 
+    /// The queue in dispatch order: one target of each kind in turn, each kind in the order it
+    /// was queued, so a budget that stops a generation early has followed every kind.
     fn into_queue(self) -> Vec<Target> {
-        self.queue
+        let mut by_kind: BTreeMap<&'static str, VecDeque<Target>> = BTreeMap::new();
+        let mut order: Vec<&'static str> = Vec::new();
+        for target in self.queue {
+            let kind = target.kind.command();
+            if !by_kind.contains_key(kind) {
+                order.push(kind);
+            }
+            by_kind.entry(kind).or_default().push_back(target);
+        }
+        let mut out = Vec::new();
+        loop {
+            let before = out.len();
+            for kind in &order {
+                if let Some(target) = by_kind.get_mut(kind).and_then(VecDeque::pop_front) {
+                    out.push(target);
+                }
+            }
+            if out.len() == before {
+                break;
+            }
+        }
+        out
     }
 }
 
@@ -745,7 +773,7 @@ impl CrawlState {
                 self.follow_at(key, held_at);
                 continue;
             }
-            if next.len() >= policy.max_frontier_per_generation {
+            if next.full_for(candidate.kind.command(), policy.max_frontier_per_generation) {
                 self.resource_limited = true;
                 continue;
             }
@@ -898,6 +926,41 @@ fn crawl<C: SelectorCollector>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A large domain's flood of subdomains takes at most half of a generation, so the address,
+    /// email and number it also found are still followed, and dispatch takes each kind in turn.
+    #[test]
+    fn one_kind_never_crowds_the_others_out_of_a_generation() {
+        let mut next = Frontier::default();
+        let cap = 8;
+        let mut admit = |kind: ScanKind, selector: String| {
+            if !next.full_for(kind.command(), cap) {
+                next.push(Target { kind, selector });
+            }
+        };
+        for n in 0..100 {
+            admit(ScanKind::Domain, format!("host{n}.example.com"));
+        }
+        admit(ScanKind::Ip, "203.0.113.7".into());
+        admit(ScanKind::Email, "hostmaster@example.com".into());
+        let queue = next.into_queue();
+        let kinds: Vec<&str> = queue.iter().map(|t| t.kind.command()).collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|k| **k == ScanKind::Domain.command())
+                .count(),
+            4
+        );
+        assert_eq!(
+            &kinds[..3],
+            &[
+                ScanKind::Domain.command(),
+                ScanKind::Ip.command(),
+                ScanKind::Email.command()
+            ]
+        );
+    }
     use std::collections::BTreeMap;
 
     #[test]

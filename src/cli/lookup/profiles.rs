@@ -16,7 +16,7 @@ use huntsman_recon::clock;
 use huntsman_recon::company_cli::{self, COMPANY_USAGE, CompanyArgs};
 use huntsman_recon::concurrent;
 use huntsman_recon::crypto_cli::{self, CRYPTO_USAGE, CryptoArgs};
-use huntsman_recon::dehashed::{self, client::DehashedClient};
+use huntsman_recon::dehashed;
 use huntsman_recon::docmeta::{self, DOCMETA_USAGE, DocmetaArgs};
 use huntsman_recon::domain_cli::{DOMAIN_USAGE, DomainArgs};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
@@ -154,8 +154,14 @@ fn people(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Ref
     let keys = crate::cli::credentials::lookup_keys();
     let (run, seeknow) = concurrent::pair(
         || {
+            // The sanctions lists download over the threat feeds' large-body transport and are
+            // kept beside the feeds, so a lookup within a list's age reads its copy.
+            let lists = huntsman_recon::sanctions::Lists::new(
+                Box::new(transport(&threat_feeds::transport_config(), chosen)),
+                crate::cli::scans::default_feed_dir(),
+            );
             let transport = transport(&TransportConfig::default(), chosen);
-            people_cli::run(&transport, selector, now)
+            people_cli::run_with_lists(&transport, &lists, selector, now)
         },
         || seeknow_leg(EntityKind::Person, selector, (&keys, chosen), now),
     );
@@ -356,10 +362,10 @@ fn exposure_legs(
     let transport = UreqTransport::new(&stolen_tax::transport_config());
     let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
     // DeHashed reuses the opt-in client; its key comes from the same lookup keys.
-    let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
-        let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
-        DehashedClient::new(transport, secret)
-    });
+    let dehashed_client = dehashed::client::client_for_lookup(
+        keys,
+        Arc::new(UreqTransport::new(&dehashed::client::transport_config())),
+    );
     let sources = Sources {
         hibp: client.as_ref(),
         stolen_tax: keys
@@ -777,7 +783,12 @@ pub(in crate::cli) fn gleif_cmd(args: &[String]) -> ExitCode {
         Err(e) => return usage_failure(&e, GLEIF_USAGE),
     };
     let transport = transport(&TransportConfig::default(), &Selection::all());
-    match source_report(gleif_cli::run(&transport, &parsed.query, clock::unix_now())) {
+    match source_report(gleif_cli::run_within(
+        &transport,
+        &parsed.query,
+        &parsed.scope,
+        clock::unix_now(),
+    )) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS

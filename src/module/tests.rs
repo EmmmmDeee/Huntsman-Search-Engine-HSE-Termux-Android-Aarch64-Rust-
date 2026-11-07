@@ -95,6 +95,7 @@ fn every_source_a_lookup_records_is_a_reachable_module() {
         crate::phone_intl::SOURCE,
         crate::phone_intl::AU_SOURCE,
         crate::phone_intl::NANP_SOURCE,
+        crate::phone_intl::AE_SOURCE,
         crate::gravatar::SRC,
         crate::duolingo::SRC,
         crate::openpgp_keys::SRC,

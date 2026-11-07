@@ -57,11 +57,7 @@ const CONF_ADDRESS: f64 = 0.55;
 const CONF_COORDS: f64 = 0.45;
 
 /// One name lookup on the ACNC charity register.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// Look up `name` on the ACNC charity register.
 ///

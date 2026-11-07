@@ -212,6 +212,8 @@ fn keyed_ip_sources_without_a_key() -> Vec<&'static str> {
                 && !source.api.wanted(&Keys::default())
         })
         .map(|source| source.api.source)
+        // The ip lookup's own keyed legs, which the shared runner does not hold.
+        .chain([crate::abuseipdb::API.source, crate::virustotal::API.source])
         .collect()
 }
 

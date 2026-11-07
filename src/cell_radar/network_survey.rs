@@ -16,7 +16,7 @@ use crate::textnorm::escape_controls;
 use crate::timefmt::parse_timestamp;
 
 pub use crate::rf::survey_csv::MAX_SURVEY_CSV_BYTES;
-use crate::rf::survey_csv::{Export, column, optional_number, read_export};
+use crate::rf::survey_csv::{Export, column, optional_number, read_export, reported_fix};
 pub const CSV_VERSION: &str = "0.5.0";
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,20 +116,11 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<LteCs
         .ok()
         .filter(|dbm| dbm.is_finite() && (-160.0..=-1.0).contains(dbm));
 
-    let lat = column(row, columns, "latitude").parse::<f64>().ok();
-    let lon = column(row, columns, "longitude").parse::<f64>().ok();
-    let accuracy = column(row, columns, "accuracy").parse::<f64>().ok();
-    let location = match (lat, lon, accuracy) {
-        (Some(lat), Some(lon), Some(accuracy))
-            if crate::geohash::valid_coordinate(lat, lon)
-                && accuracy.is_finite()
-                && accuracy > 0.0
-                && accuracy <= 100_000.0 =>
-        {
-            (Some(lat), Some(lon), Some(accuracy))
-        }
-        _ => (None, None, None),
-    };
+    let location = reported_fix(
+        column(row, columns, "latitude"),
+        column(row, columns, "longitude"),
+        column(row, columns, "accuracy"),
+    );
     Some(LteCsvRecord {
         observation,
         record_number: optional_u64(row, columns, "recordNumber"),
@@ -279,6 +270,26 @@ mod tests {
         assert_eq!(row.observation.sighting.latitude, None);
         assert!(serde_json::to_string(&report).unwrap().contains("310-01"));
         assert!(!serde_json::to_string(&report).unwrap().contains("SECRET"));
+    }
+
+    /// Network Survey writes 0, 0 when the device had no fix; a row reporting it keeps no
+    /// location, as Wi-Fi and Bluetooth rows do, instead of placing the device at 0°, 0°.
+    #[test]
+    fn a_row_reporting_zero_zero_keeps_no_location() {
+        let data = format!(
+            "{HEADER}2025-10-10T13:58:27.603261-04:00,0,0,22,1,2,310-01,12345,12345678,36,-112.0,39,true,4916,SECRET\n"
+        );
+        let report = parse_lte(data.as_bytes()).unwrap();
+        assert_eq!((report.observed, report.rejected), (1, 0));
+        let row = &report.observations[0];
+        assert_eq!(
+            (
+                row.reported_latitude,
+                row.reported_longitude,
+                row.reported_accuracy_m
+            ),
+            (None, None, None)
+        );
     }
 
     #[test]

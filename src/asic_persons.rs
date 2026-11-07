@@ -40,11 +40,7 @@ const CONF_ADDRESS: f64 = 0.55;
 const CONF_COORDS: f64 = 0.45;
 
 /// One name lookup across the seven ASIC people registers.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Report = crate::lookup_report::LookupReport;
 
 /// Look up `name` on the seven ASIC people registers.
 ///

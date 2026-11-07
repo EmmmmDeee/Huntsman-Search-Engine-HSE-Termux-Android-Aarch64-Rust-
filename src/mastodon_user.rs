@@ -29,11 +29,7 @@ const PERSON_CONF: f64 = 0.60;
 const URL_CONF: f64 = 0.75;
 const BIO_CONF_CAP: f64 = 0.70;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct ApiError {
@@ -96,7 +92,7 @@ fn lookup_with_options<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     let name = username.trim().trim_start_matches('@');
     if !valid_username(name) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SRC,
             now_unix,
             "selector cannot be a Mastodon username (letters, digits and _ only, at most 30)",
@@ -112,15 +108,7 @@ fn lookup_with_options<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, name, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, name, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// One fetched lookup as a report; `Err` is the outcome of a response that named no account.

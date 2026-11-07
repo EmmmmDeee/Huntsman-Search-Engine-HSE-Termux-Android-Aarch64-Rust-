@@ -23,11 +23,7 @@ const CONF_PROFILE: f64 = 0.60;
 const CONF_ADDRESS: f64 = 0.55;
 const CONF_ORG: f64 = 0.55;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct Envelope {
@@ -119,15 +115,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, &email, &hash, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, &email, &hash, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// Turn one fetched profile response for `email` into a report; `Err` is the outcome of a
@@ -480,7 +468,7 @@ mod tests {
             1,
         )
         .unwrap();
-        interpret(&fetched, "a@example.com", "hash", "scan", 1).unwrap_or_else(miss)
+        interpret(&fetched, "a@example.com", "hash", "scan", 1).unwrap_or_else(Report::miss)
     }
 
     #[test]

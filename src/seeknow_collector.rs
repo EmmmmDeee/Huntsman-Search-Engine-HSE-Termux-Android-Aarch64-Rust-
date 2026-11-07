@@ -178,6 +178,134 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
     Ok(batch)
 }
 
+/// The module an imported bulk export's rows are recorded under: `SeekNow`'s data, read offline.
+pub const EXPORT_MODULE: &str = "seeknow_export";
+
+/// What one bulk export yields: its entities (merged by identity across blocks), one outcome per
+/// result block, and the pivots its kept rows offer.
+#[derive(Debug, Clone, Default)]
+pub struct ExportImport {
+    pub entities: Vec<Entity>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+    pub pivots: Vec<CollectorPivot>,
+    /// Every parsed row of every block, in upload order, so the complete dataset survives import.
+    /// Only credential *values* are withheld (held in each row's `sensitive_fields` by name); all
+    /// other fields are verbatim. Entities and pivots above are the attributed subset; this is the
+    /// whole record set.
+    pub records: Vec<crate::seeknow::SeekNowRow>,
+}
+
+/// The selector kind an export block's query type stands for; `None` for a type with no single
+/// kind (`auto`, `hash`). **Pure.**
+const fn selector_kind(query_type: SeekNowQueryType) -> Option<EntityKind> {
+    Some(match query_type {
+        SeekNowQueryType::Email => EntityKind::Email,
+        SeekNowQueryType::Username => EntityKind::Username,
+        SeekNowQueryType::Phone => EntityKind::Phone,
+        SeekNowQueryType::Ip => EntityKind::IpAddress,
+        SeekNowQueryType::Domain => EntityKind::Domain,
+        SeekNowQueryType::Name => EntityKind::Person,
+        SeekNowQueryType::Url => EntityKind::Url,
+        SeekNowQueryType::MachineId => EntityKind::DeviceId,
+        SeekNowQueryType::Auto | SeekNowQueryType::Hash => return None,
+    })
+}
+
+/// Import a `SeekNow` bulk export offline through the same row rules as a live search: a row
+/// attributes only when it names its block's target in a field of the target's kind (B27), credential
+/// fields never leave the parser, and every row keeps the export's digest, id and line.
+/// Repeated target blocks each contribute observations; only resulting entity identities are
+/// merged. Skipping later blocks would silently lose their independently supplied evidence.
+/// Nothing is sent anywhere. **Pure.**
+#[must_use]
+pub fn collect_from_export(
+    export: &crate::seeknow::BulkExport,
+    limits: &CollectionLimits,
+    now_unix: u64,
+) -> ExportImport {
+    let mut import = ExportImport::default();
+    for block in &export.results {
+        // Preserve every row of every block, before any attribution decision, so the full
+        // uploaded dataset survives import whether or not a row names its target.
+        import.records.extend(block.rows.iter().cloned());
+        let Some(kind) = selector_kind(block.query_type) else {
+            import.outcomes.push(SourceExecutionOutcome::inconclusive(
+                EXPORT_MODULE,
+                now_unix,
+                format!(
+                    "target {:?}: a {} search names no single identifier kind, so no row can be attributed",
+                    block.target,
+                    block.query_type.api_value().unwrap_or("auto")
+                ),
+            ));
+            continue;
+        };
+        let scan_id = crate::entity::scan_id(&kind.to_string(), &block.target);
+        let selector = Entity::new(kind, block.target.clone(), 1.0, scan_id);
+        let search = SeekNowSearch {
+            query: block.target.clone(),
+            query_type: block.query_type,
+            limit: crate::seeknow::SEARCH_LIMIT_MAX,
+        };
+        // A positive upstream total with no exported rows is incomplete,
+        // never a verified absence. Likewise, rows rejected by the bounded
+        // parser cannot justify a clean negative result.
+        let incomplete_empty = block.rows.is_empty()
+            && (block.reported_total.is_some_and(|total| total > 0) || block.rows_not_read > 0);
+        let mut outcome = if incomplete_empty {
+            SourceExecutionOutcome::inconclusive(
+                EXPORT_MODULE,
+                now_unix,
+                "export has no readable rows despite reported or unread records",
+            )
+        } else if block.rows.is_empty() {
+            SourceExecutionOutcome::valid_zero(EXPORT_MODULE, now_unix)
+        } else {
+            SourceExecutionOutcome::success(EXPORT_MODULE, now_unix, block.rows.len())
+        };
+        let mut notes = vec![format!(
+            "bulk export {} sha256 {}",
+            export.id.as_deref().unwrap_or("(no id)"),
+            export.sha256
+        )];
+        if let Some(total) = block.reported_total {
+            if total > block.rows.len() as u64 {
+                notes.push(format!(
+                    "the provider reported {total} rows; the export holds {}",
+                    block.rows.len()
+                ));
+            }
+        }
+        if block.rows_not_read > 0 {
+            notes.push(format!("{} rows were not read", block.rows_not_read));
+        }
+        if incomplete_empty {
+            notes.push("no readable rows: cannot establish a valid zero".to_owned());
+        }
+        outcome.detail = Some(notes.join("; "));
+        let result = crate::seeknow::SeekNowSearchResult {
+            rows: block.rows.clone(),
+            meta: crate::seeknow::SeekNowResponseMeta {
+                response_sha256: Some(export.sha256.clone()),
+                truncated: block.rows_not_read > 0,
+                ..Default::default()
+            },
+            outcome,
+        };
+        let mut batch =
+            CollectionBatch::empty(COLLECTOR_ID, &selector.uid, CollectionOutcome::Failed);
+        append_result(&mut batch, &selector, &search, &result, limits, now_unix);
+        import.entities.extend(batch.entities);
+        import
+            .outcomes
+            .extend(batch.receipts.into_iter().map(|receipt| receipt.outcome));
+        import.pivots.extend(batch.pivots);
+    }
+    crate::entity::merge_by_uid(&mut import.entities);
+    import.pivots.truncate(limits.max_pivots);
+    import
+}
+
 /// Map a leg error to a collector error, keeping a request the guarded path refused before sending
 /// ([`Error::Network`]) distinct from a failure that reached `SeekNow`, so the `seeknow` command can
 /// end 77 (refusal) rather than 69 (no usable response). **Pure.**
@@ -189,24 +317,7 @@ fn execution(error: Error) -> CollectorError {
 }
 
 /// Entities and source outcomes from running `SeekNow` as one leg of a lookup.
-#[derive(Debug, Default)]
-pub struct LookupLeg {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
-
-impl LookupLeg {
-    /// Whether `SeekNow` was asked: a leg skipped for lack of a key made no request and carries
-    /// only the row saying so.
-    #[must_use]
-    pub fn asked(&self) -> bool {
-        !self.entities.is_empty()
-            || self
-                .outcomes
-                .iter()
-                .any(|outcome| outcome.kind != SourceOutcomeKind::NotConfigured)
-    }
-}
+pub type LookupLeg = crate::lookup_report::LookupReport;
 
 /// The operator-approved `SeekNow` credential built from `keys`.
 ///
@@ -351,12 +462,30 @@ fn append_result(
     now_unix: u64,
 ) {
     let dataset = single_dataset(&result.rows);
+    let naming: Vec<bool> = result
+        .rows
+        .iter()
+        .map(|row| row_names_selector(row, selector))
+        .collect();
+    let elsewhere = naming.iter().filter(|names| !**names).count();
+    let mut outcome = result.outcome.clone();
+    if elsewhere > 0 {
+        let note = format!(
+            "{elsewhere} of {} rows matched the query outside a {} field and attribute nothing",
+            result.rows.len(),
+            selector.kind.as_str()
+        );
+        outcome.detail = Some(match outcome.detail.take() {
+            Some(detail) if !detail.is_empty() => format!("{detail}; {note}"),
+            _ => note,
+        });
+    }
     batch.receipts.push(ObservationReceipt {
         source: COLLECTOR_ID.into(),
         dataset,
         observed_at_unix: now_unix,
         response_sha256: result.meta.response_sha256.clone(),
-        outcome: result.outcome.clone(),
+        outcome,
         parsed_rows: result.rows.len(),
         truncated: result.meta.truncated || result.meta.normalized_rows_truncated,
         quota: ProviderQuota::reported(
@@ -383,6 +512,12 @@ fn append_result(
         observed_at_unix: now_unix,
     };
     for (row_index, row) in result.rows.iter().enumerate() {
+        // A full-text breach search answers "Dubai" with every row where the word appears, a
+        // city field included. Only a row that carries the searched value in a field of its own
+        // kind is about the selector; the others are strangers and attribute nothing.
+        if !naming[row_index] {
+            continue;
+        }
         append_row(
             batch,
             selector,
@@ -437,6 +572,52 @@ fn append_row(
     }
 }
 
+/// Whether `row` carries the selector's value in a field of the selector's kind, compared by the
+/// engine's canonical identity key. A domain is named by a domain field or by the host of a URL
+/// or email field at that domain or a subdomain of it; a URL also by a field on the same host.
+/// A row with no such field matched the query somewhere else. **Pure.**
+fn row_names_selector(row: &SeekNowRow, selector: &Entity) -> bool {
+    let fields = row_entities(row);
+    let host_of = |kind: &EntityKind, value: &str| -> Option<String> {
+        match kind {
+            EntityKind::Domain => crate::canonical::canonical_domain(value.trim_end_matches('.')),
+            EntityKind::Email => value
+                .rsplit_once('@')
+                .and_then(|(_, domain)| crate::canonical::canonical_domain(domain)),
+            EntityKind::Url => crate::entity::link_host(value)
+                .filter(|(kind, _)| *kind == EntityKind::Domain)
+                .map(|(_, host)| host),
+            _ => None,
+        }
+    };
+    let same_identity = |kind: &EntityKind, value: &str| {
+        *kind == selector.kind && Entity::new(kind.clone(), value, 0.0, "").uid == selector.uid
+    };
+    match selector.kind {
+        EntityKind::Domain => {
+            let Some(domain) = host_of(&EntityKind::Domain, &selector.value) else {
+                return false;
+            };
+            let suffix = format!(".{domain}");
+            fields.iter().any(|(kind, value)| {
+                host_of(kind, value).is_some_and(|host| host == domain || host.ends_with(&suffix))
+            })
+        }
+        EntityKind::Url => {
+            let wanted = host_of(&EntityKind::Url, &selector.value);
+            fields.iter().any(|(kind, value)| {
+                same_identity(kind, value)
+                    || (*kind == EntityKind::Url
+                        && wanted.is_some()
+                        && host_of(kind, value) == wanted)
+            })
+        }
+        _ => fields
+            .iter()
+            .any(|(kind, value)| same_identity(kind, value)),
+    }
+}
+
 fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
     let mut values = BTreeSet::<(EntityKind, String)>::new();
     for (key, value) in &row.fields {
@@ -461,7 +642,8 @@ fn entity_kind_for_field(key: &str) -> Option<EntityKind> {
     match base {
         "email" | "email_address" => Some(EntityKind::Email),
         "phone" | "phone_number" | "mobile" => Some(EntityKind::Phone),
-        "username" | "user" | "handle" => Some(EntityKind::Username),
+        // `pseudo` is the handle column of French-language breach exports.
+        "username" | "user" | "handle" | "pseudo" => Some(EntityKind::Username),
         "ip" | "ip_address" => Some(EntityKind::IpAddress),
         "domain" | "hostname" => Some(EntityKind::Domain),
         "name" | "full_name" | "fullname" => Some(EntityKind::Person),

@@ -246,6 +246,12 @@ pub fn run<T: Transport + ?Sized>(
             Err(err) => lookup.failed(&abuseipdb::API, &err),
         }
     }
+    for api in [&abuseipdb::API, &virustotal::API] {
+        lookup
+            .report
+            .outcomes
+            .extend(api.unasked_for_want_of_a_key(transport, keys, now_unix));
+    }
     if virustotal::API.runs(transport, keys) {
         match virustotal::lookup(transport, keys, virustotal::Object::Ip, &ip, now_unix) {
             Ok(Some(report)) => virustotal_leg(&mut lookup, &report),

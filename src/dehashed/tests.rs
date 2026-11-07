@@ -8,9 +8,9 @@ use super::client::{
     API_KEY_HEADER, DEHASHED_API_BASE, DehashedClient, DehashedError, SearchRequest,
 };
 use super::query::{Field, Purpose, QueryError, Selector};
-use crate::hibp::rate_limit::RateLimiter;
 use crate::http::{Request, Response, Transport, TransportFailure};
 use crate::keys::Secret;
+use crate::rate_limit::RateLimiter;
 use crate::source_outcome::SourceOutcomeKind;
 
 const KEY: &str = "test-key-7f3a9c";
@@ -116,6 +116,68 @@ fn a_result_that_cannot_be_written_is_an_io_failure_not_success() {
     assert_eq!(fake.calls(), 1);
 }
 
+/// Every `DeHashed` path reads its key by the slot rule `credential-status` reports with and the
+/// web UI shows (`secret_for_slot`): the `HUNTSMAN_DEHASHED_KEY` slot, then `DeHashed`'s own key
+/// file. The file is read, through the private-file gate, by `Keys::resolve` (see
+/// `keys::tests::a_provider_key_file_sets_its_slot_beside_the_keys_file`), so a key it holds is
+/// found by `exposure` as it is by `dehashed search`, and reported as set by `credential-status`.
+#[test]
+fn every_path_reads_the_key_by_the_slot_rule() {
+    use super::client::{API_KEY_ENV, key};
+    use crate::keys::Keys;
+    use crate::provider_credentials::{KeySource, key_for_slot, secret_for_slot, status};
+    let none = Keys::parse("").unwrap();
+    let file = Keys::parse("")
+        .unwrap()
+        .with_provider_file(API_KEY_ENV, "file-key-0123456789abcdef");
+    let slot_and_file = Keys::parse(&format!("{API_KEY_ENV}=slot-key-0123456789abcdef"))
+        .unwrap()
+        .with_provider_file(API_KEY_ENV, "file-key-0123456789abcdef");
+    assert!(matches!(key(&none), Err(DehashedError::MissingKey)));
+    assert_eq!(key(&file).unwrap().expose(), "file-key-0123456789abcdef");
+    assert_eq!(
+        key(&slot_and_file).unwrap().expose(),
+        "slot-key-0123456789abcdef"
+    );
+    assert!(matches!(
+        key_for_slot(&file, API_KEY_ENV),
+        Some((_, KeySource::ProviderFile(_)))
+    ));
+    for keys in [&none, &file, &slot_and_file] {
+        // The search's key is the slot rule's, and `credential-status` says so.
+        assert_eq!(
+            key(keys).ok().map(|key| key.expose().to_owned()),
+            secret_for_slot(keys, API_KEY_ENV).map(|key| key.expose().to_owned())
+        );
+        let dehashed = status(keys)
+            .into_iter()
+            .find(|provider| provider.name == "DeHashed")
+            .unwrap();
+        assert_eq!(dehashed.configured, key(keys).is_ok());
+    }
+}
+
+/// The lookup legs build their client through the same resolution: a key in the shared slot, or
+/// in `DeHashed`'s own key file, gives a client that searches with it. (No key gives none, but that
+/// half depends on the machine's own environment, which `every_path_reads_the_key_by_the_slot_rule`
+/// leaves out.)
+#[test]
+fn a_lookup_client_searches_with_the_resolved_key() {
+    let slot = crate::keys::Keys::parse(&format!("{}={KEY}", super::client::API_KEY_ENV)).unwrap();
+    let file = crate::keys::Keys::parse("")
+        .unwrap()
+        .with_provider_file(super::client::API_KEY_ENV, KEY);
+    for keys in [&slot, &file] {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let client = super::client::client_for_lookup(keys, fake.clone()).expect("a client");
+        client.search(&email_request(Purpose::OwnAccount)).unwrap();
+        assert_eq!(
+            fake.requests.lock().unwrap()[0].header_value(API_KEY_HEADER),
+            Some(KEY)
+        );
+    }
+}
+
 #[test]
 fn dehashed_uses_configured_shared_key_without_leaking_it() {
     let keys = crate::keys::Keys::parse(&format!("{}={KEY}", super::client::API_KEY_ENV)).unwrap();
@@ -133,7 +195,7 @@ fn dehashed_uses_configured_shared_key_without_leaking_it() {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = cli::run(
         &args,
-        || super::client::key_from_sources(&keys),
+        || super::client::key(&keys),
         fake.clone(),
         &mut out,
         &mut err,
@@ -224,6 +286,89 @@ fn status_codes_map_to_named_errors() {
     ));
 }
 
+/// `DeHashed` says why it refused in its error body, and one status can mean two things: a 403 is
+/// a rejected key ("Issue with API Key", seen live) or an account out of credits ("Insufficient
+/// Credits", documented), and a 401 is no subscription (documented) or no key at all (seen live).
+/// Each reads as what `DeHashed` meant, so the operator is told to fix the key or buy credits,
+/// never the wrong one. The provider's own words are never echoed.
+#[test]
+fn each_documented_refusal_reads_as_what_dehashed_meant() {
+    let cases: [(u16, &str, &str, SourceOutcomeKind); 8] = [
+        (
+            400,
+            r#"{"error": "issue with authentication"}"#,
+            "KeyRejected",
+            SourceOutcomeKind::AuthRejected,
+        ),
+        (
+            400,
+            r#"{"error": "bad query"}"#,
+            "BadRequest",
+            SourceOutcomeKind::Upstream4xx,
+        ),
+        (
+            401,
+            r#"{"error": "You need a search subscription and API credits to use the API, please purchase a search subscription."}"#,
+            "NoSubscription",
+            SourceOutcomeKind::EntitlementDenied,
+        ),
+        (
+            401,
+            r#"{"error": "No Authorization header present"}"#,
+            "Unauthorized",
+            SourceOutcomeKind::AuthRejected,
+        ),
+        (
+            403,
+            r#"{"error": "Insufficient Credits"}"#,
+            "OutOfCredits",
+            SourceOutcomeKind::EntitlementDenied,
+        ),
+        (
+            403,
+            r#"{"error": "Issue with API Key"}"#,
+            "KeyRejected",
+            SourceOutcomeKind::AuthRejected,
+        ),
+        (403, "", "Forbidden", SourceOutcomeKind::EntitlementDenied),
+        (
+            403,
+            "not json",
+            "Forbidden",
+            SourceOutcomeKind::EntitlementDenied,
+        ),
+    ];
+    for (status, body, name, kind) in cases {
+        let error = crate::test_support::on_fresh_breakers(|| {
+            // DeHashed sends its error bodies as text/plain; they are read as JSON all the same.
+            let fake = Fake::with(
+                status,
+                body,
+                &[("content-type", "text/plain; charset=utf-8")],
+            );
+            client(&fake)
+                .search(&email_request(Purpose::OwnAccount))
+                .unwrap_err()
+        });
+        assert!(
+            format!("{error:?}").starts_with(name),
+            "{status} {body}: {error:?}"
+        );
+        let outcome = error.outcome("dehashed", 1);
+        assert_eq!(outcome.kind, kind, "{status} {body}");
+        assert_eq!(outcome.http_status, Some(status), "{status} {body}");
+        let said = error.to_string();
+        for words in [
+            "please purchase",
+            "Issue with API Key",
+            "Insufficient Credits",
+            "issue with",
+        ] {
+            assert!(!said.contains(words), "{said:?} echoes the body");
+        }
+    }
+}
+
 #[test]
 fn rate_limit_reports_retry_after_without_retrying() {
     let fake = Fake::with(429, "", &[("retry-after", "42")]);
@@ -248,10 +393,13 @@ fn rate_limit_reads_retry_after_as_the_fetch_does() {
         ("soon", None),
     ];
     for (value, expected) in cases {
-        let fake = Fake::with(429, "", &[("retry-after", value)]);
-        let error = client(&fake)
-            .search(&email_request(Purpose::OwnAccount))
-            .unwrap_err();
+        // Each case on its own breaker: a 429 pauses DeHashed, so a second one would not be sent.
+        let error = crate::test_support::on_fresh_breakers(|| {
+            let fake = Fake::with(429, "", &[("retry-after", value)]);
+            client(&fake)
+                .search(&email_request(Purpose::OwnAccount))
+                .unwrap_err()
+        });
         match error {
             DehashedError::RateLimited { retry_after } => {
                 assert_eq!(retry_after.map(|d| d.as_secs()), expected, "{value}");
@@ -259,6 +407,169 @@ fn rate_limit_reads_retry_after_as_the_fetch_does() {
             other => panic!("{value}: {other:?}"),
         }
     }
+}
+
+/// Every client `DehashedClient::new` builds spends one budget for the whole process: the exposure
+/// legs of concurrent lookups, a batch scan and the web UI each build their own client, so a
+/// budget per client would multiply `DeHashed`'s rate by the number of callers.
+#[test]
+fn every_production_client_shares_one_process_wide_budget() {
+    let first = DehashedClient::new(Fake::with(200, "{}", &[]), Secret::new(KEY).unwrap());
+    let second = DehashedClient::new(Fake::with(200, "{}", &[]), Secret::new(KEY).unwrap());
+    assert!(
+        std::sync::Arc::ptr_eq(first.limiter(), second.limiter()),
+        "each client kept its own budget"
+    );
+    assert_eq!(first.limiter().limit(), super::client::REQUESTS_PER_WINDOW);
+}
+
+/// A 429 pauses `DeHashed` for the process: the next search in the pause is not sent, and says
+/// so, instead of spending another request into the limit. The pause is the one `fetch`'s
+/// per-host breaker keeps for every paced source.
+#[test]
+fn a_rate_limit_pauses_the_next_search_without_sending_it() {
+    let fake = Fake::with(429, "", &[("retry-after", "30")]);
+    fake.responses.lock().unwrap().push_back(Response {
+        status: 200,
+        headers: Vec::new(),
+        body: br#"{"entries": []}"#.to_vec(),
+        truncated: false,
+    });
+    let dehashed = client(&fake);
+    let first = dehashed.search(&email_request(Purpose::OwnAccount));
+    assert!(
+        matches!(first, Err(DehashedError::RateLimited { .. })),
+        "{first:?}"
+    );
+    let second = dehashed
+        .search(&email_request(Purpose::OwnAccount))
+        .unwrap_err();
+    assert!(matches!(second, DehashedError::Paused), "{second:?}");
+    assert_eq!(fake.calls(), 1, "the paused search was sent");
+    let outcome = second.outcome("dehashed", 1);
+    assert_eq!(outcome.kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(outcome.http_status, None);
+    assert!(
+        outcome
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("nothing was sent")),
+        "{outcome:?}"
+    );
+}
+
+/// A run of server failures opens the breaker too: after `circuit::FAILURE_THRESHOLD` failed
+/// searches the next is held back, so a batch scan stops hammering a failing API.
+#[test]
+fn repeated_server_failures_hold_back_the_next_search() {
+    let fake = Arc::new(Fake::default());
+    for _ in 0..=crate::circuit::FAILURE_THRESHOLD {
+        fake.responses.lock().unwrap().push_back(Response {
+            status: 503,
+            headers: Vec::new(),
+            body: Vec::new(),
+            truncated: false,
+        });
+    }
+    let dehashed = client(&fake);
+    for _ in 0..crate::circuit::FAILURE_THRESHOLD {
+        let failed = dehashed.search(&email_request(Purpose::OwnAccount));
+        assert!(
+            matches!(failed, Err(DehashedError::Server(503))),
+            "{failed:?}"
+        );
+    }
+    let held = dehashed.search(&email_request(Purpose::OwnAccount));
+    assert!(matches!(held, Err(DehashedError::Paused)), "{held:?}");
+    assert_eq!(
+        fake.calls(),
+        crate::circuit::FAILURE_THRESHOLD as usize,
+        "the held-back search was sent"
+    );
+}
+
+/// The answer `DeHashed` documents for one record: the record, its count, the credits left.
+fn documented_answer() -> String {
+    format!(
+        r#"{{"balance": 4321, "took": "179µs", "total": 1, "entries": [{}]}}"#,
+        super::types::tests::V2_RECORD
+    )
+}
+
+/// `dehashed search` prints the account's credits left and every value a record holds, as
+/// `FIELD=VALUE` lines, but never a credential.
+#[test]
+fn the_cli_prints_the_credits_left_and_every_value_but_no_credential() {
+    let fake = Fake::with(200, &documented_answer(), &[]);
+    let outcome = client(&fake)
+        .search(&email_request(Purpose::OwnAccount))
+        .unwrap();
+    let text = cli::render(&outcome);
+    for line in [
+        "balance=4321\n",
+        "took=179µs\n",
+        "database=ExampleBreach\n",
+        "email=ada@example.com\n",
+        "name=Ada Example\n",
+        "phone=+61 7 5555 0100\n",
+        "address=1 Example St, Brisbane QLD\n",
+        "ip_address=198.51.100.7\n",
+        "cryptocurrency_address=bc1qexampleaddress\n",
+        "has_password=true\n",
+        "password_exposed=true\n",
+        "unstructured=true\n",
+    ] {
+        assert!(text.contains(line), "{line:?} missing");
+    }
+    assert!(
+        text.contains("exposed_fields=address,"),
+        "no exposed fields"
+    );
+    assert!(
+        !text.contains("le_only="),
+        "a flag DeHashed did not set was printed"
+    );
+    for (what, value) in [
+        ("password", "hunter2-cleartext"),
+        ("hash", "live-hash"),
+        ("hash type", "bcrypt-type"),
+    ] {
+        assert!(!text.contains(value), "the {what} was printed");
+    }
+}
+
+/// `DeHashed` documents a "maximum pagination depth" of 10,000 results ("page:3 and size:5000 would
+/// be invalid") and pages of up to 10,000. A request past the depth is refused before it is sent,
+/// so no request is spent on an answer `DeHashed` will refuse; a page as large as `DeHashed` allows
+/// is sent.
+#[test]
+fn a_page_past_dehashed_s_depth_is_refused_before_it_is_sent() {
+    let request = |page: u32, size: u32| SearchRequest {
+        size,
+        page,
+        ..email_request(Purpose::OwnAccount)
+    };
+    for (page, size) in [(101, 100), (3, 5_000), (2, 10_000), (5_001, 2)] {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let refused = client(&fake).search(&request(page, size)).unwrap_err();
+        assert!(
+            matches!(refused, DehashedError::BeyondDepth { .. }),
+            "{page}x{size}: {refused:?}"
+        );
+        assert_eq!(fake.calls(), 0, "{page}x{size} was sent");
+        assert_eq!(refused.outcome_kind(), SourceOutcomeKind::Inconclusive);
+    }
+    for (page, size) in [(100, 100), (1, 10_000), (2, 5_000), (10_000, 1)] {
+        let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+        let sent = client(&fake).search(&request(page, size));
+        assert!(sent.is_ok(), "{page}x{size}: {sent:?}");
+        assert_eq!(fake.calls(), 1);
+    }
+    let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+    assert!(matches!(
+        client(&fake).search(&request(1, 10_001)),
+        Err(DehashedError::InvalidSize(10_001))
+    ));
 }
 
 /// A Cloudflare interstitial served with 200 in place of the API's answer.
@@ -291,10 +602,10 @@ fn no_response_keeps_the_cause_and_a_challenge_page_is_not_an_answer() {
     );
 }
 
-#[test]
-fn every_error_names_one_outcome() {
+/// Every error, with the outcome kind and HTTP status it must record.
+fn every_error() -> Vec<(DehashedError, SourceOutcomeKind, Option<u16>)> {
     let pause = Some(std::time::Duration::from_secs(42));
-    let cases = [
+    vec![
         (
             DehashedError::Query(QueryError::Invalid("empty")),
             SourceOutcomeKind::Inconclusive,
@@ -303,11 +614,6 @@ fn every_error_names_one_outcome() {
         (
             DehashedError::MissingKey,
             SourceOutcomeKind::NotConfigured,
-            None,
-        ),
-        (
-            DehashedError::KeyFilePermissions,
-            SourceOutcomeKind::Inconclusive,
             None,
         ),
         (
@@ -365,8 +671,28 @@ fn every_error_names_one_outcome() {
             SourceOutcomeKind::SchemaDrift,
             None,
         ),
-    ];
-    for (error, kind, status) in cases {
+        (
+            DehashedError::KeyRejected(403),
+            SourceOutcomeKind::AuthRejected,
+            Some(403),
+        ),
+        (
+            DehashedError::NoSubscription,
+            SourceOutcomeKind::EntitlementDenied,
+            Some(401),
+        ),
+        (
+            DehashedError::OutOfCredits,
+            SourceOutcomeKind::EntitlementDenied,
+            Some(403),
+        ),
+        (DehashedError::Paused, SourceOutcomeKind::Inconclusive, None),
+    ]
+}
+
+#[test]
+fn every_error_names_one_outcome() {
+    for (error, kind, status) in every_error() {
         assert_eq!(error.outcome_kind(), kind, "{error:?}");
         assert_eq!(error.http_status(), status, "{error:?}");
         let outcome = error.outcome("dehashed", 7);
@@ -431,10 +757,19 @@ fn invalid_bounds_are_rejected_before_any_request() {
         Err(DehashedError::InvalidSize(0))
     ));
     request.size = 10;
+    request.page = 0;
+    assert!(matches!(
+        client(&fake).search(&request),
+        Err(DehashedError::InvalidPage(0))
+    ));
+    // DeHashed's documented depth: page x size may be at most 10,000.
     request.page = 1_001;
     assert!(matches!(
         client(&fake).search(&request),
-        Err(DehashedError::InvalidPage(1_001))
+        Err(DehashedError::BeyondDepth {
+            page: 1_001,
+            size: 10
+        })
     ));
     assert_eq!(fake.calls(), 0);
 }
@@ -468,6 +803,39 @@ fn cli_refuses_bad_arguments_before_loading_a_key_or_sending() {
     assert_eq!(code, 65);
     assert!(!key_loaded.get());
     assert_eq!(fake.calls(), 0);
+}
+
+/// Past `DeHashed`'s pagination depth the command exits 65 naming the depth, after the key loads
+/// but before any request: no request is spent on an answer `DeHashed` would refuse.
+#[test]
+fn cli_refuses_a_page_past_the_depth_without_sending() {
+    let fake = Fake::with(200, r#"{"entries": []}"#, &[]);
+    let args: Vec<String> = [
+        "search",
+        "--email",
+        "a@example.com",
+        "--purpose",
+        "own-account",
+        "--page",
+        "2",
+        "--size",
+        "6000",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = cli::run(
+        &args,
+        || Ok(Secret::new(KEY).unwrap()),
+        fake.clone(),
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 65);
+    assert_eq!(fake.calls(), 0);
+    let said = String::from_utf8(err).unwrap_or_default();
+    assert!(said.contains("10000-result depth"), "{said}");
 }
 
 #[test]
@@ -746,6 +1114,92 @@ mod collector_tests {
         assert!(batch.receipts[0].truncated);
     }
 
+    /// A saved artifact keeps what the record says: every non-credential value as `value_<field>`
+    /// evidence and the fields it exposes, and its receipt carries the credits `DeHashed` says are
+    /// left. No credential reaches an entity or its evidence.
+    #[test]
+    fn evidence_keeps_every_value_and_the_receipt_the_credits_left() {
+        let fake = Fake::with(200, &super::documented_answer(), &[]);
+        let batch = collect(
+            &client(&fake),
+            &selector(EntityKind::Email, "ada@example.com"),
+            purpose(),
+            &limits(),
+            1,
+        )
+        .unwrap();
+        let receipt = &batch.receipts[0];
+        assert_eq!(
+            receipt.quota.as_ref().and_then(|quota| quota.remaining),
+            Some(4321)
+        );
+        let username = batch
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Username && entity.value == "ada99")
+            .expect("the username entity");
+        let evidence = &username.evidence[0];
+        let attr = |name: &str| evidence.attributes.get(name).map(String::as_str);
+        assert_eq!(attr("value_name"), Some("Ada Example"));
+        assert_eq!(attr("value_phone"), Some("+61 7 5555 0100"));
+        assert_eq!(attr("password_exposed"), Some("true"));
+        assert_eq!(attr("unstructured"), Some("true"));
+        assert!(
+            attr("exposed_fields").is_some_and(|fields| fields.contains("hashed_password")),
+            "{:?}",
+            attr("exposed_fields")
+        );
+        let saved = serde_json::to_string(&batch.entities).unwrap_or_default();
+        for (what, value) in [
+            ("password", "hunter2-cleartext"),
+            ("hash", "live-hash"),
+            ("hash type", "bcrypt-type"),
+        ] {
+            assert!(!saved.contains(value), "the {what} reached the entities");
+        }
+    }
+
+    /// `total` counts every page. A later page that holds the last records is complete; only
+    /// records past this page make it partial.
+    #[test]
+    fn a_complete_later_page_is_not_partial() {
+        let body = |entries: usize, total: usize| {
+            let rows: Vec<String> = (0..entries)
+                .map(|i| format!(r#"{{"database_name": "db", "email": ["u{i}@example.com"]}}"#))
+                .collect();
+            format!(r#"{{"total": {total}, "entries": [{}]}}"#, rows.join(","))
+        };
+        let limits = CollectionLimits {
+            max_records_per_response: 100,
+            max_entities: 1_000,
+            max_pivots: 1_000,
+            ..CollectionLimits::default()
+        };
+        for (page, entries, total, outcome) in [
+            (2, 3, 103, CollectionOutcome::Success),
+            (2, 100, 250, CollectionOutcome::Partial),
+            (1, 100, 100, CollectionOutcome::Success),
+            (1, 100, 101, CollectionOutcome::Partial),
+        ] {
+            let fake = Fake::with(200, &body(entries, total), &[]);
+            let batch = super::super::collector::collect_page(
+                &client(&fake),
+                &selector(EntityKind::Email, "a@example.com"),
+                purpose(),
+                page,
+                &limits,
+                1,
+            )
+            .unwrap();
+            assert_eq!(batch.outcome, outcome, "page {page}: {entries} of {total}");
+            assert_eq!(
+                batch.receipts[0].truncated,
+                outcome == CollectionOutcome::Partial,
+                "page {page}: {entries} of {total}"
+            );
+        }
+    }
+
     #[test]
     fn upstream_failures_are_recorded_not_raised() {
         let cases = [
@@ -755,15 +1209,18 @@ mod collector_tests {
             (503, SourceOutcomeKind::Upstream5xx),
         ];
         for (status, expected) in cases {
-            let fake = Fake::with(status, "", &[]);
-            let batch = collect(
-                &client(&fake),
-                &selector(EntityKind::Email, "a@example.com"),
-                purpose(),
-                &limits(),
-                1,
-            )
-            .unwrap_or_else(|e| panic!("{status}: {e:?}"));
+            // Each case on its own breaker: after the 429 a paced source sends nothing.
+            let batch = crate::test_support::on_fresh_breakers(|| {
+                let fake = Fake::with(status, "", &[]);
+                collect(
+                    &client(&fake),
+                    &selector(EntityKind::Email, "a@example.com"),
+                    purpose(),
+                    &limits(),
+                    1,
+                )
+                .unwrap_or_else(|e| panic!("{status}: {e:?}"))
+            });
             assert_eq!(batch.outcome, CollectionOutcome::Failed, "{status}");
             assert_eq!(batch.receipts[0].outcome.kind, expected, "{status}");
             assert_eq!(batch.receipts[0].outcome.http_status, Some(status));

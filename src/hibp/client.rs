@@ -155,7 +155,12 @@ impl HibpClient {
     /// A client over `http` with `auth`, the default config and the shared
     /// process-wide limiter.
     pub fn new(http: Arc<dyn Transport + Send + Sync>, auth: Auth) -> Self {
-        Self::with_config(http, auth, HibpConfig::default(), RateLimiter::shared())
+        Self::with_config(
+            http,
+            auth,
+            HibpConfig::default(),
+            super::rate_limit::shared(),
+        )
     }
 
     /// A fully specified client.
@@ -183,7 +188,7 @@ impl HibpClient {
         auth: Auth,
         config: HibpConfig,
     ) -> Self {
-        Self::with_config(transport, auth, config, RateLimiter::shared())
+        Self::with_config(transport, auth, config, super::rate_limit::shared())
     }
 
     /// The configured auth.

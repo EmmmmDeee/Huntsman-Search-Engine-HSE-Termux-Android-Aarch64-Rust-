@@ -12,6 +12,7 @@ use crate::cell_radar::{CellObservation, parse_cells};
 use crate::error::Error;
 use crate::rf::survey_csv::{
     Export, InvalidField, column, exact_columns, optional_finite, optional_number, read_export,
+    reported_fix,
 };
 use crate::timefmt::parse_timestamp;
 
@@ -140,20 +141,11 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<NrCsv
     observation.sighting.observed_epoch = Some(epoch);
     observation.sighting.signal_dbm = sync_signal_power;
 
-    let lat = column(row, columns, "latitude").parse::<f64>().ok();
-    let lon = column(row, columns, "longitude").parse::<f64>().ok();
-    let accuracy = column(row, columns, "accuracy").parse::<f64>().ok();
-    let location = match (lat, lon, accuracy) {
-        (Some(lat), Some(lon), Some(accuracy))
-            if crate::geohash::valid_coordinate(lat, lon)
-                && accuracy.is_finite()
-                && accuracy > 0.0
-                && accuracy <= 100_000.0 =>
-        {
-            (Some(lat), Some(lon), Some(accuracy))
-        }
-        _ => (None, None, None),
-    };
+    let location = reported_fix(
+        column(row, columns, "latitude"),
+        column(row, columns, "longitude"),
+        column(row, columns, "accuracy"),
+    );
     Some(NrCsvRecord {
         observation,
         record_number,
@@ -297,6 +289,24 @@ mod tests {
         assert!(!serialized.contains("PRIVATE-MISSION"));
         assert!(!serialized.contains("PRIVATE-SERIAL"));
         assert!(!serialized.contains("Example"));
+    }
+
+    /// A row reporting 0, 0, the no-fix placeholder, keeps no location, as Wi-Fi, Bluetooth and
+    /// LTE rows do.
+    #[test]
+    fn a_row_reporting_zero_zero_keeps_no_location() {
+        let row = row().replacen("37.7749,-122.4194", "0,0", 1);
+        let report = parse_nr(format!("{PREFIX}{row}\n").as_bytes()).unwrap();
+        assert_eq!((report.observed, report.rejected), (1, 0));
+        let record = &report.observations[0];
+        assert_eq!(
+            (
+                record.reported_latitude,
+                record.reported_longitude,
+                record.reported_accuracy_m
+            ),
+            (None, None, None)
+        );
     }
 
     #[test]

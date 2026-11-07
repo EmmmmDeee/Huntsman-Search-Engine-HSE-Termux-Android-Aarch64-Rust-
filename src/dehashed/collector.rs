@@ -8,8 +8,10 @@
 //! attribute, which `lineage` reads, so two collectors relaying one dataset
 //! share one root family.
 //!
-//! Passwords and hashes are not copied into entities or evidence. Evidence
-//! records only that they exist.
+//! Each record's evidence carries every non-credential value it holds
+//! (`value_<field>`) and the fields it exposes. Passwords, hashes and salts are
+//! not copied into entities or evidence: evidence records only that they
+//! exist. The receipt carries the account's credits left as its quota.
 //!
 //! Local failures (an unsupported selector, an identifier that fails validation,
 //! a zero request budget) return `Err`, because nothing was sent. Network and
@@ -97,9 +99,11 @@ pub fn collect_page(
     let mut batch = CollectionBatch::empty(COLLECTOR_ID, &selector.uid, CollectionOutcome::Failed);
     match client.search(&request) {
         Ok(outcome) => {
-            let response_truncated = outcome
-                .total
-                .is_some_and(|total| total > outcome.entries.len() as u64);
+            // `total` counts every page: records past this page are what make it partial, not
+            // the pages before it.
+            let through_this_page = u64::from(page.saturating_sub(1)) * u64::from(request.size)
+                + outcome.entries.len() as u64;
+            let response_truncated = outcome.total.is_some_and(|total| total > through_this_page);
             let kind = if outcome.entries.is_empty() {
                 SourceOutcomeKind::ValidZero
             } else {
@@ -123,8 +127,8 @@ pub fn collect_page(
             error @ (DehashedError::Query(_)
             | DehashedError::InvalidSize(_)
             | DehashedError::InvalidPage(_)
-            | DehashedError::MissingKey
-            | DehashedError::KeyFilePermissions),
+            | DehashedError::BeyondDepth { .. }
+            | DehashedError::MissingKey),
         ) => {
             return Err(CollectorError::InvalidSelector(error.to_string()));
         }
@@ -158,7 +162,8 @@ fn receipt(
         outcome: execution,
         parsed_rows: found,
         truncated,
-        quota: None,
+        // DeHashed reports the account's credits left on every answer ("1 search = 1 credit").
+        quota: crate::collector::ProviderQuota::reported(None, outcome.balance, None),
     }
 }
 
@@ -265,7 +270,29 @@ fn evidence_for(
         .with_attr(
             "has_hashed_password",
             entry.has_hashed_password().to_string(),
+        )
+        .with_attr("password_exposed", entry.password_exposed().to_string())
+        .with_attr(
+            "exposed_fields",
+            entry
+                .fields
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
         );
+    if entry.raw.unstructured {
+        evidence = evidence.with_attr("unstructured", "true");
+    }
+    if entry.raw.le_only {
+        evidence = evidence.with_attr("le_only", "true");
+    }
+    // Every non-credential value the record holds, keyed `value_<field>` as `OathNet`'s evidence
+    // is, so it cannot clobber the attributes above.
+    for (field, values) in &entry.values {
+        let joined = values.iter().cloned().collect::<Vec<_>>().join(", ");
+        evidence = evidence.with_attr(format!("value_{field}"), joined);
+    }
     if let Some(database) = entry
         .database_name
         .as_deref()

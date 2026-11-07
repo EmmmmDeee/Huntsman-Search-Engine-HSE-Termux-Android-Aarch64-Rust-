@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use super::fail;
+use huntsman_recon::ae_id;
 use huntsman_recon::au_id::{Identifier, classify as classify_id};
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::exit::{EX_DATAERR, EX_USAGE};
@@ -92,7 +93,8 @@ pub(super) fn id_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon id TOKEN...");
     }
-    match classify_id(&args.join(" ")) {
+    let token = args.join(" ");
+    match classify_id(&token) {
         Ok(Identifier::Abn { bare, acn }) => {
             println!("abn={bare}");
             println!("acn={}", acn.as_deref().unwrap_or("none"));
@@ -102,9 +104,37 @@ pub(super) fn id_cmd(args: &[String]) -> ExitCode {
             println!("bsb={bare}");
             println!("institution={}", institution.unwrap_or("unknown"));
         }
-        Err(e) => return fail(EX_DATAERR, &e.to_string()),
+        Err(_) => match ae_id::classify(&token) {
+            Ok(identifier) => print_ae_identifier(&identifier),
+            Err(_) => {
+                return fail(
+                    EX_DATAERR,
+                    "not a valid ABN, ACN, BSB, Emirates ID number or UAE IBAN",
+                );
+            }
+        },
     }
     ExitCode::SUCCESS
+}
+
+/// An Emirates ID number with its printed form and year field, or a UAE IBAN with its printed form
+/// and institution identifier; the account number is never printed on its own. A valid check digit
+/// says the number is well formed, not who holds it.
+fn print_ae_identifier(identifier: &ae_id::AeIdentifier) {
+    match identifier {
+        ae_id::AeIdentifier::EmiratesId { bare } => {
+            println!("emirates_id={bare}");
+            println!("printed={}", identifier.printed());
+            println!("year_field={}", &bare[3..7]);
+        }
+        ae_id::AeIdentifier::Iban { bare } => {
+            println!("iban={bare}");
+            println!("printed={}", identifier.printed());
+            if let Some(institution) = ae_id::iban_institution(bare) {
+                println!("institution_id={institution}");
+            }
+        }
+    }
 }
 
 /// The rest of the line is the body, so an unquoted body is classified whole, not by its first word.

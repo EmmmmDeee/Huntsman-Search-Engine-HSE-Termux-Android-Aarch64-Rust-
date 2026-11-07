@@ -101,6 +101,20 @@ impl Api {
     pub fn runs<T: Transport + ?Sized>(&self, transport: &T, keys: &Keys) -> bool {
         self.wanted(keys) && transport.runs_module(self.source)
     }
+
+    /// The row a leg the lookup asks for leaves when its required key slot is empty: it made no
+    /// request, and the row says so instead of leaving the Sources table to imply it was never a
+    /// source. `None` when the leg runs ([`Api::runs`]) or the lookup does not ask for it.
+    #[must_use]
+    pub fn unasked_for_want_of_a_key<T: Transport + ?Sized>(
+        &self,
+        transport: &T,
+        keys: &Keys,
+        now_unix: u64,
+    ) -> Option<SourceExecutionOutcome> {
+        (!self.wanted(keys) && transport.runs_module(self.source))
+            .then(|| SourceExecutionOutcome::not_configured(self.source, now_unix))
+    }
 }
 
 /// What a provider answered.
@@ -637,6 +651,30 @@ fn diagnostic(reason: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A keyed leg the lookup asks for, with no key, leaves a `not_configured` row; with a key, or
+    /// a keyless one, it leaves none here because it runs and leaves its own.
+    #[test]
+    fn an_asked_leg_without_its_key_says_so() {
+        let transport = crate::test_support::Silent;
+        let none = Keys::parse("").unwrap();
+        let row = crate::virustotal::API
+            .unasked_for_want_of_a_key(&transport, &none, 7)
+            .expect("a row");
+        assert_eq!(row.module, crate::virustotal::API.source);
+        assert!(row.kind.is_not_configured());
+        let keyed = Keys::parse(&format!(
+            "{}=TEST_ONLY_VT_0123456789",
+            crate::virustotal::API.key.unwrap().slot
+        ))
+        .unwrap();
+        assert!(
+            crate::virustotal::API
+                .unasked_for_want_of_a_key(&transport, &keyed, 7)
+                .is_none()
+        );
+    }
+
     use super::*;
     use crate::http::{Method, TransportFailure};
     use std::sync::Mutex;

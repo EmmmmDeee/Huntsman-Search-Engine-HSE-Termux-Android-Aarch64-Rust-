@@ -23,11 +23,7 @@ const URL_CONF: f64 = 0.75;
 const BIO_CONF_CAP: f64 = 0.70;
 const DID_CONF: f64 = 0.85;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Deserialize)]
 struct XrpcError {
@@ -86,15 +82,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, &actor, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, &actor, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// Turn one fetched profile response into a report; `Err` is the outcome of a response that named

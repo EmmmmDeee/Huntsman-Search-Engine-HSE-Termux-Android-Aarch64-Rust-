@@ -17,8 +17,9 @@ pub enum BreachLeg {
     /// record; a field named with `pass` (not as the start of `passport`), `pwd`, `hash` or
     /// `salt`, or a list or object holding one, only as exposed.
     OathNet,
-    /// `DeHashed` exact-match search. Operator key required. Only database names and the
-    /// presence of a password or hash leave a record.
+    /// `DeHashed` exact-match search. Operator key required. As with `OathNet`, every
+    /// non-credential value a record holds leaves it; a password, hash or salt leaves only as
+    /// exposed.
     DeHashed,
 }
 

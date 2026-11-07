@@ -15,8 +15,39 @@ pub struct ServiceDef {
     pub test_url: &'static str,
     pub probe_method: Method,
     pub key_placement: KeyPlace,
-    pub probe_body: Option<&'static [u8]>,
+    pub probe_body: ProbeBody,
     pub success_indicates_valid_key: bool,
+}
+
+/// What a probe's `POST` sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeBody {
+    /// Nothing.
+    Empty,
+    /// This JSON, as written.
+    Json(&'static str),
+    /// `{"FIELD": HASH}`, where HASH is the lowercase hex SHA-256 of `of`. It is worked out as the
+    /// probe is built, never written as a literal. The release key scan refuses a binary holding
+    /// 32 hex characters in a row, since an HIBP key looks like that, and a SHA-256 is 64.
+    Sha256Hex {
+        field: &'static str,
+        of: &'static [u8],
+    },
+}
+
+impl ProbeBody {
+    /// The bytes the probe sends.
+    #[must_use]
+    pub fn bytes(self) -> Vec<u8> {
+        match self {
+            Self::Empty => Vec::new(),
+            Self::Json(json) => json.as_bytes().to_vec(),
+            Self::Sha256Hex { field, of } => {
+                let hash = crate::sha256::hex32(&crate::sha256::sha256(of));
+                serde_json::json!({ field: hash }).to_string().into_bytes()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +71,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.shodan.io/api-info",
         probe_method: Method::Get,
         key_placement: KeyPlace::Query("key"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -49,7 +80,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.securitytrails.com/v1/ping",
         probe_method: Method::Get,
         key_placement: KeyPlace::Header("APIKEY"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -58,7 +89,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.certspotter.com/v1/issuances?domain=example.com",
         probe_method: Method::Get,
         key_placement: KeyPlace::Bearer,
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -67,7 +98,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://app.netlas.io/api/responses/",
         probe_method: Method::Get,
         key_placement: KeyPlace::Header("X-API-Key"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -76,7 +107,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.hunter.io/v2/account",
         probe_method: Method::Get,
         key_placement: KeyPlace::Header("X-API-KEY"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -86,7 +117,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://see-know.ru/api/v1/credits",
         probe_method: Method::Get,
         key_placement: KeyPlace::Header("X-API-Key"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -95,7 +126,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://threatfox-api.abuse.ch/api/v1/",
         probe_method: Method::Post,
         key_placement: KeyPlace::Header("Auth-Key"),
-        probe_body: Some(br#"{"query":"get_iocs","limit":1}"#),
+        probe_body: ProbeBody::Json(r#"{"query":"get_iocs","limit":1}"#),
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -104,7 +135,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.apilayer.com/number_verification/validate?number=15555550100",
         probe_method: Method::Get,
         key_placement: KeyPlace::Header("apikey"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -113,7 +144,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://www.virustotal.com/api/v3/users/me",
         probe_method: Method::Get,
         key_placement: KeyPlace::Header("x-apikey"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -122,7 +153,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://api.github.com/user",
         probe_method: Method::Get,
         key_placement: KeyPlace::Bearer,
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
     ServiceDef {
@@ -131,17 +162,23 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://urlhaus-api.abuse.ch/v1/",
         probe_method: Method::Post,
         key_placement: KeyPlace::Header("Auth-Key"),
-        probe_body: Some(br#"{"query":"get_recent"}"#),
+        probe_body: ProbeBody::Json(r#"{"query":"get_recent"}"#),
         success_indicates_valid_key: false,
     },
     ServiceDef {
         name: "dehashed",
         env_var: crate::environment::DEHASHED_KEY_ENV,
-        test_url: "https://api.dehashed.com/v2/search",
+        // A search spends a paid credit; DeHashed documents this endpoint as needing neither
+        // credits nor a subscription. The body is the SHA-256 of a fixed probe string, never a
+        // password.
+        test_url: "https://api.dehashed.com/v2/search-password",
         probe_method: Method::Post,
         key_placement: KeyPlace::Header("Dehashed-Api-Key"),
-        probe_body: Some(br#"{"query":"email:test@example.com","size":1}"#),
-        success_indicates_valid_key: false,
+        probe_body: ProbeBody::Sha256Hex {
+            field: "sha256_hashed_password",
+            of: b"huntsman-credential-probe",
+        },
+        success_indicates_valid_key: true,
     },
     ServiceDef {
         name: "hibp",
@@ -149,7 +186,7 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         test_url: "https://haveibeenpwned.com/api/v3/subscription/status",
         probe_method: Method::Get,
         key_placement: KeyPlace::Header("hibp-api-key"),
-        probe_body: None,
+        probe_body: ProbeBody::Empty,
         success_indicates_valid_key: true,
     },
 ];
@@ -167,25 +204,7 @@ pub fn service_for_env(env_var: &str) -> Option<&'static ServiceDef> {
         .find(|service| service.env_var.eq_ignore_ascii_case(env_var))
 }
 
-#[must_use]
-pub fn looks_like_auth_failure_text(body: &str) -> bool {
-    let lower = body.to_ascii_lowercase();
-    [
-        "api key not found",
-        "invalid api key",
-        "invalid authorization",
-        "invalid credentials",
-        "authentication failed",
-        "authentication_failed",
-        "no user found for the api key",
-        "api key format",
-        "missing api key",
-        "invalid token",
-        "forbidden",
-    ]
-    .iter()
-    .any(|phrase| lower.contains(phrase))
-}
+pub use crate::source_outcome::looks_like_auth_failure_text;
 
 /// The probe request without its key: [`probe_service`] adds the key as the request is sent,
 /// through a [`Credential`] bound to the `test_url`'s origin.
@@ -197,10 +216,7 @@ pub fn build_probe_request(service: &ServiceDef) -> Request {
             method: Method::Head,
             ..Request::get(service.test_url)
         },
-        Method::Post => Request::post(
-            service.test_url,
-            service.probe_body.unwrap_or_default().to_vec(),
-        ),
+        Method::Post => Request::post(service.test_url, service.probe_body.bytes()),
     };
     if service.name == "hibp" {
         request = request.header("User-Agent", crate::hibp::client::USER_AGENT);
@@ -252,6 +268,14 @@ pub fn classify_probe_response(service: &ServiceDef, response: &Response) -> Pro
         "shodan" => match body.get("plan").and_then(serde_json::Value::as_str) {
             Some(plan) if !plan.trim().is_empty() => ProbeVerdict::Valid,
             _ => ProbeVerdict::Indeterminate,
+        },
+        // The password-hash count `/v2/search-password` answers with.
+        "dehashed" => match body
+            .get("results_found")
+            .and_then(serde_json::Value::as_u64)
+        {
+            Some(_) => ProbeVerdict::Valid,
+            None => ProbeVerdict::Indeterminate,
         },
         "hibp" => match (
             body.get("SubscriptionName")
@@ -593,6 +617,56 @@ mod tests {
                 }
             ),
             ProbeVerdict::Indeterminate
+        );
+    }
+
+    /// A `DeHashed` search costs one paid credit ("1 search = 1 credit"), so the key is probed on
+    /// `/v2/search-password`, which `DeHashed` documents as needing neither credits nor a
+    /// subscription. The hash sent is of a fixed probe string, never a password. A 200 proves the
+    /// key only when it carries that endpoint's own answer, `results_found`.
+    #[test]
+    fn the_dehashed_probe_spends_no_search_credit_and_reads_only_its_own_answer() {
+        let dehashed = find_service("dehashed").expect("dehashed");
+        let request = build_probe_request(dehashed);
+        assert_eq!(request.method, Method::Post);
+        assert_eq!(request.url, "https://api.dehashed.com/v2/search-password");
+        assert_eq!(
+            request.header_value("content-type"),
+            Some("application/json")
+        );
+        let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json body");
+        let hash = body["sha256_hashed_password"]
+            .as_str()
+            .expect("the hash field");
+        assert_eq!(
+            hash,
+            crate::sha256::hex32(&crate::sha256::sha256(b"huntsman-credential-probe"))
+        );
+        assert_eq!(body.as_object().map(serde_json::Map::len), Some(1));
+        let answer = |status: u16, body: &[u8]| {
+            classify_probe_response(
+                dehashed,
+                &Response {
+                    status,
+                    headers: Vec::new(),
+                    body: body.to_vec(),
+                    truncated: false,
+                },
+            )
+        };
+        assert_eq!(answer(200, br#"{"results_found": 0}"#), ProbeVerdict::Valid);
+        assert_eq!(
+            answer(200, br#"{"results_found": 12}"#),
+            ProbeVerdict::Valid
+        );
+        assert_eq!(answer(200, br#"{"ok": true}"#), ProbeVerdict::Indeterminate);
+        assert_eq!(
+            answer(200, br#"{"results_found": "x"}"#),
+            ProbeVerdict::Indeterminate
+        );
+        assert_eq!(
+            answer(403, br#"{"error": "Issue with API Key"}"#),
+            ProbeVerdict::Rejected
         );
     }
 

@@ -8,8 +8,12 @@
 #[path = "support/rust_code.rs"]
 mod rust_code;
 
-use rust_code::{code_with_string_literals, strip_non_code, tokens, without_test_items};
+use rust_code::{
+    code_with_every_string_literal, code_with_string_literals, skip_group, strip_non_code, tok,
+    tokens, without_test_items,
+};
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -374,6 +378,133 @@ fn only_the_environment_module_names_a_credential_slot() {
     );
 }
 
+/// Every string literal of production code, raw and byte strings included, as written between its
+/// quotes: what each puts in the binary.
+fn production_literals_of_every_kind(text: &str) -> Vec<String> {
+    let (code, literals) = code_with_every_string_literal(text);
+    without_test_items(&tokens(&code))
+        .0
+        .iter()
+        .filter_map(|token| {
+            let index = token.strip_prefix("__str")?.parse::<usize>().ok()?;
+            literals.get(index).cloned()
+        })
+        .collect()
+}
+
+/// How many hex characters in a row the release key scan refuses in a binary: its `hibp-key-hex`
+/// rule (`.github/scripts/scan-for-keys.sh`), since an HIBP key is 32 hex.
+const KEY_SHAPED_HEX_RUN: usize = 32;
+
+/// The production literals the release key scan strips as known values, so they never fail it:
+/// - the directive digest, which `release.yml` passes as `HUNTSMAN_DIRECTIVE_SHA256` once it has
+///   proved it equals this literal;
+/// - the AU mobile register's provenance digest, which no run-time path reads, so the binary
+///   does not hold it. A path that comes to read it fails the release scan, which this does not
+///   replace.
+fn known_hex_literals() -> [&'static str; 2] {
+    [
+        huntsman_recon::directive_lock::EXPECTED_SHA256,
+        huntsman_recon::address_au::AU_MOBILE_REGISTER_SHA256,
+    ]
+}
+
+/// Whether `literal` holds a run the release key scan reports: 32 lowercase hex characters in a
+/// row, with a letter (all-digit runs are std's decimal tables), at least five different digits
+/// in some 32-character window (fewer is the layout of zero-filled or repeated constants), and
+/// not part of the `00`..`ff` byte table. These are `hex_runs` and `varied_window` in the scan.
+fn holds_a_key_shaped_hex_run(literal: &str) -> bool {
+    let byte_table = (0..=255_u8).fold(String::new(), |mut table, byte| {
+        let _ = write!(table, "{byte:02x}");
+        table
+    });
+    literal
+        .split(|c: char| !matches!(c, '0'..='9' | 'a'..='f'))
+        .filter(|run| run.len() >= KEY_SHAPED_HEX_RUN)
+        .any(|run| {
+            run.bytes().any(|b| b.is_ascii_alphabetic())
+                && !byte_table.contains(run)
+                && run
+                    .as_bytes()
+                    .windows(KEY_SHAPED_HEX_RUN)
+                    .any(|window| window.iter().collect::<BTreeSet<_>>().len() >= 5)
+        })
+}
+
+/// G10. No production literal holds a key-shaped hex run, so the release key scan never finds one
+/// in the binary and fails the release: a digest the code needs is worked out at run time (as
+/// `service_defs::ProbeBody::Sha256Hex` and `doctor`'s `CACHEDIR.TAG` signature are). This catches
+/// one at `cargo test`.
+#[test]
+fn no_production_literal_holds_a_key_shaped_hex_run() {
+    let known = known_hex_literals();
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .flat_map(|source| {
+            production_literals_of_every_kind(&source.text)
+                .into_iter()
+                .filter(|literal| !known.contains(&literal.as_str()))
+                .filter(|literal| holds_a_key_shaped_hex_run(literal))
+                .map(move |literal| format!("{}: {} characters", source.path, literal.len()))
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "a production literal holds {KEY_SHAPED_HEX_RUN} hex characters in a row, which the \
+         release key scan refuses in the binary; work the value out at run time instead: {found:?}"
+    );
+}
+
+#[test]
+fn the_hex_run_rule_sees_every_literal_kind_and_only_production_code() {
+    let digest = "99128459e698abba6e5fac40cf12b4c8e2c5d7f8e3ae1d7e4138aead2b3f80b8";
+    for code in [
+        format!("const D: &str = \"{digest}\";"),
+        format!("const D: &[u8] = b\"{digest}\";"),
+        format!("const D: &str = r\"{digest}\";"),
+        format!("const D: &[u8] = br#\"{{\"h\":\"{digest}\"}}\"#;"),
+    ] {
+        let literals = production_literals_of_every_kind(&code);
+        assert!(
+            literals
+                .iter()
+                .any(|literal| holds_a_key_shaped_hex_run(literal)),
+            "{code}: {literals:?}"
+        );
+    }
+    for code in [
+        format!("// const D: &str = \"{digest}\";"),
+        format!("#[cfg(test)] mod t {{ const D: &str = \"{digest}\"; }}"),
+    ] {
+        assert!(
+            production_literals_of_every_kind(&code).is_empty(),
+            "{code}"
+        );
+    }
+    // What the scan lets through is let through here: 31 in a row, all digits, uppercase, a
+    // run broken by another character, too few different digits (a Solana program address), or
+    // the byte table.
+    assert!(holds_a_key_shaped_hex_run(&digest[..32]));
+    assert!(!holds_a_key_shaped_hex_run(&digest[..31]));
+    assert!(!holds_a_key_shaped_hex_run(&"0123456789".repeat(4)));
+    assert!(!holds_a_key_shaped_hex_run(&digest.to_ascii_uppercase()));
+    assert!(!holds_a_key_shaped_hex_run(&format!(
+        "{}-{}",
+        &digest[..20],
+        &digest[20..40]
+    )));
+    assert!(!holds_a_key_shaped_hex_run(
+        "Stake11111111111111111111111111111111111111"
+    ));
+    assert!(!holds_a_key_shaped_hex_run(
+        "000102030405060708090a0b0c0d0e0f101112131415"
+    ));
+    // The known values are what the release workflow strips, and each still reads as a key.
+    for known in known_hex_literals() {
+        assert!(holds_a_key_shaped_hex_run(known), "{known}");
+    }
+}
+
 /// The formats of the two rows a report gives an entity, as the literals read in the source: the
 /// entity itself (kind, value, confidence, tags) and the evidence behind it (source, summary).
 const REPORT_ROWS: [&str; 2] = ["{}\\t{}\\t{:.2}\\t{}", "evidence\\t{}\\t{}"];
@@ -732,6 +863,166 @@ fn trimmed_nonblank_field_has_one_definition() {
         .map(|source| source.path)
         .collect();
     assert!(found.is_empty(), "nonblank copy defined in: {found:?}");
+}
+
+/// The report shapes `src/lookup_report.rs` defines once: what one source found (`SourceReport`),
+/// what a lookup found from every source (`LookupReport`) and one leg of a lookup that runs several
+/// (`Leg`). Each field list is written without `pub` and commas.
+const REPORT_SHAPES: [&[&str]; 3] = [
+    &[
+        "entities",
+        ":",
+        "Vec",
+        "<",
+        "Entity",
+        ">",
+        "outcome",
+        ":",
+        "SourceExecutionOutcome",
+    ],
+    &[
+        "entities",
+        ":",
+        "Vec",
+        "<",
+        "Entity",
+        ">",
+        "outcomes",
+        ":",
+        "Vec",
+        "<",
+        "SourceExecutionOutcome",
+        ">",
+    ],
+    &[
+        "entities",
+        ":",
+        "Vec",
+        "<",
+        "Entity",
+        ">",
+        "outcome",
+        ":",
+        "Option",
+        "<",
+        "SourceExecutionOutcome",
+        ">",
+    ],
+];
+
+/// The field tokens of each braced struct in `toks`, without `pub`, its restriction and commas.
+/// A tuple struct, a unit struct and a struct whose generics hold parentheses are skipped.
+fn struct_fields(toks: &[String]) -> Vec<Vec<String>> {
+    let mut found = Vec::new();
+    for (index, token) in toks.iter().enumerate() {
+        if token != "struct" {
+            continue;
+        }
+        let Some(open) =
+            (index + 2..toks.len()).find(|&at| matches!(toks[at].as_str(), "{" | ";" | "("))
+        else {
+            continue;
+        };
+        if toks[open] != "{" {
+            continue;
+        }
+        let close = skip_group(toks, open) - 1;
+        let mut fields = Vec::new();
+        let mut at = open + 1;
+        while at < close {
+            match toks[at].as_str() {
+                "pub" if tok(toks, at + 1) == "(" => at = skip_group(toks, at + 1) - 1,
+                "pub" | "," => {}
+                other => fields.push(other.to_owned()),
+            }
+            at += 1;
+        }
+        found.push(fields);
+    }
+    found
+}
+
+/// Whether the tokens declare a struct of one of the [`REPORT_SHAPES`], whatever its name.
+fn declares_a_report_shape(toks: &[String]) -> bool {
+    struct_fields(toks)
+        .iter()
+        .any(|fields| REPORT_SHAPES.iter().any(|shape| fields == shape))
+}
+
+/// A collector's report is `lookup_report::SourceReport`, `LookupReport` or `Leg`, named as its
+/// `Report` or `Leg` by a type alias; no other module declares a struct of those shapes (G7).
+#[test]
+fn report_shapes_have_one_definition() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/lookup_report.rs")
+        .filter(|source| declares_a_report_shape(&production_tokens(&source.text)))
+        .map(|source| source.path)
+        .collect();
+    assert!(found.is_empty(), "a report shape redefined in: {found:?}");
+}
+
+#[test]
+fn the_report_shape_rule_sees_each_shape_by_any_name_and_ignores_the_rest() {
+    for (name, fields) in [
+        (
+            "Report",
+            "pub entities: Vec<Entity>, pub outcome: SourceExecutionOutcome,",
+        ),
+        (
+            "Found",
+            "pub(crate) entities: Vec<Entity>, pub(crate) outcomes: Vec<SourceExecutionOutcome>",
+        ),
+        (
+            "Leg",
+            "entities: Vec<Entity>, outcome: Option<SourceExecutionOutcome>,",
+        ),
+    ] {
+        let code = format!("#[derive(Debug)]\npub struct {name} {{ {fields} }}");
+        assert!(declares_a_report_shape(&production_tokens(&code)), "{code}");
+        let commented = format!("// pub struct {name} {{ {fields} }}\nfn f() {{}}");
+        assert!(
+            !declares_a_report_shape(&production_tokens(&commented)),
+            "{commented}"
+        );
+        let test_only = format!("#[cfg(test)]\nstruct {name} {{ {fields} }}");
+        assert!(
+            !declares_a_report_shape(&production_tokens(&test_only)),
+            "{test_only}"
+        );
+    }
+    for other in [
+        "pub type Report = crate::lookup_report::SourceReport;",
+        "pub struct Report { pub entities: Vec<Entity>, pub outcome: SourceExecutionOutcome, pub total: usize }",
+        "pub struct Report(pub Vec<Entity>, pub SourceExecutionOutcome);",
+        "pub struct Report { pub leads: Vec<Lead>, pub outcome: SourceExecutionOutcome }",
+    ] {
+        assert!(
+            !declares_a_report_shape(&production_tokens(other)),
+            "{other}"
+        );
+    }
+}
+
+/// A URL's host is `circuit::host_of`: the breakers key on it, and the Spiderfoot export, web
+/// meta-search and the hosted-on relation read it there. No other module keeps a reader of its
+/// own under that name or as `url_host` (G8).
+#[test]
+fn url_host_has_one_definition() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path != "src/circuit.rs")
+        .filter(|source| {
+            production_tokens(&source.text)
+                .windows(2)
+                .any(|w| w[0] == "fn" && matches!(w[1].as_str(), "url_host" | "host_of"))
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(
+        found.is_empty(),
+        "a URL-host reader redefined in: {found:?}"
+    );
 }
 
 /// Lower-case hex in the APK parsers is `base64::base16_lower`, whose test pins it to `{:02x}` for

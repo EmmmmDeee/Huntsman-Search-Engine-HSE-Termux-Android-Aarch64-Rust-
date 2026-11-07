@@ -88,7 +88,11 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
         }
         Some(crate::value_syntax::PhoneE164Error::Length(length)) => ValidationReport::fail(
             "e164.length",
-            format!("expected 10..=15 digits, got {length}"),
+            format!(
+                "expected {}..={} digits, got {length}",
+                crate::value_syntax::E164_DIGITS.start(),
+                crate::value_syntax::E164_DIGITS.end()
+            ),
         ),
     }
 }

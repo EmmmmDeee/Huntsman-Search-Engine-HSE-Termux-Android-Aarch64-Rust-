@@ -8,12 +8,13 @@
 //! capture: what a page said when it was archived, never proof that it is current. Script and
 //! style text, comments and attribute values other than those links are not published contacts.
 
+use std::fmt::Write as _;
+
 use crate::canonical::canonical_url;
 use crate::classifier;
 use crate::domains::{host_only, is_or_subdomain_of};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::html_text::{Markup, Piece, attribute, html_to_text};
-use crate::source_outcome::SourceExecutionOutcome;
 
 /// Archived pages one source reads per lookup.
 pub const MAX_PAGES: usize = 3;
@@ -40,10 +41,61 @@ const CONTACT_WORDS: &[&str] = &[
 ];
 
 /// A web-archive source's answer for one domain: its entities and its typed outcome.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
+pub type Report = crate::lookup_report::SourceReport;
+
+/// Add what reading the chosen pages gave to `report`: every entity found, merged by UID, their
+/// count, and one detail clause. The clause names the content (`label`), how many of the pages
+/// were read, the contact details and archived technology signals they held, why any page was not
+/// read and, last, `note`. `reads` holds each page's entities, or why it was not read, in the
+/// order the pages were chosen. Common Crawl and the Wayback Machine both end their content pass
+/// here.
+pub fn record_reads(
+    report: &mut Report,
+    label: &str,
+    reads: Vec<Result<Vec<Entity>, String>>,
+    note: Option<&str>,
+) {
+    let pages = reads.len();
+    let mut read = 0usize;
+    let mut found = Vec::new();
+    let mut unread = Vec::new();
+    for page in reads {
+        match page {
+            Ok(entities) => {
+                read += 1;
+                found.extend(entities);
+            }
+            Err(reason) => unread.push(reason),
+        }
+    }
+    let contacts = found
+        .iter()
+        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
+        .count();
+    let technologies = found.len() - contacts;
+    report.entities.extend(found);
+    merge_by_uid(&mut report.entities);
+    report.outcome.found = Some(report.entities.len());
+    let mut detail =
+        format!("{label}: {read} of {pages} page(s) read, {contacts} contact detail(s) found");
+    if technologies > 0 {
+        let _ = write!(
+            detail,
+            "; {technologies} archived technology signal(s) found"
+        );
+    }
+    if !unread.is_empty() {
+        detail.push_str("; not read: ");
+        detail.push_str(&unread.join(", "));
+    }
+    if let Some(note) = note {
+        detail.push_str("; ");
+        detail.push_str(note);
+    }
+    report.outcome.detail = Some(match report.outcome.detail.take() {
+        Some(existing) => format!("{existing}; {detail}"),
+        None => detail,
+    });
 }
 
 /// One capture to read: its 14-digit UTC timestamp and its canonical original URL.

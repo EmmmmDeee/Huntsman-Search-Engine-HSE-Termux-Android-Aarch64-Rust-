@@ -228,6 +228,12 @@ pub fn host_state(host: &str) -> Option<BreakerState> {
     with_breakers(|breakers| breakers.state(host))
 }
 
+/// The host a URL of any scheme names: the authority after `scheme://`, without its userinfo and
+/// port, an IPv6 literal kept in its brackets, one trailing root dot dropped (`host.` names the
+/// same host as `host`, so one breaker paces both spellings), in ASCII lower case. `None` for text
+/// with no `scheme://` or an empty host. It lives with the breakers because they key on it and
+/// this layer can depend on nothing above it; the Spiderfoot export, web meta-search and the
+/// hosted-on relation read a URL's host here too. **Pure.**
 #[must_use]
 pub fn host_of(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("://")?;
@@ -240,7 +246,6 @@ pub fn host_of(url: &str) -> Option<String> {
         let end = authority.find(']')?;
         &authority[..=end]
     } else {
-        // `host.` names the same host as `host`: one breaker paces both spellings.
         let name = authority.split(':').next().unwrap_or(authority);
         name.strip_suffix('.').unwrap_or(name)
     };

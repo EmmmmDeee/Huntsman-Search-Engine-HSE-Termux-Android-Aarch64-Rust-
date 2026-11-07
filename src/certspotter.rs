@@ -116,11 +116,7 @@ struct Revocation {
 }
 
 /// What one lookup found and its row.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// The URL of the page of issuances for `domain` after issuance `after`. **Pure.**
 #[must_use]

@@ -109,6 +109,10 @@ pub enum PhoneE164Error {
     Length(usize),
 }
 
+/// How many digits an E.164 number holds after its `+`: at most 15, and at least 8, the length
+/// of a six-digit Australian `13` number (`+61132200`) and of the shortest national plans.
+pub const E164_DIGITS: std::ops::RangeInclusive<usize> = 8..=15;
+
 #[must_use]
 pub fn phone_e164_error(value: &str) -> Option<PhoneE164Error> {
     if !value.starts_with('+') {
@@ -121,7 +125,7 @@ pub fn phone_e164_error(value: &str) -> Option<PhoneE164Error> {
     if digits.starts_with('0') {
         return Some(PhoneE164Error::CountryCodeLeadingZero);
     }
-    if !(10..=15).contains(&digits.len()) {
+    if !E164_DIGITS.contains(&digits.len()) {
         return Some(PhoneE164Error::Length(digits.len()));
     }
     None
@@ -174,11 +178,16 @@ pub fn is_domain_label(label: &str) -> bool {
 }
 
 /// One AU national-significant-number rule shared by every input shape:
-/// nine digits with a geographic/mobile lead, or a 1300/1800 service number.
+/// nine digits with a geographic/mobile lead, a 1300/1800/190x service number, or a six-digit
+/// `13` local-rate number: every range `address_au::au_phone_line_type` gives a line type.
 fn au_national_key(national: &str) -> Option<String> {
     let bytes = national.as_bytes();
     let ok = (bytes.len() == 9 && matches!(bytes[0], b'2' | b'3' | b'4' | b'5' | b'7' | b'8'))
-        || (bytes.len() == 10 && (national.starts_with("1300") || national.starts_with("1800")));
+        || (bytes.len() == 10
+            && (national.starts_with("1300")
+                || national.starts_with("1800")
+                || national.starts_with("190")))
+        || (bytes.len() == 6 && national.starts_with("13"));
     let candidate = format!("+61{national}");
     (ok && phone_e164_error(&candidate).is_none()).then_some(candidate)
 }
@@ -218,10 +227,51 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
     au_national_key(&compact)
 }
 
+/// The value of an Arabic-Indic (U+0660 to U+0669) or Extended Arabic-Indic (U+06F0 to U+06F9,
+/// the Persian and Urdu forms) digit, written in Arabic text across the Gulf. **Pure.**
+const fn eastern_digit(character: char) -> Option<char> {
+    let zero = match character {
+        '\u{0660}'..='\u{0669}' => '\u{0660}',
+        '\u{06f0}'..='\u{06f9}' => '\u{06f0}',
+        _ => return None,
+    };
+    char::from_digit(character as u32 - zero as u32, 10)
+}
+
+/// The invisible marks right-to-left text puts around a number so that it displays left to right:
+/// the Arabic letter mark, the left-to-right and right-to-left marks, and the bidirectional
+/// embeddings, overrides and isolates. They carry no character of the value. **Pure.**
+const fn is_direction_mark(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// `raw` with every Arabic-Indic and Extended Arabic-Indic digit written as its ASCII digit and
+/// without the direction marks around numbers in right-to-left text, so `+٩٧١ ٥٠ ١٢٣ ٤٥٦٧` reads
+/// as `+971 50 123 4567`. Text holding neither is returned unchanged, without a copy. **Pure.**
+#[must_use]
+pub fn western_digits(raw: &str) -> std::borrow::Cow<'_, str> {
+    if !raw
+        .chars()
+        .any(|character| eastern_digit(character).is_some() || is_direction_mark(character))
+    {
+        return std::borrow::Cow::Borrowed(raw);
+    }
+    raw.chars()
+        .filter(|&character| !is_direction_mark(character))
+        .map(|character| eastern_digit(character).unwrap_or(character))
+        .collect::<String>()
+        .into()
+}
+
 /// The one canonical form of a phone number, which every phone value is read by (an entity, a
 /// classified token, a selector, `phone_intl::canonicalize`): an explicit international number or
 /// a recognised Australian national number in E.164, else `None`. **Pure.**
 ///
+/// - Arabic-Indic and Extended Arabic-Indic digits are read as their ASCII digits, and the
+///   direction marks of right-to-left text are ignored ([`western_digits`]).
 /// - The number starts at its first digit or `+`, so `tel:+1…` and `(+44)…` are read as written.
 /// - A `00` or Australian `0011` international prefix is a `+` (`0044 20…`, `0011 44 20…` are
 ///   `+4420…`).
@@ -229,11 +279,12 @@ pub fn normalise_au_phone(raw: &str) -> Option<String> {
 ///   refused: dropping the marker would join the extension onto the number.
 /// - A `+61` number is Australian or none, keeping no trunk zero (`+61 (0)4…` is `+614…`).
 /// - A `+1` number written after an international prefix has the North American plan's ten
-///   digits after the `1`. Any `+` number holds 10 to 15 digits, its country code not starting
+///   digits after the `1`. Any `+` number holds 8 to 15 digits, its country code not starting
 ///   with `0`, and one `+` only. The country of a bare non-Australian national number is never
 ///   guessed.
 #[must_use]
 pub fn canonical_phone(raw: &str) -> Option<String> {
+    let raw = western_digits(raw);
     let number =
         raw.trim_start_matches(|character: char| !(character.is_ascii_digit() || character == '+'));
     if has_digits_after_a_marker(number) {
@@ -592,6 +643,33 @@ fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
 }
 
 #[cfg(test)]
+mod au_plan_agreement {
+    use super::normalise_au_phone;
+    use crate::address_au::au_phone_line_type;
+
+    /// The canonicaliser accepts exactly the Australian numbers the numbering plan types: a
+    /// `13 22 00` local-rate or `1900` premium number the plan knows is never refused upstream.
+    #[test]
+    fn every_number_the_au_plan_types_canonicalises() {
+        for (raw, e164) in [
+            ("13 22 00", Some("+61132200")),
+            ("132200", Some("+61132200")),
+            ("+61 13 22 00", Some("+61132200")),
+            ("1300 368 387", Some("+611300368387")),
+            ("1800 813 191", Some("+611800813191")),
+            ("1900 123 456", Some("+611900123456")),
+            ("03 8647 4838", Some("+61386474838")),
+            ("0412 345 678", Some("+61412345678")),
+            ("0612 345 678", None),
+            ("14 22 00", None),
+        ] {
+            assert_eq!(normalise_au_phone(raw).as_deref(), e164, "{raw}");
+            assert_eq!(au_phone_line_type(raw).is_some(), e164.is_some(), "{raw}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod form_tests {
     use super::*;
 
@@ -896,6 +974,32 @@ mod au_phone_key_contract {
             canonical_phone("+1202555010").as_deref(),
             Some("+1202555010")
         );
+    }
+
+    #[test]
+    fn a_number_in_arabic_indic_digits_is_the_same_number() {
+        let want = Some("+971501234567".to_string());
+        for written in [
+            "+971 50 123 4567",
+            // Arabic-Indic digits, as an Emirati card or document writes them.
+            "+٩٧١ ٥٠ ١٢٣ ٤٥٦٧",
+            "٠٠٩٧١٥٠١٢٣٤٥٦٧",
+            // Extended Arabic-Indic (Persian and Urdu) digits.
+            "+۹۷۱ ۵۰ ۱۲۳ ۴۵۶۷",
+            // Direction marks around the number, as right-to-left text holds it.
+            "\u{200e}+971 50 123 4567\u{200e}",
+            "\u{2066}+٩٧١ ٥٠ ١٢٣ ٤٥٦٧\u{2069}",
+        ] {
+            assert_eq!(canonical_phone(written), want, "{written:?}");
+        }
+        assert_eq!(western_digits("plain +971 text"), "plain +971 text");
+        assert!(matches!(
+            western_digits("plain"),
+            std::borrow::Cow::Borrowed("plain")
+        ));
+        assert_eq!(western_digits("رقم ٤٢"), "رقم 42");
+        // An extension after an Arabic-Indic number is still an extension.
+        assert_eq!(canonical_phone("+٩٧١ ٤ ١٢٣ ٤٥٦٧ ext ٢٢"), None);
     }
 
     #[test]

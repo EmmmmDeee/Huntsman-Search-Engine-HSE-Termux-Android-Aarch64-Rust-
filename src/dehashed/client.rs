@@ -15,7 +15,7 @@
 //! `exposure` leg and the collector's receipt.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -26,9 +26,9 @@ use super::types::{Entry, SearchResponse};
 use crate::clock;
 use crate::credential_origin::AuthenticationAuthority;
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
-use crate::hibp::rate_limit::{DEFAULT_REQUESTS_PER_MINUTE, RateLimiter};
 use crate::http::{Request, Response, Transport};
 use crate::keys::{Keys, Secret};
+use crate::rate_limit::RateLimiter;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
 
@@ -43,10 +43,41 @@ pub const API_KEY_HEADER: &str = "Dehashed-Api-Key";
 pub const API_KEY_ENV: &str = crate::environment::DEHASHED_KEY_ENV;
 /// Results per page used when the caller does not choose.
 pub const DEFAULT_PAGE_SIZE: u32 = 10;
-/// Largest page this client will request. Bounds one call's output.
-pub const MAX_PAGE_SIZE: u32 = 100;
-/// Largest page number this client will request.
-pub const MAX_PAGE: u32 = 1_000;
+/// Largest page this client will request: `DeHashed`'s documented maximum `size`. One search costs
+/// one credit whatever its size.
+pub const MAX_PAGE_SIZE: u32 = 10_000;
+/// Largest page number this client will request: a one-record page at [`MAX_RESULT_DEPTH`].
+pub const MAX_PAGE: u32 = 10_000;
+/// `DeHashed`'s documented "maximum pagination depth": `page` x `size` may be at most this.
+pub const MAX_RESULT_DEPTH: u64 = 10_000;
+/// Searches per [`RATE_WINDOW`] every `DeHashed` client in this process shares: `DeHashed`'s
+/// documented limit, "a maximum of 10 requests per second from a single IP and API credential",
+/// enforced by a sliding window, past which it answers 429 and may suspend the account.
+pub const REQUESTS_PER_WINDOW: u32 = 10;
+/// The window [`REQUESTS_PER_WINDOW`] is counted over.
+pub const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// The transport `DeHashed` searches go through: the default, with room for the largest page
+/// `DeHashed` serves ([`MAX_PAGE_SIZE`] records, a few megabytes) and the time it takes to send
+/// one, so a large page is read whole rather than cut and lost as a decode error.
+#[must_use]
+pub fn transport_config() -> crate::http::TransportConfig {
+    crate::http::TransportConfig {
+        timeout: Duration::from_secs(60),
+        max_body: 16 * 1024 * 1024,
+        ..crate::http::TransportConfig::default()
+    }
+}
+
+/// The one budget every `DeHashed` client in this process spends: the exposure legs of concurrent
+/// lookups, a batch scan, a recursive crawl and the web UI each build a client, and they share it.
+#[must_use]
+pub fn shared_limiter() -> Arc<RateLimiter> {
+    static SHARED: OnceLock<Arc<RateLimiter>> = OnceLock::new();
+    SHARED
+        .get_or_init(|| Arc::new(RateLimiter::new(REQUESTS_PER_WINDOW, RATE_WINDOW)))
+        .clone()
+}
 
 #[derive(Debug, Error)]
 pub enum DehashedError {
@@ -56,18 +87,33 @@ pub enum DehashedError {
         "dehashed: no API key (set {API_KEY_ENV} in ~/.huntsman.env or the environment, or ~/.config/dehashed/api_key)"
     )]
     MissingKey,
-    #[error(
-        "dehashed: the key file was refused: it must be a regular file (not a symlink) owned by you with mode 0600"
-    )]
-    KeyFilePermissions,
     #[error("dehashed: size must be between 1 and {MAX_PAGE_SIZE}, got {0}")]
     InvalidSize(u32),
     #[error("dehashed: page must be between 1 and {MAX_PAGE}, got {0}")]
     InvalidPage(u32),
+    /// The page reaches past `DeHashed`'s documented pagination depth: `page` x `size` may be at
+    /// most [`MAX_RESULT_DEPTH`].
+    #[error(
+        "dehashed: page {page} of size {size} reaches past DeHashed's {MAX_RESULT_DEPTH}-result depth"
+    )]
+    BeyondDepth { page: u32, size: u32 },
     #[error("dehashed: unauthorised (HTTP 401): the key was rejected")]
     Unauthorized,
-    #[error("dehashed: forbidden (HTTP 403): the key's plan does not allow this search")]
+    /// A 403 whose body names neither a bad key nor spent credits.
+    #[error(
+        "dehashed: forbidden (HTTP 403): the key, its subscription or its credits do not allow this search"
+    )]
     Forbidden,
+    /// `DeHashed` said the key itself is wrong: a 403 "Issue with API Key" (seen live) or a 400
+    /// "issue with authentication" (documented).
+    #[error("dehashed: the key was rejected (HTTP {0})")]
+    KeyRejected(u16),
+    /// The account has no search subscription or no API credits: `DeHashed`'s documented 401.
+    #[error("dehashed: the account has no search subscription or API credits (HTTP 401)")]
+    NoSubscription,
+    /// The account's search credits are spent: `DeHashed`'s documented 403 "Insufficient Credits".
+    #[error("dehashed: the account is out of search credits (HTTP 403)")]
+    OutOfCredits,
     #[error("dehashed: bad request (HTTP 400)")]
     BadRequest,
     #[error("dehashed: rate limited (HTTP 429), retry after {}", describe_retry(*.retry_after))]
@@ -85,6 +131,10 @@ pub enum DehashedError {
     /// Nothing reached the network, so it says nothing about the identifier.
     #[error("dehashed: request refused before sending")]
     Refused,
+    /// The process's pacing held the request back: an earlier 429 or a run of failures opened
+    /// `DeHashed`'s circuit in [`crate::circuit`], so nothing was sent.
+    #[error("dehashed: paused after an earlier rate limit or failures; nothing was sent")]
+    Paused,
     /// A 200 that is not an API answer: a challenge page served in its place.
     #[error("dehashed: response is not an API answer ({0:?})")]
     NotAnAnswer(SourceOutcomeKind),
@@ -102,8 +152,10 @@ impl DehashedError {
     pub const fn outcome_kind(&self) -> SourceOutcomeKind {
         match self {
             Self::MissingKey => SourceOutcomeKind::NotConfigured,
-            Self::Unauthorized => SourceOutcomeKind::AuthRejected,
-            Self::Forbidden => SourceOutcomeKind::EntitlementDenied,
+            Self::Unauthorized | Self::KeyRejected(_) => SourceOutcomeKind::AuthRejected,
+            Self::Forbidden | Self::NoSubscription | Self::OutOfCredits => {
+                SourceOutcomeKind::EntitlementDenied
+            }
             Self::RateLimited { .. } => SourceOutcomeKind::RateLimited,
             Self::BadRequest => SourceOutcomeKind::Upstream4xx,
             Self::Server(_) => SourceOutcomeKind::Upstream5xx,
@@ -111,8 +163,11 @@ impl DehashedError {
             Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
             Self::Refused => SourceOutcomeKind::RefusedBeforeSending,
             Self::Decode(_) => SourceOutcomeKind::SchemaDrift,
-            Self::Query(_)
-            | Self::KeyFilePermissions
+            // A held-back request, like a local refusal of the arguments, says nothing about
+            // the identifier.
+            Self::Paused
+            | Self::BeyondDepth { .. }
+            | Self::Query(_)
             | Self::InvalidSize(_)
             | Self::InvalidPage(_) => SourceOutcomeKind::Inconclusive,
         }
@@ -122,11 +177,13 @@ impl DehashedError {
     #[must_use]
     pub const fn http_status(&self) -> Option<u16> {
         match self {
-            Self::Unauthorized => Some(401),
-            Self::Forbidden => Some(403),
+            Self::Unauthorized | Self::NoSubscription => Some(401),
+            Self::Forbidden | Self::OutOfCredits => Some(403),
             Self::BadRequest => Some(400),
             Self::RateLimited { .. } => Some(429),
-            Self::Server(status) | Self::Unexpected(status) => Some(*status),
+            Self::KeyRejected(status) | Self::Server(status) | Self::Unexpected(status) => {
+                Some(*status)
+            }
             _ => None,
         }
     }
@@ -173,16 +230,24 @@ impl SearchRequest {
         }
     }
 
-    /// Check bounds that the request body depends on.
+    /// Check bounds that the request body depends on, `DeHashed`'s pagination depth included, so
+    /// no request is spent on an answer it would refuse.
     ///
     /// # Errors
-    /// [`DehashedError::InvalidSize`] or [`DehashedError::InvalidPage`].
+    /// [`DehashedError::InvalidSize`], [`DehashedError::InvalidPage`] or
+    /// [`DehashedError::BeyondDepth`].
     pub fn validate(&self) -> Result<(), DehashedError> {
         if !(1..=MAX_PAGE_SIZE).contains(&self.size) {
             return Err(DehashedError::InvalidSize(self.size));
         }
         if !(1..=MAX_PAGE).contains(&self.page) {
             return Err(DehashedError::InvalidPage(self.page));
+        }
+        if u64::from(self.page) * u64::from(self.size) > MAX_RESULT_DEPTH {
+            return Err(DehashedError::BeyondDepth {
+                page: self.page,
+                size: self.size,
+            });
         }
         Ok(())
     }
@@ -196,6 +261,10 @@ pub struct SearchOutcome {
     pub page: u32,
     pub size: u32,
     pub total: Option<u64>,
+    /// The account's search credits left after this search, as `DeHashed` reported them.
+    pub balance: Option<u64>,
+    /// How long `DeHashed` says the search took, as it wrote it.
+    pub took: Option<String>,
     /// SHA-256 of the raw response body, for the audit receipt.
     pub response_sha256: String,
     pub entries: Vec<Entry>,
@@ -208,6 +277,8 @@ impl fmt::Debug for SearchOutcome {
             .field("page", &self.page)
             .field("size", &self.size)
             .field("total", &self.total)
+            .field("balance", &self.balance)
+            .field("took", &self.took)
             .field("entries", &self.entries.len())
             .finish_non_exhaustive()
     }
@@ -238,19 +309,19 @@ impl fmt::Debug for DehashedClient {
 }
 
 impl DehashedClient {
-    /// A client over `http` authenticating with `key`, limited to the default
-    /// requests-per-minute budget.
+    /// A client over `http` authenticating with `key`, spending the process's one `DeHashed`
+    /// budget ([`shared_limiter`]).
     #[must_use]
     pub fn new(http: Arc<dyn Transport + Send + Sync>, key: Secret) -> Self {
-        Self::with_limiter(
+        Self {
             http,
             key,
-            RateLimiter::per_minute(DEFAULT_REQUESTS_PER_MINUTE),
-        )
+            limiter: shared_limiter(),
+        }
     }
 
-    /// A client with an explicit limiter (used by tests and callers that
-    /// share a budget across clients).
+    /// A client with its own limiter, not the process's: for tests that must not wait on, or
+    /// spend, another test's budget.
     #[must_use]
     pub fn with_limiter(
         http: Arc<dyn Transport + Send + Sync>,
@@ -262,6 +333,12 @@ impl DehashedClient {
             key,
             limiter: Arc::new(limiter),
         }
+    }
+
+    /// The budget this client spends.
+    #[cfg(test)]
+    pub(crate) const fn limiter(&self) -> &Arc<RateLimiter> {
+        &self.limiter
     }
 
     /// Run one exact-match search.
@@ -299,6 +376,8 @@ impl DehashedClient {
             page: request.page,
             size: request.size,
             total: parsed.total,
+            balance: parsed.balance,
+            took: parsed.took,
             response_sha256,
             entries: parsed.entries,
         })
@@ -316,8 +395,11 @@ fn credential(key: Secret, now_unix: u64) -> Result<Credential, DehashedError> {
         .map_err(|_| DehashedError::Refused)
 }
 
-/// One request through [`fetch`] with the key, redirects off, with the response and what the
-/// fetch made of it. A request the guarded egress refused before sending is
+/// One request through [`fetch`] with the key, redirects off and paced by the shared per-host
+/// breaker ([`FetchOptions::paced`]): a 429 pauses `DeHashed` for its `Retry-After` (or the
+/// breaker's cool-down) and a run of failures opens it, for every caller in the process. Returns
+/// the response and what the fetch made of it; a request the breaker holds back is
+/// [`DehashedError::Paused`]. A request the guarded egress refused before sending is
 /// [`DehashedError::Refused`] (fetch's `Err`); a request that was attempted but got no response is
 /// [`DehashedError::Transport`] carrying the fetch's cause; nothing the transport said is kept,
 /// since it can name the request.
@@ -334,13 +416,19 @@ fn send(
         http,
         request,
         Some(credential),
-        &FetchOptions::no_redirects(),
+        &FetchOptions::no_redirects().paced(),
         "dehashed",
         now_unix,
     )
     .map_err(|_| DehashedError::Refused)?;
     let Some(response) = fetched.response else {
-        return Err(DehashedError::Transport(fetched.outcome.kind));
+        // A paced fetch the breaker holds back is the one no-response `Inconclusive`; every
+        // attempted request that got no answer carries the cause the fetch observed.
+        return Err(if fetched.outcome.kind == SourceOutcomeKind::Inconclusive {
+            DehashedError::Paused
+        } else {
+            DehashedError::Transport(fetched.outcome.kind)
+        });
     };
     if response.truncated {
         return Err(DehashedError::Decode("response exceeds body limit".into()));
@@ -363,9 +451,7 @@ fn decode(
             // The body is deliberately not echoed: it holds personal data.
             DehashedError::Decode("unexpected response shape".into())
         }),
-        400 => Err(DehashedError::BadRequest),
-        401 => Err(DehashedError::Unauthorized),
-        403 => Err(DehashedError::Forbidden),
+        400 | 401 | 403 => Err(refusal(response.status, &response.body)),
         429 => Err(DehashedError::RateLimited {
             retry_after: fetched.retry_after_secs.map(Duration::from_secs),
         }),
@@ -374,44 +460,62 @@ fn decode(
     }
 }
 
-/// Resolve a provider credential from the shared lookup keys first, then from the
-/// legacy private `DeHashed` key file. The caller supplies `Keys::for_lookup` so
-/// `~/.huntsman.env` and individual environment slots use the same precedence
-/// as every other provider. No secret is printed or exposed in diagnostics.
+/// What a 400, 401 or 403 means, read from the words `DeHashed` puts in its `error` field (sent as
+/// JSON under `text/plain`, so the body is read whatever its type). Its documented and observed
+/// refusals:
 ///
-/// # Errors
-/// The same errors as [`key_from_environment`] when the shared keys contain
-/// no `DeHashed` credential.
-pub fn key_from_sources(keys: &Keys) -> Result<Secret, DehashedError> {
-    keys.get(API_KEY_ENV).map_or_else(key_from_environment, Ok)
+/// | Status | `error` | Meaning |
+/// | --- | --- | --- |
+/// | 400 | `issue with authentication` | the key is wrong ([`DehashedError::KeyRejected`]) |
+/// | 401 | `You need a search subscription and API credits …` | [`DehashedError::NoSubscription`] |
+/// | 401 | `No Authorization header present` (seen live) | [`DehashedError::Unauthorized`] |
+/// | 403 | `Insufficient Credits` | [`DehashedError::OutOfCredits`] |
+/// | 403 | `Issue with API Key` (seen live) | the key is wrong ([`DehashedError::KeyRejected`]) |
+///
+/// Any other body keeps the status's general reading. The words are matched, never kept: no
+/// error carries what the provider wrote. **Pure.**
+fn refusal(status: u16, body: &[u8]) -> DehashedError {
+    let said = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .or_else(|| value.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        })
+        .unwrap_or_default();
+    match status {
+        400 if said.contains("authentication") => DehashedError::KeyRejected(400),
+        400 => DehashedError::BadRequest,
+        401 if said.contains("subscription") => DehashedError::NoSubscription,
+        401 => DehashedError::Unauthorized,
+        403 if said.contains("insufficient credits") => DehashedError::OutOfCredits,
+        403 if said.contains("api key") => DehashedError::KeyRejected(403),
+        _ => DehashedError::Forbidden,
+    }
 }
 
-/// Load the API key from [`API_KEY_ENV`], then from `~/.config/dehashed/api_key`.
-///
-/// The file must be private (no group or other permission bits) on Unix.
-/// A file that exists but is readable by others is refused, not used.
+/// The key every `DeHashed` path uses, `dehashed search` and the lookup legs alike: the
+/// [`API_KEY_ENV`] slot by the rule `credential-status` reports with and the web UI shows
+/// ([`crate::provider_credentials::secret_for_slot`]). That is the slot in `~/.huntsman.env`, then
+/// in the process environment, then `DeHashed`'s own private key file,
+/// `~/.config/dehashed/api_key` ([`crate::keys::PROVIDER_KEY_FILES`]). A key file the private-file
+/// gate refuses is named in the keys' warning, and its key is not used.
 ///
 /// # Errors
-/// [`DehashedError::MissingKey`] when neither source holds a valid key, or
-/// [`DehashedError::KeyFilePermissions`] when the file is too open.
-pub fn key_from_environment() -> Result<Secret, DehashedError> {
-    if let Some(raw) = crate::environment::variable(API_KEY_ENV) {
-        if let Ok(secret) = Secret::new(raw) {
-            return Ok(secret);
-        }
-    }
-    let Some(home) = crate::environment::home() else {
-        return Err(DehashedError::MissingKey);
-    };
-    let path = std::path::PathBuf::from(home)
-        .join(".config")
-        .join("dehashed")
-        .join("api_key");
-    let bytes = match crate::keys::read_private_file(&path, 4096) {
-        Ok(Some(Ok(bytes))) => bytes,
-        Ok(Some(Err(_refusal))) => return Err(DehashedError::KeyFilePermissions),
-        Ok(None) | Err(_) => return Err(DehashedError::MissingKey),
-    };
-    let raw = String::from_utf8(bytes).map_err(|_| DehashedError::MissingKey)?;
-    Secret::new(raw).map_err(|_| DehashedError::MissingKey)
+/// [`DehashedError::MissingKey`] when none of them holds a key.
+pub fn key(keys: &Keys) -> Result<Secret, DehashedError> {
+    crate::provider_credentials::secret_for_slot(keys, API_KEY_ENV).ok_or(DehashedError::MissingKey)
+}
+
+/// The client a lookup's `DeHashed` leg searches with, or `None` when no source holds a key: the
+/// leg then sends nothing and records `NotConfigured`. The key is resolved as every `DeHashed` path
+/// resolves it ([`key`]), so a key `dehashed search` finds is one the lookups find.
+#[must_use]
+pub fn client_for_lookup(
+    keys: &Keys,
+    http: Arc<dyn Transport + Send + Sync>,
+) -> Option<DehashedClient> {
+    key(keys).ok().map(|key| DehashedClient::new(http, key))
 }

@@ -14,8 +14,6 @@
 //! the crawl date, not a claim that it is still true; an empty index is not proof that a site
 //! never existed.
 
-use std::fmt::Write as _;
-
 use crate::archived_page::{self, Admission, Archive, Capture};
 use crate::canonical::{canonical_domain, canonical_url};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -55,7 +53,7 @@ pub fn lookup<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Report, Error> {
     let Some(domain) = canonical_domain(domain) else {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SOURCE,
             now_unix,
             "invalid domain selector",
@@ -69,7 +67,7 @@ pub fn lookup<T: Transport + ?Sized>(
     )?;
     let crawl = match newest_crawl(&fetched, now_unix) {
         Ok(crawl) => crawl,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
     let mut url = append_query_param(&format!("{INDEX}/{crawl}-index"), "url", &domain);
     url = append_query_param(&url, "matchType", "domain");
@@ -81,7 +79,7 @@ pub fn lookup<T: Transport + ?Sized>(
     let fetched = get(transport, url, "application/json", now_unix)?;
     let mut report = match index_answer(&fetched, &domain, &crawl, scan_id, now_unix) {
         Ok(report) => report,
-        Err(outcome) => miss(outcome),
+        Err(outcome) => Report::miss(outcome),
     };
     if report.outcome.kind == SourceOutcomeKind::Success {
         read_contents(transport, &mut report, &crawl, scan_id, now_unix);
@@ -105,13 +103,6 @@ fn get<T: Transport + ?Sized>(
         SOURCE,
         now_unix,
     )
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 fn failed(
@@ -178,7 +169,7 @@ fn index_answer(
 ) -> Result<Report, SourceExecutionOutcome> {
     let response = whole_response(fetched, "Common Crawl index")?;
     if response.status == 404 && no_captures(response) {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
                 .with_http_status(404)
                 .with_detail(format!("no {crawl} capture of {domain}")),
@@ -321,7 +312,7 @@ fn parse_index(
         ));
     }
     if lines.is_empty() {
-        return Ok(miss(
+        return Ok(Report::miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
         ));
     }
@@ -454,44 +445,11 @@ fn read_contents<T: Transport + ?Sized>(
     if records.is_empty() {
         return;
     }
-    let mut read = 0usize;
-    let mut found = Vec::new();
-    let mut unread = Vec::new();
-    for (capture, record) in &records {
-        match read_record(transport, capture, record, crawl, scan_id, now_unix) {
-            Ok(entities) => {
-                read += 1;
-                found.extend(entities);
-            }
-            Err(reason) => unread.push(reason),
-        }
-    }
-    let contacts = found
+    let reads = records
         .iter()
-        .filter(|entity| matches!(entity.kind, EntityKind::Email | EntityKind::Phone))
-        .count();
-    let technologies = found.len() - contacts;
-    report.entities.extend(found);
-    merge_by_uid(&mut report.entities);
-    report.outcome.found = Some(report.entities.len());
-    let mut detail = format!(
-        "crawled content: {read} of {} page(s) read, {contacts} contact detail(s) found",
-        records.len()
-    );
-    if technologies > 0 {
-        let _ = write!(
-            detail,
-            "; {technologies} archived technology signal(s) found"
-        );
-    }
-    if !unread.is_empty() {
-        detail.push_str("; not read: ");
-        detail.push_str(&unread.join(", "));
-    }
-    report.outcome.detail = Some(match report.outcome.detail.take() {
-        Some(existing) => format!("{existing}; {detail}"),
-        None => detail,
-    });
+        .map(|(capture, record)| read_record(transport, capture, record, crawl, scan_id, now_unix))
+        .collect();
+    archived_page::record_reads(report, "crawled content", reads, None);
 }
 
 /// The contacts one crawled page published, or why it was not read.

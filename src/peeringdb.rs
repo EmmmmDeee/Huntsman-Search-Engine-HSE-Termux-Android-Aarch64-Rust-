@@ -50,11 +50,7 @@ const FACILITY_CONF: f64 = 0.55;
 /// Bound secondary response processing and avoid silently accepting incomplete large listings.
 const MAX_FACILITY_ROWS: usize = 100;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// The list envelope every `PeeringDB` endpoint returns: `{"data": [...], "meta": {...}}`. A missing
 /// `data` is schema drift, not an observed empty registry.
@@ -205,7 +201,7 @@ pub fn lookup<T: Transport + ?Sized>(
     let status = fetched.response.as_ref().map(|response| response.status);
     let net = match interpret_net(&fetched, asn, now_unix) {
         Ok(net) => net,
-        Err(outcome) => return Ok(miss(outcome)),
+        Err(outcome) => return Ok(Report::miss(outcome)),
     };
 
     let mut entities = Vec::new();
@@ -265,14 +261,6 @@ pub fn lookup<T: Transport + ?Sized>(
         outcome = outcome.with_http_status(status);
     }
     Ok(Report { entities, outcome })
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
 }
 
 /// The confirmed `net` record, or the outcome of a lookup that named nothing usable. A 404 or an

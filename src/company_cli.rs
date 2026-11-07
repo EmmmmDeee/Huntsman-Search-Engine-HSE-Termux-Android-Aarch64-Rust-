@@ -34,14 +34,7 @@ impl CompanyArgs {
             return Err(Error::Invalid("company needs a NAME, ACN or ABN".into()));
         }
         let raw = args.join(" ");
-        if raw.len() > MAX_COMPANY_QUERY_BYTES {
-            return Err(Error::invalid_value(format!(
-                "the query is longer than {MAX_COMPANY_QUERY_BYTES} bytes"
-            )));
-        }
-        if raw.chars().any(char::is_control) {
-            return Err(Error::invalid_value("the query holds a control character"));
-        }
+        crate::textnorm::within_query_bound(&raw, MAX_COMPANY_QUERY_BYTES, "query")?;
         let query = Query::parse(&raw).ok_or_else(|| {
             Error::invalid_value("the query is empty, or a number that is not a valid ACN or ABN")
         })?;

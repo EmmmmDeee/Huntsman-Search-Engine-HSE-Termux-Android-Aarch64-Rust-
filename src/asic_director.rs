@@ -47,11 +47,7 @@ const CONF_ADDRESS: f64 = 0.72;
 const CONF_COORDS: f64 = 0.62;
 
 /// One name lookup against ASIC Connect Online.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Report = crate::lookup_report::LookupReport;
 
 /// Look up director appointments for `name`.
 ///

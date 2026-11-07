@@ -184,6 +184,127 @@ struct JsonEndpointResult {
     outcome: SourceExecutionOutcome,
 }
 
+/// The most result blocks one bulk export may hold; beyond it the export is refused whole.
+pub const MAX_EXPORT_RESULTS: usize = 256;
+/// The most rows read from one result block of a bulk export; the rest are counted, not read.
+pub const MAX_EXPORT_ROWS_PER_RESULT: usize = SEARCH_LIMIT_MAX as usize;
+
+/// One `SeekNow` bulk export (the JSON the web app downloads for a list of targets), read offline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkExport {
+    pub id: Option<String>,
+    pub created_at: Option<String>,
+    /// SHA-256 of the exact bytes read, so every row traces to the file it came from.
+    pub sha256: String,
+    pub results: Vec<BulkResult>,
+}
+
+/// One target's block of a bulk export: the query, the provider's own counts and its rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkResult {
+    pub target: String,
+    pub query_type: SeekNowQueryType,
+    /// The provider's `total`: how many rows it found, which may exceed the rows exported.
+    pub reported_total: Option<u64>,
+    pub rows: Vec<SeekNowRow>,
+    /// Row objects in the block that were not read: over the bound or not objects.
+    pub rows_not_read: usize,
+}
+
+/// The query type an export block names in its `type`. **Pure.**
+#[must_use]
+pub fn query_type_named(name: &str) -> Option<SeekNowQueryType> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "email" => SeekNowQueryType::Email,
+        "username" | "user" | "handle" => SeekNowQueryType::Username,
+        "phone" => SeekNowQueryType::Phone,
+        "ip" => SeekNowQueryType::Ip,
+        "domain" => SeekNowQueryType::Domain,
+        "name" | "person" => SeekNowQueryType::Name,
+        "hash" => SeekNowQueryType::Hash,
+        "url" => SeekNowQueryType::Url,
+        "machine_id" => SeekNowQueryType::MachineId,
+        "auto" => SeekNowQueryType::Auto,
+        _ => return None,
+    })
+}
+
+/// Whether `bytes` look like a `SeekNow` bulk export: a JSON object whose `results` is an array of
+/// objects that each carry a `target` and a `rows` array. **Pure.**
+#[must_use]
+pub fn is_bulk_export(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes).is_ok_and(|value| {
+        value
+            .get("results")
+            .and_then(Value::as_array)
+            .is_some_and(|results| {
+                !results.is_empty()
+                    && results.iter().all(|result| {
+                        result.get("target").is_some_and(Value::is_string)
+                            && result.get("rows").is_some_and(Value::is_array)
+                    })
+            })
+    })
+}
+
+/// Read a `SeekNow` bulk export with the same row normalization as a live search: credential
+/// fields are dropped by name, oversized values discarded, and every bound reported.
+///
+/// # Errors
+/// A message naming what is wrong when the bytes are not JSON, not an export, a block has no
+/// readable target or an unknown query type, or there are more than [`MAX_EXPORT_RESULTS`] blocks.
+pub fn parse_bulk_export(bytes: &[u8]) -> Result<BulkExport, String> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|error| format!("not JSON: {error}"))?;
+    let results = value
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or("not a SeekNow bulk export: no results array")?;
+    if results.len() > MAX_EXPORT_RESULTS {
+        return Err(format!(
+            "the export holds {} result blocks; at most {MAX_EXPORT_RESULTS} are read",
+            results.len()
+        ));
+    }
+    let text = |value: &Value, key: &str| value.get(key).and_then(bounded_scalar_string);
+    let mut blocks = Vec::with_capacity(results.len());
+    for (index, result) in results.iter().enumerate() {
+        let target = text(result, "target")
+            .map(|target| target.trim().to_owned())
+            .filter(|target| !target.is_empty())
+            .ok_or_else(|| format!("result block {index} has no target"))?;
+        let type_name = text(result, "type").unwrap_or_else(|| "auto".into());
+        let query_type = query_type_named(&type_name).ok_or_else(|| {
+            format!("result block {index} names an unknown query type {type_name:?}")
+        })?;
+        // A missing or malformed rows array is schema drift, not a clean
+        // zero-result export. Keep actual empty arrays distinguishable.
+        let rows = result
+            .get("rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("result block {index} has no rows array"))?;
+        let all = rows.len();
+        let read: Vec<SeekNowRow> = rows
+            .iter()
+            .take(MAX_EXPORT_ROWS_PER_RESULT)
+            .filter_map(normalize_row)
+            .collect();
+        blocks.push(BulkResult {
+            target,
+            query_type,
+            reported_total: result.get("total").and_then(value_as_u64),
+            rows_not_read: all - read.len(),
+            rows: read,
+        });
+    }
+    Ok(BulkExport {
+        id: text(&value, "id"),
+        created_at: text(&value, "createdAt"),
+        sha256: hex32(&sha256(bytes)),
+        results: blocks,
+    })
+}
+
 #[must_use]
 pub fn effective_limit(limit: u16) -> u16 {
     limit.clamp(1, SEARCH_LIMIT_MAX)
@@ -669,7 +790,12 @@ fn extract_upstream(object: &serde_json::Map<String, Value>) -> (SeekNowUpstream
         source_db: values("source_db"),
         database_name: values("database_name"),
         dataset: values("dataset"),
-        source: values("source"),
+        // Bulk exports name each row's dataset in `_source` ("SeekNow Local • FiveM").
+        source: {
+            let mut source = values("source");
+            source.extend(values("_source"));
+            source
+        },
         record_id: ["record_id", "id", "_id"]
             .iter()
             .find_map(|key| object.get(*key).and_then(bounded_scalar_string)),

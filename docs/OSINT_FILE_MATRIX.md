@@ -1,23 +1,22 @@
 # HUNTSMAN — OSINT file ownership and capability matrix
 
-Inventory source: exact Git tree based on main `0f3a306a7c664c5f39c781da5d1f0870b8ba3287` with the bounded orthogonal planner refactor staged.
+The matrix is compiled into `huntsman-recon` from `src/osint_matrix.rs`. It has no separate file
+to keep in step.
 
-**Full machine-readable inventory:** `docs/OSINT_FILE_MATRIX.csv` (1361 tracked source-tree files).
-The complete tree was returned without truncation. Classifications are filename-derived triage hints, **not** executed-source coverage or proof of functional integration.
-Compiled file blobs retain canonical Git SHA-1 identifiers to permit reproducibility. The matrix files themselves are excluded to avoid self-referential hashes.
+| Surface | What it gives |
+|---|---|
+| `huntsman-recon osint matrix` | One line per capability group: priority, id, discipline, mode, implementation status, its owner files and `modules=` the reachable modules in it. |
+| `huntsman-recon osint matrix --json` and `GET /api/osint/matrix` | Every group in full, with its inputs, outputs, synergies, limitation and modules, and the counts. |
 
-## File inventory by OSINT hint
+**What keeps it true.** The tests in `src/osint_matrix.rs` check that:
+- every file a group names exists, and the group's owner file is among them;
+- every synergy names a group;
+- every reachable module (`module::reachable_modules`, the list `/api/modules` and the web UI
+  show) sits in exactly one group, and every module a group names is reachable.
 
-| Hint | Files |
-|---|---:|
-| FOUNDATION_OR_OTHER | 947 |
-| NETINT | 115 |
-| FUSION_ANALYTICS | 73 |
-| GEOINT | 52 |
-| EXPOSURE_INTEL | 49 |
-| PUBLIC_HUMAN_INTEL | 45 |
-| DEVICE_INTEL | 41 |
-| WEB_ARCHIVE_INTEL | 39 |
+A module added without a group fails those tests, as does a group naming a module that is gone.
+
+`implementation` is source-code status, never a runtime or availability observation.
 
 ## Canonical interfaces: one implementation, multiple surfaces
 
@@ -38,7 +37,7 @@ Compiled file blobs retain canonical Git SHA-1 identifiers to permit reproducibi
 3. Keep `huntsman-recon` as the single canonical pure-Rust runtime, with no root, new dependency or runtime LLM on Android AArch64 Termux.
 4. Existing Web UI's Analysis tab reads the same serialized `orthogonal` report; no additional endpoints, unguarded network access, or duplicate HTML client state are required.
 5. For complete autonomy, only approved workloads may execute through existing bounded collectors, budgets, timeouts, state checkpoints, failure isolation and termination gates. Proposals alone are not executed scans.
-6. Do not confuse a path-heuristic inventory entry with tested functionality, reachable modules, an enabled API credential, or verified source observations.
+6. Do not confuse a group's file or module list with tested functionality, an enabled API credential, or verified source observations.
 
 ## Acceptance gates
 
@@ -47,5 +46,3 @@ Compiled file blobs retain canonical Git SHA-1 identifiers to permit reproducibi
 - `cargo run --locked -p xtask -- gate full`
 - GitHub Actions Android AArch64 cross-build, QEMU library tests, Web UI/browser, CodeQL and RustSec
 - Real unprivileged Termux handset operation is a separate unverified gate until performed.
-
-Regenerate the inventory after future main merges; SHA and size columns describe this exact tree, not later states.

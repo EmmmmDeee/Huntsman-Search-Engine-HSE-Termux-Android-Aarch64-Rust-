@@ -320,6 +320,18 @@ pub fn html_ok(body: &str) -> Response {
 
 /// A 200 response with a JSON body.
 #[must_use]
+/// Runs `f` on a thread of its own, so it starts from an empty per-host breaker table: under test
+/// the breakers of [`crate::circuit`] are thread-local. A case that must not see an earlier case's
+/// 429 or failures (a paced source pauses after them) runs here. A panic in `f` is the test's.
+pub fn on_fresh_breakers<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(f)
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
 pub fn json_ok(body: &str) -> Response {
     Response {
         status: 200,

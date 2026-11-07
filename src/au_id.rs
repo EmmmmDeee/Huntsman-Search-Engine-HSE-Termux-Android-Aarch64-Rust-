@@ -58,9 +58,7 @@ fn abn_ok(d: &[u8]) -> bool {
         .enumerate()
         .map(|(i, (w, &x))| w * (u32::from(x) - u32::from(i == 0)))
         .sum();
-    #[allow(clippy::manual_is_multiple_of)] // is_multiple_of needs Rust 1.90; MSRV is 1.87
-    let ok = sum % 89 == 0;
-    ok
+    sum.is_multiple_of(89)
 }
 
 fn acn_ok(d: &[u8]) -> bool {

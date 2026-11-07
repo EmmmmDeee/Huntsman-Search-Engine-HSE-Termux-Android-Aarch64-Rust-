@@ -2,6 +2,7 @@ abuseipdb	adapter	AbuseIPDB check leg reached through ip_cli from ip, scan -k ip
 abn_lookup	adapter	keyed ABN Lookup source client reached through company_cli from the company command for an ABN or ACN
 account_leg	adapter	shared fetch and identity checks of the simple username legs (lobsters, chess_com, lichess, codeberg_user, devto_user, codewars_user, huggingface_user, hacker_news), reached through each of them
 acnc	adapter	ACNC charity register source client folded into a people scan as a candidate lead
+ae_id	leaf	UAE identifier validation (Emirates ID Luhn, UAE IBAN mod 97-10) behind the id command
 address_au	leaf	Australian address and phone normalization utility
 analysis	runtime	shared analysis fan-out
 api_leg	runtime	shared request path, key binding and status mapping of the free-tier API legs
@@ -35,6 +36,7 @@ solana_rpc	adapter	keyless Solana mainnet-beta account observations through cryp
 evm_rpc	leaf	the one keyless EVM JSON-RPC account-observation core (batch request, fail-closed decode, exact-wei provenance) shared by base_rpc and eth_rpc
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
+breach_record	leaf	what a breach record exposes, credentials held back, shared by the OathNet and DeHashed legs
 canonical	runtime	canonicalization for entities and provenance
 censys	adapter	Censys Platform v3 IP host lookup reached through the indicator legs when a PAT is configured
 circuit	leaf	bounded circuit/cache state
@@ -195,6 +197,7 @@ provider_credentials	leaf	provider credential completeness manifest
 pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
 qld_traffic_cameras	adapter	Explicit QLDTraffic (keyed slot) and state-road GIS collectors reached only through the traffic-cameras CLI; nearby assets remain candidates
 radar	leaf	cross-sweep recurrence and follower detection over the private sweep log, reached through cli/radar.rs from radar track; its Bluetooth live tracker (BtRadarState) has no rootless Termux source and no caller yet
+rate_limit	leaf	sliding-window request budget each keyed provider with a stated rate shares process-wide (HIBP, DeHashed)
 recon	leaf	seed kinds the crtsh lookup and the domain recon front-ends share
 recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
 rdap	adapter	keyless RDAP registration client reached through rdap_legs from domain, ip, scan and /api/lookup
@@ -233,6 +236,8 @@ scan_service	runtime	saved-scan runner reached through scans run and the scan AP
 scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
 scan_uncertainty	runtime	read-only evidence-derived scan uncertainty register used by the scan API and mobile Summary view
 search	diagnostic	local search utility
+icij_offshore	adapter	keyless ICIJ Offshore Leaks reconciliation client folded into a people scan as a lead (nodes kept only when their name carries every word of the person's name; each a Document keyed by node URL)
+sanctions	adapter	keyless OFAC SDN, UN Security Council and EU consolidated sanctions lists, kept on the device through the threat feeds' download-and-keep machinery and matched locally in a people scan (listings that carry every word of the name, as Document leads)
 sec_edgar	adapter	keyless SEC EDGAR full-text and submissions client folded into a people scan as a candidate lead (US issuers and insiders; LEI joins gleif, website into domain recon, addresses into geocode)
 securitytrails	adapter	SecurityTrails subdomain leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 seeknow	adapter	SeekNow/See-Know source client

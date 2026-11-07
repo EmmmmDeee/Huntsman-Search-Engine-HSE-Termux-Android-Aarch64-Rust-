@@ -189,7 +189,7 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
         // A URL the iTunes lookup tags as an App Store app page is Spiderfoot's app-store entry
         // type, whatever the scan target is.
         EntityKind::Url if entity.has_tag(tags::APP_STORE_ENTRY) => "APPSTORE_ENTRY",
-        EntityKind::Url => match (target.domain(), url_host(value)) {
+        EntityKind::Url => match (target.domain(), crate::circuit::host_of(value)) {
             (Some(domain), Some(host)) if is_or_subdomain_of(&host, domain) => {
                 "LINKED_URL_INTERNAL"
             }
@@ -205,13 +205,6 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
         },
         _ => base_type(&entity.kind),
     }
-}
-
-fn url_host(url: &str) -> Option<String> {
-    let rest = url.split_once("://")?.1;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let host = authority.rsplit('@').next()?.split(':').next()?;
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 fn crypto_type(value: &str) -> &'static str {
@@ -1494,6 +1487,27 @@ mod tests {
         let linked = of_type(&found, "LINKED_URL_INTERNAL").len()
             + of_type(&found, "LINKED_URL_EXTERNAL").len();
         assert_eq!(linked, 1, "an untagged URL is still a linked URL");
+    }
+
+    /// A URL whose host is the target's domain is internal however the host is written: a
+    /// trailing root dot names the same host. A URL canonical form cannot read (here an `ftp`
+    /// link) reaches the typing as written, so the host reader drops the dot, as the breakers'
+    /// does.
+    #[test]
+    fn a_url_on_the_target_domain_written_with_a_root_dot_is_internal() {
+        for url in ["ftp://example.com./pub", "ftp://Example.COM:2121/pub"] {
+            let link = entity(EntityKind::Url, url, "web", &[]);
+            let found = elements(DOMAIN, &[link], 1_700_000_000);
+            assert_eq!(of_type(&found, "LINKED_URL_INTERNAL").len(), 1, "{url}");
+        }
+        for url in [
+            "ftp://example.com.evil.net/pub",
+            "ftp://[2001:db8::1]:21/pub",
+        ] {
+            let link = entity(EntityKind::Url, url, "web", &[]);
+            let found = elements(DOMAIN, &[link], 1_700_000_000);
+            assert_eq!(of_type(&found, "LINKED_URL_EXTERNAL").len(), 1, "{url}");
+        }
     }
 
     /// A URL the iTunes lookup tags as an App Store entry is Spiderfoot's `APPSTORE_ENTRY`

@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::error::Error;
 use crate::rf::survey_csv::{
     Export, InvalidField, column, exact_columns, optional_finite, optional_number, optional_text,
-    read_export,
+    read_export, reported_fix,
 };
 use crate::rf::{band, canonical_network_id, valid_wifi_bssid};
 use crate::textnorm::escape_controls;
@@ -147,20 +147,11 @@ fn parse_record(row: &[String], columns: &BTreeMap<&str, usize>) -> Option<WifiC
     let bandwidth = optional_text(column(row, columns, "bandwidth"), 32).ok()?;
     let record_number = optional_number(column(row, columns, "recordNumber"), u64::MAX).ok()?;
     let location_age_ms = optional_number(column(row, columns, "locationAge"), 86_400_000).ok()?;
-    let lat = column(row, columns, "latitude").parse::<f64>().ok();
-    let lon = column(row, columns, "longitude").parse::<f64>().ok();
-    let accuracy = column(row, columns, "accuracy").parse::<f64>().ok();
-    let location = match (lat, lon, accuracy) {
-        (Some(lat), Some(lon), Some(accuracy))
-            if crate::geohash::valid_fix(lat, lon)
-                && accuracy.is_finite()
-                && accuracy > 0.0
-                && accuracy <= 100_000.0 =>
-        {
-            (Some(lat), Some(lon), Some(accuracy))
-        }
-        _ => (None, None, None),
-    };
+    let location = reported_fix(
+        column(row, columns, "latitude"),
+        column(row, columns, "longitude"),
+        column(row, columns, "accuracy"),
+    );
     Some(WifiCsvRecord {
         bssid: canonical_network_id(raw_bssid),
         ssid,

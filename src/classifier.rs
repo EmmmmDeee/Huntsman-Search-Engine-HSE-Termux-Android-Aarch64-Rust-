@@ -14,6 +14,10 @@ pub const ACTIONABLE_FLOOR: f64 = 0.50;
 /// Company words. A marker qualifies a name, so it counts only as a whole word, in a value
 /// of two or more words.
 const COMPANY_WORDS: &[&str] = &[
+    "limited",
+    "ltd",
+    "plc",
+    "llp",
     "llc",
     "inc",
     "incorporated",
@@ -48,8 +52,12 @@ impl Classified {
     }
 }
 
+/// What one value is. Arabic-Indic digits are read as ASCII digits and the direction marks of
+/// right-to-left text are ignored ([`crate::value_syntax::western_digits`]), so a number written
+/// in Arabic text classifies as it does in Latin digits.
 #[must_use]
 pub fn classify(raw: &str) -> Classified {
+    let raw = crate::value_syntax::western_digits(raw);
     let value = raw.trim();
     if value.is_empty() {
         return Classified {
@@ -235,9 +243,12 @@ fn word_tokens(value: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every distinct value `text` holds, in order. Arabic-Indic digits and the direction marks of
+/// right-to-left text are read as [`classify`] reads them.
 #[must_use]
 pub fn extract(text: &str) -> Vec<Classified> {
-    let tokens = tokenize(text);
+    let text = crate::value_syntax::western_digits(text);
+    let tokens = tokenize(&text);
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     let mut index = 0;
@@ -602,6 +613,20 @@ mod tests {
     }
 
     #[test]
+    fn a_phone_number_in_arabic_text_and_digits_is_found() {
+        // "Contact the office on +971 4 123 4567" as an Arabic notice writes it, with the
+        // number in Arabic-Indic digits wrapped in left-to-right isolates.
+        let found = extract("للتواصل مع المكتب \u{2066}+٩٧١ ٤ ١٢٣ ٤٥٦٧\u{2069} شكرا");
+        let phones: Vec<_> = found
+            .iter()
+            .filter(|item| item.kind == EntityKind::Phone)
+            .collect();
+        assert_eq!(phones.len(), 1, "{found:?}");
+        assert_eq!(phones[0].value, "+97141234567");
+        assert_eq!(classify("+۹۷۱۵۰۱۲۳۴۵۶۷").value, "+971501234567");
+    }
+
+    #[test]
     fn digits_inside_another_token_are_not_a_phone_number() {
         // A cookie's GeoIP coordinates once became the phone number +61390577494.
         let cookie = extract("set-cookie: GeoIP=US:VA:Ashburn:39.05:-77.49:v4; Path=/;");
@@ -794,6 +819,15 @@ mod tests {
         assert_eq!(classify("Acme Pty Ltd").kind, EntityKind::Organisation);
         assert_eq!(classify("Acme Inc.").kind, EntityKind::Organisation);
         assert_eq!(classify("Acme Corporation").kind, EntityKind::Organisation);
+        // An Australian or British public company ends in Limited, Ltd or PLC.
+        for raw in [
+            "Telstra Group Limited",
+            "Acme Ltd",
+            "Acme Holdings PLC",
+            "Acme LLP",
+        ] {
+            assert_eq!(classify(raw).kind, EntityKind::Organisation, "{raw}");
+        }
     }
 
     #[test]

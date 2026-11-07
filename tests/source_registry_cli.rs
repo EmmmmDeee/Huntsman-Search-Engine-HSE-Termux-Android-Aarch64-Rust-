@@ -229,3 +229,22 @@ fn sources_refuses_out_of_range_coordinates() {
     assert_eq!(out.status.code(), Some(65));
     assert_eq!(out.stdout, [] as [u8; 0]);
 }
+
+/// A one-word name is the whole query: `sources Telstra` gives the organisation's search routes,
+/// at low confidence, instead of refusing them.
+#[test]
+fn sources_routes_a_one_word_name_as_an_organisation() {
+    let out = bin().args(["sources", "Telstra"]).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("kind=organisation confidence=0.300"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Telstra"), "{stdout}");
+}

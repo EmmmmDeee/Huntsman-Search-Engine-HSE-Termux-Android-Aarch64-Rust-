@@ -400,7 +400,7 @@ fn cert_evidence_stamps_empty_strings_when_fields_absent() {
 
 #[test]
 fn timeout_allows_slow_but_alive_ct_json() {
-    assert_eq!(TIMEOUT, Duration::from_secs(30));
+    assert_eq!(TIMEOUT, Duration::from_secs(75));
     let config = transport_config();
     assert_eq!(config.timeout, TIMEOUT);
     assert_eq!(config.max_body, MAX_BODY);

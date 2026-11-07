@@ -38,11 +38,7 @@ const CONF_ORG: f64 = 0.70;
 const CONF_ID: f64 = 0.72;
 
 /// One query across the ASIC organisation registers.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcomes: Vec<SourceExecutionOutcome>,
-}
+pub type Report = crate::lookup_report::LookupReport;
 
 /// What one query asks: a registered number, or the words of a name.
 #[derive(Debug, Clone, PartialEq, Eq)]

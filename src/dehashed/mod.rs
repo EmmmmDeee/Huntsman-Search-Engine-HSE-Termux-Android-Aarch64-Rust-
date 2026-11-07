@@ -7,8 +7,12 @@
 //! ([`cli`]), and the `exposure` leg ([`exposure`]), which reuses the same
 //! client to add `DeHashed` to the keyed breach legs of `exposure ADDR`.
 //!
-//! The response schema in [`types`] is not verified against a live key. Read
-//! that file's header before relying on field names.
+//! The response schema in [`types`] follows `DeHashed`'s published v2
+//! documentation and live unauthenticated probes; that file's header says which
+//! fields are first-party and which are reported by others. On 2026-11-07 it was
+//! verified against the live API with a real key (`tests/dehashed_live.rs`, run
+//! with `--ignored`): every record of a page decoded, every non-credential value
+//! kept verbatim, no credential value retained, and an email search exact.
 
 pub mod cli;
 pub mod client;

@@ -373,7 +373,19 @@ pub(in crate::cli) fn sources_cmd(args: &[String]) -> ExitCode {
         return fail(EX_USAGE, "usage: huntsman-recon sources QUERY...");
     }
     let input = args.join(" ");
-    let classified = classify_indicator(&input);
+    let mut classified = classify_indicator(&input);
+    // In prose one word is never a name, but here it is the whole query the operator typed:
+    // `sources Telstra` is a name to search for, routed as an organisation at low confidence.
+    if classified.kind == entity::EntityKind::Other
+        && !input.contains(char::is_whitespace)
+        && input.chars().filter(|c| c.is_alphabetic()).count() >= 2
+        && input
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '&' | '\'' | '-'))
+    {
+        classified.kind = entity::EntityKind::Organisation;
+        classified.confidence = 0.30;
+    }
     // A handle is routed as written: the classified value drops `.`, `_` and `-`,
     // which would point `@octo-cat` at the account `octocat`.
     let value = if classified.kind == entity::EntityKind::Username {

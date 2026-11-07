@@ -24,7 +24,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::fetch::{
     FetchOptions, Fetched, answer, decode_json, fetch, mediawiki_api_error, whole_response,
@@ -145,6 +145,54 @@ const PROPERTIES: &[Property] = &[
         },
     },
     Property {
+        pid: "P6634",
+        attr: "linkedin_personal_id",
+        pivot: Pivot::External {
+            url: "https://www.linkedin.com/in/{}/",
+            handle: false,
+        },
+    },
+    Property {
+        pid: "P11892",
+        attr: "threads_username",
+        pivot: Pivot::External {
+            url: "https://www.threads.net/@{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P7085",
+        attr: "tiktok_username",
+        pivot: Pivot::External {
+            url: "https://www.tiktok.com/@{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P12361",
+        attr: "bluesky_handle",
+        pivot: Pivot::External {
+            url: "https://bsky.app/profile/{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P4265",
+        attr: "reddit_username",
+        pivot: Pivot::External {
+            url: "https://www.reddit.com/user/{}",
+            handle: true,
+        },
+    },
+    Property {
+        pid: "P2397",
+        attr: "youtube_channel_id",
+        pivot: Pivot::External {
+            url: "https://www.youtube.com/channel/{}",
+            handle: false,
+        },
+    },
+    Property {
         pid: "P345",
         attr: "imdb_id",
         pivot: Pivot::External {
@@ -203,18 +251,7 @@ const ORGANISATION_TYPES: &[&str] = &[
     "Q43702",   // federation
 ];
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
-
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 fn configured_base() -> Result<String, Error> {
     crate::canonical::configured_https_origin(
@@ -300,7 +337,7 @@ pub fn lookup<T: Transport + ?Sized>(
     } else {
         match resolve(transport, &base, query, now_unix)? {
             Resolved::Item { qid, label } => (qid, label),
-            Resolved::None(outcome) => return Ok(miss(outcome)),
+            Resolved::None(outcome) => return Ok(Report::miss(outcome)),
         }
     };
 
@@ -312,7 +349,128 @@ pub fn lookup<T: Transport + ?Sized>(
         SOURCE,
         now_unix,
     )?;
-    Ok(interpret(&fetched, &qid, search_label.as_deref(), scan_id, now_unix).unwrap_or_else(miss))
+    let mut report = interpret(&fetched, &qid, search_label.as_deref(), scan_id, now_unix)
+        .unwrap_or_else(Report::miss);
+    label_claims(transport, &base, &qid, &mut report, now_unix);
+    Ok(report)
+}
+
+/// The most ids one `wbgetentities` request names (the Action API's own limit).
+const MAX_LABEL_IDS: usize = 50;
+
+/// The `wbgetentities` URL that names the properties and items in `ids`. **Pure.**
+#[must_use]
+pub fn labels_url(base: &str, ids: &[String]) -> String {
+    format!(
+        "{base}/w/api.php?action=wbgetentities&ids={}&props=labels&languages=en&languagefallback=1&format=json",
+        percent_encode_unreserved(&ids.join("|"))
+    )
+}
+
+/// Whether `id` is a property id (`P` and digits). **Pure.**
+fn is_pid(id: &str) -> bool {
+    id.strip_prefix('P')
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The property and item ids an item's `claim` attributes name, each once, at most
+/// [`MAX_LABEL_IDS`]: every claim's property, then its item value, in claim order, so a bounded
+/// request names whole claims rather than only properties. **Pure.**
+fn claim_ids(evidence: &Evidence) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for claim in evidence.attr_values("claim") {
+        let Some((pid, value)) = claim.split_once('=') else {
+            continue;
+        };
+        for id in [pid, value] {
+            let nameable = is_pid(id) || (id.starts_with('Q') && is_qid(id));
+            if nameable && ids.len() < MAX_LABEL_IDS && !ids.iter().any(|known| known == id) {
+                ids.push(id.to_owned());
+            }
+        }
+    }
+    ids
+}
+
+/// `id=label` for every entity in a `wbgetentities` response that carries a label. **Pure.**
+fn labels_from(response: &Value, ids: &[String]) -> Vec<String> {
+    let Some(entities) = response.get("entities").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    ids.iter()
+        .filter_map(|id| {
+            let labels = entities.get(id)?.get("labels")?.as_object()?;
+            let label = labels
+                .get("en")
+                .or_else(|| labels.values().next())?
+                .get("value")?
+                .as_str()?
+                .trim();
+            (!label.is_empty()).then(|| format!("{id}={label}"))
+        })
+        .collect()
+}
+
+/// Why a labels response could not be read: its outcome's kind and detail. **Pure.**
+fn why(outcome: SourceExecutionOutcome) -> String {
+    format!("{:?}: {}", outcome.kind, outcome.detail.unwrap_or_default())
+}
+
+/// Name the properties and items the item's claims cite, with one bounded request. Readable
+/// labels are presentation: a failed lookup leaves the claims as they were, records why in
+/// `claim_labels_unavailable`, and never changes the report's outcome or entities.
+fn label_claims<T: Transport + ?Sized>(
+    transport: &T,
+    base: &str,
+    qid: &str,
+    report: &mut Report,
+    now_unix: u64,
+) {
+    let Some(evidence) = report
+        .entities
+        .iter_mut()
+        .flat_map(|entity| entity.evidence.iter_mut())
+        .find(|evidence| {
+            evidence.attr_values("qid").any(|q| q == qid)
+                && evidence.attributes.contains_key("claim")
+        })
+    else {
+        return;
+    };
+    let ids = claim_ids(evidence);
+    if ids.is_empty() {
+        return;
+    }
+    let labelled = fetch(
+        transport,
+        request(labels_url(base, &ids)),
+        None,
+        &FetchOptions::no_redirects().paced(),
+        SOURCE,
+        now_unix,
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|fetched| {
+        let response = whole_response(&fetched, "Wikidata labels").map_err(why)?;
+        answer(&fetched, "Wikidata labels").map_err(why)?;
+        let body: Value =
+            decode_json(response, SOURCE, now_unix, "Wikidata labels").map_err(why)?;
+        Ok(labels_from(&body, &ids))
+    });
+    let mut updated = std::mem::replace(
+        evidence,
+        Evidence::new(EvidenceProvenance::for_scan(SOURCE, ""), String::new()),
+    );
+    match labelled {
+        Ok(labels) if !labels.is_empty() => {
+            for label in labels {
+                updated = updated.with_attr("claim_label", label);
+            }
+        }
+        Ok(_) => updated = updated.with_attr("claim_labels_unavailable", "no labels returned"),
+        Err(reason) => updated = updated.with_attr("claim_labels_unavailable", reason),
+    }
+    *evidence = updated;
 }
 
 enum Resolved {
@@ -371,8 +529,51 @@ fn resolve<T: Transport + ?Sized>(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
         ));
     }
+    let hits: Vec<SearchHit> = hits
+        .into_iter()
+        .filter(|hit| !hit.id.trim().is_empty())
+        .collect();
+    // Namesakes: several items carry exactly the searched label. The search's ranking does not
+    // say which one is the subject, so none is attributed; the candidates are named for a
+    // follow-up lookup by Q-number.
+    let exact: Vec<&SearchHit> = hits
+        .iter()
+        .filter(|hit| {
+            hit.label
+                .as_deref()
+                .is_some_and(|label| label.trim().eq_ignore_ascii_case(term.trim()))
+        })
+        .collect();
+    if exact.len() > 1 {
+        let candidates: Vec<String> = exact
+            .iter()
+            .map(|hit| match hit.description.as_deref() {
+                Some(description) => format!("{} ({description})", hit.id),
+                None => hit.id.clone(),
+            })
+            .collect();
+        return Ok(Resolved::None(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::Inconclusive,
+            Some(response.status),
+            format!(
+                "{} Wikidata items are labelled \"{}\": {}; none is attributed, look one up by its Q-number",
+                exact.len(),
+                term.trim(),
+                candidates.join(", ")
+            ),
+        )));
+    }
+    // One exact-label hit is the item, wherever the search ranked it.
+    if let [only] = exact.as_slice() {
+        return Ok(Resolved::Item {
+            qid: only.id.clone(),
+            label: only.label.clone().or_else(|| only.description.clone()),
+        });
+    }
     // Hits that name no item matched something the search cannot say: no clean negative.
-    match hits.into_iter().find(|hit| !hit.id.trim().is_empty()) {
+    match hits.into_iter().next() {
         Some(hit) => Ok(Resolved::Item {
             qid: hit.id,
             label: hit.label.or(hit.description),
@@ -495,8 +696,10 @@ fn rendered_value(value: &Value) -> Option<String> {
 }
 
 /// A statement may generate a current-looking entity only when it is not deprecated and carries
-/// no qualifiers. Qualifiers can restrict time, jurisdiction, or applicability; without interpreting
-/// them, suppressing the pivot is safer than presenting it as current. **Pure.**
+/// no qualifiers, or, for an account identifier, only ones that describe the account
+/// ([`eligible_for_account_pivot`]). Qualifiers can
+/// restrict time, jurisdiction, or applicability; an uninterpreted one suppresses the pivot rather
+/// than presenting the value as current. **Pure.**
 fn eligible_rank(statement: &Value) -> bool {
     matches!(
         statement.get("rank").and_then(Value::as_str),
@@ -505,41 +708,66 @@ fn eligible_rank(statement: &Value) -> bool {
 }
 
 fn eligible_for_pivot(statement: &Value) -> bool {
-    eligible_rank(statement)
-        && statement
-            .get("qualifiers")
-            .is_none_or(|qualifiers| match qualifiers {
-                Value::Object(entries) => entries.is_empty(),
-                Value::Array(entries) => entries.is_empty(),
-                _ => false,
-            })
+    eligible_rank(statement) && qualifiers_all(statement, |_, _| false)
+}
+
+/// An external account identifier (an [`Pivot::External`] property) may pivot with qualifiers
+/// that only describe the account ([`describes_without_restricting`]); Wikidata records a public
+/// figure's social handles with follower counts, so the strict rule would drop every one. **Pure.**
+fn eligible_for_account_pivot(statement: &Value) -> bool {
+    eligible_rank(statement) && qualifiers_all(statement, describes_without_restricting)
+}
+
+/// Qualifiers that describe a still-current account without limiting when or where the
+/// statement holds: statement is subject of (`P805`), a follower count (`P3744`) and the time it
+/// was counted (`P585`), the account's start (`P580`, with no end time), the X numeric user id
+/// (`P6552`), and `P1552` only when it says "verified account" (`Q28378282`). An end time, a
+/// jurisdiction, a reason for deprecation or any other qualifier still suppresses the pivot.
+/// **Pure.**
+fn describes_without_restricting(pid: &str, value: &Value) -> bool {
+    match pid {
+        "P805" | "P3744" | "P585" | "P580" | "P6552" => true,
+        "P1552" => value.get("content").and_then(Value::as_str) == Some("Q28378282"),
+        _ => false,
+    }
 }
 
 /// P805 (statement is subject of) is non-restrictive. Wikibase REST v1 exposes qualifiers
-/// as a list of {property, value} pairs; older fixture/Action shapes use property-keyed maps.
+/// as an array of `{property:{id}, value}` objects; older/other envelopes use a PID map.
 /// Both forms permit only P805 for P31 classification, never temporal or unknown qualifiers.
 fn eligible_for_classification(statement: &Value) -> bool {
-    eligible_rank(statement)
-        && statement
-            .get("qualifiers")
-            .is_none_or(|qualifiers| match qualifiers {
-                Value::Object(entries) => entries.iter().all(|(pid, values)| {
-                    pid == "P805" && values.as_array().is_some_and(|items| !items.is_empty())
-                }),
-                Value::Array(entries) => entries.iter().all(|entry| {
-                    entry
-                        .get("property")
-                        .and_then(|property| property.get("id"))
-                        .and_then(Value::as_str)
-                        == Some("P805")
-                        && entry
-                            .get("value")
-                            .and_then(|value| value.get("type"))
-                            .and_then(Value::as_str)
-                            == Some("value")
-                }),
-                _ => false,
-            })
+    eligible_rank(statement) && qualifiers_all(statement, |pid, _| pid == "P805")
+}
+
+/// Whether every qualifier of `statement` is a real value that `allowed` accepts; a statement
+/// with no qualifiers passes, an unreadable qualifier shape fails. **Pure.**
+fn qualifiers_all(statement: &Value, allowed: impl Fn(&str, &Value) -> bool) -> bool {
+    let is_value = |value: &Value| value.get("type").and_then(Value::as_str) == Some("value");
+    statement
+        .get("qualifiers")
+        .is_none_or(|qualifiers| match qualifiers {
+            Value::Object(entries) => entries.iter().all(|(pid, values)| {
+                values.as_array().is_some_and(|items| {
+                    !items.is_empty()
+                        && items.iter().all(|item| {
+                            let value = item.get("value").unwrap_or(item);
+                            allowed(pid, value)
+                        })
+                })
+            }),
+            Value::Array(entries) => entries.iter().all(|entry| {
+                let pid = entry
+                    .get("property")
+                    .and_then(|property| property.get("id"))
+                    .and_then(Value::as_str);
+                let value = entry.get("value");
+                match (pid, value) {
+                    (Some(pid), Some(value)) => is_value(value) && allowed(pid, value),
+                    _ => false,
+                }
+            }),
+            _ => false,
+        })
 }
 
 /// Share the bounded value decoder while retaining property-specific eligibility.
@@ -562,8 +790,12 @@ fn values_filtered(
 }
 
 /// Only unqualified, non-deprecated values seed friendly attributes and automatic pivots.
-fn values(statements: Option<&serde_json::Map<String, Value>>, pid: &str) -> Vec<String> {
-    values_filtered(statements, pid, eligible_for_pivot)
+fn values(statements: Option<&serde_json::Map<String, Value>>, property: &Property) -> Vec<String> {
+    let eligible = match property.pivot {
+        Pivot::External { .. } => eligible_for_account_pivot,
+        _ => eligible_for_pivot,
+    };
+    values_filtered(statements, property.pid, eligible)
 }
 
 /// Classify an item from current P31 values, including non-restrictive P805 annotations.
@@ -664,7 +896,7 @@ fn decode(
     // Every curated property keeps a friendly, named attribute.
     let mut pivots: Vec<(EntityKind, String, String)> = Vec::new();
     for property in PROPERTIES {
-        let found = values(statements, property.pid);
+        let found = values(statements, property);
         for value in &found {
             evidence = evidence.with_attr(property.attr, value.clone());
             collect_pivots(property, value, &label, qid, &mut pivots);
@@ -775,8 +1007,8 @@ fn collect_pivots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::Entity;
     use crate::source_outcome::SourceOutcomeKind;
-    use crate::test_support::OneResponse;
 
     /// A fictional person item with the REST v1 shapes: an entity-ref P31, a string website, a
     /// globe-coordinate, a timestamp and external identifiers.
@@ -797,11 +1029,97 @@ mod tests {
       }
     }"#;
 
+    /// The labels the Action API returns for the ids the person item's claims cite.
+    const LABELS: &str = r#"{"entities":{
+      "P31":{"labels":{"en":{"language":"en","value":"instance of"}}},
+      "P856":{"labels":{"en":{"language":"en","value":"official website"}}},
+      "Q5":{"labels":{"en":{"language":"en","value":"human"}}},
+      "P999":{"missing":""}
+    },"success":1}"#;
+
+    /// The item, then the one labels request its claims prompt (a connect failure when the
+    /// script is spent, which only marks the labels unavailable).
     fn report_of(body: &str, query: &str) -> Report {
-        match lookup(&OneResponse::json(200, body), query, "scan-wd", 1) {
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(body)),
+            Ok(crate::test_support::json_ok(LABELS)),
+        ]);
+        match lookup(&transport, query, "scan-wd", 1) {
             Ok(report) => report,
             Err(error) => panic!("{error}"),
         }
+    }
+
+    fn item_evidence(report: &Report) -> &Evidence {
+        report
+            .entities
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .find(|ev| ev.attributes.contains_key("claim"))
+            .expect("item evidence")
+    }
+
+    #[test]
+    fn claims_name_their_properties_and_items_with_one_bounded_request() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(PERSON_ITEM)),
+            Ok(crate::test_support::json_ok(LABELS)),
+        ]);
+        let report = lookup(&transport, "Q000", "scan-wd", 1).expect("lookup");
+        let seen = transport.seen.borrow();
+        assert_eq!(seen.len(), 2, "item then one labels request");
+        assert!(
+            seen[1].url.contains("action=wbgetentities"),
+            "{}",
+            seen[1].url
+        );
+        assert!(
+            seen[1].url.contains("P31%7CQ5"),
+            "claim then its value: {}",
+            seen[1].url
+        );
+        let labels: Vec<&str> = item_evidence(&report).attr_values("claim_label").collect();
+        assert!(labels.contains(&"P31=instance of"), "{labels:?}");
+        assert!(labels.contains(&"Q5=human"), "{labels:?}");
+        assert!(!labels.iter().any(|l| l.starts_with("P999")), "{labels:?}");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+    }
+
+    #[test]
+    fn a_failed_labels_request_never_changes_the_findings() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![Ok(
+            crate::test_support::json_ok(PERSON_ITEM),
+        )]);
+        let unlabelled = lookup(&transport, "Q000", "scan-wd", 1).expect("lookup");
+        let labelled = report_of(PERSON_ITEM, "Q000");
+        assert_eq!(unlabelled.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(unlabelled.entities.len(), labelled.entities.len());
+        let evidence = item_evidence(&unlabelled);
+        assert!(evidence.attributes.contains_key("claim_labels_unavailable"));
+        assert!(!evidence.attributes.contains_key("claim_label"));
+    }
+
+    #[test]
+    fn claim_ids_name_whole_claims_each_once_and_bounded() {
+        let mut evidence = Evidence::new(EvidenceProvenance::for_scan(SOURCE, "s"), "x");
+        for n in 0..60 {
+            evidence = evidence.with_attr("claim", format!("P{n}=Q{n}"));
+        }
+        evidence = evidence
+            .with_attr("claim", "P0=Q0")
+            .with_attr("claim", "P1=plain text")
+            .with_attr("claim", "bad");
+        let ids = claim_ids(&evidence);
+        assert_eq!(ids.len(), MAX_LABEL_IDS);
+        assert_eq!(
+            &ids[..4],
+            ["P0", "Q0", "P1", "Q1"],
+            "each claim whole, in order"
+        );
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len());
     }
 
     fn entity<'a>(report: &'a Report, kind: &EntityKind, value: &str) -> &'a Entity {
@@ -1182,5 +1500,177 @@ mod tests {
             "qualifiers":[]
         });
         assert!(eligible_for_pivot(&empty));
+    }
+
+    /// An X handle as Wikidata publishes it for a public figure: follower counts with the time
+    /// each was counted, the account's start, its numeric id and "verified account".
+    fn handle_with(extra: &[serde_json::Value]) -> serde_json::Value {
+        let q = |pid: &str, content: serde_json::Value| serde_json::json!({"property":{"id":pid},"value":{"type":"value","content":content}});
+        let mut qualifiers = vec![
+            q("P3744", serde_json::json!({"amount":"+9135405","unit":"1"})),
+            q(
+                "P585",
+                serde_json::json!({"time":"+2023-01-01T00:00:00Z","precision":11}),
+            ),
+            q(
+                "P580",
+                serde_json::json!({"time":"+2009-06-03T00:00:00Z","precision":11}),
+            ),
+            q("P6552", serde_json::json!("12345")),
+            q("P1552", serde_json::json!("Q28378282")),
+        ];
+        qualifiers.extend(extra.iter().cloned());
+        serde_json::json!({
+            "rank":"normal","value":{"type":"value","content":"ExampleHandle"},
+            "qualifiers":qualifiers
+        })
+    }
+
+    #[test]
+    fn descriptive_qualifiers_keep_a_handle_pivot_and_restrictive_ones_suppress_it() {
+        assert!(eligible_for_account_pivot(&handle_with(&[])));
+        let q = |pid: &str, content: serde_json::Value| serde_json::json!({"property":{"id":pid},"value":{"type":"value","content":content}});
+        let ended = q(
+            "P582",
+            serde_json::json!({"time":"+2020-01-01T00:00:00Z","precision":11}),
+        );
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[ended])),
+            "an end time"
+        );
+        let other = q("P1552", serde_json::json!("Q1"));
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[other])),
+            "another characteristic"
+        );
+        let unknown = q("P9999", serde_json::json!("x"));
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[unknown])),
+            "an uninterpreted qualifier"
+        );
+        let novalue = serde_json::json!({"property":{"id":"P3744"},"value":{"type":"novalue"}});
+        assert!(
+            !eligible_for_account_pivot(&handle_with(&[novalue])),
+            "a non-value qualifier"
+        );
+        // A website keeps the strict rule, and classification still accepts P805 alone.
+        assert!(!eligible_for_pivot(&handle_with(&[])));
+        let mut typed = handle_with(&[]);
+        typed["value"]["content"] = serde_json::json!("Q5");
+        assert!(!eligible_for_classification(&typed));
+    }
+
+    #[test]
+    fn a_verified_handle_with_follower_counts_becomes_a_pivot() {
+        let mut item = serde_json::json!({
+            "type":"item","id":"Q44","labels":{"en":"Example Ruler"},
+            "statements":{"P31":[{"value":{"type":"value","content":"Q5"}}]}
+        });
+        item["statements"]["P2002"] = serde_json::json!([handle_with(&[])]);
+        let report = decode(&item, "Q44", None, "scan-wd", 1, 200);
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.raw_value == "ExampleHandle"),
+            "{:?}",
+            report
+                .entities
+                .iter()
+                .map(|e| &e.raw_value)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn namesakes_are_inconclusive_and_never_attributed() {
+        let search = r#"{"search":[
+          {"id":"Q127511658","label":"Andrew Forrest"},
+          {"id":"Q504773","label":"Andrew Forrest","description":"Australian mining businessman"},
+          {"id":"Q50548887","label":"Andrew F. Hugall","description":"biologist"},
+          {"id":"Q93245974","label":"andrew forrest","description":"Deserter from British Army"}
+        ]}"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![Ok(
+            crate::test_support::json_ok(search),
+        )]);
+        let report = lookup(&transport, "Andrew Forrest", "scan-wd", 1).expect("lookup");
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+        let detail = report.outcome.detail.clone().unwrap_or_default();
+        assert!(detail.starts_with("3 Wikidata items"), "{detail}");
+        assert!(
+            detail.contains("Q504773 (Australian mining businessman)"),
+            "{detail}"
+        );
+        assert!(!detail.contains("Q50548887"), "{detail}");
+        assert_eq!(transport.seen.borrow().len(), 1, "no item is fetched");
+    }
+
+    #[test]
+    fn the_one_exact_label_is_the_item_wherever_it_ranks() {
+        let search = r#"{"search":[
+          {"id":"Q50548887","label":"Andrew F. Hugall","description":"biologist"},
+          {"id":"Q000","label":"Jane Example"}
+        ]}"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(search)),
+            Ok(crate::test_support::json_ok(PERSON_ITEM)),
+        ]);
+        let report = lookup(&transport, "Jane Example", "scan-wd", 1).expect("lookup");
+        assert!(transport.seen.borrow()[1].url.ends_with("/items/Q000"));
+        entity(&report, &EntityKind::Person, "Jane Example");
+    }
+
+    #[test]
+    fn linkedin_threads_and_other_account_ids_become_pivots() {
+        let item = r#"{"type":"item","id":"Q45","labels":{"en":"Example Executive"},
+          "statements":{
+            "P31":[{"value":{"type":"value","content":"Q5"}}],
+            "P6634":[{"rank":"normal","value":{"type":"value","content":"example-exec"}}],
+            "P11892":[{"rank":"normal","value":{"type":"value","content":"exampleexec"}}],
+            "P7085":[{"rank":"normal","value":{"type":"value","content":"exampletok"}}],
+            "P12361":[{"rank":"normal","value":{"type":"value","content":"example.bsky.social"}}],
+            "P4265":[{"rank":"normal","value":{"type":"value","content":"exampleredditor"}}],
+            "P2397":[{"rank":"normal","value":{"type":"value","content":"UCabc123"}}]
+          }}"#;
+        let report = report_of(item, "Q45");
+        for url in [
+            "https://www.linkedin.com/in/example-exec/",
+            "https://www.threads.net/@exampleexec",
+            "https://www.tiktok.com/@exampletok",
+            "https://bsky.app/profile/example.bsky.social",
+            "https://www.reddit.com/user/exampleredditor",
+            "https://www.youtube.com/channel/UCabc123",
+        ] {
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Url && e.raw_value == url),
+                "{url}"
+            );
+        }
+        for handle in [
+            "exampleexec",
+            "exampletok",
+            "example.bsky.social",
+            "exampleredditor",
+        ] {
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Username && e.raw_value == handle),
+                "{handle}"
+            );
+        }
+        // A LinkedIn slug and a YouTube channel id are not cross-site usernames.
+        assert!(
+            !report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username
+                    && (e.raw_value == "example-exec" || e.raw_value == "UCabc123"))
+        );
     }
 }

@@ -56,3 +56,83 @@ fn credential_status_rejects_ambiguous_arguments_before_network() {
             .contains("usage: huntsman-recon credential-status [--probe] [FILE]")
     );
 }
+
+/// `DeHashed`'s legacy private key file, `~/.config/dehashed/api_key`, sets
+/// `HUNTSMAN_DEHASHED_KEY` for every path: `credential-status` reports the key a search would
+/// use. A file the private-file gate refuses is named on stderr, with the fix, and its key is
+/// neither used nor shown.
+#[cfg(unix)]
+#[test]
+fn credential_status_reports_the_key_dehashed_s_own_file_gives_every_search() {
+    let home = scratch("dehashed-file");
+    let dir = home.join(".config").join("dehashed");
+    fs::create_dir_all(&dir).expect("dir");
+    let file = dir.join("api_key");
+    let secret = "TEST_ONLY_DEHASHED_FILE_KEY_51c3";
+    fs::write(&file, format!("{secret}\n")).expect("write key");
+    let run = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+            .arg("credential-status")
+            .env("HOME", &home)
+            .env_remove("HUNTSMAN_DEHASHED_KEY")
+            .output()
+            .expect("run");
+        assert_eq!(output.status.code(), Some(0));
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        let stderr = String::from_utf8(output.stderr).expect("stderr");
+        assert!(!stdout.contains(secret) && !stderr.contains(secret));
+        (stdout, stderr)
+    };
+
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).expect("chmod");
+    let (stdout, stderr) = run();
+    assert!(
+        stdout.contains("provider=DeHashed\tstate=configured"),
+        "{stdout}"
+    );
+    assert!(stderr.is_empty(), "{stderr}");
+
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("chmod");
+    let (stdout, stderr) = run();
+    assert!(
+        stdout.contains("provider=DeHashed\tstate=incomplete\tHUNTSMAN_DEHASHED_KEY=unset"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains(&format!("warning: not loading {}", file.display())),
+        "{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(home);
+}
+
+/// HIBP's own private key file, `~/.config/hibp/api_key`, which every HIBP lookup reads last, sets
+/// `HUNTSMAN_HIBP_KEY` for `credential-status` too: it reports the key a lookup would use.
+#[cfg(unix)]
+#[test]
+fn credential_status_reports_the_key_hibp_s_own_file_gives_every_lookup() {
+    let home = scratch("hibp-file");
+    let dir = home.join(".config").join("hibp");
+    fs::create_dir_all(&dir).expect("dir");
+    let file = dir.join("api_key");
+    let secret = "0123456789abcdef0123456789abcdef";
+    fs::write(&file, format!("{secret}\n")).expect("write key");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).expect("chmod");
+    let output = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+        .arg("credential-status")
+        .env("HOME", &home)
+        .env_remove("HUNTSMAN_HIBP_KEY")
+        .env_remove("HIBP_API_KEY")
+        .output()
+        .expect("run");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(
+        stdout.contains("provider=HIBP\tstate=configured\tHUNTSMAN_HIBP_KEY=set"),
+        "{stdout}"
+    );
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(!stdout.contains(secret) && !stderr.contains(secret));
+    let _ = fs::remove_dir_all(home);
+}

@@ -37,11 +37,7 @@ const SCENE_CONFIDENCE: f64 = 0.9;
 /// What a scene never establishes.
 pub const SCENE_LIMIT: &str = "A catalogue record of a satellite pass: it does not say what the imagery shows, its acquisition time is not a publication time, and its footprint is an area of tens of kilometres, not the point searched.";
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 /// The item-search body for a point over the last [`WINDOW_DAYS`] days ending at `now_unix`.
 /// A `GeoJSON` position is longitude first (RFC 7946). **Pure.**

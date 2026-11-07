@@ -21,8 +21,8 @@ use crate::credential_origin::CredentialFingerprint;
 use crate::environment;
 use crate::error::Error;
 use crate::fsio::{
-    CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, read_bounded, read_to_bound, same_inode, store_err,
-    write_atomic_private,
+    CHANGED_WHILE_OPENING, ExclusiveLock, LockRefusal, NOT_REGULAR_FILE, read_bounded,
+    read_to_bound, same_inode, store_err, write_atomic_private,
 };
 
 pub(crate) const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
@@ -37,16 +37,110 @@ pub const DEFAULT_KEYS_FILE: &str = ".huntsman.env";
 /// relative `HOME` would make the default file depend on the working directory.
 #[must_use]
 pub fn default_keys_path(home: Option<&OsStr>) -> Option<PathBuf> {
-    let home = Path::new(home?);
-    home.is_absolute().then(|| home.join(DEFAULT_KEYS_FILE))
+    absolute_home(home).map(|home| home.join(DEFAULT_KEYS_FILE))
 }
 
-/// The keys for one command run, plus a warning for stderr when the default file
-/// was skipped. The warning names the path and the fix; it never holds a value.
+/// `home` as a path, when it is set and absolute.
+fn absolute_home(home: Option<&OsStr>) -> Option<&Path> {
+    let home = Path::new(home?);
+    home.is_absolute().then_some(home)
+}
+
+/// A provider's own private key file under `$HOME`, read beside the keys file. It sets its slot
+/// only when nothing else does: [`crate::provider_credentials::secret_for_slot`] reads it last,
+/// so `credential-status`, the web UI and every lookup find the same key. It passes the same
+/// private-file gate as the keys file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderKeyFile {
+    /// The slot the file's key sets.
+    pub slot: &'static str,
+    /// The file's path below `$HOME`, one component at a time.
+    pub path: &'static [&'static str],
+}
+
+impl ProviderKeyFile {
+    /// The file as messages name it: `~/` and its path.
+    #[must_use]
+    pub fn shown(&self) -> String {
+        format!("~/{}", self.path.join("/"))
+    }
+
+    /// The file under `home`.
+    #[must_use]
+    pub fn at(&self, home: &Path) -> PathBuf {
+        self.path
+            .iter()
+            .fold(home.to_path_buf(), |path, part| path.join(part))
+    }
+}
+
+/// The provider key files read beside the keys file: `DeHashed`'s legacy
+/// `~/.config/dehashed/api_key` and HIBP's `~/.config/hibp/api_key`.
+pub const PROVIDER_KEY_FILES: &[ProviderKeyFile] = &[
+    ProviderKeyFile {
+        slot: environment::DEHASHED_KEY_ENV,
+        path: &[".config", "dehashed", "api_key"],
+    },
+    ProviderKeyFile {
+        slot: environment::HUNTSMAN_HIBP_KEY_ENV,
+        path: &[".config", "hibp", "api_key"],
+    },
+];
+
+/// The provider key file that sets `slot`, if one does.
+#[must_use]
+pub fn provider_key_file(slot: &str) -> Option<&'static ProviderKeyFile> {
+    PROVIDER_KEY_FILES.iter().find(|file| file.slot == slot)
+}
+
+/// The longest provider key file read: one key, as [`MAX_KEY_BYTES`] bounds a saved one.
+const MAX_PROVIDER_KEY_FILE_BYTES: u64 = MAX_KEY_BYTES as u64;
+
+/// The keys for one command run, plus a warning for stderr when the default file, or a provider
+/// key file, was skipped: one line per file. The warning names the path and the fix; it never
+/// holds a value.
 #[derive(Debug)]
 pub struct ResolvedKeys {
     pub keys: Keys,
     pub warning: Option<String>,
+}
+
+impl ResolvedKeys {
+    /// These keys with every [`PROVIDER_KEY_FILES`] entry under `home` read in. A file the
+    /// private-file gate refuses, or that cannot be read, adds a warning line naming it and the
+    /// fix; one that is absent, blank or not UTF-8 sets nothing.
+    fn with_provider_key_files(mut self, home: &Path) -> Self {
+        for file in PROVIDER_KEY_FILES {
+            let path = file.at(home);
+            match read_private_file(&path, MAX_PROVIDER_KEY_FILE_BYTES) {
+                Ok(None) => {}
+                Ok(Some(Ok(bytes))) => {
+                    if let Some(secret) = String::from_utf8(bytes)
+                        .ok()
+                        .and_then(|text| Secret::new(text).ok())
+                    {
+                        self.keys.provider_files.insert(file.slot, secret);
+                    }
+                }
+                Ok(Some(Err(refusal))) => self.warn(format!(
+                    "warning: not loading {}: {}",
+                    path.display(),
+                    refusal.reason_for(&file.shown())
+                )),
+                Err(error) => {
+                    self.warn(format!("warning: not loading {}: {error}", path.display()));
+                }
+            }
+        }
+        self
+    }
+
+    fn warn(&mut self, line: String) {
+        self.warning = Some(match self.warning.take() {
+            Some(earlier) => format!("{earlier}\n{line}"),
+            None => line,
+        });
+    }
 }
 
 /// Is this a real credential rather than a blank or a template placeholder?
@@ -142,11 +236,14 @@ pub fn valid_slot(name: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// Parsed keys file plus an environment fallback.
+/// Parsed keys file plus an environment fallback, and the keys [`PROVIDER_KEY_FILES`] gave.
 #[derive(Default)]
 pub struct Keys {
     entries: BTreeMap<String, Secret>,
     use_env: bool,
+    /// By slot, the keys read from [`PROVIDER_KEY_FILES`]. Only [`Keys::resolve`] from `$HOME`
+    /// reads them; [`Keys::get`] never returns one.
+    provider_files: BTreeMap<&'static str, Secret>,
 }
 
 impl Keys {
@@ -154,8 +251,8 @@ impl Keys {
     #[must_use]
     pub fn from_env() -> Self {
         Self {
-            entries: BTreeMap::new(),
             use_env: true,
+            ..Self::default()
         }
     }
 
@@ -194,7 +291,7 @@ impl Keys {
         }
         Ok(Self {
             entries,
-            use_env: false,
+            ..Self::default()
         })
     }
 
@@ -244,6 +341,10 @@ impl Keys {
     /// Precedence is that of [`Keys::load`]: a slot in the file wins over the same
     /// variable in the process environment; slots the file lacks fall back to it.
     ///
+    /// Without `explicit`, an absolute `home` also has its [`PROVIDER_KEY_FILES`] read, through
+    /// the same gate, whatever became of the default file; a refused one adds a warning line.
+    /// Their keys come last ([`Keys::provider_file`]).
+    ///
     /// # Errors
     /// As [`Keys::load`] for the `--keys` file; for the default file, I/O errors
     /// other than "not found" and malformed content.
@@ -266,33 +367,40 @@ impl Keys {
                 "warning: not loading ~/{DEFAULT_KEYS_FILE}: HOME is not an absolute path"
             ))));
         };
-        match load_default_file(&path)? {
-            None => Ok(env_only(None)),
-            Some(Err(refusal)) => Ok(env_only(Some(format!(
+        let resolved = match load_default_file(&path)? {
+            None => env_only(None),
+            Some(Err(refusal)) => env_only(Some(format!(
                 "warning: not loading {}: {}",
                 path.display(),
                 refusal.reason()
-            )))),
-            Some(Ok(keys)) => Ok(ResolvedKeys {
+            ))),
+            Some(Ok(keys)) => ResolvedKeys {
                 keys,
                 warning: None,
-            }),
-        }
+            },
+        };
+        Ok(resolved.with_provider_key_files(Path::new(home)))
     }
 
     /// The keys a lookup uses: the ones `credential-status` reports, read by
-    /// [`Keys::resolve`] from `$HOME/.huntsman.env` (when it passes the default-file gate)
-    /// and the process environment. A configured key is never left unused because it sits in
-    /// the file instead of the environment. A file that cannot be read or parsed does not stop
-    /// the lookup: the result is then [`Keys::from_env`] and a warning that names the error,
-    /// never a value.
+    /// [`Keys::resolve`] from `$HOME/.huntsman.env` (when it passes the default-file gate),
+    /// the process environment and the [`PROVIDER_KEY_FILES`]. A configured key is never left
+    /// unused because it sits in a file instead of the environment. A keys file that cannot be
+    /// read or parsed does not stop the lookup: the result is then [`Keys::from_env`] with the
+    /// provider key files, and a warning that names the error, never a value.
     #[must_use]
     pub fn for_lookup(home: Option<&OsStr>) -> ResolvedKeys {
-        Self::resolve(None, home).unwrap_or_else(|error| ResolvedKeys {
-            keys: Self::from_env(),
-            warning: Some(format!(
-                "warning: not loading ~/{DEFAULT_KEYS_FILE}: {error}"
-            )),
+        Self::resolve(None, home).unwrap_or_else(|error| {
+            let resolved = ResolvedKeys {
+                keys: Self::from_env(),
+                warning: Some(format!(
+                    "warning: not loading ~/{DEFAULT_KEYS_FILE}: {error}"
+                )),
+            };
+            match absolute_home(home) {
+                Some(home) => resolved.with_provider_key_files(home),
+                None => resolved,
+            }
         })
     }
 
@@ -318,14 +426,25 @@ impl Keys {
     /// to persistent storage.
     #[must_use]
     pub fn provider_key(&self, slot: &str) -> Option<Secret> {
-        self.get(slot).or_else(|| {
-            let other = match slot {
-                environment::THREATFOX_KEY_ENV => environment::ABUSECH_KEY_ENV,
-                environment::ABUSECH_KEY_ENV => environment::THREATFOX_KEY_ENV,
-                _ => return None,
-            };
-            self.get(other)
-        })
+        self.get(slot)
+            .or_else(|| paired_slot(slot).and_then(|other| self.get(other)))
+    }
+
+    /// The key a provider's own key file ([`PROVIDER_KEY_FILES`]) gave `slot`, when
+    /// [`Keys::resolve`] read one. [`crate::provider_credentials::secret_for_slot`] reads it last.
+    #[must_use]
+    pub fn provider_file(&self, slot: &str) -> Option<Secret> {
+        self.provider_files.get(slot).cloned()
+    }
+
+    /// These keys as if `slot`'s provider key file held `key`: for a test that must not depend
+    /// on a real `$HOME` or the process environment.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_provider_file(mut self, slot: &'static str, key: &str) -> Self {
+        self.provider_files
+            .insert(slot, Secret::new(key).expect("a test key"));
+        self
     }
 
     /// A runtime setting kept beside the keys, by the chain [`Self::get`] reads: the file's value,
@@ -353,15 +472,31 @@ impl Keys {
     }
 }
 
+/// The slot that holds the same operator-issued key as `slot`: the abuse.ch Auth-Key's two
+/// slots, `ThreatFox`'s and `URLhaus`'s. [`Keys::provider_key`] reads it when `slot` is unset.
+#[must_use]
+pub fn paired_slot(slot: &str) -> Option<&'static str> {
+    match slot {
+        environment::THREATFOX_KEY_ENV => Some(environment::ABUSECH_KEY_ENV),
+        environment::ABUSECH_KEY_ENV => Some(environment::THREATFOX_KEY_ENV),
+        _ => None,
+    }
+}
+
 impl fmt::Debug for Keys {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Keys")
             .field("slots", &self.slots())
+            .field(
+                "provider_files",
+                &self.provider_files.keys().collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
 
-/// Why `$HOME/.huntsman.env` was not read. Carries metadata only, never content.
+/// Why `$HOME/.huntsman.env`, or a provider key file, was not read. Carries metadata only,
+/// never content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DefaultFileRefusal {
     Symlink,
@@ -373,7 +508,13 @@ pub(crate) enum DefaultFileRefusal {
 }
 
 impl DefaultFileRefusal {
+    /// The reason and fix for the keys file.
     fn reason(self) -> String {
+        self.reason_for(&format!("~/{DEFAULT_KEYS_FILE}"))
+    }
+
+    /// The reason and fix for the refused file, `shown` as messages name it.
+    fn reason_for(self, shown: &str) -> String {
         match self {
             Self::Symlink => "it is a symlink; remove the symlink and create a regular file \
                  owned by you with mode 600"
@@ -388,9 +529,9 @@ impl DefaultFileRefusal {
             Self::UnknownCurrentUser => "the current uid cannot be determined, so ownership \
                  cannot be checked; set the keys in the environment instead"
                 .to_owned(),
-            Self::LoosePermissions { mode } => format!(
-                "mode {mode:o} is accessible by group/others; fix with `chmod 600 ~/{DEFAULT_KEYS_FILE}`"
-            ),
+            Self::LoosePermissions { mode } => {
+                format!("mode {mode:o} is accessible by group/others; fix with `chmod 600 {shown}`")
+            }
             Self::ChangedWhileOpening => format!("it {CHANGED_WHILE_OPENING}"),
         }
     }
@@ -585,6 +726,22 @@ fn read_for_rewrite(path: &Path) -> Result<String, Error> {
     String::from_utf8(bytes).map_err(|_| Error::Invalid("keys file is not utf-8".into()))
 }
 
+/// How long a save waits for another writer of the keys file, in this process or another, to
+/// finish.
+const KEYS_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The keys file's wording for a lock its save could not take: nothing was saved.
+fn keys_lock_refusal(path: &Path, refusal: LockRefusal) -> Error {
+    match refusal {
+        LockRefusal::Busy { lock } => Error::Store(format!(
+            "{} is busy or has a stale lock at {}; nothing was saved; remove the lock only after verifying no Huntsman writer is running",
+            path.display(),
+            lock.display()
+        )),
+        LockRefusal::Io { lock, error } => store_err(&lock, &error),
+    }
+}
+
 /// Sets `slot` to `value` in the keys file at `path`, or removes it when `value` is `None`, and
 /// keeps every other line as it was: [`store_slots`] with one change.
 ///
@@ -601,14 +758,15 @@ pub fn store_slot(path: &Path, slot: &str, value: Option<&str>) -> Result<(), Er
 /// the order of `changes`. The result must read back through [`Keys::parse`] with exactly these
 /// values (and without the removed slots) before it replaces the file, atomically and at mode
 /// 600, so a save never leaves a file that lookups would refuse or read differently, and a change
-/// that cannot be saved saves nothing. Saves in this process run one at a time, so two never
-/// lose each other's keys.
+/// that cannot be saved saves nothing. Saves run one at a time, in this process and across
+/// processes (the CLI and the Web UI), through a lock beside the file, so two never lose each
+/// other's keys.
 ///
 /// # Errors
 /// `Error::Invalid` for no change, a bad slot name, a blank, placeholder, over-long or
 /// unquotable value, or a file whose other lines do not parse (by line number, never a value);
 /// `Error::Store` for a file the default-file gate refuses for any reason but loose permissions,
-/// or an I/O failure.
+/// a lock another writer still holds after five seconds, or an I/O failure.
 pub fn store_slots(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<(), Error> {
     static SAVING: Mutex<()> = Mutex::new(());
     if changes.is_empty() {
@@ -639,6 +797,8 @@ pub fn store_slots(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<(), 
         }
     }
     let _saving = SAVING.lock().unwrap_or_else(PoisonError::into_inner);
+    let _writing = ExclusiveLock::acquire(path, KEYS_LOCK_WAIT)
+        .map_err(|refusal| keys_lock_refusal(path, refusal))?;
     let current = read_for_rewrite(path)?;
     let mut text = String::with_capacity(current.len() + 80 * planned.len());
     for raw in current.lines() {
@@ -1367,11 +1527,129 @@ mod tests {
         std::fs::remove_dir_all(&home).expect("cleanup");
     }
 
+    // --- Provider key files (DeHashed's ~/.config/dehashed/api_key) ---
+
+    /// `home`'s `DeHashed` key file, written with `mode`, and the path it is at.
+    #[cfg(unix)]
+    fn dehashed_key_file(home: &Path, text: &str, mode: u32) -> PathBuf {
+        let file = provider_key_file(environment::DEHASHED_KEY_ENV)
+            .expect("DeHashed's key file")
+            .at(home);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        write_mode(&file, text, mode);
+        file
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn dehashed_refusal_text_carries_no_key_material() {
-        let text = crate::dehashed::client::DehashedError::KeyFilePermissions.to_string();
-        assert!(!text.contains(GATE_SECRET));
-        assert!(text.contains("0600"), "{text}");
+    fn a_provider_key_file_sets_its_slot_beside_the_keys_file() {
+        let home = fake_home("provider-file");
+        dehashed_key_file(&home, &format!("{GATE_SECRET}\n"), 0o600);
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        assert_eq!(resolved.warning, None);
+        let keys = resolved.keys;
+        assert_eq!(
+            keys.provider_file(environment::DEHASHED_KEY_ENV)
+                .expect("the file's key")
+                .expose(),
+            GATE_SECRET,
+            "read as written, without its newline"
+        );
+        // It sets nothing in the keys file, and `Keys::get` keeps meaning the file or the
+        // environment: the slot rule reads it last.
+        assert!(keys.slots().is_empty());
+        let shown = format!("{keys:?}");
+        assert!(shown.contains(environment::DEHASHED_KEY_ENV) && !shown.contains(GATE_SECRET));
+
+        // `--keys FILE` is exactly that file: no provider key file is read beside it.
+        let explicit = home.join("explicit.env");
+        write_mode(&explicit, "", 0o600);
+        let keys = Keys::resolve(Some(&explicit), Some(home.as_os_str()))
+            .expect("explicit")
+            .keys;
+        assert!(keys.provider_file(environment::DEHASHED_KEY_ENV).is_none());
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_provider_key_file_is_named_with_its_own_fix_and_never_read() {
+        let home = fake_home("provider-file-refused");
+        let file = dehashed_key_file(&home, GATE_SECRET, 0o644);
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        assert!(
+            resolved
+                .keys
+                .provider_file(environment::DEHASHED_KEY_ENV)
+                .is_none()
+        );
+        assert_eq!(
+            resolved.warning.as_deref(),
+            Some(
+                format!(
+                    "warning: not loading {}: mode 644 is accessible by group/others; fix with \
+                     `chmod 600 ~/.config/dehashed/api_key`",
+                    file.display()
+                )
+                .as_str()
+            )
+        );
+
+        // With the keys file refused too, each file has its own line, the keys file's first.
+        write_mode(&home.join(DEFAULT_KEYS_FILE), "", 0o644);
+        let warning = Keys::for_lookup(Some(home.as_os_str()))
+            .warning
+            .expect("two warnings");
+        let lines: Vec<&str> = warning.lines().collect();
+        // The failure messages leave the warning out: it can name uids (a foreign owner's).
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("chmod 600 ~/.huntsman.env"));
+        assert!(lines[1].contains("chmod 600 ~/.config/dehashed/api_key"));
+        assert!(!warning.contains(GATE_SECRET));
+
+        // A symlink is refused as the keys file's would be, never followed.
+        std::fs::remove_file(home.join(DEFAULT_KEYS_FILE)).expect("rm");
+        std::fs::remove_file(&file).expect("rm");
+        let target = home.join("elsewhere");
+        write_mode(&target, GATE_SECRET, 0o600);
+        std::os::unix::fs::symlink(&target, &file).expect("symlink");
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        assert!(
+            resolved
+                .keys
+                .provider_file(environment::DEHASHED_KEY_ENV)
+                .is_none()
+        );
+        assert!(
+            resolved
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("symlink"))
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    /// A keys file that cannot be parsed does not hide the provider key files: the lookup still
+    /// finds `DeHashed`'s key, and the warning names the keys file.
+    #[cfg(unix)]
+    #[test]
+    fn a_provider_key_file_is_read_when_the_keys_file_cannot_be() {
+        let home = fake_home("provider-file-bad-keys");
+        dehashed_key_file(&home, GATE_SECRET, 0o600);
+        write_mode(&home.join(DEFAULT_KEYS_FILE), "not a statement\n", 0o600);
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        assert_eq!(
+            resolved
+                .keys
+                .provider_file(environment::DEHASHED_KEY_ENV)
+                .expect("still read")
+                .expose(),
+            GATE_SECRET
+        );
+        let warning = resolved.warning.expect("the keys file is named");
+        assert!(warning.contains(DEFAULT_KEYS_FILE));
+        assert!(!warning.contains(GATE_SECRET));
+        std::fs::remove_dir_all(&home).expect("cleanup");
     }
 
     // --- Saving one key into the keys file ---

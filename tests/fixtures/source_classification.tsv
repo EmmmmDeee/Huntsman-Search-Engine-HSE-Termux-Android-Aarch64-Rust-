@@ -162,6 +162,7 @@ oui	rf	rf
 peeringdb	other	infra
 phishstats	infra	infra
 phishtank	other	other
+phone_ae	other	other
 phone_au	other	other
 phone_intl	other	other
 phone_nanp	other	other

@@ -24,7 +24,7 @@ use std::path::PathBuf;
 
 use crate::canonical::{canonical_ip, canonical_netblock};
 use crate::dns::{self, RESOLVE_SOURCE, ResolveErrorKind};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
@@ -279,10 +279,7 @@ fn routing_leg(
 }
 
 /// What sweeping the block found: its entities and the `dnsresolve` row.
-struct Swept {
-    entities: Vec<Entity>,
-    outcome: SourceExecutionOutcome,
-}
+type Swept = crate::lookup_report::SourceReport;
 
 /// The PTR records of every public address in `block`, when it holds at most 256.
 fn sweep<T: Transport + ?Sized + Sync>(

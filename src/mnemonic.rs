@@ -212,11 +212,7 @@ pub fn lookup<T: Transport + ?Sized>(
 
 /// The leg's entities and its outcome row. A failed leg's row carries the failure (its kind and
 /// detail), which the lookup reads through [`crate::source_outcome::SourceReach`].
-#[derive(Debug, Default)]
-pub struct Leg {
-    pub entities: Vec<Entity>,
-    pub outcome: Option<SourceExecutionOutcome>,
-}
+pub type Leg = crate::lookup_report::Leg;
 
 /// Passive DNS for `domain`: every record on the domain, each public address its names answered
 /// with, each name under it, and each name a CNAME, MX or NS record of its names points to.

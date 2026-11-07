@@ -458,6 +458,11 @@ fn keyed_legs<T: Transport + ?Sized>(
         );
         found.outcomes.push(outcome);
     }
+    for api in [&virustotal::API, &hunter::API] {
+        found
+            .outcomes
+            .extend(api.unasked_for_want_of_a_key(transport, keys, now_unix));
+    }
     let legs = indicator_legs::run(
         transport,
         keys,

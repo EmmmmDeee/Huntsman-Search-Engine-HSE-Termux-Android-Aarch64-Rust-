@@ -521,6 +521,104 @@ fn create_temp_file(
     }
 }
 
+/// A cooperative cross-process write lock on one file: `<file>.lock`, created exclusively, private
+/// to the user, holding the holder's process id and a sequence number that name this one lock. It
+/// covers a whole read–modify–write cycle, so the CLI and the loopback Web UI cannot each read the
+/// file and then silently overwrite the other's change. Dropping it removes the lock, but only
+/// while it is still the file this holder created: the same inode, still holding its name, since a
+/// lock deleted and created again can reuse the inode. A crash can strand it, and no writer
+/// deletes a lock it did not create: the next one waits, then fails closed.
+#[derive(Debug)]
+pub(crate) struct ExclusiveLock {
+    path: PathBuf,
+    inode: fs::Metadata,
+    holder: String,
+}
+
+/// Locks this process has taken, so each holds a name no other lock in it held.
+static LOCKS_TAKEN: AtomicUsize = AtomicUsize::new(0);
+
+/// The most a lock file holds: a process id, a space and a sequence number.
+const MAX_LOCK_BYTES: u64 = 64;
+
+/// Why [`ExclusiveLock::acquire`] took no lock.
+#[derive(Debug)]
+pub(crate) enum LockRefusal {
+    /// Another writer held the lock for the whole wait, or a crash stranded it.
+    Busy { lock: PathBuf },
+    /// The lock file could not be created or written.
+    Io {
+        lock: PathBuf,
+        error: std::io::Error,
+    },
+}
+
+impl ExclusiveLock {
+    /// Take the lock on `file`, trying again every 10 ms for at most `wait`.
+    ///
+    /// # Errors
+    /// [`LockRefusal::Busy`] when another writer still holds it after `wait`, and
+    /// [`LockRefusal::Io`] when the lock file cannot be created or written.
+    pub(crate) fn acquire(file: &Path, wait: Duration) -> Result<Self, LockRefusal> {
+        let mut name = file.as_os_str().to_os_string();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        let began = std::time::Instant::now();
+        loop {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(mut lock) => {
+                    let holder = format!(
+                        "{} {}",
+                        std::process::id(),
+                        LOCKS_TAKEN.fetch_add(1, Ordering::Relaxed)
+                    );
+                    let held = lock
+                        .metadata()
+                        .and_then(|inode| lock.write_all(holder.as_bytes()).map(|()| inode));
+                    return match held {
+                        Ok(inode) => Ok(Self {
+                            path,
+                            inode,
+                            holder,
+                        }),
+                        Err(error) => {
+                            let _ = fs::remove_file(&path);
+                            Err(LockRefusal::Io { lock: path, error })
+                        }
+                    };
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if began.elapsed() >= wait {
+                        return Err(LockRefusal::Busy { lock: path });
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(LockRefusal::Io { lock: path, error }),
+            }
+        }
+    }
+}
+
+impl Drop for ExclusiveLock {
+    fn drop(&mut self) {
+        // An externally replaced lock must not be removed by its old holder.
+        if fs::symlink_metadata(&self.path)
+            .is_ok_and(|current| current.is_file() && same_inode(&self.inode, &current))
+            && read_bounded(&self.path, MAX_LOCK_BYTES)
+                .is_ok_and(|held| held == self.holder.as_bytes())
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +628,46 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The lock is `<file>.lock`, private and naming its holder; a second writer waits, then is
+    /// refused without touching it; and dropping it removes only the lock this holder created.
+    #[test]
+    fn an_exclusive_lock_is_held_alone_and_removed_only_by_its_holder() {
+        let dir = scratch("lock");
+        let file = dir.join("keys.env");
+        let lock = dir.join("keys.env.lock");
+        let held = ExclusiveLock::acquire(&file, Duration::ZERO).unwrap();
+        let holder = fs::read_to_string(&lock).unwrap();
+        assert!(
+            holder.starts_with(&format!("{} ", std::process::id())),
+            "{holder}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&lock).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let waited = std::time::Instant::now();
+        assert!(matches!(
+            ExclusiveLock::acquire(&file, Duration::from_millis(50)),
+            Err(LockRefusal::Busy { lock: busy }) if busy == lock
+        ));
+        assert!(waited.elapsed() >= Duration::from_millis(50));
+        assert!(lock.exists(), "a refused writer removed the holder's lock");
+        drop(held);
+        assert!(!lock.exists(), "the holder left its lock behind");
+
+        // A lock replaced under its holder is someone else's now: the old holder leaves it.
+        let held = ExclusiveLock::acquire(&file, Duration::ZERO).unwrap();
+        fs::remove_file(&lock).unwrap();
+        fs::write(&lock, "another writer").unwrap();
+        drop(held);
+        assert_eq!(fs::read_to_string(&lock).unwrap(), "another writer");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

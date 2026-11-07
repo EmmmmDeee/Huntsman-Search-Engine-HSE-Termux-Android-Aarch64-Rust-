@@ -11,6 +11,29 @@ use serde::{Deserialize, Serialize};
 use crate::classify::is_challenge_at;
 use crate::error::Error;
 
+/// Whether a provider's message says it refused the key: one of the phrases providers send with a
+/// rejected, missing or malformed key, in any letter case. A keyed probe (`service_defs`) and a
+/// collector reading its own error body (`stolen_tax`) both read a refusal through here. **Pure.**
+#[must_use]
+pub fn looks_like_auth_failure_text(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    [
+        "api key not found",
+        "invalid api key",
+        "invalid authorization",
+        "invalid credentials",
+        "authentication failed",
+        "authentication_failed",
+        "no user found for the api key",
+        "api key format",
+        "missing api key",
+        "invalid token",
+        "forbidden",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
+}
+
 /// Causal outcome of one provider execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

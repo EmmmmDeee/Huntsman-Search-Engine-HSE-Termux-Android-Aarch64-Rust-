@@ -57,11 +57,7 @@ const DOMAIN_CONF: f64 = 0.60;
 /// `Domain` pivot, as a code forge's is ([`crate::domains::is_code_forge_host`]).
 const REGISTRY_HOSTS: &[&str] = &["npmjs.com", "npmjs.org"];
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Report {
-    pub entities: Vec<Entity>,
-    pub outcome: SourceExecutionOutcome,
-}
+pub type Report = crate::lookup_report::SourceReport;
 
 #[derive(Debug, Default, Deserialize)]
 struct SearchResp {
@@ -148,7 +144,7 @@ pub fn lookup<T: Transport + ?Sized>(
 ) -> Result<Report, Error> {
     let handle = username.trim().trim_start_matches('@').to_ascii_lowercase();
     if !valid_handle(&handle) {
-        return Ok(miss(SourceExecutionOutcome::inconclusive(
+        return Ok(Report::miss(SourceExecutionOutcome::inconclusive(
             SRC,
             now_unix,
             "selector is not a valid npm handle",
@@ -164,15 +160,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, &handle, scan_id, now_unix).unwrap_or_else(miss))
-}
-
-/// A report that found nothing, carrying only its outcome. **Pure.**
-fn miss(outcome: SourceExecutionOutcome) -> Report {
-    Report {
-        entities: Vec::new(),
-        outcome,
-    }
+    Ok(interpret(&fetched, &handle, scan_id, now_unix).unwrap_or_else(Report::miss))
 }
 
 /// Turn one fetched search response into a report; `Err` is the outcome of a response that named no
