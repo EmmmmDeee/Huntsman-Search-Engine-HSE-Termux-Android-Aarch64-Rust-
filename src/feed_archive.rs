@@ -95,6 +95,43 @@ pub(crate) fn store(
     Ok(digest)
 }
 
+/// Preserve a copy created by a prior HSE version before the mutable cache replaces it.
+/// Its original request headers were not recorded; the receipt explicitly marks them unknown.
+/// A byte-identical copy already archived is verified but does not create repeated receipts.
+pub(crate) fn backfill(
+    dir: &Path,
+    feed_id: &str,
+    body: &[u8],
+    cache_mtime: u64,
+) -> Result<(), String> {
+    let digest = crate::sha256::hex32(&crate::sha256::sha256(body));
+    let path = dir
+        .join("originals")
+        .join(feed_id)
+        .join(format!("{digest}.raw"));
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            let bound = u64::try_from(body.len()).map_err(|e| e.to_string())?;
+            let previous = crate::fsio::read_bounded(&path, bound)
+                .map_err(|e| e.to_string())?;
+            if previous != body {
+                return Err(format!("{}: existing archived bytes differ", path.display()));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let context = serde_json::json!({
+                "origin": "legacy_cache",
+                "cache_file_mtime_unix": cache_mtime,
+                "original_response_headers_known": false,
+                "original_http_status_known": false,
+            });
+            store(dir, feed_id, body, &context).map(|_| ())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
