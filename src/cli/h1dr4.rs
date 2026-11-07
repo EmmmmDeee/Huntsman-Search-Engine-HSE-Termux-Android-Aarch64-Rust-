@@ -62,9 +62,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         "search" if !terms.is_empty() && tip_id.is_none() => {
             (Resource::Search(terms.join(" ")), limit.unwrap_or(20))
         }
-        "case" if terms.len() == 1 => {
-            (Resource::Case(terms[0].to_owned()), limit.unwrap_or(200))
-        }
+        "case" if terms.len() == 1 => (Resource::Case(terms[0].to_owned()), limit.unwrap_or(200)),
         "rewards" if terms.is_empty() && tip_id.is_none() => {
             (Resource::OfficialRewards, limit.unwrap_or(20))
         }
@@ -73,10 +71,15 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         }
         _ => return fail(EX_USAGE, HELP),
     };
-    if tip_id.is_some_and(|id| id.is_empty() || id.len() > 20 || !id.bytes().all(|b| b.is_ascii_digit())) {
+    if tip_id
+        .is_some_and(|id| id.is_empty() || id.len() > 20 || !id.bytes().all(|b| b.is_ascii_digit()))
+    {
         return fail(EX_USAGE, "tip ID must be a positive decimal identifier");
     }
-    let bounds = Bounds { pages, limit: chosen_limit };
+    let bounds = Bounds {
+        pages,
+        limit: chosen_limit,
+    };
     if let Err(reason) = bounds.checked(&resource) {
         return fail(EX_USAGE, reason);
     }
@@ -85,13 +88,20 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         Err(reason) => return fail(EX_UNAVAILABLE, &reason),
     };
     if let Some(tip) = tip_id {
-        let found = report.records.iter().any(|r| r.kind == "tip" && r.source_record_id == tip);
+        let found = report
+            .records
+            .iter()
+            .any(|r| r.kind == "tip" && r.source_record_id == tip);
         // All source JSON remains byte-for-byte in pages. A missing tip in a bounded
         // response is not evidence it does not exist elsewhere in the upstream case.
-        report.records.retain(|r| r.kind == "case" || (r.kind == "tip" && r.source_record_id == tip));
+        report
+            .records
+            .retain(|r| r.kind == "case" || (r.kind == "tip" && r.source_record_id == tip));
         report.returned_count = report.records.len();
         if !found {
-            report.limitations.push("Requested tip not found in this bounded page; absence is not established");
+            report
+                .limitations
+                .push("Requested tip not found in this bounded page; absence is not established");
         }
     }
     let output = match terminal_json_pretty(&report) {
@@ -101,9 +111,14 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     if let Some(path) = save {
         let path = Path::new(path);
         if path.as_os_str().is_empty() || path.symlink_metadata().is_ok() {
-            return fail(EX_IOERR, "refusing to overwrite an existing H1DR4 evidence file");
+            return fail(
+                EX_IOERR,
+                "refusing to overwrite an existing H1DR4 evidence file",
+            );
         }
-        if let Err(e) = huntsman_recon::fsio::write_atomic_private(path, output.as_bytes(), 16 * 1024 * 1024) {
+        if let Err(e) =
+            huntsman_recon::fsio::write_atomic_private(path, output.as_bytes(), 16 * 1024 * 1024)
+        {
             return fail(EX_IOERR, &format!("cannot save H1DR4 evidence: {e}"));
         }
     }
