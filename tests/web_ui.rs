@@ -1097,12 +1097,12 @@ fn the_scans_list_shows_each_scans_sources_and_unresolved_count() {
 #[test]
 fn html_ids_are_unique_across_scan_detail_and_multihop_analysis() {
     let mut seen = std::collections::BTreeSet::new();
-    for part in PAGE.split(" id=\\"").skip(1) {
+    for part in PAGE.split(" id=\"").skip(1) {
         let id = part.split('"').next().expect("html id");
         assert!(seen.insert(id), "duplicate HTML id: {id}");
     }
-    assert!(PAGE.contains("id=\\"anote\\""));
-    assert!(PAGE.contains("id=\\"anote-seeds\\""));
+    assert!(PAGE.contains("id=\"anote\""));
+    assert!(PAGE.contains("id=\"anote-seeds\""));
     assert!(inline("script").contains("$('anote-seeds').textContent=body.correlations.length"));
 }
 
