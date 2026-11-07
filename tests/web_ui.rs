@@ -42,7 +42,9 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// Raised to 142 KiB for the Rhinser offline source directory in Multi-hop Analysis:
 /// 83 locally served catalogue references, on-page filtering, and explicit HTTPS link opening.
 /// Phone-browser runtime performance remains an independent acceptance gate.
-const PAGE_BUDGET: usize = 144 * 1024;
+/// Bound the redesigned SpiderFoot-style workbench, radar scope and mobile rail to 160 KiB.
+/// The phone browser separately measures load and rendering under throttled conditions.
+const PAGE_BUDGET: usize = 160 * 1024;
 /// The server fills the page's empty `huntsman-page` meta tag with a page id of this many hex
 /// digits (`src/web_server/page.rs`), so the page as served, which is what a phone downloads and
 /// the browser check weighs, is this much longer than the file.
