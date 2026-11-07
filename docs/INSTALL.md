@@ -60,14 +60,15 @@ resolves `main` once to a full immutable commit SHA (unless `HUNTSMAN_REV`
 already names one). Then it installs, in this order:
 
 1. **The verified prebuilt build of that commit**, when CI published one as the
-   `main-<sha7>` pre-release: binary size varies by revision, no compiler. The download must match
-   the release's SHA-256 file, `build-sha` must print the commit, and `check`
+   `main-<sha7>` pre-release: binary size varies by revision; no compiler
+   is needed. The download must match the release's SHA-256 file, `build-sha`
+   must print the commit, and `check`
    plus ledger verification must pass, all before the binary is staged next to
    `$PREFIX/bin/huntsman-recon`, re-checked there and renamed into place.
 2. **The newest published build of `main`**, when the head of `main` has none
    yet (CI is still building it, or a newer push superseded it) and no
-   `HUNTSMAN_REV` was given: the installer walks back from the head, at most 30
-   predecessor commits (29 checked at most), through the GitHub API.
+   `HUNTSMAN_REV` was given: the installer checks up to 29 preceding main
+   commits through the GitHub API.
 3. **A source build**, only when no published build fits, or when
    `HUNTSMAN_FROM_SOURCE=1` asks for one. It installs `rust clang`, aligns the
    Termux Rust compiler with its host `rust-std-<target>` package, compiles a
