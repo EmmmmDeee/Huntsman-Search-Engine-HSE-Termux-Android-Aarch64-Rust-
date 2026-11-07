@@ -305,6 +305,8 @@ struct State {
     graph_cancellations: BTreeMap<String, Arc<AtomicBool>>,
     // Volatile failures let wait/run report a row that could not be persisted.
     status_failures: BTreeMap<String, String>,
+    // Separate from status errors: a successful row update cannot restore lost log entries.
+    log_failures: BTreeMap<String, String>,
 }
 
 /// What following a scan's findings produced beside the findings themselves.
@@ -880,6 +882,7 @@ impl ScanService {
                 aborts: BTreeSet::new(),
                 graph_cancellations: BTreeMap::new(),
                 status_failures: BTreeMap::new(),
+                log_failures: BTreeMap::new(),
             }),
             owned_scans: Mutex::new(BTreeSet::new()),
             freed: Condvar::new(),
@@ -1016,8 +1019,8 @@ impl ScanService {
     }
 
     fn log(&self, id: &str, component: &str, level: LogLevel, message: impl Into<String>) {
-        // A log write failure must not stop the scan, but must never be silent.
-        // Preserve the reason on stderr even when the scan's own log is unwritable.
+        // Preserve the persistence failure for run/wait without printing from library code.
+        // The worker continues; a later successful status write cannot clear missing evidence.
         if let Err(error) = self.store.append_log(
             id,
             &LogEntry {
@@ -1027,7 +1030,11 @@ impl ScanService {
                 message: message.into(),
             },
         ) {
-            eprintln!("huntsman scan {id}: unable to persist log entry: {error}");
+            self.state()
+                .log_failures
+                .entry(id.to_owned())
+                .or_insert_with(|| format!("scan {id}: unable to persist log entry: {error}"));
+            self.freed.notify_all();
         }
     }
 
@@ -1218,7 +1225,7 @@ impl ScanService {
             // A scan saves its final status before it takes this lock to give up its place and
             // notify `freed`, so a row read under the lock cannot miss that notice.
             let state = self.state();
-            if let Some(error) = state.status_failures.get(id) {
+            if let Some(error) = state.status_failures.get(id).or_else(|| state.log_failures.get(id)) {
                 return Err(ServiceError::Store(error.clone()));
             }
             let record = self.store.get(id)?;
@@ -1240,9 +1247,15 @@ impl ScanService {
     pub fn run(&self, request: &ScanRequest) -> Result<ScanRecord, ServiceError> {
         let (record, plan) = self.create(request)?;
         self.execute(&record.id, &plan);
-        if let Some(error) = self.state().status_failures.get(&record.id) {
+        let state = self.state();
+        if let Some(error) = state
+            .status_failures
+            .get(&record.id)
+            .or_else(|| state.log_failures.get(&record.id))
+        {
             return Err(ServiceError::Store(error.clone()));
         }
+        drop(state);
         Ok(self.store.get(&record.id)?)
     }
 
@@ -1904,6 +1917,7 @@ impl ScanService {
         let mut state = self.state();
         self.owned().remove(id);
         state.status_failures.remove(id);
+        state.log_failures.remove(id);
         Ok(())
     }
 
