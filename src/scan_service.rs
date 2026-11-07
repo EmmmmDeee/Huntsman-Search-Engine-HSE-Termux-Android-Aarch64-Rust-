@@ -305,8 +305,6 @@ struct State {
     graph_cancellations: BTreeMap<String, Arc<AtomicBool>>,
     // Volatile failures let wait/run report a row that could not be persisted.
     status_failures: BTreeMap<String, String>,
-    // Separate from status errors: a successful row update cannot restore lost log entries.
-    log_failures: BTreeMap<String, String>,
 }
 
 /// What following a scan's findings produced beside the findings themselves.
@@ -835,6 +833,8 @@ pub struct ScanService {
     rules: Vec<Rule>,
     rule_errors: Vec<RuleError>,
     state: Mutex<State>,
+    // Separate mutex: stop() logs while holding state, so failures cannot re-lock state.
+    log_failures: Mutex<BTreeMap<String, String>>,
     // Per-instance ownership is distinct from PID. Kept outside state so start_or_join
     // can register a scan while holding the state lock without re-locking it.
     owned_scans: Mutex<BTreeSet<String>>,
@@ -882,8 +882,8 @@ impl ScanService {
                 aborts: BTreeSet::new(),
                 graph_cancellations: BTreeMap::new(),
                 status_failures: BTreeMap::new(),
-                log_failures: BTreeMap::new(),
             }),
+            log_failures: Mutex::new(BTreeMap::new()),
             owned_scans: Mutex::new(BTreeSet::new()),
             freed: Condvar::new(),
             admission: Arc::new(LookupAdmission::default()),
@@ -1018,6 +1018,14 @@ impl ScanService {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn log_failure(&self, id: &str) -> Option<String> {
+        self.log_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
     fn log(&self, id: &str, component: &str, level: LogLevel, message: impl Into<String>) {
         // Preserve the persistence failure for run/wait without printing from library code.
         // The worker continues; a later successful status write cannot clear missing evidence.
@@ -1030,10 +1038,15 @@ impl ScanService {
                 message: message.into(),
             },
         ) {
-            self.state()
-                .log_failures
-                .entry(id.to_owned())
-                .or_insert_with(|| format!("scan {id}: unable to persist log entry: {error}"));
+            {
+                let mut failures = self
+                    .log_failures
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                failures
+                    .entry(id.to_owned())
+                    .or_insert_with(|| format!("scan {id}: unable to persist log entry: {error}"));
+            }
             self.freed.notify_all();
         }
     }
@@ -1228,9 +1241,10 @@ impl ScanService {
             if let Some(error) = state
                 .status_failures
                 .get(id)
-                .or_else(|| state.log_failures.get(id))
+                .cloned()
+                .or_else(|| self.log_failure(id))
             {
-                return Err(ServiceError::Store(error.clone()));
+                return Err(ServiceError::Store(error));
             }
             let record = self.store.get(id)?;
             let now = Instant::now();
@@ -1255,9 +1269,10 @@ impl ScanService {
         if let Some(error) = state
             .status_failures
             .get(&record.id)
-            .or_else(|| state.log_failures.get(&record.id))
+            .cloned()
+            .or_else(|| self.log_failure(&record.id))
         {
-            return Err(ServiceError::Store(error.clone()));
+            return Err(ServiceError::Store(error));
         }
         drop(state);
         Ok(self.store.get(&record.id)?)
@@ -1921,7 +1936,10 @@ impl ScanService {
         let mut state = self.state();
         self.owned().remove(id);
         state.status_failures.remove(id);
-        state.log_failures.remove(id);
+        self.log_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
         Ok(())
     }
 
