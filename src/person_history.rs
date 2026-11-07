@@ -74,7 +74,13 @@ pub struct AuditSummary {
     pub scans_retained: usize,
     pub scans_read: usize,
     pub scans_unreadable: usize,
+    pub scans_without_results: usize,
+    pub scans_not_finished: usize,
     pub person_scan_records: usize,
+    pub person_targets: usize,
+    pub person_entities: usize,
+    pub human_name_elements: usize,
+    pub false_positive_name_elements: usize,
     pub with_birthplace_claim: usize,
     pub with_conflicting_birthplace_claims: usize,
     pub without_birthplace_claim: usize,
@@ -388,8 +394,25 @@ pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSumm
             }
         };
         summary.scans_read += 1;
+        if results.is_none() {
+            summary.scans_without_results += 1;
+        }
+        if scan.status != crate::scan_store::ScanStatus::Finished {
+            summary.scans_not_finished += 1;
+        }
         for row in people_in_scan(&scan, results.as_ref()) {
             summary.person_scan_records += 1;
+            match row.discovered_as.first().map(String::as_str) {
+                Some("scan_target") => summary.person_targets += 1,
+                Some("person_entity") => summary.person_entities += 1,
+                Some("human_name_element") => {
+                    summary.human_name_elements += 1;
+                    if row.flagged_false_positive {
+                        summary.false_positive_name_elements += 1;
+                    }
+                }
+                _ => {}
+            }
             match row.birthplace_status {
                 "not_recorded" => summary.without_birthplace_claim += 1,
                 "conflicting_claims" => {
@@ -695,6 +718,12 @@ mod tests {
         assert_eq!(summary.scans_read, 1);
         assert_eq!(summary.scans_unreadable, 0);
         assert_eq!(summary.person_scan_records, 3);
+        assert_eq!(summary.person_targets, 1);
+        assert_eq!(summary.person_entities, 1);
+        assert_eq!(summary.human_name_elements, 1);
+        assert_eq!(summary.false_positive_name_elements, 1);
+        assert_eq!(summary.scans_not_finished, 0);
+        assert_eq!(summary.scans_without_results, 0);
         assert!(summary.complete_for_retained_scans);
         assert_eq!(lines.len(), 4); // target, entity, element, summary
         assert_eq!(lines[0]["occurrence_id"], "scan_target");
