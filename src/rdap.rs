@@ -574,11 +574,7 @@ fn record(object: Object, url: &str, raw: String) -> Record {
 fn autnum(value: Option<&Value>) -> Option<u32> {
     match value? {
         Value::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
-        Value::String(text) => text
-            .trim()
-            .trim_start_matches(['A', 'S', 'a', 's'])
-            .parse()
-            .ok(),
+        Value::String(text) => crate::textnorm::parse_asn(text).and_then(|n| u32::try_from(n).ok()),
         _ => None,
     }
 }
