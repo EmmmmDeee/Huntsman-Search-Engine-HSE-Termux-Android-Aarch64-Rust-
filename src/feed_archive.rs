@@ -103,6 +103,7 @@ pub(crate) fn backfill(
     feed_id: &str,
     body: &[u8],
     cache_mtime: u64,
+    sidecar: Option<&[u8]>,
 ) -> Result<(), String> {
     let digest = crate::sha256::hex32(&crate::sha256::sha256(body));
     let path = dir
@@ -119,7 +120,6 @@ pub(crate) fn backfill(
                     path.display()
                 ));
             }
-            Ok(())
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let context = serde_json::json!({
@@ -128,10 +128,16 @@ pub(crate) fn backfill(
                 "original_response_headers_known": false,
                 "original_http_status_known": false,
             });
-            store(dir, feed_id, body, &context).map(|_| ())
+            store(dir, feed_id, body, &context)?;
         }
-        Err(error) => Err(error.to_string()),
+        Err(error) => return Err(error.to_string()),
     }
+    // The old publisher-date sidecar is also source metadata. Keep its exact original bytes
+    // independently of the newer mutable sidecar that a successful refresh replaces.
+    if let Some(sidecar) = sidecar {
+        write_once(&path.with_extension("updated"), sidecar)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
