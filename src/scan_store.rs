@@ -1152,7 +1152,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&dir).unwrap().permissions().mode(), before.mode());
+            assert_eq!(
+                fs::metadata(&dir).unwrap().permissions().mode(),
+                before.mode()
+            );
         }
         #[cfg(not(unix))]
         assert_eq!(
