@@ -418,6 +418,11 @@ same files.
 | B15 | `credential-status`, its probe and the web UI's key settings read each slot by the lookups' rule | A key only in `~/.config/dehashed/api_key` shows as set and is probed; a refused one is named with its own fix. The web UI also shows the shared abuse.ch key on URLhaus and ThreatFox, and HIBP's `HIBP_API_KEY`, as set, with where each key is |
 | B16 | HIBP's `~/.config/hibp/api_key` is a provider key file | `credential-status`, its probe and the web UI report the key HIBP's lookups read from it. A refused one is named with its fix, and `hibp subscription` still names the file as the key's source |
 | B17 | The evidence matrix counts only modules that ran | `module_execution_counts` no longer counts a module that never sent a request (`not_configured`, `refused_before_sending`). `module_outcome_kinds` says, for each module, what its outcomes were |
+| B18 | Australian `13` and `190x` numbers are phone numbers | The canonicaliser accepts every range the AU plan types; E.164 is 8 to 15 digits |
+| B19 | crt.sh waits 75 s | Large domains' certificate histories are read instead of timing out |
+| B20 | `Limited`, `Ltd`, `PLC` and `LLP` names are organisations; `sources` routes a one-word name | Routes and classification of company names change |
+| B21 | Every keyed leg without its key leaves `not_configured` | VirusTotal, AbuseIPDB and Hunter rows appear in `ip` and `domain` |
+| B22 | A depth scan's frontier is fair across pivot kinds | A kind takes at most half a generation; dispatch is round-robin by kind |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 
