@@ -106,17 +106,49 @@ pub fn lookup<T: Transport + ?Sized>(
             "selector is not a valid Telegram handle",
         )));
     }
-    let fetched = fetch(
+    let fetched = get_page(transport, &page_url(handle), now_unix)?;
+    let (page, status) = match interpret(&fetched, handle, now_unix) {
+        Ok(found) => found,
+        Err(outcome) => return Ok(empty(outcome)),
+    };
+    // Only a channel has a public post preview. A preview that cannot be read keeps the confirmed
+    // page and says so; it never turns the channel into a miss.
+    let preview = if page.kind == Kind::Channel {
+        let fetched = get_page(transport, &preview_url(handle), now_unix)?;
+        Some(read_preview(&fetched, handle))
+    } else {
+        None
+    };
+    let entities = build_entities(&page, preview.as_ref(), handle, scan_id);
+    let mut outcome =
+        SourceExecutionOutcome::success(SRC, now_unix, entities.len()).with_http_status(status);
+    if let Some(Err(reason)) = &preview {
+        outcome = outcome.with_detail(format!("channel post preview not read: {reason}"));
+    }
+    Ok(Report { entities, outcome })
+}
+
+fn get_page<T: Transport + ?Sized>(
+    transport: &T,
+    url: &str,
+    now_unix: u64,
+) -> Result<Fetched, Error> {
+    fetch(
         transport,
-        Request::get(page_url(handle))
+        Request::get(url)
             .header("accept", "text/html")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         None,
         &FetchOptions::no_redirects().paced(),
         SRC,
         now_unix,
-    )?;
-    Ok(interpret(&fetched, handle, scan_id, now_unix).unwrap_or_else(empty))
+    )
+}
+
+/// The public post preview URL of a channel. **Pure.**
+#[must_use]
+pub fn preview_url(handle: &str) -> String {
+    format!("{PAGE_BASE}/s/{handle}")
 }
 
 fn empty(outcome: SourceExecutionOutcome) -> Report {
@@ -129,9 +161,8 @@ fn empty(outcome: SourceExecutionOutcome) -> Report {
 fn interpret(
     fetched: &Fetched,
     handle: &str,
-    scan_id: &str,
     now_unix: u64,
-) -> Result<Report, SourceExecutionOutcome> {
+) -> Result<(Page, u16), SourceExecutionOutcome> {
     let response = whole_response(fetched, "Telegram page")?;
     if (300..400).contains(&response.status) {
         return Err(SourceExecutionOutcome::failed(
@@ -171,11 +202,128 @@ fn interpret(
             ),
         ));
     };
-    let entities = build_entities(&page, handle, scan_id);
-    Ok(Report {
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
-            .with_http_status(response.status),
-        entities,
+    Ok((page, response.status))
+}
+
+/// What a channel's public post preview shows: the posts on its first page, their date range,
+/// and the other Telegram names those posts forward from or link to, with how often.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Preview {
+    pub posts: usize,
+    pub newest_post_id: Option<u64>,
+    pub newest_post_at: Option<String>,
+    pub oldest_post_at: Option<String>,
+    /// Lowercased handle and the number of posts forwarded from it.
+    pub forwarded_from: Vec<(String, usize)>,
+    /// Lowercased handle and the number of links to it in the posts.
+    pub mentions: Vec<(String, usize)>,
+}
+
+const MAX_PIVOTS: usize = 10;
+
+fn read_preview(fetched: &Fetched, handle: &str) -> Result<Preview, String> {
+    let Some(response) = &fetched.response else {
+        return Err(fetched
+            .outcome
+            .detail
+            .clone()
+            .unwrap_or_else(|| "no response".to_owned()));
+    };
+    if response.truncated || response.body.len() > MAX_PAGE_BYTES {
+        return Err("preview exceeded the bounded parser budget".to_owned());
+    }
+    if response.status != 200 {
+        return Err(format!("preview answered HTTP {}", response.status));
+    }
+    let html =
+        std::str::from_utf8(&response.body).map_err(|_| "preview is not UTF-8".to_owned())?;
+    parse_preview(html, handle).ok_or_else(|| "preview carried no posts".to_owned())
+}
+
+/// Every start tag named `name` in `html`, as its attribute text. **Pure.**
+fn start_tags<'a>(html: &'a str, name: &str) -> Vec<&'a str> {
+    let open = format!("<{name}");
+    let mut out = Vec::new();
+    let mut rest = html;
+    while let Some(at) = rest.find(&open) {
+        let after = rest.get(at + open.len()..).unwrap_or_default();
+        if !after.starts_with(|c: char| c.is_ascii_whitespace() || c == '>') {
+            rest = after;
+            continue;
+        }
+        let end = after.find('>').unwrap_or(after.len());
+        out.push(after.get(..end).unwrap_or_default());
+        rest = after.get(end..).unwrap_or_default();
+    }
+    out
+}
+
+fn has_class(attrs: &str, class: &str) -> bool {
+    attribute(attrs, "class").is_some_and(|c| c.split_ascii_whitespace().any(|c| c == class))
+}
+
+fn ranked(counts: std::collections::BTreeMap<String, usize>) -> Vec<(String, usize)> {
+    let mut list: Vec<_> = counts.into_iter().collect();
+    list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    list.truncate(MAX_PIVOTS);
+    list
+}
+
+/// A channel's post preview read from Telegram's `/s/` page, or `None` when it shows no post of
+/// the channel. **Pure.**
+#[must_use]
+pub fn parse_preview(html: &str, handle: &str) -> Option<Preview> {
+    let own = handle.to_ascii_lowercase();
+    let prefix = format!("{own}/");
+    let mut posts = 0;
+    let mut newest_post_id = None;
+    let mut times: Vec<String> = Vec::new();
+    let mut forwarded = std::collections::BTreeMap::new();
+    let mut mentions = std::collections::BTreeMap::new();
+    for attrs in start_tags(html, "div") {
+        if let Some(post) = attribute(attrs, "data-post") {
+            if let Some(id) = post.to_ascii_lowercase().strip_prefix(&prefix) {
+                posts += 1;
+                if let Ok(id) = id.parse::<u64>() {
+                    newest_post_id = newest_post_id.max(Some(id));
+                }
+            }
+        }
+    }
+    if posts == 0 {
+        return None;
+    }
+    for attrs in start_tags(html, "time") {
+        if let Some(at) = attribute(attrs, "datetime").filter(|t| t.len() <= 40) {
+            times.push(at.to_owned());
+        }
+    }
+    for attrs in start_tags(html, "a") {
+        let Some(name) = attribute(attrs, "href").and_then(handle_from_link) else {
+            continue;
+        };
+        if name == own {
+            continue;
+        }
+        let bucket = if has_class(attrs, "tgme_widget_message_forwarded_from_name") {
+            &mut forwarded
+        } else if has_class(attrs, "tgme_widget_message_date")
+            || has_class(attrs, "tgme_widget_message_owner_name")
+        {
+            continue;
+        } else {
+            &mut mentions
+        };
+        *bucket.entry(name).or_insert(0) += 1;
+    }
+    times.sort();
+    Some(Preview {
+        posts,
+        newest_post_id,
+        newest_post_at: times.last().cloned(),
+        oldest_post_at: times.first().cloned(),
+        forwarded_from: ranked(forwarded),
+        mentions: ranked(mentions),
     })
 }
 
@@ -325,9 +473,71 @@ fn page_evidence(page: &Page, handle: &str, scan_id: &str) -> Evidence {
     ])
 }
 
+/// The page evidence with what the channel preview showed, or why it was not read. **Pure.**
+fn with_preview(
+    mut evidence: Evidence,
+    preview: Option<&Result<Preview, String>>,
+    handle: &str,
+) -> Evidence {
+    match preview {
+        Some(Ok(p)) => {
+            let posts = p.posts.to_string();
+            let newest = p.newest_post_id.map(|id| id.to_string());
+            evidence = evidence
+                .with_attr("preview_url", preview_url(handle))
+                .with_attr("preview_posts", posts)
+                .with_optional_attrs([
+                    ("newest_post_id", newest.as_deref()),
+                    ("newest_post_at", p.newest_post_at.as_deref()),
+                    ("oldest_post_at", p.oldest_post_at.as_deref()),
+                ]);
+        }
+        Some(Err(reason)) => {
+            evidence = evidence.with_attr("preview", format!("not read: {reason}"));
+        }
+        None => {}
+    }
+    evidence
+}
+
+/// The other Telegram names a channel's posts forward from or link to, as leads. **Pure.**
+fn push_network_pivots(entities: &mut Vec<Entity>, p: &Preview, handle: &str, scan_id: &str) {
+    for (relation, list) in [
+        ("forwarded_from", &p.forwarded_from),
+        ("mentioned", &p.mentions),
+    ] {
+        for (name, count) in list {
+            push_entity(
+                entities,
+                EntityKind::Url,
+                &page_url(name),
+                SELF_REPORTED_CONF,
+                scan_id,
+                Evidence::new(
+                    EvidenceProvenance::for_scan(SRC, scan_id),
+                    format!(
+                        "@{handle}'s public posts {} @{name} {count} time(s): a channel-network lead, not an affiliation",
+                        if relation == "forwarded_from" { "forward from" } else { "link to" }
+                    ),
+                )
+                .with_attr("relation", relation)
+                .with_attr("count", count.to_string())
+                .with_attr("preview_url", preview_url(handle))
+                .inferred(),
+                &["telegram", "telegram-pivot", relation, crate::tags::CANDIDATE],
+            );
+        }
+    }
+}
+
 /// Build the report entities from a confirmed public page. **Pure.**
-fn build_entities(page: &Page, handle: &str, scan_id: &str) -> Vec<Entity> {
-    let evidence = page_evidence(page, handle, scan_id);
+fn build_entities(
+    page: &Page,
+    preview: Option<&Result<Preview, String>>,
+    handle: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let evidence = with_preview(page_evidence(page, handle, scan_id), preview, handle);
     let kind_tag = format!("telegram-{}", page.kind.as_str());
     let own = handle.to_ascii_lowercase();
     let mut entities = Vec::new();
@@ -421,6 +631,9 @@ fn build_entities(page: &Page, handle: &str, scan_id: &str) -> Vec<Entity> {
                 &["telegram", crate::tags::DERIVED],
             );
         }
+    }
+    if let Some(Ok(p)) = preview {
+        push_network_pivots(&mut entities, p, handle, scan_id);
     }
     merge_by_uid(&mut entities);
     entities
@@ -635,6 +848,103 @@ mod tests {
         let transport = ScriptedTransport::new(vec![]);
         let report = lookup(&transport, "bad handle", "scan-tg", 1).expect("lookup runs");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+    }
+
+    /// Two posts in the `/s/` markup captured from `t.me/s/durov` on 2026-11-07: one forwarded
+    /// from another channel, one linking to two others, plus the header's own-channel link.
+    fn preview() -> String {
+        let post = |id: u32, at: &str, body: &str| {
+            format!(
+                "<div class=\"tgme_widget_message_wrap js-widget_message_wrap\"><div class=\"tgme_widget_message text_not_supported_wrap js-widget_message\" data-post=\"durov/{id}\" data-view=\"x\">\n<div class=\"tgme_widget_message_author accent_color\"><a class=\"tgme_widget_message_owner_name\" href=\"https://t.me/durov\"><span dir=\"auto\">Pavel Durov</span></a></div>\n{body}\n<a class=\"tgme_widget_message_date\" href=\"https://t.me/durov/{id}\"><time datetime=\"{at}\" class=\"time\">12:00</time></a></div></div>"
+            )
+        };
+        format!(
+            "<html><body><a class=\"tgme_channel_info_header\" href=\"https://t.me/durov\">x</a>{}{}</body></html>",
+            post(
+                551,
+                "2026-07-16T20:45:25+00:00",
+                "<div class=\"tgme_widget_message_forwarded_from accent_color\">Forwarded from&nbsp;<a class=\"tgme_widget_message_forwarded_from_name\" href=\"https://t.me/telegram/460\"><span dir=\"auto\">Telegram News</span></a></div>"
+            ),
+            post(
+                552,
+                "2026-10-11T14:52:40+00:00",
+                "<div class=\"tgme_widget_message_text js-message_text\" dir=\"auto\">See <a href=\"https://t.me/telegram\">@telegram</a> and <a href=\"https://t.me/contest\">@contest</a> and <a href=\"https://t.me/joinchat/AbC\">invite</a></div>"
+            ),
+        )
+    }
+
+    #[test]
+    fn a_channel_preview_adds_activity_dates_and_network_pivots() {
+        let transport =
+            ScriptedTransport::new(vec![Ok(html_ok(&channel())), Ok(html_ok(&preview()))]);
+        let report = lookup(&transport, "durov", "scan-tg", 1).expect("lookup runs");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(report.outcome.detail, None);
+        assert_eq!(attr(&report, "preview_posts"), Some("2"));
+        assert_eq!(attr(&report, "newest_post_id"), Some("552"));
+        assert_eq!(
+            attr(&report, "newest_post_at"),
+            Some("2026-10-11T14:52:40+00:00")
+        );
+        assert_eq!(
+            attr(&report, "oldest_post_at"),
+            Some("2026-07-16T20:45:25+00:00")
+        );
+        let pivot = |name: &str| {
+            report.entities.iter().find(|e| {
+                e.kind == EntityKind::Url && e.raw_value == format!("https://t.me/{name}")
+            })
+        };
+        let news = pivot("telegram").expect("forward and mention pivot");
+        assert!(
+            news.has_tag("telegram-pivot")
+                && news.has_tag("forwarded_from")
+                && news.has_tag("mentioned")
+        );
+        assert!(
+            pivot("contest")
+                .expect("mention pivot")
+                .has_tag("mentioned")
+        );
+        assert!(pivot("joinchat").is_none(), "an invite is not a name");
+        assert_eq!(transport.seen.borrow()[1].url, "https://t.me/s/durov");
+    }
+
+    #[test]
+    fn an_unreadable_preview_keeps_the_confirmed_channel() {
+        // The script holds no second answer, so the preview request fails to connect.
+        let report = report_of(&channel(), "durov");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert!(
+            report
+                .outcome
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("preview not read"))
+        );
+        assert!(attr(&report, "preview").is_some_and(|p| p.starts_with("not read")));
+        assert!(has(&report, &EntityKind::Username, "durov"));
+    }
+
+    #[test]
+    fn only_a_channel_asks_for_a_preview() {
+        for (body, handle) in [
+            (group(), "ru_python"),
+            (bot(), "BotFather"),
+            (user(), "ada_lovelace"),
+        ] {
+            let transport = ScriptedTransport::new(vec![Ok(html_ok(&body))]);
+            lookup(&transport, handle, "scan-tg", 1).expect("lookup runs");
+            assert_eq!(transport.seen.borrow().len(), 1, "{handle}");
+        }
+    }
+
+    #[test]
+    fn a_preview_without_the_channels_posts_is_none() {
+        assert_eq!(
+            parse_preview("<html><div data-post=\"other/1\"></div></html>", "durov"),
+            None
+        );
     }
 
     #[test]
