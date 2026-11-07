@@ -1149,7 +1149,16 @@ mod tests {
         let before = fs::metadata(&dir).unwrap().permissions();
         let store = ScanStore::open_existing_readonly(&dir).unwrap();
         assert!(store.list().unwrap().is_empty());
-        assert_eq!(fs::metadata(&dir).unwrap().permissions(), before);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&dir).unwrap().permissions().mode(), before.mode());
+        }
+        #[cfg(not(unix))]
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().readonly(),
+            before.readonly()
+        );
 
         #[cfg(unix)]
         {
