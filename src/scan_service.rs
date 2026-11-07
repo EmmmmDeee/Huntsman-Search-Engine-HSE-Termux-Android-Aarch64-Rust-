@@ -902,6 +902,11 @@ impl ScanService {
         let mut record = self.store.get(id)?;
         self.store
             .reconcile(&mut record, clock::unix_now_millis())?;
+        // The detail API must not report a successful scan when its log evidence
+        // failed to persist. A list view can still enumerate the other scans.
+        if let Some(error) = self.log_failure(id) {
+            return Err(ServiceError::Store(error));
+        }
         Ok(record)
     }
 
