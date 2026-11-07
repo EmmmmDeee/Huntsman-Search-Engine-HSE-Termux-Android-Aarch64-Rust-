@@ -109,6 +109,7 @@ pub mod exit;
 pub mod exposure;
 pub mod exposure_cli;
 pub mod federated_osint;
+mod feed_archive;
 pub mod fetch;
 pub mod fetch_cli;
 pub mod fsio;
