@@ -301,10 +301,128 @@ pub fn lookup<T: Transport + ?Sized>(
         SOURCE,
         now_unix,
     )?;
-    Ok(
-        interpret(&fetched, &qid, search_label.as_deref(), scan_id, now_unix)
-            .unwrap_or_else(Report::miss),
+    let mut report = interpret(&fetched, &qid, search_label.as_deref(), scan_id, now_unix)
+        .unwrap_or_else(Report::miss);
+    label_claims(transport, &base, &qid, &mut report, now_unix);
+    Ok(report)
+}
+
+/// The most ids one `wbgetentities` request names (the Action API's own limit).
+const MAX_LABEL_IDS: usize = 50;
+
+/// The `wbgetentities` URL that names the properties and items in `ids`. **Pure.**
+#[must_use]
+pub fn labels_url(base: &str, ids: &[String]) -> String {
+    format!(
+        "{base}/w/api.php?action=wbgetentities&ids={}&props=labels&languages=en&languagefallback=1&format=json",
+        percent_encode_unreserved(&ids.join("|"))
     )
+}
+
+/// Whether `id` is a property id (`P` and digits). **Pure.**
+fn is_pid(id: &str) -> bool {
+    id.strip_prefix('P')
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The property and item ids an item's `claim` attributes name, each once, at most
+/// [`MAX_LABEL_IDS`]: every claim's property, then its item value, in claim order, so a bounded
+/// request names whole claims rather than only properties. **Pure.**
+fn claim_ids(evidence: &Evidence) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for claim in evidence.attr_values("claim") {
+        let Some((pid, value)) = claim.split_once('=') else {
+            continue;
+        };
+        for id in [pid, value] {
+            let nameable = is_pid(id) || (id.starts_with('Q') && is_qid(id));
+            if nameable && ids.len() < MAX_LABEL_IDS && !ids.iter().any(|known| known == id) {
+                ids.push(id.to_owned());
+            }
+        }
+    }
+    ids
+}
+
+/// `id=label` for every entity in a `wbgetentities` response that carries a label. **Pure.**
+fn labels_from(response: &Value, ids: &[String]) -> Vec<String> {
+    let Some(entities) = response.get("entities").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    ids.iter()
+        .filter_map(|id| {
+            let labels = entities.get(id)?.get("labels")?.as_object()?;
+            let label = labels
+                .get("en")
+                .or_else(|| labels.values().next())?
+                .get("value")?
+                .as_str()?
+                .trim();
+            (!label.is_empty()).then(|| format!("{id}={label}"))
+        })
+        .collect()
+}
+
+/// Why a labels response could not be read: its outcome's kind and detail. **Pure.**
+fn why(outcome: SourceExecutionOutcome) -> String {
+    format!("{:?}: {}", outcome.kind, outcome.detail.unwrap_or_default())
+}
+
+/// Name the properties and items the item's claims cite, with one bounded request. Readable
+/// labels are presentation: a failed lookup leaves the claims as they were, records why in
+/// `claim_labels_unavailable`, and never changes the report's outcome or entities.
+fn label_claims<T: Transport + ?Sized>(
+    transport: &T,
+    base: &str,
+    qid: &str,
+    report: &mut Report,
+    now_unix: u64,
+) {
+    let Some(evidence) = report
+        .entities
+        .iter_mut()
+        .flat_map(|entity| entity.evidence.iter_mut())
+        .find(|evidence| {
+            evidence.attr_values("qid").any(|q| q == qid)
+                && evidence.attributes.contains_key("claim")
+        })
+    else {
+        return;
+    };
+    let ids = claim_ids(evidence);
+    if ids.is_empty() {
+        return;
+    }
+    let labelled = fetch(
+        transport,
+        request(labels_url(base, &ids)),
+        None,
+        &FetchOptions::no_redirects().paced(),
+        SOURCE,
+        now_unix,
+    )
+    .map_err(|error| error.to_string())
+    .and_then(|fetched| {
+        let response = whole_response(&fetched, "Wikidata labels").map_err(why)?;
+        answer(&fetched, "Wikidata labels").map_err(why)?;
+        let body: Value =
+            decode_json(response, SOURCE, now_unix, "Wikidata labels").map_err(why)?;
+        Ok(labels_from(&body, &ids))
+    });
+    let mut updated = std::mem::replace(
+        evidence,
+        Evidence::new(EvidenceProvenance::for_scan(SOURCE, ""), String::new()),
+    );
+    match labelled {
+        Ok(labels) if !labels.is_empty() => {
+            for label in labels {
+                updated = updated.with_attr("claim_label", label);
+            }
+        }
+        Ok(_) => updated = updated.with_attr("claim_labels_unavailable", "no labels returned"),
+        Err(reason) => updated = updated.with_attr("claim_labels_unavailable", reason),
+    }
+    *evidence = updated;
 }
 
 enum Resolved {
@@ -769,7 +887,6 @@ mod tests {
     use super::*;
     use crate::entity::Entity;
     use crate::source_outcome::SourceOutcomeKind;
-    use crate::test_support::OneResponse;
 
     /// A fictional person item with the REST v1 shapes: an entity-ref P31, a string website, a
     /// globe-coordinate, a timestamp and external identifiers.
@@ -790,11 +907,97 @@ mod tests {
       }
     }"#;
 
+    /// The labels the Action API returns for the ids the person item's claims cite.
+    const LABELS: &str = r#"{"entities":{
+      "P31":{"labels":{"en":{"language":"en","value":"instance of"}}},
+      "P856":{"labels":{"en":{"language":"en","value":"official website"}}},
+      "Q5":{"labels":{"en":{"language":"en","value":"human"}}},
+      "P999":{"missing":""}
+    },"success":1}"#;
+
+    /// The item, then the one labels request its claims prompt (a connect failure when the
+    /// script is spent, which only marks the labels unavailable).
     fn report_of(body: &str, query: &str) -> Report {
-        match lookup(&OneResponse::json(200, body), query, "scan-wd", 1) {
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(body)),
+            Ok(crate::test_support::json_ok(LABELS)),
+        ]);
+        match lookup(&transport, query, "scan-wd", 1) {
             Ok(report) => report,
             Err(error) => panic!("{error}"),
         }
+    }
+
+    fn item_evidence(report: &Report) -> &Evidence {
+        report
+            .entities
+            .iter()
+            .flat_map(|e| &e.evidence)
+            .find(|ev| ev.attributes.contains_key("claim"))
+            .expect("item evidence")
+    }
+
+    #[test]
+    fn claims_name_their_properties_and_items_with_one_bounded_request() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(PERSON_ITEM)),
+            Ok(crate::test_support::json_ok(LABELS)),
+        ]);
+        let report = lookup(&transport, "Q000", "scan-wd", 1).expect("lookup");
+        let seen = transport.seen.borrow();
+        assert_eq!(seen.len(), 2, "item then one labels request");
+        assert!(
+            seen[1].url.contains("action=wbgetentities"),
+            "{}",
+            seen[1].url
+        );
+        assert!(
+            seen[1].url.contains("P31%7CQ5"),
+            "claim then its value: {}",
+            seen[1].url
+        );
+        let labels: Vec<&str> = item_evidence(&report).attr_values("claim_label").collect();
+        assert!(labels.contains(&"P31=instance of"), "{labels:?}");
+        assert!(labels.contains(&"Q5=human"), "{labels:?}");
+        assert!(!labels.iter().any(|l| l.starts_with("P999")), "{labels:?}");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+    }
+
+    #[test]
+    fn a_failed_labels_request_never_changes_the_findings() {
+        let transport = crate::test_support::ScriptedTransport::new(vec![Ok(
+            crate::test_support::json_ok(PERSON_ITEM),
+        )]);
+        let unlabelled = lookup(&transport, "Q000", "scan-wd", 1).expect("lookup");
+        let labelled = report_of(PERSON_ITEM, "Q000");
+        assert_eq!(unlabelled.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(unlabelled.entities.len(), labelled.entities.len());
+        let evidence = item_evidence(&unlabelled);
+        assert!(evidence.attributes.contains_key("claim_labels_unavailable"));
+        assert!(!evidence.attributes.contains_key("claim_label"));
+    }
+
+    #[test]
+    fn claim_ids_name_whole_claims_each_once_and_bounded() {
+        let mut evidence = Evidence::new(EvidenceProvenance::for_scan(SOURCE, "s"), "x");
+        for n in 0..60 {
+            evidence = evidence.with_attr("claim", format!("P{n}=Q{n}"));
+        }
+        evidence = evidence
+            .with_attr("claim", "P0=Q0")
+            .with_attr("claim", "P1=plain text")
+            .with_attr("claim", "bad");
+        let ids = claim_ids(&evidence);
+        assert_eq!(ids.len(), MAX_LABEL_IDS);
+        assert_eq!(
+            &ids[..4],
+            ["P0", "Q0", "P1", "Q1"],
+            "each claim whole, in order"
+        );
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len());
     }
 
     fn entity<'a>(report: &'a Report, kind: &EntityKind, value: &str) -> &'a Entity {

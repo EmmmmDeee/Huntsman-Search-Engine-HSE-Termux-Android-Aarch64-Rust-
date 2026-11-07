@@ -103,7 +103,9 @@ mod tests {
 
     #[test]
     fn run_prints_the_item_and_its_website_pivot() {
-        match run(&OneResponse::json(200, ITEM), "Q000", 1) {
+        // The labels request finds the script spent; the item and its pivots still print.
+        let transport = ScriptedTransport::new(vec![Ok(json_ok(ITEM))]);
+        match run(&transport, "Q000", 1) {
             WikidataRun::Printed { text, report } => {
                 assert!(text.contains("wikidata\tsuccess"), "{text}");
                 assert!(
