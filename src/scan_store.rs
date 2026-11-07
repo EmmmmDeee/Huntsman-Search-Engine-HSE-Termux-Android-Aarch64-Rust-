@@ -735,7 +735,9 @@ impl ScanStore {
                     .saturating_add(marker_line.len() as u64)
                     <= MAX_LOG_BYTES
             }) {
-                return file.write_all(bytes).map_err(|error| io_error(&path, &error));
+                return file
+                    .write_all(bytes)
+                    .map_err(|error| io_error(&path, &error));
             }
         }
 
@@ -1041,7 +1043,9 @@ fn log_is_full(path: &Path) -> bool {
         return false;
     };
     let old_marker = format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept");
-    let new_marker = format!("log full at {MAX_LOG_BYTES} bytes; later entries archived in {LOG_OVERFLOW_FILE}");
+    let new_marker = format!(
+        "log full at {MAX_LOG_BYTES} bytes; later entries archived in {LOG_OVERFLOW_FILE}"
+    );
     bytes.split(|byte| *byte == b'\n').any(|line| {
         serde_json::from_slice::<LogEntry>(line).is_ok_and(|entry| {
             entry.component == "huntsman"
@@ -1915,8 +1919,12 @@ mod tests {
             assert_eq!(entry.component, "source");
         }
         let saved = dir.join(&record.id);
-        assert!(fs::metadata(saved.join(LOG_FILE)).unwrap().len() <= MAX_LOG_BYTES);
-        assert!(fs::metadata(saved.join(LOG_OVERFLOW_FILE)).unwrap().len() > MAX_LOG_BYTES);
+        assert!(
+            fs::metadata(saved.join(LOG_FILE)).unwrap().len() <= MAX_LOG_BYTES
+        );
+        assert!(
+            fs::metadata(saved.join(LOG_OVERFLOW_FILE)).unwrap().len() > MAX_LOG_BYTES
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1976,7 +1984,10 @@ mod tests {
             level: LogLevel::Info,
             message: "cannot silently vanish".into(),
         };
-        assert!(matches!(store.append_log(&record.id, &entry), Err(StoreError::Io(_))));
+        assert!(matches!(
+            store.append_log(&record.id, &entry),
+            Err(StoreError::Io(_))
+        ));
         assert_eq!(fs::read(&unrelated).unwrap(), b"untouched");
         let _ = fs::remove_dir_all(&dir);
     }
