@@ -111,6 +111,7 @@ pub mod exposure_cli;
 pub mod federated_osint;
 pub mod fetch;
 pub mod fetch_cli;
+mod feed_archive;
 pub mod fsio;
 pub mod gap;
 pub mod geohash;
