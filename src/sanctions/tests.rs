@@ -177,3 +177,71 @@ fn the_eu_list_groups_a_subject_s_rows_and_matches_only_whole_words() {
         values(&bout)
     );
 }
+
+#[test]
+fn a_failed_refresh_preserves_historical_matches_without_current_clearance() {
+    let dir = std::env::temp_dir().join(format!(
+        "hse-sanctions-stale-{}",
+        crate::entity::scan_id("sanctions-test", "freshness")
+    ));
+    std::fs::create_dir_all(&dir).expect("test cache directory");
+    let start = crate::clock::unix_now();
+    let first = Lists::new(
+        Box::new(RoutedTransport::new(&[
+            (OFAC_SDN.url, 200, SDN),
+            (OFAC_ALT.url, 200, ALT),
+            (UN_SC.url, 200, UN_XML),
+        ])),
+        Some(dir.clone()),
+    );
+    let (_, initial) = check(&first, "Kim Jong Un", "scan", start);
+    assert_eq!(initial[0].kind, SourceOutcomeKind::Success);
+    assert_eq!(initial[1].kind, SourceOutcomeKind::ValidZero);
+
+    // Twenty-five hours later, every publisher is unreachable. The last valid copies
+    // are still read, including the historical positive, but neither list is current.
+    let offline = Lists::new(Box::new(RoutedTransport::new(&[])), Some(dir.clone()));
+    let (previous, outcomes) = check(&offline, "Kim Jong Un", "scan", start + MAX_AGE + 1);
+    assert_eq!(
+        values(&previous),
+        ["https://sanctionssearch.ofac.treas.gov/Details.aspx?id=20157"]
+    );
+    assert_eq!(outcomes.len(), 3);
+    for outcome in &outcomes[..2] {
+        assert_eq!(outcome.kind, SourceOutcomeKind::Inconclusive, "{outcome:?}");
+        assert!(
+            outcome
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("could not be downloaded again"),
+            "{outcome:?}"
+        );
+    }
+    assert_eq!(outcomes[0].found, Some(1));
+    assert_eq!(outcomes[1].found, Some(0));
+    std::fs::remove_dir_all(dir).expect("test cleanup");
+}
+
+#[test]
+fn missing_ofac_aliases_cannot_prove_absence() {
+    let partial = Lists::new(
+        Box::new(RoutedTransport::new(&[
+            (OFAC_SDN.url, 200, SDN),
+            (UN_SC.url, 200, UN_XML),
+        ])),
+        None,
+    );
+    let (entities, outcomes) = check(&partial, "Ada Lovelace", "scan", 1);
+    assert!(entities.is_empty());
+    assert_eq!(outcomes[0].module, OFAC);
+    assert_eq!(outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+    assert!(
+        outcomes[0]
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("aliases unavailable")
+    );
+    assert_eq!(outcomes[1].kind, SourceOutcomeKind::ValidZero);
+}

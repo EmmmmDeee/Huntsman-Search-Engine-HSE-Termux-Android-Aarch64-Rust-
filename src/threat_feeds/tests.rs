@@ -1174,3 +1174,115 @@ fn a_declared_xml_root_is_the_list_and_a_page_is_still_a_page() {
     let page = "<!DOCTYPE html><html><body>moved</body></html>";
     assert!(is_page_for(page.as_bytes(), Some("CONSOLIDATED_LIST")));
 }
+
+#[test]
+fn a_failed_refresh_is_not_a_current_copy_even_when_its_body_is_kept() {
+    let make = |downloaded, date, note: Option<&str>| Copy {
+        body: b"complete original".to_vec(),
+        fetched: 1_000,
+        date,
+        downloaded,
+        note: note.map(str::to_owned),
+    };
+    assert!(make(false, KeptDate::Kept(None), None).current_for(1_001, 100));
+    assert!(!make(false, KeptDate::Kept(None), None).current_for(1_100, 100));
+    assert!(!make(false, KeptDate::Missing, None).current_for(1_001, 100));
+    assert!(
+        !make(
+            false,
+            KeptDate::Kept(None),
+            Some("could not be downloaded again (connection refused)")
+        )
+        .current_for(1_001, 100)
+    );
+    assert!(make(true, KeptDate::Missing, None).current_for(1_001, 100));
+    // A newly downloaded old revision is not a clean negative.
+    assert!(
+        !make(true, KeptDate::Kept(Some(1_000)), None)
+            .current_for(1_000 + 31 * 86_400, 40 * 86_400)
+    );
+    assert!(
+        make(true, KeptDate::Kept(Some(1_000)), None).current_for(1_000 + 2 * 86_400, 40 * 86_400)
+    );
+    // A publisher timestamp in the future does not prove freshness.
+    assert!(!make(true, KeptDate::Kept(Some(1_100)), None).current_for(1_001, 100));
+}
+
+#[test]
+fn all_download_responses_keep_original_bytes_and_legacy_copies() {
+    let dir = scratch("original-http-evidence");
+    std::fs::create_dir_all(&dir).expect("archive test directory");
+    let feed = FEEDS
+        .iter()
+        .find(|feed| feed.id == "greensnow")
+        .expect("GreenSnow feed")
+        .cached();
+    let old = b"legacy bytes\r\n";
+    std::fs::write(dir.join(feed.id), old).expect("old mutable cache");
+    let old_sidecar = b"previous-publisher-date-raw\n";
+    std::fs::write(updated_path(&dir.join(feed.id)), old_sidecar)
+        .expect("old publisher-date sidecar");
+    let net = Net::serving();
+    let transport = Shared(Arc::clone(&net));
+    let initial = b"194.180.49.70\r\n";
+    net.set(
+        "greensnow",
+        Reply::Body(String::from_utf8_lossy(initial).into_owned()),
+    );
+    let start = now();
+    let downloaded = load(&transport, Some(&dir), &feed, start).expect("first fetch");
+    assert_eq!(downloaded.body, initial);
+    let originals = dir.join("originals").join(feed.id);
+    for bytes in [old.as_slice(), initial.as_slice()] {
+        let digest = crate::sha256::hex32(&crate::sha256::sha256(bytes));
+        assert_eq!(
+            std::fs::read(originals.join(format!("{digest}.raw"))).unwrap(),
+            bytes
+        );
+    }
+
+    let old_hash = crate::sha256::hex32(&crate::sha256::sha256(old));
+    assert_eq!(
+        std::fs::read(originals.join(format!("{old_hash}.updated"))).unwrap(),
+        old_sidecar,
+        "the original publisher-date sidecar must survive replacement"
+    );
+
+    // A later network failure is also a first-class archived HTTP response. It must
+    // not replace either the live mutable copy or any original bytes.
+    let challenge = "<html>Access denied</html>";
+    net.set("greensnow", Reply::Page(403, challenge.into()));
+    let restored = load(&transport, Some(&dir), &feed, start + feed.max_age + 10)
+        .expect("kept copy after HTTP 403");
+    assert_eq!(restored.body, initial);
+    assert_eq!(
+        std::fs::read(dir.join(feed.id)).unwrap(),
+        initial,
+        "the operational copy must not become an error page"
+    );
+    let challenge_hash = crate::sha256::hex32(&crate::sha256::sha256(challenge.as_bytes()));
+    assert_eq!(
+        std::fs::read(originals.join(format!("{challenge_hash}.raw"))).unwrap(),
+        challenge.as_bytes()
+    );
+    let receipts: Vec<serde_json::Value> = std::fs::read_dir(&originals)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .map(|entry| serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap())
+        .collect();
+    assert!(
+        receipts.iter().any(|receipt| {
+            receipt["acquisition"]["response_status"] == 403 && receipt["sha256"] == challenge_hash
+        }),
+        "the error response and its status must remain inspectable"
+    );
+    assert!(
+        receipts.iter().any(|receipt| {
+            receipt["acquisition"]["origin"] == "legacy_cache"
+                && receipt["acquisition"]["original_response_headers_known"] == false
+        }),
+        "the old cache must be kept without inventing its lost network metadata"
+    );
+    std::fs::remove_dir_all(dir).expect("cleanup");
+}

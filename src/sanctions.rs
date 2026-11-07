@@ -139,9 +139,20 @@ pub fn check(
         (EU, read_eu(transport, dir, now_unix)),
     ] {
         outcomes.push(match read {
-            Ok((listings, note)) => {
+            Ok((listings, note, current)) => {
                 let found = record_matches(&listings, &query, label, scan_id, &mut entities);
-                let mut outcome = if found == 0 {
+                let mut outcome = if !current {
+                    // Retain every historical matching document, but neither a positive
+                    // nor a negative from an outdated copy proves the present-day list.
+                    SourceExecutionOutcome::observed(
+                        label,
+                        now_unix,
+                        SourceOutcomeKind::Inconclusive,
+                        None,
+                        Some(found),
+                        "list refresh failed or verified cache freshness expired",
+                    )
+                } else if found == 0 {
                     SourceExecutionOutcome::valid_zero(label, now_unix)
                 } else {
                     SourceExecutionOutcome::success(label, now_unix, found)
@@ -225,8 +236,9 @@ fn copy_of(
     dir: Option<&Path>,
     list: &CachedList,
     now_unix: u64,
-) -> Result<(String, Option<String>), crate::threat_feeds::Failure> {
+) -> Result<(String, Option<String>, bool), crate::threat_feeds::Failure> {
     let copy = load(transport, dir, list, now_unix)?;
+    let current = copy.current_for(now_unix, list.max_age);
     let age = now_unix.saturating_sub(copy.fetched);
     let mut note = format!(
         "copy {} ({}s old)",
@@ -241,7 +253,11 @@ fn copy_of(
         note.push_str("; ");
         note.push_str(&extra);
     }
-    Ok((String::from_utf8_lossy(&copy.body).into_owned(), Some(note)))
+    Ok((
+        String::from_utf8_lossy(&copy.body).into_owned(),
+        Some(note),
+        current,
+    ))
 }
 
 /// OFAC's SDN rows joined with their aliases.
@@ -249,12 +265,17 @@ fn read_ofac(
     transport: &(dyn Transport + Send + Sync),
     dir: Option<&Path>,
     now_unix: u64,
-) -> Result<(Vec<Listing>, Option<String>), crate::threat_feeds::Failure> {
-    let (sdn, note) = copy_of(transport, dir, &OFAC_SDN, now_unix)?;
-    // The alias table enriches the names; a list read without it still answers for primary names.
-    let (alt, alt_note) = match copy_of(transport, dir, &OFAC_ALT, now_unix) {
-        Ok((alt, _)) => (alt, None),
-        Err((_, why)) => (String::new(), Some(format!("aliases unavailable ({why})"))),
+) -> Result<(Vec<Listing>, Option<String>, bool), crate::threat_feeds::Failure> {
+    let (sdn, note, sdn_current) = copy_of(transport, dir, &OFAC_SDN, now_unix)?;
+    // A missing alias table does not invalidate observed primary names, but it prevents
+    // a complete negative verdict: the queried name might occur only in an alias.
+    let (alt, alt_note, alt_current) = match copy_of(transport, dir, &OFAC_ALT, now_unix) {
+        Ok((alt, _, current)) => (alt, None, current),
+        Err((_, why)) => (
+            String::new(),
+            Some(format!("aliases unavailable ({why})")),
+            false,
+        ),
     };
     let listings = parse_ofac(&sdn, &alt);
     if listings.is_empty() {
@@ -268,7 +289,7 @@ fn read_ofac(
         .flatten()
         .collect::<Vec<_>>()
         .join("; ");
-    Ok((listings, Some(note)))
+    Ok((listings, Some(note), sdn_current && alt_current))
 }
 
 /// The UN list's individuals and entities.
@@ -276,8 +297,8 @@ fn read_un(
     transport: &(dyn Transport + Send + Sync),
     dir: Option<&Path>,
     now_unix: u64,
-) -> Result<(Vec<Listing>, Option<String>), crate::threat_feeds::Failure> {
-    let (xml, note) = copy_of(transport, dir, &UN_SC, now_unix)?;
+) -> Result<(Vec<Listing>, Option<String>, bool), crate::threat_feeds::Failure> {
+    let (xml, note, current) = copy_of(transport, dir, &UN_SC, now_unix)?;
     let listings = parse_un(&xml);
     if listings.is_empty() {
         return Err((
@@ -285,7 +306,7 @@ fn read_un(
             format!("no listing could be read in {} bytes", xml.len()),
         ));
     }
-    Ok((listings, note))
+    Ok((listings, note, current))
 }
 
 /// The EU list's subjects.
@@ -293,8 +314,8 @@ fn read_eu(
     transport: &(dyn Transport + Send + Sync),
     dir: Option<&Path>,
     now_unix: u64,
-) -> Result<(Vec<Listing>, Option<String>), crate::threat_feeds::Failure> {
-    let (csv, note) = copy_of(transport, dir, &EU_FSF, now_unix)?;
+) -> Result<(Vec<Listing>, Option<String>, bool), crate::threat_feeds::Failure> {
+    let (csv, note, current) = copy_of(transport, dir, &EU_FSF, now_unix)?;
     let listings = parse_eu(&csv);
     if listings.is_empty() {
         return Err((
@@ -302,7 +323,7 @@ fn read_eu(
             format!("no subject could be read in {} bytes", csv.len()),
         ));
     }
-    Ok((listings, note))
+    Ok((listings, note, current))
 }
 
 /// The EU list's columns kept for the evidence, by header name, and the attribute each becomes.

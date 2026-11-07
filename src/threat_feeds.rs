@@ -525,6 +525,33 @@ pub(crate) struct Copy {
     pub(crate) note: Option<String>,
 }
 
+impl Copy {
+    /// A fresh download, or an integrity-checked kept copy within the refresh interval, can
+    /// answer a current absence query. A copy used only because its refresh failed cannot.
+    /// This does not change whether the historical listing is preserved and searchable.
+    pub(crate) fn current_for(&self, now_unix: u64, max_age: u64) -> bool {
+        const MAX_PUBLISHER_AGE: u64 = 30 * 86_400;
+        let verified_copy = self.downloaded || matches!(self.date, KeptDate::Kept(_));
+        let refresh_failed = self
+            .note
+            .as_deref()
+            .is_some_and(|note| note.starts_with("could not be downloaded again ("));
+        // Download time is not publication time. A publisher revision known to be
+        // older than the feed freshness policy cannot establish present-day absence.
+        // When Last-Modified is unavailable, retain the existing acquisition-age rule.
+        let publisher_current = match self.date {
+            KeptDate::Kept(Some(updated)) => {
+                updated <= now_unix && now_unix - updated <= MAX_PUBLISHER_AGE
+            }
+            KeptDate::Kept(None) | KeptDate::Missing => true,
+        };
+        verified_copy
+            && !refresh_failed
+            && publisher_current
+            && now_unix.saturating_sub(self.fetched) < max_age
+    }
+}
+
 /// The feed's body: the copy in `dir` while it is younger than the feed's age, else a download
 /// (kept in `dir`), else the old copy.
 pub(crate) fn load(
@@ -534,11 +561,24 @@ pub(crate) fn load(
     now_unix: u64,
 ) -> Result<Copy, Failure> {
     let path = dir.map(|dir| dir.join(feed.id));
+    // Preserve the complete pre-upgrade cache, even if it is HTML or cannot be parsed,
+    // before a refresh can replace it. Repeat reads verify the same immutable bytes.
+    let existing = path.as_deref().and_then(read_copy);
+    if let (Some(dir), Some((body, fetched))) = (dir, existing.as_ref()) {
+        let sidecar = path
+            .as_deref()
+            .and_then(|path| crate::fsio::read_bounded(&updated_path(path), UPDATED_BYTES).ok());
+        crate::feed_archive::backfill(dir, feed.id, body, *fetched, sidecar.as_deref()).map_err(
+            |error| {
+                (
+                    SourceOutcomeKind::Inconclusive,
+                    format!("existing original feed could not be archived ({error})"),
+                )
+            },
+        )?;
+    }
     // A page an earlier version kept in the list's place is no copy of the list.
-    let kept = path
-        .as_deref()
-        .and_then(read_copy)
-        .filter(|(body, _)| !is_page_for(body, feed.xml_root));
+    let kept = existing.filter(|(body, _)| !is_page_for(body, feed.xml_root));
     let kept_date = match (path.as_deref(), &kept) {
         (Some(path), Some((body, _))) => read_updated(path, body),
         _ => KeptDate::Missing,
@@ -556,7 +596,7 @@ pub(crate) fn load(
             });
         }
     }
-    match download(transport, feed, now_unix) {
+    match download(transport, dir, feed, now_unix) {
         Ok((body, updated)) => {
             let note = path
                 .and_then(|path| keep(&path, &body, updated).err())
@@ -698,6 +738,7 @@ fn read_copy(path: &Path) -> Option<(Vec<u8>, u64)> {
 /// when the answer says.
 fn download(
     transport: &(dyn Transport + Send + Sync),
+    dir: Option<&Path>,
     feed: &CachedList,
     now_unix: u64,
 ) -> Result<(Vec<u8>, Option<u64>), Failure> {
@@ -712,6 +753,27 @@ fn download(
     )
     // `fetch` errors only before anything is sent (a blocked egress, an unsendable URL).
     .map_err(|error| (SourceOutcomeKind::RefusedBeforeSending, error.to_string()))?;
+    // Archive the exact bytes and headers of every HTTP response, including HTML challenges,
+    // errors and truncated bodies. None of these may overwrite the operational cache.
+    if let (Some(dir), Some(response)) = (dir, fetched.response.as_ref()) {
+        let metadata = serde_json::json!({
+            "source": feed.source,
+            "request_method": "GET",
+            "request_url": feed.url,
+            "final_url": fetched.final_url,
+            "redirects": fetched.redirects,
+            "response_status": response.status,
+            "response_headers": response.headers,
+            "body_truncated": response.truncated,
+            "observed_at_unix": now_unix,
+        });
+        crate::feed_archive::store(dir, feed.id, &response.body, &metadata).map_err(|error| {
+            (
+                SourceOutcomeKind::Inconclusive,
+                format!("original HTTP response could not be preserved ({error})"),
+            )
+        })?;
+    }
     match fetched.response {
         Some(response) if response.truncated => Err((
             SourceOutcomeKind::ProtocolDrift,
