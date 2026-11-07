@@ -247,7 +247,19 @@ pub fn collect_from_export(
             query_type: block.query_type,
             limit: crate::seeknow::SEARCH_LIMIT_MAX,
         };
-        let mut outcome = if block.rows.is_empty() {
+        // A positive upstream total with no exported rows is incomplete,
+        // never a verified absence. Likewise, rows rejected by the bounded
+        // parser cannot justify a clean negative result.
+        let incomplete_empty = block.rows.is_empty()
+            && (block.reported_total.is_some_and(|total| total > 0)
+                || block.rows_not_read > 0);
+        let mut outcome = if incomplete_empty {
+            SourceExecutionOutcome::inconclusive(
+                EXPORT_MODULE,
+                now_unix,
+                "export has no readable rows despite reported or unread records",
+            )
+        } else if block.rows.is_empty() {
             SourceExecutionOutcome::valid_zero(EXPORT_MODULE, now_unix)
         } else {
             SourceExecutionOutcome::success(EXPORT_MODULE, now_unix, block.rows.len())
@@ -267,6 +279,9 @@ pub fn collect_from_export(
         }
         if block.rows_not_read > 0 {
             notes.push(format!("{} rows were not read", block.rows_not_read));
+        }
+        if incomplete_empty {
+            notes.push("no readable rows: cannot establish a valid zero".to_owned());
         }
         outcome.detail = Some(notes.join("; "));
         let result = crate::seeknow::SeekNowSearchResult {
