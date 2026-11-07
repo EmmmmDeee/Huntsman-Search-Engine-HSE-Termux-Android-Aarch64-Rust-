@@ -93,6 +93,73 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
     true
 }
 
+/// Why an in-place writer could not safely open its checked path.
+#[derive(Debug)]
+pub(crate) enum OpenRefusal {
+    Linked,
+    Changed,
+    NotRegular,
+    Io(std::io::Error),
+}
+
+/// One descriptor policy for in-place writes: retain the checked inode and refuse
+/// non-regular files. Callers retain their own public errors and wording.
+pub(crate) fn require_opened(
+    linked: Option<&fs::Metadata>,
+    opened: &fs::Metadata,
+) -> Result<(), OpenRefusal> {
+    if linked.is_some_and(|linked| !same_inode(linked, opened)) {
+        return Err(OpenRefusal::Changed);
+    }
+    if !opened.is_file() {
+        return Err(OpenRefusal::NotRegular);
+    }
+    Ok(())
+}
+
+/// Open a regular file for an in-place write, retaining caller options and mode.
+/// Missing paths are created exclusively only when `create` permits it. On the
+/// Linux/Android targets covered by `NONBLOCK_NOFOLLOW`, the open itself refuses
+/// final symlinks and cannot wait for a FIFO reader after a path replacement.
+pub(crate) fn open_checked(
+    path: &Path,
+    options: &mut OpenOptions,
+    create: bool,
+) -> Result<File, OpenRefusal> {
+    open_checked_with(path, options, create, || {})
+}
+
+/// The same write policy with a deterministic check/open seam for regression tests.
+pub(crate) fn open_checked_with(
+    path: &Path,
+    options: &mut OpenOptions,
+    create: bool,
+    after_check: impl FnOnce(),
+) -> Result<File, OpenRefusal> {
+    let linked = check_not_symlink(path).map_err(|refusal| match refusal {
+        SymlinkRefusal::Linked => OpenRefusal::Linked,
+        SymlinkRefusal::Unreadable(error) => OpenRefusal::Io(error),
+    })?;
+    if linked.as_ref().is_some_and(|meta| !meta.is_file()) {
+        return Err(OpenRefusal::NotRegular);
+    }
+    after_check();
+    if create && linked.is_none() {
+        options.create_new(true);
+    }
+    let file = open_unfollowed_with(path, options).map_err(|error| {
+        if is_refused_link(&error) {
+            // A link seen by lstat was already refused above: this one was
+            // planted after the check, so preserve the changed-path refusal.
+            OpenRefusal::Changed
+        } else {
+            OpenRefusal::Io(error)
+        }
+    })?;
+    require_opened(linked.as_ref(), &file.metadata().map_err(OpenRefusal::Io)?)?;
+    Ok(file)
+}
+
 /// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known, each
 /// with `ELOOP` 40. `O_NONBLOCK` is 0o4000 on all of them. `O_NOFOLLOW` is 0o100000 on Arm and
 /// PowerPC, where 0o400000 is another flag (`O_LARGEFILE` on Arm, `O_DIRECT` on PowerPC) and the
@@ -130,6 +197,12 @@ const ELOOP: i32 = 40;
 pub(crate) fn open_unfollowed(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
+    open_unfollowed_with(path, &mut options)
+}
+
+/// Apply the one platform flag table to reads and writes alike. Callers still
+/// check regular-file type and inode identity before using the descriptor.
+fn open_unfollowed_with(path: &Path, options: &mut OpenOptions) -> std::io::Result<File> {
     #[cfg(unix)]
     if let Some(flags) = NONBLOCK_NOFOLLOW {
         use std::os::unix::fs::OpenOptionsExt as _;
@@ -849,6 +922,47 @@ mod tests {
         .expect_err("a new symlink must never be accepted as an atomic replacement");
         assert!(failure.to_string().contains(REFUSED_SYMLINK));
         assert_eq!(fs::read(&other).unwrap(), b"unrelated");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checked_writer_never_overwrites_a_file_planted_after_a_missing_check() {
+        let dir = scratch("write-create-race");
+        let path = dir.join("history.jsonl");
+        let mut options = OpenOptions::new();
+        options.append(true);
+        let result = open_checked_with(&path, &mut options, true, || {
+            fs::write(&path, b"another writer's record\n").unwrap();
+        });
+        assert!(matches!(result, Err(OpenRefusal::Io(_))));
+        assert_eq!(fs::read(&path).unwrap(), b"another writer's record\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checked_writer_requires_permission_to_create_and_keeps_existing_bytes() {
+        let dir = scratch("write-create-policy");
+        let path = dir.join("history.jsonl");
+        let mut options = OpenOptions::new();
+        options.append(true);
+        assert!(matches!(
+            open_checked(&path, &mut options, false),
+            Err(OpenRefusal::Io(_))
+        ));
+        assert!(!path.exists());
+        let mut options = OpenOptions::new();
+        options.append(true);
+        open_checked(&path, &mut options, true)
+            .unwrap()
+            .write_all(b"original\n")
+            .unwrap();
+        let mut options = OpenOptions::new();
+        options.append(true);
+        open_checked(&path, &mut options, false)
+            .unwrap()
+            .write_all(b"next\n")
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"original\nnext\n");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -578,7 +578,10 @@ files. Every line reference is to that commit.
   - Every `apk_intel`, `apk_set_cli`, `x509` and `certspotter` test passes unchanged.
   - A new test, `a_certificate_time_outside_the_calendar_is_not_printed_as_a_date`, fails before and passes after.
 
-**C4. One checked open for in-place writes.** Declared change B9, because of the defect below.
+**C4. One checked open for in-place writes.** Declared change B9.
+- **Current implementation.** `fsio::open_checked` owns the preflight, exclusive missing-file creation and descriptor checks for both `run_history` and `scan_store`. Each caller retains its own error wording and permissions. The shared opener also uses the existing platform-specific `O_NONBLOCK | O_NOFOLLOW` table: on its supported Linux/Android architectures, a FIFO planted after the preflight cannot block the open, and a final symlink cannot be followed. Other platforms retain the metadata checks without claiming these open-flag guarantees.
+- **Regression evidence.** `scan_store::tests::append_does_not_block_when_a_fifo_replaces_the_checked_file` replaces a checked regular file with a FIFO at the check/open seam; it failed before the shared protected open and passes afterwards. The pre-existing FIFO preflight correction from #1790 is retained, not repeated. `fsio` tests also preserve missing-path creation policy and refuse a file planted after a missing check without overwriting it.
+- **Historical rationale and contract:**
 - **Defect found while preparing it.**
   - `run_history`'s check refuses only a symbolic link. It learns the file type after the open, so a FIFO at the history path blocks the open, waiting for a reader.
   - `scan_store` refuses anything but a regular file before it opens.
