@@ -89,6 +89,7 @@ pub struct AuditSummary {
     pub false_positive_name_elements: usize,
     pub with_birthplace_claim: usize,
     pub with_conflicting_birthplace_claims: usize,
+    pub with_ambiguous_compound_birthplace_claims: usize,
     pub without_birthplace_claim: usize,
     /// This audit has no access to deleted, pruned, unsaved or remote history.
     pub history_scope: &'static str,
@@ -348,6 +349,13 @@ fn people_in_scan(scan: &ScanRecord, results: Option<&ScanResults>) -> Vec<Perso
         row.birthplace_status = match distinct_values(&row.place_of_birth_claims) {
             0 => "not_recorded",
             1 => "reported_unverified",
+            _ if row
+                .place_of_birth_claims
+                .iter()
+                .any(|claim| claim.raw_attribute_value.contains("; ")) =>
+            {
+                "ambiguous_compound_claims"
+            }
             _ => "conflicting_claims",
         };
     }
@@ -382,6 +390,10 @@ fn emit_person(
         "conflicting_claims" => {
             summary.with_birthplace_claim += 1;
             summary.with_conflicting_birthplace_claims += 1;
+        }
+        "ambiguous_compound_claims" => {
+            summary.with_birthplace_claim += 1;
+            summary.with_ambiguous_compound_birthplace_claims += 1;
         }
         _ => summary.with_birthplace_claim += 1,
     }
@@ -703,9 +715,37 @@ mod tests {
             termination: None,
         };
         let rows = people_in_scan(&record(), Some(&results));
-        assert_eq!(rows[1].birthplace_status, "conflicting_claims");
+        assert_eq!(rows[1].birthplace_status, "ambiguous_compound_claims");
         assert_eq!(rows[1].place_of_birth_claims.len(), 2);
         assert_eq!(rows[1].date_of_birth_claims.len(), 2);
+        assert!(rows[1].historical_context.is_empty());
+    }
+
+    #[test]
+    fn compound_place_country_is_ambiguous_not_two_confirmed_birthplaces() {
+        let mut person = Entity::new(EntityKind::Person, "Jane Citizen", 0.5, "0123456789abcdef");
+        person.add_evidence(
+            Evidence::new(EvidenceProvenance::new("record"), "one composite place")
+                .with_attr("place_of_birth", "Dushanbe; Tajikistan"),
+        );
+        let results = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: record().id,
+            text: String::new(),
+            entities: vec![person],
+            outcomes: Vec::new(),
+            elements: Vec::new(),
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        let rows = people_in_scan(&record(), Some(&results));
+        assert_eq!(rows[1].birthplace_status, "ambiguous_compound_claims");
+        assert_eq!(rows[1].place_of_birth_claims.len(), 2);
+        assert_eq!(
+            rows[1].place_of_birth_claims[0].raw_attribute_value,
+            "Dushanbe; Tajikistan"
+        );
         assert!(rows[1].historical_context.is_empty());
     }
 
