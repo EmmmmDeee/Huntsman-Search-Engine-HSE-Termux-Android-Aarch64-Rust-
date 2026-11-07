@@ -11,6 +11,7 @@
 //! whole listing kept verbatim as evidence (remarks, dates of birth, nationality, programmes) so
 //! it can be compared with what else is known.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -139,8 +140,9 @@ pub fn check(
         (EU, read_eu(transport, dir, now_unix)),
     ] {
         outcomes.push(match read {
-            Ok((listings, note, current)) => {
-                let found = record_matches(&listings, &query, label, scan_id, &mut entities);
+            Ok((listings, note, current, unreadable)) => {
+                let (found, matching) =
+                    record_matches(&listings, &query, label, scan_id, &mut entities);
                 let mut outcome = if !current {
                     // Retain every historical matching document, but neither a positive
                     // nor a negative from an outdated copy proves the present-day list.
@@ -152,12 +154,32 @@ pub fn check(
                         Some(found),
                         "list refresh failed or verified cache freshness expired",
                     )
+                } else if found == 0 && unreadable > 0 {
+                    // Rows that could not be read could hold the subject: no clean negative.
+                    SourceExecutionOutcome::observed(
+                        label,
+                        now_unix,
+                        SourceOutcomeKind::Inconclusive,
+                        None,
+                        Some(0),
+                        "no readable listing matched, but some rows could not be read",
+                    )
                 } else if found == 0 {
                     SourceExecutionOutcome::valid_zero(label, now_unix)
                 } else {
                     SourceExecutionOutcome::success(label, now_unix, found)
                 };
                 let mut detail = format!("{} listings read", listings.len());
+                if unreadable > 0 {
+                    let _ = write!(detail, "; {unreadable} rows could not be read");
+                }
+                if matching > found {
+                    let _ = write!(
+                        detail,
+                        "; {} more matching listings beyond the first {found} were not attached",
+                        matching - found
+                    );
+                }
                 if let Some(note) = note {
                     detail.push_str("; ");
                     detail.push_str(&note);
@@ -172,15 +194,17 @@ pub fn check(
     (entities, outcomes)
 }
 
-/// Push every listing in `listings` that names `query`, at most [`MAX_MATCHES`]. **Pure.**
+/// Push every listing in `listings` that names `query`, at most [`MAX_MATCHES`]. Returns how many
+/// were attached and how many matched in all, so a cut-off is never silent. **Pure.**
 fn record_matches(
     listings: &[Listing],
     query: &[String],
     label: &str,
     scan_id: &str,
     entities: &mut Vec<Entity>,
-) -> usize {
+) -> (usize, usize) {
     let mut found = 0;
+    let mut matching = 0;
     for listing in listings {
         let Some(matched) = listing
             .names
@@ -189,8 +213,9 @@ fn record_matches(
         else {
             continue;
         };
+        matching += 1;
         if found == MAX_MATCHES {
-            break;
+            continue;
         }
         found += 1;
         let primary = listing.names.first().map_or("", String::as_str);
@@ -219,7 +244,7 @@ fn record_matches(
             &["sanctions", "name-match-lead"],
         );
     }
-    found
+    (found, matching)
 }
 
 const fn list_title(label: &str) -> &'static str {
@@ -229,6 +254,10 @@ const fn list_title(label: &str) -> &'static str {
         _ => "UN Security Council Consolidated List",
     }
 }
+
+/// One list as read: its listings, what the outcome should say about its copy, whether that copy is
+/// current, and how many data rows could not be read.
+type ListRead = (Vec<Listing>, Option<String>, bool, usize);
 
 /// A list's copy (kept or downloaded) and what its outcome should say about the copy.
 fn copy_of(
@@ -265,7 +294,7 @@ fn read_ofac(
     transport: &(dyn Transport + Send + Sync),
     dir: Option<&Path>,
     now_unix: u64,
-) -> Result<(Vec<Listing>, Option<String>, bool), crate::threat_feeds::Failure> {
+) -> Result<ListRead, crate::threat_feeds::Failure> {
     let (sdn, note, sdn_current) = copy_of(transport, dir, &OFAC_SDN, now_unix)?;
     // A missing alias table does not invalidate observed primary names, but it prevents
     // a complete negative verdict: the queried name might occur only in an alias.
@@ -277,7 +306,7 @@ fn read_ofac(
             false,
         ),
     };
-    let listings = parse_ofac(&sdn, &alt);
+    let (listings, unreadable) = parse_ofac(&sdn, &alt);
     if listings.is_empty() {
         return Err((
             SourceOutcomeKind::ProtocolDrift,
@@ -289,7 +318,7 @@ fn read_ofac(
         .flatten()
         .collect::<Vec<_>>()
         .join("; ");
-    Ok((listings, Some(note), sdn_current && alt_current))
+    Ok((listings, Some(note), sdn_current && alt_current, unreadable))
 }
 
 /// The UN list's individuals and entities.
@@ -297,16 +326,16 @@ fn read_un(
     transport: &(dyn Transport + Send + Sync),
     dir: Option<&Path>,
     now_unix: u64,
-) -> Result<(Vec<Listing>, Option<String>, bool), crate::threat_feeds::Failure> {
+) -> Result<ListRead, crate::threat_feeds::Failure> {
     let (xml, note, current) = copy_of(transport, dir, &UN_SC, now_unix)?;
-    let listings = parse_un(&xml);
+    let (listings, unreadable) = parse_un(&xml);
     if listings.is_empty() {
         return Err((
             SourceOutcomeKind::ProtocolDrift,
             format!("no listing could be read in {} bytes", xml.len()),
         ));
     }
-    Ok((listings, note, current))
+    Ok((listings, note, current, unreadable))
 }
 
 /// The EU list's subjects.
@@ -314,16 +343,16 @@ fn read_eu(
     transport: &(dyn Transport + Send + Sync),
     dir: Option<&Path>,
     now_unix: u64,
-) -> Result<(Vec<Listing>, Option<String>, bool), crate::threat_feeds::Failure> {
+) -> Result<ListRead, crate::threat_feeds::Failure> {
     let (csv, note, current) = copy_of(transport, dir, &EU_FSF, now_unix)?;
-    let listings = parse_eu(&csv);
+    let (listings, unreadable) = parse_eu(&csv);
     if listings.is_empty() {
         return Err((
             SourceOutcomeKind::ProtocolDrift,
             format!("no subject could be read in {} bytes", csv.len()),
         ));
     }
-    Ok((listings, note, current))
+    Ok((listings, note, current, unreadable))
 }
 
 /// The EU list's columns kept for the evidence, by header name, and the attribute each becomes.
@@ -349,16 +378,19 @@ const EU_FIELDS: [(&str, &str); 16] = [
 /// Every subject on the EU list. The file holds one row per combination of a subject's names,
 /// addresses, birth dates, documents and citizenships, so rows are grouped by
 /// `Entity_LogicalId` and each value is kept once, in file order. **Pure.**
-fn parse_eu(csv: &str) -> Vec<Listing> {
+/// Every subject on the EU list, and how many data rows could not be read (a row with the wrong
+/// number of fields or no subject id, or a subject left with no name), which could hold the
+/// subject asked about. **Pure.**
+fn parse_eu(csv: &str) -> (Vec<Listing>, usize) {
     let mut lines = csv.trim_start_matches('\u{feff}').lines();
     let Some(header) = lines.next() else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     let header = delimited_fields(header, ';');
     let column = |name: &str| header.iter().position(|h| h == name);
     let (Some(id_at), Some(whole_at)) = (column("Entity_LogicalId"), column("NameAlias_WholeName"))
     else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
     let parts_at = [
         column("NameAlias_FirstName"),
@@ -369,15 +401,22 @@ fn parse_eu(csv: &str) -> Vec<Listing> {
         .iter()
         .filter_map(|(name, key)| column(name).map(|at| (at, *key)))
         .collect();
+    let mut unreadable = 0usize;
     let mut order: Vec<String> = Vec::new();
     let mut subjects: std::collections::HashMap<String, Listing> = std::collections::HashMap::new();
     for line in lines {
-        let fields = delimited_fields(line.trim_end_matches('\r'), ';');
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields = delimited_fields(line, ';');
         if fields.len() != header.len() {
+            unreadable += 1;
             continue;
         }
         let id = fields[id_at].trim();
         if id.is_empty() {
+            unreadable += 1;
             continue;
         }
         let listing = subjects.entry(id.to_owned()).or_insert_with(|| {
@@ -409,9 +448,13 @@ fn parse_eu(csv: &str) -> Vec<Listing> {
             }
         }
     }
-    order
+    let subjects: Vec<Listing> = order
         .into_iter()
         .filter_map(|id| subjects.remove(&id))
+        .collect();
+    let nameless = subjects.iter().filter(|l| l.names.is_empty()).count();
+    let listings = subjects
+        .into_iter()
         .filter(|listing| !listing.names.is_empty())
         .map(|mut listing| {
             let reference = listing
@@ -430,7 +473,8 @@ fn parse_eu(csv: &str) -> Vec<Listing> {
             listing.url = format!("https://webgate.ec.europa.eu/fsd/fsf/public/files/csvFullSanctionsList_1_1/content#{reference}");
             listing
         })
-        .collect()
+        .collect();
+    (listings, unreadable + nameless)
 }
 
 /// OFAC's "no value" marker.
@@ -442,7 +486,7 @@ fn ofac_value(field: &str) -> Option<String> {
 /// Every SDN row (`ent_num, name, type, program, title, call sign, vessel type, tonnage, GRT,
 /// vessel flag, vessel owner, remarks`) with the aliases `ALT.CSV` lists under its number. A
 /// line that is not a full row (the file's trailing end-of-file byte) is skipped. **Pure.**
-fn parse_ofac(sdn: &str, alt: &str) -> Vec<Listing> {
+fn parse_ofac(sdn: &str, alt: &str) -> (Vec<Listing>, usize) {
     let mut aliases: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for line in alt.lines() {
@@ -469,15 +513,27 @@ fn parse_ofac(sdn: &str, alt: &str) -> Vec<Listing> {
         "remarks",
     ];
     let mut listings = Vec::new();
+    let mut unreadable = 0usize;
     for line in sdn.lines() {
-        let fields = csv_fields(line.trim_end_matches('\r'));
+        let line = line.trim_end_matches('\r');
+        // The file ends with a DOS end-of-file byte on a line of its own: not a row.
+        if line
+            .trim_matches(|c: char| c.is_whitespace() || c == '\u{1a}')
+            .is_empty()
+        {
+            continue;
+        }
+        let fields = csv_fields(line);
         if fields.len() < COLUMNS.len() {
+            unreadable += 1;
             continue;
         }
         let (Some(number), Some(name)) = (ofac_value(&fields[0]), ofac_value(&fields[1])) else {
+            unreadable += 1;
             continue;
         };
         if !number.bytes().all(|b| b.is_ascii_digit()) {
+            unreadable += 1;
             continue;
         }
         let mut names = vec![name];
@@ -493,7 +549,7 @@ fn parse_ofac(sdn: &str, alt: &str) -> Vec<Listing> {
             fields: kept,
         });
     }
-    listings
+    (listings, unreadable)
 }
 
 /// The text of every `<tag>…</tag>` in `block`, unescaped, in order. **Pure.**
@@ -575,8 +631,9 @@ fn blocks<'a>(xml: &'a str, element: &str) -> Vec<&'a str> {
 
 /// Every individual and entity on the UN list: the name parts joined, every alias, and every
 /// field kept for the evidence. **Pure.**
-fn parse_un(xml: &str) -> Vec<Listing> {
+fn parse_un(xml: &str) -> (Vec<Listing>, usize) {
     let mut listings = Vec::new();
+    let mut unreadable = 0usize;
     for (element, kind) in [("INDIVIDUAL", "individual"), ("ENTITY", "entity")] {
         for block in blocks(xml, element) {
             let parts: Vec<String> = ["FIRST_NAME", "SECOND_NAME", "THIRD_NAME", "FOURTH_NAME"]
@@ -584,9 +641,11 @@ fn parse_un(xml: &str) -> Vec<Listing> {
                 .filter_map(|tag| tag_values(block, tag).into_iter().next())
                 .collect();
             let Some(reference) = tag_values(block, "REFERENCE_NUMBER").into_iter().next() else {
+                unreadable += 1;
                 continue;
             };
             if parts.is_empty() {
+                unreadable += 1;
                 continue;
             }
             let mut names = vec![parts.join(" ")];
@@ -639,7 +698,7 @@ fn parse_un(xml: &str) -> Vec<Listing> {
             });
         }
     }
-    listings
+    (listings, unreadable)
 }
 
 #[cfg(test)]
