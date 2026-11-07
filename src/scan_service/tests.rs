@@ -48,7 +48,7 @@ fn failed_scan_log_write_remains_observable_after_successful_status_update() {
     std::fs::remove_dir(&log).unwrap();
     assert!(service.wait(&record.id, Instant::now()).is_err());
     service.delete(&record.id).unwrap();
-    assert!(!service.log_failure(&record.id).is_some());
+    assert!(service.log_failure(&record.id).is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
