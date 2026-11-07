@@ -506,11 +506,20 @@ mod tests {
     fn keeps_stale_source_failures_separate_from_valid_cache() {
         let raw = r#"{"ok":true,"rewards":[{"id":"old","source":"fbi","last_synced_at":"2026-07-04T13:31:17Z"}],"total_available":1234,"stale_sources":["fbi"],"errors":[{"source":"fbi","error":"FBI_HTTP_403"}],"cache":{"stale":false},"fetched_at":"2026-11-07T16:21:27Z"}"#;
         let t = fake(raw);
-        let r = retrieve(&t, &Resource::OfficialRewards, Bounds { pages: 1, limit: 1 }, 100).unwrap();
+        let r = retrieve(
+            &t,
+            &Resource::OfficialRewards,
+            Bounds { pages: 1, limit: 1 },
+            100,
+        )
+        .unwrap();
         assert_eq!(r.pages[0].original_json, raw);
         assert_eq!(r.stale_upstream_sources, vec!["fbi"]);
         assert_eq!(r.upstream_fetch_errors.len(), 1);
-        assert_eq!(r.records[0].record_synced_at.as_deref(), Some("2026-07-04T13:31:17Z"));
+        assert_eq!(
+            r.records[0].record_synced_at.as_deref(),
+            Some("2026-07-04T13:31:17Z")
+        );
         assert_eq!(r.upstream_total_available, Some(1234));
         assert!(!r.complete_dataset_verified);
     }
