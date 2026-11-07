@@ -665,10 +665,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "hse-person-audit-{}-{stamp}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("hse-person-audit-{}-{stamp}", std::process::id()));
         let store = ScanStore::open(&path).unwrap();
         let row = record();
         store.create(&row).unwrap();
