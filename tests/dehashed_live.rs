@@ -158,12 +158,13 @@ fn a_domain_search_loses_no_record_keeps_every_value_and_no_credential() {
     assert!(checked > 0);
 
     // No credential value appears anywhere in what HSE keeps or prints.
+    // Nothing derived from a credential is printed, not even a count: the assertions below are
+    // the whole verdict.
     let secrets = credential_values(&truth);
     let kept = format!("{outcome:?}");
-    let leaked = secrets.iter().filter(|s| kept.contains(s.as_str())).count();
-    println!(
-        "credential values in the raw page: {}, in HSE's outcome: {leaked}",
-        secrets.len()
+    assert!(
+        !secrets.is_empty(),
+        "the raw page holds credentials to check"
     );
     let marked = outcome.entries.iter().filter(|e| e.password).count();
     let raw_marked = raw_entries
