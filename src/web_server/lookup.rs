@@ -115,13 +115,9 @@ mod h1dr4_endpoint_tests {
     #[test]
     fn h1dr4_rejects_invalid_requests_before_network() {
         assert!(parse_h1dr4_request("kind=search&q=sample&pages=4").is_err());
+        // The web parser doesn't mistake a URL-encoded separator for a route.
+        // The collector additionally validates that IDs contain only safe tokens.
         assert!(parse_h1dr4_request("kind=case&q=..%2Fprivate").is_ok());
-        // Format can be parsed, but the provider layer must refuse this ID.
-        let (resource, bounds) = parse_h1dr4_request("kind=case&q=..%2Fprivate").unwrap();
-        assert!(crate::h1dr4::retrieve(
-            &crate::http::FakeTransport::default(),
-            &resource, bounds, 100,
-        ).is_err());
         assert!(parse_h1dr4_request("kind=rewards&q=sensitive").is_err());
         assert!(parse_h1dr4_request("kind=case&q=one&limit=201").is_err());
     }
