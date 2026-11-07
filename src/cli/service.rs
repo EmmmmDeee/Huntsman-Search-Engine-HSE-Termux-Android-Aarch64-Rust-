@@ -58,6 +58,29 @@ fn web_analyze(
 /// findings and says why in an inconclusive `exif` outcome.
 fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
     let now = clock::unix_now();
+    // A SeekNow bulk export uploaded from the phone is read offline by the same import as
+    // `seeknow import`: rows attribute only when they name their target, credentials never kept.
+    if huntsman_recon::seeknow::is_bulk_export(bytes) {
+        let import = huntsman_recon::seeknow_cli::import_export(bytes, now).map_err(|message| {
+            LookupError {
+                status: 422,
+                message,
+            }
+        })?;
+        let text = huntsman_recon::lookup_report::render(&import.entities, &import.outcomes)
+            .map_err(|message| LookupError {
+                status: 500,
+                message,
+            })?;
+        return Ok(LookupReport {
+            route: "inspect",
+            text,
+            entities: import.entities,
+            outcomes: import.outcomes,
+            scan: None,
+            status: None,
+        });
+    }
     // APK set containers are ZIP archives with nested APKs, not individual APKs.
     // Reuse the same bounded offline parser and evidence contract as `apk set`.
     if label.rsplit_once('.').is_some_and(|(_, extension)| {

@@ -915,3 +915,89 @@ fn a_domain_is_named_by_hosts_on_it_and_not_by_lookalikes() {
     );
     assert!(!values.contains(&"lookalike"), "{values:?}");
 }
+
+/// A synthetic bulk export shaped like the file `SeekNow`'s web app downloads: two spellings of
+/// one handle, a block for another handle, a credential column and a provider total above the
+/// rows exported.
+const BULK_EXPORT: &str = r#"{
+  "id":"test-export","createdAt":"2026-11-07T00:00:00Z","format":"json","status":"done",
+  "targets":["Dubai","dubai","example_handle"],
+  "results":[
+    {"target":"Dubai","type":"username","total":3,"sources":2,"breaches":3,"stealers":0,"intel":0,"rows":[
+      {"_source":"Dataset A","pseudo":"dubai","email":"owner@example.com","password":"hunter2-secret","_line":"7"},
+      {"_source":"Dataset B","field_4":"Dubai","email":"stranger@example.com"}
+    ]},
+    {"target":"dubai","type":"username","total":3,"rows":[
+      {"_source":"Dataset A","pseudo":"dubai","email":"owner@example.com"}
+    ]},
+    {"target":"example_handle","type":"username","total":0,"rows":[]}
+  ]
+}"#;
+
+#[test]
+fn a_bulk_export_imports_offline_through_the_live_row_rules() {
+    use huntsman_recon::seeknow::{is_bulk_export, parse_bulk_export};
+    use huntsman_recon::seeknow_collector::{EXPORT_MODULE, collect_from_export};
+    assert!(is_bulk_export(BULK_EXPORT.as_bytes()));
+    assert!(!is_bulk_export(br#"{"success":true,"data":[]}"#));
+    let export = parse_bulk_export(BULK_EXPORT.as_bytes()).expect("export");
+    assert_eq!(export.results.len(), 3);
+    let import = collect_from_export(&export, &CollectionLimits::default(), 1);
+
+    // Dubai and dubai are one target, read once; the empty block is a clean zero.
+    assert_eq!(import.outcomes.len(), 2, "{:?}", import.outcomes);
+    assert!(import.outcomes.iter().all(|o| o.module == EXPORT_MODULE));
+    let first = import.outcomes[0].detail.clone().unwrap_or_default();
+    assert!(first.contains("bulk export test-export sha256 "), "{first}");
+    assert!(
+        first.contains("1 of 2 rows matched the query outside a username field"),
+        "{first}"
+    );
+    assert!(
+        first.contains("the provider reported 3 rows; the export holds 2"),
+        "{first}"
+    );
+    assert_eq!(import.outcomes[1].kind, SourceOutcomeKind::ValidZero);
+
+    let values: Vec<&str> = import.entities.iter().map(|e| e.value.as_str()).collect();
+    assert!(values.contains(&"owner@example.com"), "{values:?}");
+    // A stranger's row is not ATTRIBUTED to the target (not an entity)...
+    assert!(!values.contains(&"stranger@example.com"), "{values:?}");
+    // ...but every row is PRESERVED as a record: the two Dubai rows plus the duplicate-target
+    // block's row = 3 rows kept, the stranger row among them with its fields verbatim.
+    assert_eq!(import.records.len(), 3, "every row preserved");
+    let records = serde_json::to_string(&import.records).expect("json");
+    assert!(
+        records.contains("stranger@example.com"),
+        "stranger row preserved: {records}"
+    );
+    assert!(records.contains("owner@example.com"));
+    assert!(records.contains("Dataset A") && records.contains("_line"));
+    // The credential VALUE is masked everywhere; the field is named as present, never silent.
+    let saved = serde_json::to_string(&import.entities).expect("json");
+    for blob in [&saved, &records] {
+        assert!(
+            !blob.contains("hunter2-secret"),
+            "credential value never emitted"
+        );
+    }
+    assert!(
+        records.contains("password"),
+        "the masked field is named in sensitive_fields"
+    );
+    assert!(saved.contains("sensitive_fields_present"));
+    assert!(saved.contains("provider_field._line"));
+}
+
+#[test]
+fn a_bulk_export_with_an_unknown_type_or_no_target_is_refused_whole() {
+    use huntsman_recon::seeknow::parse_bulk_export;
+    for bad in [
+        r#"{"results":[{"target":"x","type":"telepathy","rows":[]}]}"#,
+        r#"{"results":[{"target":"  ","type":"username","rows":[]}]}"#,
+        r#"{"rows":[]}"#,
+        "not json",
+    ] {
+        assert!(parse_bulk_export(bad.as_bytes()).is_err(), "{bad}");
+    }
+}

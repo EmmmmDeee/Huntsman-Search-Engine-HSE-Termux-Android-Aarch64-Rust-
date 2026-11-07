@@ -178,6 +178,122 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
     Ok(batch)
 }
 
+/// The module an imported bulk export's rows are recorded under: `SeekNow`'s data, read offline.
+pub const EXPORT_MODULE: &str = "seeknow_export";
+
+/// What one bulk export yields: its entities (merged by identity across blocks), one outcome per
+/// target, and the pivots its kept rows offer.
+#[derive(Debug, Clone, Default)]
+pub struct ExportImport {
+    pub entities: Vec<Entity>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+    pub pivots: Vec<CollectorPivot>,
+    /// Every parsed row of every block, in upload order, so the complete dataset survives import.
+    /// Only credential *values* are withheld (held in each row's `sensitive_fields` by name); all
+    /// other fields are verbatim. Entities and pivots above are the attributed subset; this is the
+    /// whole record set.
+    pub records: Vec<crate::seeknow::SeekNowRow>,
+}
+
+/// The selector kind an export block's query type stands for; `None` for a type with no single
+/// kind (`auto`, `hash`). **Pure.**
+const fn selector_kind(query_type: SeekNowQueryType) -> Option<EntityKind> {
+    Some(match query_type {
+        SeekNowQueryType::Email => EntityKind::Email,
+        SeekNowQueryType::Username => EntityKind::Username,
+        SeekNowQueryType::Phone => EntityKind::Phone,
+        SeekNowQueryType::Ip => EntityKind::IpAddress,
+        SeekNowQueryType::Domain => EntityKind::Domain,
+        SeekNowQueryType::Name => EntityKind::Person,
+        SeekNowQueryType::Url => EntityKind::Url,
+        SeekNowQueryType::MachineId => EntityKind::DeviceId,
+        SeekNowQueryType::Auto | SeekNowQueryType::Hash => return None,
+    })
+}
+
+/// Import a `SeekNow` bulk export offline through the same row rules as a live search: a row
+/// attributes only when it names its block's target in a field of the target's kind (B27), credential
+/// fields never leave the parser, and every row keeps the export's digest, id and line. Blocks for
+/// the same target (`Dubai` and `dubai`) are read once. Nothing is sent anywhere. **Pure.**
+#[must_use]
+pub fn collect_from_export(
+    export: &crate::seeknow::BulkExport,
+    limits: &CollectionLimits,
+    now_unix: u64,
+) -> ExportImport {
+    let mut import = ExportImport::default();
+    let mut seen = std::collections::BTreeSet::new();
+    for block in &export.results {
+        // Preserve every row of every block, before any attribution decision, so the full
+        // uploaded dataset survives import whether or not a row names its target.
+        import.records.extend(block.rows.iter().cloned());
+        let Some(kind) = selector_kind(block.query_type) else {
+            import.outcomes.push(SourceExecutionOutcome::inconclusive(
+                EXPORT_MODULE,
+                now_unix,
+                format!(
+                    "target {:?}: a {} search names no single identifier kind, so no row can be attributed",
+                    block.target,
+                    block.query_type.api_value().unwrap_or("auto")
+                ),
+            ));
+            continue;
+        };
+        let scan_id = crate::entity::scan_id(&kind.to_string(), &block.target);
+        let selector = Entity::new(kind, block.target.clone(), 1.0, scan_id);
+        if !seen.insert(selector.uid.clone()) {
+            continue;
+        }
+        let search = SeekNowSearch {
+            query: block.target.clone(),
+            query_type: block.query_type,
+            limit: crate::seeknow::SEARCH_LIMIT_MAX,
+        };
+        let mut outcome = if block.rows.is_empty() {
+            SourceExecutionOutcome::valid_zero(EXPORT_MODULE, now_unix)
+        } else {
+            SourceExecutionOutcome::success(EXPORT_MODULE, now_unix, block.rows.len())
+        };
+        let mut notes = vec![format!(
+            "bulk export {} sha256 {}",
+            export.id.as_deref().unwrap_or("(no id)"),
+            export.sha256
+        )];
+        if let Some(total) = block.reported_total {
+            if total > block.rows.len() as u64 {
+                notes.push(format!(
+                    "the provider reported {total} rows; the export holds {}",
+                    block.rows.len()
+                ));
+            }
+        }
+        if block.rows_not_read > 0 {
+            notes.push(format!("{} rows were not read", block.rows_not_read));
+        }
+        outcome.detail = Some(notes.join("; "));
+        let result = crate::seeknow::SeekNowSearchResult {
+            rows: block.rows.clone(),
+            meta: crate::seeknow::SeekNowResponseMeta {
+                response_sha256: Some(export.sha256.clone()),
+                truncated: block.rows_not_read > 0,
+                ..Default::default()
+            },
+            outcome,
+        };
+        let mut batch =
+            CollectionBatch::empty(COLLECTOR_ID, &selector.uid, CollectionOutcome::Failed);
+        append_result(&mut batch, &selector, &search, &result, limits, now_unix);
+        import.entities.extend(batch.entities);
+        import
+            .outcomes
+            .extend(batch.receipts.into_iter().map(|receipt| receipt.outcome));
+        import.pivots.extend(batch.pivots);
+    }
+    crate::entity::merge_by_uid(&mut import.entities);
+    import.pivots.truncate(limits.max_pivots);
+    import
+}
+
 /// Map a leg error to a collector error, keeping a request the guarded path refused before sending
 /// ([`Error::Network`]) distinct from a failure that reached `SeekNow`, so the `seeknow` command can
 /// end 77 (refusal) rather than 69 (no usable response). **Pure.**
