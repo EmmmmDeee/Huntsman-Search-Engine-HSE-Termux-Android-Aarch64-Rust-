@@ -77,7 +77,12 @@ pub struct AuditSummary {
 }
 
 const PLACE_KEYS: &[&str] = &[
-    "place_of_birth", "birth_place", "birthplace", "pob", "birth_city", "birth_town",
+    "place_of_birth",
+    "birth_place",
+    "birthplace",
+    "pob",
+    "birth_city",
+    "birth_town",
 ];
 const DATE_KEYS: &[&str] = &["date_of_birth", "birth_date", "dob"];
 
@@ -104,7 +109,10 @@ fn facts(evidence: &Evidence, keys: &[&str]) -> Vec<BirthClaim> {
 }
 
 fn key(name: &str) -> String {
-    name.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Only an unambiguous year (year or ISO date) is usable for historical context.
@@ -135,9 +143,16 @@ fn birth_date(date: &str) -> Option<(i32, Option<&str>)> {
 fn dushanbe(place: &str, date: Option<&str>) -> Option<HistoricalContext> {
     let simple = place.trim().to_lowercase();
     let valid = [
-        "dushanbe", "душанбе", "stalinabad", "сталинабад",
-        "stalinobod", "сталинобод", "dyushambe", "дюшамбе",
-        "dushanbe, tajikistan", "dushanbe, tajik ssr",
+        "dushanbe",
+        "душанбе",
+        "stalinabad",
+        "сталинабад",
+        "stalinobod",
+        "сталинобод",
+        "dyushambe",
+        "дюшамбе",
+        "dushanbe, tajikistan",
+        "dushanbe, tajik ssr",
     ]
     .contains(&simple.as_str());
     if !valid {
@@ -153,30 +168,21 @@ fn dushanbe(place: &str, date: Option<&str>) -> Option<HistoricalContext> {
             "Year of city renaming",
             "Exact effective renaming date unresolved",
         ),
-        Some((year, _)) if (1930..1961).contains(&year) => (
-            "Stalinabad",
-            "Tajik Soviet Socialist Republic, USSR",
-        ),
-        Some((year, _)) if (1962..1991).contains(&year) => (
-            "Dushanbe",
-            "Tajik Soviet Socialist Republic, USSR",
-        ),
-        Some((1991, Some(iso))) if iso < "1991-09-09" => (
-            "Dushanbe",
-            "Tajik Soviet Socialist Republic, USSR",
-        ),
+        Some((year, _)) if (1930..1961).contains(&year) => {
+            ("Stalinabad", "Tajik Soviet Socialist Republic, USSR")
+        }
+        Some((year, _)) if (1962..1991).contains(&year) => {
+            ("Dushanbe", "Tajik Soviet Socialist Republic, USSR")
+        }
+        Some((1991, Some(iso))) if iso < "1991-09-09" => {
+            ("Dushanbe", "Tajik Soviet Socialist Republic, USSR")
+        }
         Some((1991, Some(_))) => (
             "Dushanbe",
             "Republic of Tajikistan (independence declared 9 September 1991)",
         ),
-        Some((1991, None)) => (
-            "Dushanbe",
-            "1991 transition; full birth date needed",
-        ),
-        Some((year, _)) if year > 1991 => (
-            "Dushanbe",
-            "Republic of Tajikistan",
-        ),
+        Some((1991, None)) => ("Dushanbe", "1991 transition; full birth date needed"),
+        Some((year, _)) if year > 1991 => ("Dushanbe", "Republic of Tajikistan"),
         _ => (
             "Dushanbe / Stalinabad / Dyushambe (date-dependent)",
             "Birth date not established",
@@ -193,7 +199,11 @@ fn dushanbe(place: &str, date: Option<&str>) -> Option<HistoricalContext> {
 }
 
 fn distinct_values(claims: &[BirthClaim]) -> usize {
-    claims.iter().map(|claim| key(&claim.value)).collect::<BTreeSet<_>>().len()
+    claims
+        .iter()
+        .map(|claim| key(&claim.value))
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 fn people_in_scan(scan: &ScanRecord, results: Option<&ScanResults>) -> Vec<PersonHistoryRow> {
@@ -250,7 +260,8 @@ fn people_in_scan(scan: &ScanRecord, results: Option<&ScanResults>) -> Vec<Perso
                     row.entity_uids.push(entity.uid.clone());
                 }
                 for evidence in &entity.evidence {
-                    row.place_of_birth_claims.extend(facts(evidence, PLACE_KEYS));
+                    row.place_of_birth_claims
+                        .extend(facts(evidence, PLACE_KEYS));
                     row.date_of_birth_claims.extend(facts(evidence, DATE_KEYS));
                 }
             }
@@ -321,11 +332,14 @@ pub fn audit_all(store: &ScanStore, writer: &mut impl Write) -> Result<AuditSumm
             Ok(results) => results,
             Err(error) => {
                 summary.scans_unreadable += 1;
-                emit(writer, &ScanReadError {
-                    record_type: "scan_read_error",
-                    scan_id: scan.id,
-                    error: error.to_string(),
-                })?;
+                emit(
+                    writer,
+                    &ScanReadError {
+                        record_type: "scan_read_error",
+                        scan_id: scan.id,
+                        error: error.to_string(),
+                    },
+                )?;
                 continue;
             }
         };
@@ -388,9 +402,11 @@ mod tests {
     #[test]
     fn raw_source_claim_is_attributed_and_context_is_conditional() {
         let mut person = Entity::new(EntityKind::Person, "Jane Citizen", 0.4, "0123456789abcdef");
-        person.add_evidence(Evidence::new(EvidenceProvenance::new("public_registry"), "birth claim")
-            .with_attr("place_of_birth", "Dushanbe, Tajikistan")
-            .with_attr("date_of_birth", "1985-05-05"));
+        person.add_evidence(
+            Evidence::new(EvidenceProvenance::new("public_registry"), "birth claim")
+                .with_attr("place_of_birth", "Dushanbe, Tajikistan")
+                .with_attr("date_of_birth", "1985-05-05"),
+        );
         let results = ScanResults {
             format_version: FORMAT_VERSION,
             scan_id: record().id,
@@ -405,8 +421,15 @@ mod tests {
         let rows = people_in_scan(&record(), Some(&results));
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].place_of_birth_claims[0].source, "public_registry");
-        assert_eq!(rows[0].historical_context[0].contemporary_place_name, "Dushanbe");
-        assert!(rows[0].historical_context[0].contemporary_jurisdiction.contains("USSR"));
+        assert_eq!(
+            rows[0].historical_context[0].contemporary_place_name,
+            "Dushanbe"
+        );
+        assert!(
+            rows[0].historical_context[0]
+                .contemporary_jurisdiction
+                .contains("USSR")
+        );
     }
 
     #[test]
@@ -416,27 +439,58 @@ mod tests {
         renamed.id = "ffffffffffffffff".to_owned();
         assert_eq!(people_in_scan(&other, None)[0].scan_id, other.id);
         assert_eq!(people_in_scan(&renamed, None)[0].scan_id, renamed.id);
-        assert!(people_in_scan(&other, None)[0].historical_context.is_empty());
+        assert!(
+            people_in_scan(&other, None)[0]
+                .historical_context
+                .is_empty()
+        );
     }
 
     #[test]
     fn renaming_and_independence_boundaries_are_not_guessed() {
         assert_eq!(
-            dushanbe("Stalinabad", Some("1955-02-12")).unwrap().contemporary_place_name,
+            dushanbe("Stalinabad", Some("1955-02-12"))
+                .unwrap()
+                .contemporary_place_name,
             "Stalinabad"
         );
-        assert!(dushanbe("Dushanbe", Some("1961")).unwrap().contemporary_jurisdiction.contains("unresolved"));
-        assert!(dushanbe("Dushanbe", Some("1991")).unwrap().contemporary_jurisdiction.contains("transition"));
-        assert!(dushanbe("Dushanbe", Some("1991-09-08")).unwrap().contemporary_jurisdiction.contains("USSR"));
-        assert!(dushanbe("Dushanbe", Some("1991-09-09")).unwrap().contemporary_jurisdiction.contains("Republic of Tajikistan"));
+        assert!(
+            dushanbe("Dushanbe", Some("1961"))
+                .unwrap()
+                .contemporary_jurisdiction
+                .contains("unresolved")
+        );
+        assert!(
+            dushanbe("Dushanbe", Some("1991"))
+                .unwrap()
+                .contemporary_jurisdiction
+                .contains("transition")
+        );
+        assert!(
+            dushanbe("Dushanbe", Some("1991-09-08"))
+                .unwrap()
+                .contemporary_jurisdiction
+                .contains("USSR")
+        );
+        assert!(
+            dushanbe("Dushanbe", Some("1991-09-09"))
+                .unwrap()
+                .contemporary_jurisdiction
+                .contains("Republic of Tajikistan")
+        );
         assert!(dushanbe("Paris", Some("1985-01-01")).is_none());
     }
 
     #[test]
     fn distinct_birthplaces_are_retained_as_conflict() {
-        let a = BirthClaim { value: "Dushanbe".into(), attribute: "pob".into(),
-            source: "source_a".into(), recorded_at_unix: 1,
-            operator_seed: false, inferred: false };
+        let a = BirthClaim {
+            value: "Dushanbe".into(),
+            attribute: "pob".into(),
+            source: "source_a".into(),
+            recorded_at_unix: 1,
+            operator_seed: false,
+            inferred: false,
+        };
         let mut b = a.clone();
         b.value = "Tashkent".into();
         assert_eq!(distinct_values(&[a, b]), 2);
