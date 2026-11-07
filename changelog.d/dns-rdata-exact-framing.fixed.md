@@ -1,0 +1,1 @@
+- Refuse extra bytes after the complete layout of a DNS name-bearing or SOA resource record instead of silently discarding them. Well-framed compressed names, ordinary records and opaque unknown record data retain their existing output; stored evidence is not rewritten.
