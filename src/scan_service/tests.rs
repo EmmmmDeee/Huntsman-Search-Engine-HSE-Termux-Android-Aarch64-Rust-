@@ -31,6 +31,12 @@ fn failed_scan_log_write_remains_observable_after_successful_status_update() {
     let state = service.state();
     service.log(&record.id, "test", LogLevel::Info, "must be retained");
     drop(state);
+    // Scan detail readers must not expose an apparently healthy row after
+    // the underlying log evidence write was lost.
+    assert!(matches!(
+        service.record(&record.id),
+        Err(ServiceError::Store(message)) if message.contains("unable to persist log entry")
+    ));
     let error = service.wait(&record.id, Instant::now()).unwrap_err();
     assert!(
         matches!(error, ServiceError::Store(message) if message.contains("unable to persist log entry"))
