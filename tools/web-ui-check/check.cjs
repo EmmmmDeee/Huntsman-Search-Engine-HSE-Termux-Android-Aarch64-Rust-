@@ -191,6 +191,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check('cold load asks only for the page, health, the scan list, icon and event stream', paths.every(p => ['/', '/api/health', '/api/scans', '/favicon.svg', '/api/events'].includes(p)) && paths.includes('/api/scans'), paths);
       check('server shown online', m.pill === 'online', m.pill);
       check('the scan list opens first and says there are no scans yet', m.empty, m);
+      const dashboard = await page.evaluate(() => ['w-total', 'w-running', 'w-finished', 'w-elements'].map(id => document.getElementById(id).textContent));
+      check('new workbench reports real empty scan totals rather than fabricated activity',
+        dashboard.length === 4 && dashboard.every(value => value === '0'), dashboard);
 
       // A tab with nothing running that comes back into view asks for health and nothing else.
       const again = await tabReturns(page, 3);
@@ -288,6 +291,29 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await ctx.close();
     }
 
+    // The SpiderFoot-inspired desktop workbench has a persistent left rail; the
+    // phone retains its accessible bottom navigation instead.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+      const page = await ctx.newPage();
+      await page.goto(base + '/#/scans', { waitUntil: 'networkidle' });
+      const layout = await page.evaluate(() => {
+        const nav = document.querySelector('.navbar').getBoundingClientRect();
+        const work = document.querySelector('main').getBoundingClientRect();
+        return { rail: nav.width, railEnd: nav.right, workspaceLeft: work.left,
+          hero: !!document.getElementById('workbench'), horizontalOverflow: document.documentElement.scrollWidth - innerWidth };
+      });
+      check('desktop workbench uses a persistent investigation rail without horizontal overflow',
+        layout.rail >= 220 && layout.workspaceLeft >= layout.railEnd - 2 &&
+        layout.hero && layout.horizontalOverflow === 0, layout);
+      await fits(page, 'desktop scans');
+      await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
+      check('desktop Radar renders an explicitly passive OS-cache instrument',
+        await page.isVisible('.radar-scope') &&
+        (await page.textContent('.radar-scope-caption')).includes('ON DEMAND'), 'radar scope missing');
+      await ctx.close();
+    }
+
     // Both system themes: colours, the browser bar, contrast in every view, the scan flows.
     for (const scheme of ['dark', 'light']) {
       const ctx = await browser.newContext({ ...PHONE, colorScheme: scheme });
@@ -324,6 +350,10 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       });
       await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
       check(`${scheme}: Radar is a reachable mobile view`, await page.isVisible('#view-radar'), 'missing');
+      check(`${scheme}: passive Radar illustration never claims an active sweep`,
+        await page.isVisible('.radar-scope') &&
+        (await page.textContent('.radar-scope-caption')).includes('ON DEMAND') &&
+        (await page.textContent('.radar-flags')).includes('Explicit reads only'), 'passive radar contract missing');
       check(`${scheme}: Radar never queries the sensor merely because it opened`, radarCalls === 0, radarCalls);
       await audit(page, `${scheme} radar`);
       await page.click('#rread');
