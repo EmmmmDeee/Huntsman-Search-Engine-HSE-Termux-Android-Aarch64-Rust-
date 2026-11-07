@@ -30,6 +30,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # A PR event's recorded base SHA can precede the first parent of
+          # GitHub's synthetic merge. Full ancestry is needed to verify that
+          # the actual merge base descends from the recorded base, rather than
+          # incorrectly requiring those two commits to be identical.
+          fetch-depth: 0
       # pull_request defaults to a synthetic merge checkout; never mislabel it as PR HEAD.
       - name: Verify checked-out commit and PR parent SHAs
         shell: bash
@@ -44,13 +49,20 @@ jobs:
             exit 1
           fi
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            parents="$(git cat-file -p HEAD | awk '$1=="parent" {print $2}')"
-            expected_parents="$(printf '%s\n%s' "$PR_BASE_SHA" "$PR_HEAD_SHA")"
-            if [ "$parents" != "$expected_parents" ]; then
-              echo "::error::The tested PR merge commit does not have the expected base/head parents"
+            # Always require exactly two parents and the exact PR HEAD as
+            # parent two. GitHub may have advanced main since the event's
+            # base SHA; a descendant base is legitimate, an unrelated one not.
+            read -r merge_sha actual_base actual_head extra_parent < <(git rev-list --parents -n 1 HEAD)
+            if [ "$merge_sha" != "$checked_out" ] || [ -n "${extra_parent:-}" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+              echo "::error::The tested merge does not have the exact PR head as its second parent"
               exit 1
             fi
-            echo "pr_base_sha=$PR_BASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+            if ! git merge-base --is-ancestor "$PR_BASE_SHA" "$actual_base"; then
+              echo "::error::The tested merge base is not descended from the PR event base"
+              exit 1
+            fi
+            echo "pr_event_base_sha=$PR_BASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+            echo "tested_merge_base_sha=$actual_base" >> "$GITHUB_STEP_SUMMARY"
             echo "pr_head_sha=$PR_HEAD_SHA" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "tested_checkout_sha=$checked_out" >> "$GITHUB_STEP_SUMMARY"
