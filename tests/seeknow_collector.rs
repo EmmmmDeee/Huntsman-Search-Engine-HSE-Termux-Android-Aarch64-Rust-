@@ -1003,3 +1003,33 @@ fn a_bulk_export_with_an_unknown_type_or_no_target_is_refused_whole() {
         assert!(parse_bulk_export(bad.as_bytes()).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn incomplete_empty_bulk_blocks_cannot_claim_valid_zero() {
+    use huntsman_recon::seeknow::parse_bulk_export;
+    use huntsman_recon::seeknow_collector::collect_from_export;
+
+    // A missing or wrongly typed rows array is not evidence of absence.
+    for malformed in [
+        r#"{"results":[{"target":"sample_handle","type":"username","total":4}]}"#,
+        r#"{"results":[{"target":"sample_handle","type":"username","rows":{}}]}"#,
+    ] {
+        assert!(parse_bulk_export(malformed.as_bytes()).is_err());
+    }
+
+    let input = r#"{"results":[
+        {"target":"sample_handle","type":"username","total":4,"rows":[]},
+        {"target":"other_handle","type":"username","total":0,"rows":[]},
+        {"target":"third_handle","type":"username","total":0,"rows":[null]}
+    ]}"#;
+    let export = parse_bulk_export(input.as_bytes()).expect("valid export envelope");
+    let import = collect_from_export(&export, &CollectionLimits::default(), 1);
+    assert_eq!(import.outcomes.len(), 3);
+    assert_eq!(import.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(import.outcomes[1].kind, SourceOutcomeKind::ValidZero);
+    assert_eq!(import.outcomes[2].kind, SourceOutcomeKind::Inconclusive);
+    for index in [0, 2] {
+        let detail = import.outcomes[index].detail.as_deref().unwrap_or_default();
+        assert!(detail.contains("cannot establish a valid zero"), "{detail}");
+    }
+}
