@@ -1,6 +1,6 @@
 # Native OSINT method equivalents
 
-Independent Huntsman implementations: **no H1DR4 runtime connection**. The source-backed casework model and event-pressure heuristic follow public investigative *methodologies*, not proprietary H1DR4 datasets, models or credentials.
+Independent Huntsman casework and area-risk heuristics continue to run **without H1DR4**. An optional, keyless, read-only H1DR4 public API connector now exists separately; its third-party source assertions never count as independent corroboration of these local methods. No proprietary H1DR4 models or credentials are required.
 
 ## Available paths
 
@@ -16,6 +16,15 @@ Independent Huntsman implementations: **no H1DR4 runtime connection**. The sourc
 
 Web UI: Analysis > Source-backed OSINT methods. APIs `POST /api/osint/case` and `POST /api/osint/area-risk` use existing authorization, origin and body-size controls. The area-risk API JSON includes `as_of_unix`, `events`, `center_lat`, `center_lon`, `radius_m`, `category`.
 
+## Optional H1DR4 public connector (draft integration)
+
+- `huntsman-recon h1dr4 search "SEARCH TERM" --limit 10 --pages 1 --save local-evidence.json`: keyless, bounded public case search; saves an exclusive private JSON report containing exact upstream UTF-8 payload(s), SHA-256, normalized case lead summaries and pagination caveats. The file must not already exist.
+- `huntsman-recon h1dr4 case dossier-CASE-ID --limit 200 --save local-case.json`: public case details with bounded tips. Add `--tip 617` to select one matching normalized tip **without discarding the original upstream payload**. If a tip is absent from a bounded page, absence across the case is not established.
+- `huntsman-recon h1dr4 rewards --limit 10`: aggregator references; confirm wanted status, rewards and source freshness independently at the relevant official agency.
+- `huntsman-recon h1dr4 onchain-stats`: reads public registry aggregate counts, not wallet-owner identities.
+
+**Limits:** Upstream case-detail `tip_count` can reflect the response limit, not the true case total. A tested H1DR4 case ignored `offset` for tips; pagination is therefore not claimed complete. Every response body is preserved as `original_json` with its digest, even when normalized rows are missing or schema changes. No query ever creates cases, submits tips, pays fees, or uses an LLM. Web UI controls and regular event ingestion are not part of this first connector; this document is not evidence that those future integrations work.
+
 ## Evidence and security boundaries
 
 All source URLs are **input claims** until verified. Receipts hash observation metadata, not remote documents. Declared different roots are not proof of independent sourcing. The area score is a disclosed heuristic (density 45, category 25, last-72-hours 15, severity 15) and is not comparable to any proprietary risk score. No provider credentials are copied from H1DR4; no wallet signing, unauthorized private data access, credential guessing, or unrequested paid lookup occurs.
@@ -27,6 +36,7 @@ cargo fmt --all --check
 cargo test --lib osint_casework
 cargo test --lib osint_area_risk
 cargo test --lib federated_osint
+cargo test --lib h1dr4
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
