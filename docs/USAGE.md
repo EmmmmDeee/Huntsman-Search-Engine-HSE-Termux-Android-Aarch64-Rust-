@@ -624,14 +624,29 @@ Huntsman's **Analysis**, **Inspect**, and **Radar** features. The scan dashboard
 counts from saved scan records rather than fabricating activity. No external JavaScript
 framework, font, image service, root privilege or runtime language model is required.
 
-The dedicated `/#/radar` workbench is **passive and explicitly initiated**: opening it
-does **not** query the phone's radios. Select **Read OS scan cache**, **Read cells**, or
-**Log a sweep** to invoke the existing guarded Rust/Termux:API adapters. The displayed
-radar scope is a *decorative UI guide*, not live active RF scanning or geographic
-positioning. Android permissions and the separate Termux:API companion app are required
-for the corresponding OS-provided cached observations; a 404, refusal or empty cache
-does not prove that no signal exists. Any **Investigate** pivot pre-fills the existing
-scan form without starting network egress or spending a provider key.
+The dedicated `/#/radar` workbench provides **active monitoring of Android's Wi-Fi
+scan cache and reported cellular observations**. Select **Start live monitoring** to
+read both through the existing guarded Rust/Termux:API adapters immediately, then
+refresh at 45-second intervals while the Radar tab remains visible. **Stop monitoring**
+ends the repeat cycle; leaving the tab or hiding the page also stops it. Individual
+**Read OS scan cache**, **Read cells** and **Log a sweep** actions remain available.
+Live monitoring never automatically writes a track sweep, initiates a target scan,
+or spends a provider key. Earlier readings remain visible after a failure, with
+the failure clearly reported.
+
+These are **active, repeated cache reads**, NOT guaranteed new Wi-Fi hardware scans.
+The `termux-wifi-scaninfo` command returns Android OS scan results; it does not
+call `WifiManager.startScan()`. On Android, hardware scans require an authorized
+app using the platform API and are subject to foreground/background throttling and
+permissions. Repeated cached values are not fresh acquisitions. The radar plot
+places BSSIDs at deterministic artificial angles and uses RSSI as relative
+radial distance, **not geographic position, physical bearing or a measured range**.
+The count and dots represent only actual returned cache records.
+
+Android permissions and the separate Termux:API companion app are needed for
+OS-provided observations; errors and empty caches do not establish an absence
+of nearby networks or cells. An **Investigate** pivot merely pre-fills a scan
+form; it does not automatically contact the selected target.
 
 The entire single-file interface is embedded in the Rust binary. Its inline style and
 script continue to use automatically derived CSP hashes. The updated 160 KiB served
