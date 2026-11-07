@@ -380,10 +380,12 @@ struct HeldPosition {
     former: bool,
 }
 
-/// The positions the item's kept `P39` statements name, deprecated ones left out, at most
-/// [`MAX_POSITIONS`], each once. **Pure.**
-fn held_positions(evidence: &Evidence) -> Vec<HeldPosition> {
+/// The positions the item's kept `P39` statements name, deprecated ones left out, each once, with
+/// the first [`MAX_POSITIONS`] kept and the total distinct count so truncation can be reported.
+/// **Pure.**
+fn held_positions(evidence: &Evidence) -> (Vec<HeldPosition>, usize) {
     let mut held: Vec<HeldPosition> = Vec::new();
+    let mut distinct = std::collections::BTreeSet::new();
     for statement in evidence.attr_values("statement_json") {
         let Some(json) = statement
             .strip_prefix(POSITION_HELD)
@@ -419,17 +421,21 @@ fn held_positions(evidence: &Evidence) -> Vec<HeldPosition> {
         if let Some(known) = held.iter_mut().find(|h| h.qid == position) {
             // A position held once and ended, then held again, is current if any holding is.
             known.former &= former;
-        } else if held.len() < MAX_POSITIONS {
+            continue;
+        }
+        distinct.insert(position.to_owned());
+        if held.len() < MAX_POSITIONS {
             held.push(HeldPosition {
                 qid: position.to_owned(),
                 former,
             });
         }
     }
-    held
+    (held, distinct.len())
 }
 
-/// The item ids a `wbgetentities` claim list names under `pid`. **Pure.**
+/// The item ids a `wbgetentities` claim list names under `pid`, deprecated claims left out, so a
+/// deprecated classification cannot type a position as a public office. **Pure.**
 fn claim_targets<'a>(entity: &'a Value, pid: &str) -> Vec<&'a str> {
     entity
         .get("claims")
@@ -437,6 +443,7 @@ fn claim_targets<'a>(entity: &'a Value, pid: &str) -> Vec<&'a str> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|claim| claim.get("rank").and_then(Value::as_str) != Some("deprecated"))
         .filter_map(|claim| {
             claim
                 .get("mainsnak")?
@@ -482,10 +489,20 @@ fn classify_positions<T: Transport + ?Sized>(
     let Some(evidence) = item_evidence(report, qid) else {
         return;
     };
-    let held = held_positions(evidence);
+    let (held, total_positions) = held_positions(evidence);
     if held.is_empty() {
         return;
     }
+    // When more positions were found than the request could carry, every message says so, so a
+    // "none" or a count is never read as exhaustive.
+    let coverage = if total_positions > held.len() {
+        format!(
+            "; only {} of {total_positions} positions held (P39) were checked, incomplete",
+            held.len()
+        )
+    } else {
+        String::new()
+    };
     let ids: Vec<String> = held.iter().map(|h| h.qid.clone()).collect();
     let records = fetch(
         transport,
@@ -531,7 +548,7 @@ fn classify_positions<T: Transport + ?Sized>(
                 updated = updated.with_attr(
                     "politically_exposed",
                     format!(
-                        "yes: {offices} of {} positions held (P39) are typed as public offices; review before relying on it",
+                        "yes: {offices} of {} positions checked (P39) are typed as public offices{coverage}; review before relying on it",
                         held.len()
                     ),
                 );
@@ -539,7 +556,7 @@ fn classify_positions<T: Transport + ?Sized>(
                 updated = updated.with_attr(
                     "public_office_checked",
                     format!(
-                        "{} positions held (P39), none typed as a public office",
+                        "{} positions held (P39), none typed as a public office{coverage}",
                         held.len()
                     ),
                 );
@@ -1965,6 +1982,91 @@ mod tests {
                 .contains_key("public_office_unavailable")
         );
         assert!(!evidence.attributes.contains_key("public_office_checked"));
+    }
+
+    #[test]
+    fn a_deprecated_public_office_classification_never_types_a_position() {
+        // A position whose only public-office P31/P279 claim is deprecated is not a public office;
+        // the same claim at normal rank is.
+        let deprecated = serde_json::json!({
+            "claims":{"P31":[{"rank":"deprecated","mainsnak":{"datavalue":{"value":{"id":"Q294414"}}}}]}
+        });
+        assert!(!is_public_office(&deprecated));
+        let deprecated_class = serde_json::json!({
+            "claims":{"P279":[{"rank":"deprecated","mainsnak":{"datavalue":{"value":{"id":"Q48352"}}}}]}
+        });
+        assert!(!is_public_office(&deprecated_class));
+        let normal = serde_json::json!({
+            "claims":{"P31":[{"rank":"normal","mainsnak":{"datavalue":{"value":{"id":"Q294414"}}}}]}
+        });
+        assert!(is_public_office(&normal));
+    }
+
+    #[test]
+    fn a_person_with_a_deprecated_office_record_is_not_flagged_exposed() {
+        // The person holds one position; its record types it a public office only on a deprecated
+        // claim, so the person is not politically exposed.
+        let item = r#"{"type":"item","id":"Q49","labels":{"en":"Example Dep"},
+          "statements":{"P31":[{"value":{"type":"value","content":"Q5"}}],
+          "P39":[{"rank":"normal","value":{"type":"value","content":"Q110964267"},"qualifiers":[]}]}}"#;
+        let positions = r#"{"entities":{"Q110964267":{"claims":{"P31":[
+          {"rank":"deprecated","mainsnak":{"datavalue":{"value":{"id":"Q294414"}}}}]}}},"success":1}"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(item)),
+            Ok(crate::test_support::json_ok(LABELS)),
+            Ok(crate::test_support::json_ok(positions)),
+        ]);
+        let report = lookup(&transport, "Q49", "scan-wd", 1).expect("lookup");
+        let person = entity(&report, &EntityKind::Person, "Example Dep");
+        assert!(!person.tags.iter().any(|t| t == "politically-exposed"));
+        assert!(
+            item_evidence_of(&report)
+                .attributes
+                .contains_key("public_office_checked")
+        );
+    }
+
+    #[test]
+    fn positions_past_the_cap_are_counted_and_reported_incomplete() {
+        // 25 distinct positions held: only the first 20 are looked up, so the coverage is
+        // explicitly incomplete and the total is preserved, never a claim of exhaustive checking.
+        let p39: Vec<Value> = (0..25)
+            .map(|n| {
+                serde_json::json!({"rank":"normal","value":{"type":"value","content":format!("Q90{n:02}")},"qualifiers":[]})
+            })
+            .collect();
+        let item = serde_json::json!({
+            "type":"item","id":"Q50","labels":{"en":"Example Many"},
+            "statements":{"P31":[{"value":{"type":"value","content":"Q5"}}],"P39":p39}
+        });
+        let positions = r#"{"entities":{},"success":1}"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(&item.to_string())),
+            Ok(crate::test_support::json_ok(LABELS)),
+            Ok(crate::test_support::json_ok(positions)),
+        ]);
+        let report = lookup(&transport, "Q50", "scan-wd", 1).expect("lookup");
+        let seen = transport.seen.borrow();
+        assert!(
+            seen[2].url.matches("Q90").count() == 20,
+            "only 20 position ids are fetched: {}",
+            seen[2].url
+        );
+        let checked = item_evidence_of(&report)
+            .attributes
+            .get("public_office_checked")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            checked.contains("of 25 positions held") && checked.contains("incomplete"),
+            "{checked}"
+        );
+        assert!(
+            !entity(&report, &EntityKind::Person, "Example Many")
+                .tags
+                .iter()
+                .any(|t| t == "politically-exposed")
+        );
     }
 
     fn item_evidence_of(report: &Report) -> &Evidence {

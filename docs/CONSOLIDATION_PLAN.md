@@ -434,6 +434,7 @@ same files.
 | B30 | A DeHashed domain search works against the live API | Domain is sent unquoted (the API refuses a quoted domain with 400); email and username stay quoted (unquoted email is fuzzy). Opt-in live test proves decode, fidelity and masking against the raw answer |
 | B31 | A public-office holder is flagged politically exposed | P39 positions classified by their own P31/P279 records (public/elective office, head of state or government, minister, legislator, ...), never the generic "position" type; current or former kept per office |
 | B32 | The sanctions lists count every match and row they leave out | A capped match is reported in the detail; unparseable rows make an unmatched list inconclusive, never a clean valid_zero |
+| B33 | The PEP check ignores deprecated office classifications and reports P39 truncation | Deprecated P31/P279 are filtered; the total positions held is kept and coverage past the 20-cap is called incomplete |
 
 B10 to B14 are `DeHashed`'s, and [DEHASHED.md](DEHASHED.md) has the contract and tests behind them.
 
