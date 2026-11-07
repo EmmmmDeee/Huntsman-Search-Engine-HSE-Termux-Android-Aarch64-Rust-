@@ -1251,7 +1251,7 @@ fn prebuilt_only_rejects_explicit_source_build_even_when_release_exists() {
 }
 
 /// Incorrect install-mode input must fail before any package/network work or
-/// persistent filesystem change. An unknown FROM_SOURCE mode cannot silently
+/// persistent filesystem change. An unknown `FROM_SOURCE` mode cannot silently
 /// install a prebuilt binary instead of honoring the operator's intention.
 #[test]
 fn invalid_install_modes_are_refused_before_state_or_network_changes() {
