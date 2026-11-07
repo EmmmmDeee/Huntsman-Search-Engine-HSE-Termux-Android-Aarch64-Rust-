@@ -361,12 +361,18 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         (await page.textContent('.radar-scope-caption')).includes('ON DEMAND') &&
         (await page.textContent('.radar-flags')).includes('Explicit reads only'), 'passive radar contract missing');
       check(`${scheme}: Radar never queries the sensor merely because it opened`, radarCalls === 0, radarCalls);
+      check(`${scheme}: radar scope is unset before the first explicit cache read`,
+        (await page.textContent('#radar-observed')).trim() === '—',
+        await page.textContent('#radar-observed'));
       await audit(page, `${scheme} radar`);
       await page.click('#rread');
       await page.waitForSelector('#rresult:not([hidden])', { timeout: 10000 }).catch(() => {});
       check(`${scheme}: Radar requests an OS-cache observation only once after explicit action`,
         radarCalls === 1 && lookupHeader, { radarCalls, lookupHeader });
       const radarText = await page.textContent('#rrows');
+      check(`${scheme}: radar scope count reflects received cache records only`,
+        (await page.textContent('#radar-observed')).trim() === '1',
+        await page.textContent('#radar-observed'));
       check(`${scheme}: Radar shows cached values and stale labels without inventing positions`,
         await page.isHidden('#rerror') && radarText.includes('3c:5a:b4:11:22:33') &&
         radarText.includes('900') && radarText.includes('stale') && await page.isEnabled('#rdownload'),
