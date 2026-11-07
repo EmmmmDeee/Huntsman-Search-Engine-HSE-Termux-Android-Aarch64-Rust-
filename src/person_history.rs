@@ -19,6 +19,8 @@ const DUSHANBE_HISTORY_CITATION: &str = "https://www.iranicaonline.org/articles/
 pub struct HistoricalContext {
     pub location: String,
     pub date_claim: Option<String>,
+    /// Saved Person entity evidence index supporting the historical context.
+    pub evidence_index: Option<usize>,
     pub contemporary_place_name: String,
     pub contemporary_jurisdiction: String,
     pub source_url: &'static str,
@@ -222,6 +224,7 @@ fn dushanbe(place: &str, date: Option<&str>) -> Option<HistoricalContext> {
     Some(HistoricalContext {
         location: place.to_owned(),
         date_claim: date.map(str::to_owned),
+        evidence_index: None,
         contemporary_place_name: name.to_owned(),
         contemporary_jurisdiction: jurisdiction.to_owned(),
         source_url: DUSHANBE_HISTORY_CITATION,
@@ -273,7 +276,8 @@ fn push_context(row: &mut PersonHistoryRow, places: &[BirthClaim], dates: &[Birt
         None
     };
     for place in places {
-        if let Some(context) = dushanbe(&place.value, date) {
+        if let Some(mut context) = dushanbe(&place.value, date) {
+            context.evidence_index = Some(place.evidence_index);
             if !row.historical_context.contains(&context) {
                 row.historical_context.push(context);
             }
@@ -519,6 +523,7 @@ mod tests {
         assert_eq!(entity.place_of_birth_claims[0].source, "public_registry");
         assert_eq!(entity.place_of_birth_claims[0].evidence_index, 0);
         assert_eq!(entity.place_of_birth_claims[0].evidence_summary, "birth claim");
+        assert_eq!(entity.historical_context[0].evidence_index, Some(0));
         assert_eq!(
             entity.place_of_birth_claims[0].raw_attribute_value,
             "Dushanbe, Tajikistan"
