@@ -1,5 +1,8 @@
 name: H1DR4 connector verification
 on:
+  push:
+    branches:
+      - 'feat/h1dr4-keyless-raw-evidence'
   pull_request:
     paths:
       - 'src/h1dr4.rs'
