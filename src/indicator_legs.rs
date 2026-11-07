@@ -128,14 +128,12 @@ pub fn run<T: Transport + ?Sized>(
     // empty, made no request: it leaves the row that says so, as the exposure legs do, instead of
     // leaving the Sources table to imply it was never a source.
     for source in SOURCES {
-        if source.kinds.iter().any(|kind| kind.covers(indicator))
-            && !source.api.wanted(keys)
-            && transport.runs_module(source.api.source)
-        {
-            legs.outcomes.push(SourceExecutionOutcome::not_configured(
-                source.api.source,
-                now_unix,
-            ));
+        if source.kinds.iter().any(|kind| kind.covers(indicator)) {
+            legs.outcomes.extend(
+                source
+                    .api
+                    .unasked_for_want_of_a_key(&transport, keys, now_unix),
+            );
         }
     }
     legs
