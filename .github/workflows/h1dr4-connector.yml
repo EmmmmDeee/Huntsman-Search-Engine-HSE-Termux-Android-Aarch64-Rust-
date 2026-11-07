@@ -33,6 +33,6 @@ jobs:
       - name: Check all targets
         run: cargo check --locked --all-targets
       - name: Test H1DR4
-        run: cargo test --locked h1dr4 -- --nocapture
+        run: cargo test --locked --lib h1dr4 -- --nocapture
       - name: Clippy all targets
         run: cargo clippy --locked --all-targets -- -D warnings
