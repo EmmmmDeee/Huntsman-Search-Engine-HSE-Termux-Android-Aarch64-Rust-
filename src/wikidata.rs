@@ -481,8 +481,51 @@ fn resolve<T: Transport + ?Sized>(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
         ));
     }
+    let hits: Vec<SearchHit> = hits
+        .into_iter()
+        .filter(|hit| !hit.id.trim().is_empty())
+        .collect();
+    // Namesakes: several items carry exactly the searched label. The search's ranking does not
+    // say which one is the subject, so none is attributed; the candidates are named for a
+    // follow-up lookup by Q-number.
+    let exact: Vec<&SearchHit> = hits
+        .iter()
+        .filter(|hit| {
+            hit.label
+                .as_deref()
+                .is_some_and(|label| label.trim().eq_ignore_ascii_case(term.trim()))
+        })
+        .collect();
+    if exact.len() > 1 {
+        let candidates: Vec<String> = exact
+            .iter()
+            .map(|hit| match hit.description.as_deref() {
+                Some(description) => format!("{} ({description})", hit.id),
+                None => hit.id.clone(),
+            })
+            .collect();
+        return Ok(Resolved::None(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::Inconclusive,
+            Some(response.status),
+            format!(
+                "{} Wikidata items are labelled \"{}\": {}; none is attributed, look one up by its Q-number",
+                exact.len(),
+                term.trim(),
+                candidates.join(", ")
+            ),
+        )));
+    }
+    // One exact-label hit is the item, wherever the search ranked it.
+    if let [only] = exact.as_slice() {
+        return Ok(Resolved::Item {
+            qid: only.id.clone(),
+            label: only.label.clone().or_else(|| only.description.clone()),
+        });
+    }
     // Hits that name no item matched something the search cannot say: no clean negative.
-    match hits.into_iter().find(|hit| !hit.id.trim().is_empty()) {
+    match hits.into_iter().next() {
         Some(hit) => Ok(Resolved::Item {
             qid: hit.id,
             label: hit.label.or(hit.description),
@@ -1489,5 +1532,44 @@ mod tests {
                 .map(|e| &e.raw_value)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn namesakes_are_inconclusive_and_never_attributed() {
+        let search = r#"{"search":[
+          {"id":"Q127511658","label":"Andrew Forrest"},
+          {"id":"Q504773","label":"Andrew Forrest","description":"Australian mining businessman"},
+          {"id":"Q50548887","label":"Andrew F. Hugall","description":"biologist"},
+          {"id":"Q93245974","label":"andrew forrest","description":"Deserter from British Army"}
+        ]}"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![Ok(
+            crate::test_support::json_ok(search),
+        )]);
+        let report = lookup(&transport, "Andrew Forrest", "scan-wd", 1).expect("lookup");
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Inconclusive);
+        let detail = report.outcome.detail.clone().unwrap_or_default();
+        assert!(detail.starts_with("3 Wikidata items"), "{detail}");
+        assert!(
+            detail.contains("Q504773 (Australian mining businessman)"),
+            "{detail}"
+        );
+        assert!(!detail.contains("Q50548887"), "{detail}");
+        assert_eq!(transport.seen.borrow().len(), 1, "no item is fetched");
+    }
+
+    #[test]
+    fn the_one_exact_label_is_the_item_wherever_it_ranks() {
+        let search = r#"{"search":[
+          {"id":"Q50548887","label":"Andrew F. Hugall","description":"biologist"},
+          {"id":"Q000","label":"Jane Example"}
+        ]}"#;
+        let transport = crate::test_support::ScriptedTransport::new(vec![
+            Ok(crate::test_support::json_ok(search)),
+            Ok(crate::test_support::json_ok(PERSON_ITEM)),
+        ]);
+        let report = lookup(&transport, "Jane Example", "scan-wd", 1).expect("lookup");
+        assert!(transport.seen.borrow()[1].url.ends_with("/items/Q000"));
+        entity(&report, &EntityKind::Person, "Jane Example");
     }
 }
