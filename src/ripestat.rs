@@ -635,11 +635,12 @@ pub fn geolocation<T: Transport + ?Sized>(
     decode_geolocation(&body)
 }
 
-/// One `geoloc` body, every location kept in published order. A resource with no location is a
-/// valid empty answer. **Pure.**
+/// One `geoloc` body, every valid location kept in published order. A resource with no location
+/// is a valid empty answer. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for a body that is not an `ok` envelope with data.
+/// [`LegError::Decode`] for a body that is not an `ok` envelope with data, an incomplete place,
+/// coordinates outside latitude/longitude bounds, or coverage outside 0–100 percent.
 pub fn decode_geolocation(body: &[u8]) -> Result<Geolocation, LegError> {
     let data: GeolocationData = unwrap(body)?;
     let locations: Vec<Location> = data
@@ -662,6 +663,23 @@ pub fn decode_geolocation(body: &[u8]) -> Result<Geolocation, LegError> {
     }) {
         return Err(LegError::Decode(
             "geolocation contains an incomplete place".into(),
+        ));
+    }
+    // A JSON number is not necessarily a geographical coordinate or a percentage.
+    // Keep the coordinate rule shared, without applying the RF-fix exclusion of 0,0.
+    if locations.iter().any(|place| {
+        place
+            .latitude
+            .zip(place.longitude)
+            .is_some_and(|(latitude, longitude)| {
+                !crate::geohash::valid_coordinate(latitude, longitude)
+            })
+            || place
+                .covered_percentage
+                .is_some_and(|share| !(0.0..=100.0).contains(&share))
+    }) {
+        return Err(LegError::Decode(
+            "geolocation contains out-of-range coordinates or coverage".into(),
         ));
     }
     Ok(Geolocation { locations })

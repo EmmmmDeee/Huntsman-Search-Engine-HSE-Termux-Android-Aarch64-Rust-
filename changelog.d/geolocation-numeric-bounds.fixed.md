@@ -1,0 +1,1 @@
+- Refuse RIPEstat geolocation rows with out-of-range latitude, longitude or coverage as an explicit failed geolocation leg, rather than turning impossible values into IP or netblock place evidence. Valid places, their order, named-only locations, coordinate boundaries and 0,0 remain unchanged; coverage is checked per place without normalising the set.
