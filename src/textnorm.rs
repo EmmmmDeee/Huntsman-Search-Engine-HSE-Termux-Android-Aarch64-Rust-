@@ -351,6 +351,17 @@ pub fn ascii_digits_and_plus(s: &str) -> String {
         .collect()
 }
 
+/// Parse a bare ASCII decimal as a 32-bit number. This is the common syntax gate for
+/// ASN classification and public ASN target normalisation; prefix and assignment policy
+/// remain with their respective callers. **Pure.**
+#[must_use]
+pub(crate) fn parse_ascii_decimal_u32(digits: &str) -> Option<u32> {
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Parse `AS13335`, `as13335`, or `13335`.
 #[must_use]
 pub fn parse_asn(s: &str) -> Option<u64> {
@@ -877,6 +888,26 @@ mod tests {
         assert_eq!(upper_first("mcDonald"), "McDonald");
         assert_eq!(upper_first("ñoño"), "Ñoño");
         assert_eq!(upper_first(""), "");
+    }
+
+    #[test]
+    fn ascii_decimal_u32_is_strict_and_bounds_checked() {
+        for (raw, expected) in [
+            ("0", Some(0)),
+            ("00013335", Some(13_335)),
+            ("4294967295", Some(u32::MAX)),
+            ("", None),
+            ("4294967296", None),
+            ("+13335", None),
+            ("-1", None),
+            (" 13335", None),
+            ("13335 ", None),
+            ("13x35", None),
+            ("AS13335", None),
+            ("１２３", None),
+        ] {
+            assert_eq!(super::parse_ascii_decimal_u32(raw), expected, "{raw:?}");
+        }
     }
 
     #[test]
