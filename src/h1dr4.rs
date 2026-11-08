@@ -265,26 +265,8 @@ fn parse_rows(value: &Value, resource: &Resource) -> Result<Vec<PublicRecord>, &
     Ok(rows)
 }
 
-/// Fetches bounded public pages through Huntsman's guarded shared transport.
-/// Every successful HTTP body (even JSON schema drift) is preserved in `pages`.
-/// No upstream allegation becomes verified merely because it parsed.
-///
-/// # Errors
-/// Refuses invalid parameters, network failures, non-2xx responses, truncated
-/// bodies, or responses that are not valid UTF-8. No writes or credentials.
-pub fn retrieve<T: Transport + ?Sized>(
-    transport: &T,
-    resource: &Resource,
-    bounds: Bounds,
-    now_unix: u64,
-) -> Result<Report, String> {
-    let bounds = bounds.checked(resource).map_err(str::to_owned)?;
-    match resource {
-        Resource::Search(q) if !checked_query(q) => return Err("invalid h1dr4 query".into()),
-        Resource::Case(id) if !checked_identifier(id) => return Err("invalid h1dr4 case id".into()),
-        _ => {}
-    }
-    let mut report = Report {
+fn initial_report(resource: &Resource) -> Report {
+    Report {
         provider: "h1dr4_public",
         resource: label(resource),
         requested_identifier: match resource {
@@ -306,7 +288,29 @@ pub fn retrieve<T: Transport + ?Sized>(
             "Source freshness differs from HTTP cache freshness; verify official records at origin",
             "Raw pages are immutable evidence; normalized rows are an incomplete derived view",
         ],
-    };
+    }
+}
+
+/// Fetches bounded public pages through Huntsman's guarded shared transport.
+/// Every successful HTTP body (even JSON schema drift) is preserved in `pages`.
+/// No upstream allegation becomes verified merely because it parsed.
+///
+/// # Errors
+/// Refuses invalid parameters, network failures, non-2xx responses, truncated
+/// bodies, or responses that are not valid UTF-8. No writes or credentials.
+pub fn retrieve<T: Transport + ?Sized>(
+    transport: &T,
+    resource: &Resource,
+    bounds: Bounds,
+    now_unix: u64,
+) -> Result<Report, String> {
+    let bounds = bounds.checked(resource).map_err(str::to_owned)?;
+    match resource {
+        Resource::Search(q) if !checked_query(q) => return Err("invalid h1dr4 query".into()),
+        Resource::Case(id) if !checked_identifier(id) => return Err("invalid h1dr4 case id".into()),
+        _ => {}
+    }
+    let mut report = initial_report(resource);
     let mut seen = BTreeSet::new();
     for page in 0..bounds.pages {
         let offset = u16::from(page) * bounds.limit;
