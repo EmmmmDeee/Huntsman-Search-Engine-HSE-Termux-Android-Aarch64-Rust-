@@ -14,8 +14,8 @@ pub(super) use discovery::{
 };
 pub(super) use plan::plan_cmd;
 pub(super) use profiles::{
-    Refused, asn_cmd, collect, company_cmd, crypto_cmd, docmeta_cmd, domain_cmd, email_cmd,
-    exif_cmd, exposure_cmd, geocode_cmd, gleif_cmd, ip_cmd, itunes_cmd, netblock_cmd, network_cmd,
-    people_cmd, phone_cmd, telegram_network_cmd, username_cmd, wikidata_cmd,
+    Refused, asn_cmd, collect, company_cmd, crypto_cmd, cve_cmd, docmeta_cmd, domain_cmd,
+    email_cmd, exif_cmd, exposure_cmd, geocode_cmd, gleif_cmd, ip_cmd, itunes_cmd, netblock_cmd,
+    network_cmd, people_cmd, phone_cmd, telegram_network_cmd, username_cmd, wikidata_cmd,
 };
 pub(super) use scan::scan_cmd;
