@@ -245,10 +245,9 @@ pub fn canonical_asn(raw: &str) -> Option<String> {
         .or_else(|| upper.strip_prefix("AS"))
         .unwrap_or(&upper)
         .trim_start();
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let number: u32 = digits.parse().ok()?;
+    // Share the exact numeric syntax and u32 overflow policy with ASN classification;
+    // assignment eligibility is deliberately stricter for public lookup targets.
+    let number = crate::textnorm::parse_ascii_decimal_u32(digits)?;
     is_public_asn(number).then(|| format!("AS{number}"))
 }
 

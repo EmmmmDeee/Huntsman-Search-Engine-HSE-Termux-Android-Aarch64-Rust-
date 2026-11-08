@@ -172,13 +172,9 @@ fn parse_asn(value: &str) -> Option<String> {
     let digits = upper
         .strip_prefix("ASN")
         .or_else(|| upper.strip_prefix("AS"))?;
-    // `u32` parsing takes a leading `+`, which an AS number never has.
-    if !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    // AS numbers are 32-bit. Parsing also drops leading zeros, however many, so AS013335
-    // is AS13335, as `canonical_asn` reads it.
-    let number: u32 = digits.parse().ok()?;
+    // Use the shared strict decimal/u32 gate. Prefix recognition stays local: bare numbers
+    // are not classified as ASNs, and private ASNs remain observable entities.
+    let number = crate::textnorm::parse_ascii_decimal_u32(digits)?;
     Some(format!("AS{number}"))
 }
 
