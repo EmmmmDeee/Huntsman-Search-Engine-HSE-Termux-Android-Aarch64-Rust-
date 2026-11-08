@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, LegError};
+use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
@@ -26,7 +26,14 @@ pub const API: Api = Api {
     source: SOURCE,
     provider: "xposedornot.com",
     origin: "https://api.xposedornot.com:443",
-    key: None,
+    // Keyless by default; an optional XposedOrNot API key, when set, is sent in the `x-api-key`
+    // header to raise the per-minute rate limit, so bulk email scans hit fewer rate-limit refusals.
+    // The breach-analytics answer is the same with or without it.
+    key: Some(KeyUse {
+        slot: crate::environment::XPOSEDORNOT_KEY_ENV,
+        place: KeyPlace::Header("x-api-key"),
+        required: false,
+    }),
 };
 pub const INTEL: Source = Source {
     api: &API,
@@ -282,6 +289,28 @@ mod tests {
     fn a_body_that_is_not_the_documented_shape_is_a_decode_error_never_a_zero() {
         assert!(matches!(decode(br#"{"status":"x"}"#), Ok(None) | Err(_)));
         assert!(matches!(decode(b"not json"), Err(LegError::Decode(_))));
+    }
+
+    #[test]
+    fn the_source_is_keyless_by_default_and_the_optional_key_never_gates_it() {
+        // Keyless by default: the leg runs whether or not the optional key is set, so no address
+        // loses its breach lookup for want of a key.
+        assert!(
+            API.wanted(&Keys::default()),
+            "keyless default must always run"
+        );
+        let keyed = Keys::parse("HUNTSMAN_XPOSEDORNOT_KEY=example-key\n").expect("keys parse");
+        assert!(
+            API.wanted(&keyed),
+            "a configured key must not gate the keyless leg"
+        );
+        let key = API.key.expect("an optional key is declared");
+        assert!(
+            !key.required,
+            "the XposedOrNot key is optional, never required"
+        );
+        assert_eq!(key.slot, crate::environment::XPOSEDORNOT_KEY_ENV);
+        assert!(matches!(key.place, KeyPlace::Header("x-api-key")));
     }
 
     #[test]

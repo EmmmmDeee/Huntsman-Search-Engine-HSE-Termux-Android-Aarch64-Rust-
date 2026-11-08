@@ -264,6 +264,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::OATHNET_KEY_ENV],
     },
     Provider {
+        name: "XposedOrNot",
+        get_key_url: "https://xposedornot.com/api_doc",
+        free_tier: "keyless; an optional free API key raises the per-minute rate limit",
+        slots: &[crate::environment::XPOSEDORNOT_KEY_ENV],
+    },
+    Provider {
         name: "DeHashed",
         get_key_url: "https://dehashed.com",
         free_tier: "paid API",
