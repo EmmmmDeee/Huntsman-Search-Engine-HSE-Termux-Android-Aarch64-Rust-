@@ -133,6 +133,8 @@ const OSINT_CASE_PATH: &str = "/api/osint/case";
 /// Source-code inventory, never a claim of live OSINT availability.
 const OSINT_MATRIX_PATH: &str = "/api/osint/matrix";
 const OSINT_RISK_PATH: &str = "/api/osint/area-risk";
+/// Explicit, guarded, read-only external public intelligence. No writes or wallets.
+const H1DR4_PUBLIC_PATH: &str = "/api/h1dr4";
 const INVESTIGATE_PATH: &str = "/api/investigate";
 /// Explicit, source-scoped keyless people discovery. Body carries the name so
 /// neither browser history nor routine URL logs expose the search subject.
@@ -1462,6 +1464,7 @@ fn protected_path(path: &str) -> bool {
             | RHINSER_OVERLAPS_PATH
             | OSINT_CASE_PATH
             | OSINT_RISK_PATH
+            | H1DR4_PUBLIC_PATH
             | OSINT_MATRIX_PATH
             | INVESTIGATE_PATH
     ) || ScanApi::handles(path)
@@ -1542,6 +1545,7 @@ fn route(
             ),
         },
         "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
+        H1DR4_PUBLIC_PATH => lookup::h1dr4_response(parsed),
         "/api/research" => lookup::research_response(parsed, routes.research.as_ref()),
         PEOPLE_DISCOVER_PATH => {
             lookup::people_discover_response(parsed, routes.people_discover.as_ref())

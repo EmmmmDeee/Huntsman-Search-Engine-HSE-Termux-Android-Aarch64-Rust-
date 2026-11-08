@@ -1,0 +1,43 @@
+name: H1DR4 connector verification
+on:
+  pull_request:
+    paths:
+      - 'src/h1dr4.rs'
+      - 'src/cli/h1dr4.rs'
+      - 'src/cli/mod.rs'
+      - 'src/web_server.rs'
+      - 'src/web_server/lookup.rs'
+      - 'src/web_ui.html'
+      - 'src/cli/help.rs'
+      - 'src/lib.rs'
+      - '.github/workflows/h1dr4-connector.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  formatting:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Verify Rust formatting
+        run: cargo fmt --all --check
+  connector:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Verify Rust formatting
+        run: cargo fmt --all --check
+      - name: Check all targets
+        run: cargo check --locked --all-targets
+      - name: Test H1DR4
+        run: cargo test --locked --lib h1dr4 -- --nocapture
+      - name: Clippy all targets
+        run: cargo clippy --locked --all-targets -- -D warnings

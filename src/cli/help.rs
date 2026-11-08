@@ -124,6 +124,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         }
         "apk" => huntsman_recon::apk_intel::APK_HELP,
         "source-intel" => super::source_intel::HELP,
+        "h1dr4" => super::h1dr4::HELP,
         "radar" => radar_help(),
         "mitm" => super::mitm::USAGE,
         "domain" => domain_help(),

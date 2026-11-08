@@ -5,8 +5,9 @@
 use serde::Serialize;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+use std::sync::{Arc, LazyLock};
 use std::thread;
 use std::time::Instant;
 
@@ -21,6 +22,110 @@ use super::{
     MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES,
     Sensor, Slot, json_error, json_ok, page_refusal, response, response_bytes,
 };
+
+/// H1DR4 runs only on deliberate guarded requests; no credentials or
+/// writable third-party API calls are ever issued.
+static H1DR4_ACTIVE: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
+
+fn parse_h1dr4_request(
+    raw: &str,
+) -> Result<(crate::h1dr4::Resource, crate::h1dr4::Bounds), &'static str> {
+    let pairs = crate::value_syntax::form_pairs(raw).ok_or("invalid H1DR4 query encoding")?;
+    let mut kind = String::from("search");
+    let mut query = String::new();
+    let mut limit = None;
+    let mut pages = 1_u8;
+    for (key, value) in pairs {
+        match key.as_str() {
+            "kind" => kind = value,
+            "q" => query = value,
+            "limit" => limit = Some(value.parse::<u16>().map_err(|_| "invalid H1DR4 limit")?),
+            "pages" => pages = value.parse::<u8>().map_err(|_| "invalid H1DR4 pages")?,
+            _ => return Err("unrecognized H1DR4 query parameter"),
+        }
+    }
+    let (resource, max) = match kind.as_str() {
+        "search" if !query.is_empty() => (crate::h1dr4::Resource::Search(query), 20),
+        "case" if !query.is_empty() => (crate::h1dr4::Resource::Case(query), 200),
+        "rewards" if query.is_empty() => (crate::h1dr4::Resource::OfficialRewards, 20),
+        "onchain-stats" if query.is_empty() => (crate::h1dr4::Resource::OnchainStats, 1),
+        _ => return Err("invalid H1DR4 mode or missing case/search query"),
+    };
+    let bounds = crate::h1dr4::Bounds {
+        pages,
+        limit: limit.unwrap_or(max),
+    };
+    bounds.checked(&resource)?;
+    Ok((resource, bounds))
+}
+
+/// GET /api/h1dr4: bounded read-only public intelligence, with every original
+/// upstream JSON response included. Same-origin and lookup-header requirements
+/// protect users from cross-origin requests consuming network capacity.
+pub(super) fn h1dr4_response(parsed: &ParsedRequest<'_>) -> String {
+    if parsed.method != Method::Get {
+        return json_error(405, "H1DR4 requires GET");
+    }
+    if let Some(refusal) = page_refusal(parsed, "H1DR4 public intelligence", true) {
+        return refusal;
+    }
+    if parsed.has_body {
+        return json_error(400, "H1DR4 takes no request body");
+    }
+    let (resource, bounds) = match parse_h1dr4_request(parsed.query) {
+        Ok(args) => args,
+        Err(reason) => return json_error(400, reason),
+    };
+    let Some(slot) = Slot::take_of(&H1DR4_ACTIVE, MAX_LOOKUPS) else {
+        return json_error(503, "H1DR4 lookup capacity in use");
+    };
+    let (sender, receiver) = sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("serve-h1dr4".into())
+        .stack_size(LOOKUP_STACK_BYTES)
+        .spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let transport = crate::http::UreqTransport::new(&crate::http::TransportConfig {
+                    timeout: std::time::Duration::from_secs(16),
+                    max_body: 4 * 1024 * 1024,
+                    ..crate::http::TransportConfig::default()
+                });
+                crate::h1dr4::retrieve(&transport, &resource, bounds, crate::clock::unix_now())
+            }));
+            drop(slot);
+            let _ = sender.send(result);
+        });
+    if worker.is_err() {
+        return json_error(503, "could not start H1DR4 worker");
+    }
+    match receiver.recv_timeout(super::LOOKUP_WAIT) {
+        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
+            Ok(body) => json_ok(&body, false),
+            Err(_) => json_error(500, "H1DR4 report could not be serialized"),
+        },
+        Ok(Ok(Err(_))) => json_error(502, "H1DR4 source refused or failed the request"),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            json_error(500, "H1DR4 lookup failed unexpectedly")
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            json_error(504, "H1DR4 lookup timed out; no report was saved")
+        }
+    }
+}
+
+#[cfg(test)]
+mod h1dr4_endpoint_tests {
+    use super::*;
+    #[test]
+    fn h1dr4_rejects_invalid_requests_before_network() {
+        assert!(parse_h1dr4_request("kind=search&q=sample&pages=4").is_err());
+        // The web parser doesn't mistake a URL-encoded separator for a route.
+        // The collector additionally validates that IDs contain only safe tokens.
+        assert!(parse_h1dr4_request("kind=case&q=..%2Fprivate").is_ok());
+        assert!(parse_h1dr4_request("kind=rewards&q=sensitive").is_err());
+        assert!(parse_h1dr4_request("kind=case&q=one&limit=201").is_err());
+    }
+}
 
 /// Read a sensor (Android's OS-cached Wi-Fi scan, or the cells it reports) or record one track
 /// sweep only after an explicitly initiated, same-origin, lookup-header-bearing request of the one
