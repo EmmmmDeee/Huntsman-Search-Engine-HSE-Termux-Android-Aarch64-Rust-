@@ -75,10 +75,108 @@ pub fn run<T: Transport + ?Sized>(
     report.entities.extend(catalog.entities);
     report.outcomes.push(catalog.outcome);
     crate::entity::merge_by_uid(&mut report.entities);
+    attach_triage(&mut report, &cve, &scan_id);
     lookup_report::finish(report, &format!("no source answered for {cve}"))
 }
 
 type LegFn<T> = fn(&T, &str, &str, u64) -> Result<lookup_report::SourceReport, Error>;
+
+/// The exploitation signals the sources reported, read off the merged CVE document's evidence.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Signals {
+    known_exploited: bool,
+    ransomware: bool,
+    epss: Option<f64>,
+    severity: Option<String>,
+    base_score: Option<f64>,
+}
+
+/// Read every signal from the CVE document's evidence attributes across its sources. **Pure.**
+fn collect_signals(doc: &crate::entity::Entity) -> Signals {
+    let attr = |key: &str| -> Option<String> {
+        doc.evidence
+            .iter()
+            .find_map(|ev| ev.attributes.get(key))
+            .cloned()
+    };
+    Signals {
+        known_exploited: attr("kev_known_exploited").as_deref() == Some("true"),
+        ransomware: attr("kev_ransomware_use").is_some_and(|v| v.eq_ignore_ascii_case("known")),
+        epss: attr("epss_probability").and_then(|v| v.parse().ok()),
+        severity: attr("nvd_cvss_severity").map(|v| v.to_ascii_uppercase()),
+        base_score: attr("nvd_cvss_base_score").and_then(|v| v.parse().ok()),
+    }
+}
+
+/// A conservative, derived triage over the signals: a priority tier and a one-line rationale, or
+/// `None` when the sources carry no risk signal at all (only that the CVE exists), so the command
+/// never invents urgency it cannot support. Known exploitation outranks any score. **Pure.**
+fn triage(sig: &Signals) -> Option<(&'static str, String)> {
+    let mut why = Vec::new();
+    if sig.known_exploited {
+        why.push("on the CISA KEV catalogue (actively exploited)".to_owned());
+        if sig.ransomware {
+            why.push("used in ransomware".to_owned());
+        }
+    }
+    if let Some(epss) = sig.epss {
+        why.push(format!("EPSS {epss:.4}"));
+    }
+    if let Some(severity) = &sig.severity {
+        match sig.base_score {
+            Some(score) => why.push(format!("CVSS {score} {severity}")),
+            None => why.push(format!("CVSS {severity}")),
+        }
+    }
+    if why.is_empty() {
+        return None;
+    }
+    let high_severity = sig
+        .severity
+        .as_deref()
+        .is_some_and(|s| s == "CRITICAL" || s == "HIGH");
+    let medium_severity = sig.severity.as_deref() == Some("MEDIUM");
+    let epss_high = sig.epss.is_some_and(|p| p >= 0.5);
+    let epss_moderate = sig.epss.is_some_and(|p| p >= 0.1);
+    let priority = if sig.known_exploited {
+        "act-now"
+    } else if epss_high || high_severity {
+        "elevated"
+    } else if epss_moderate || medium_severity {
+        "moderate"
+    } else {
+        "lower"
+    };
+    Some((priority, why.join("; ")))
+}
+
+/// Attach the derived triage to the merged CVE document, clearly marked as an inferred correlation
+/// of the sources, never a source claim of its own. Does nothing when there is no CVE document or
+/// no risk signal. **Pure.**
+fn attach_triage(report: &mut Report, cve: &str, scan_id: &str) {
+    use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
+    let Some(doc) = report
+        .entities
+        .iter_mut()
+        .find(|e| e.kind == EntityKind::Document && e.raw_value == cve && e.has_tag("cve"))
+    else {
+        return;
+    };
+    let Some((priority, rationale)) = triage(&collect_signals(doc)) else {
+        return;
+    };
+    doc.add_evidence(
+        Evidence::new(
+            EvidenceProvenance::for_scan("cve_triage", scan_id),
+            format!("Derived exploitation triage for {cve}: {priority}"),
+        )
+        .with_attr("assessment", "derived")
+        .with_attr("triage_priority", priority)
+        .with_attr("triage_rationale", rationale)
+        .inferred(),
+    );
+    doc.tag("triage");
+}
 
 #[cfg(test)]
 mod tests {
@@ -153,6 +251,90 @@ mod tests {
                 assert!(
                     ev.contains(&"osv") && ev.contains(&"nvd") && ev.contains(&"epss"),
                     "all sources on the node: {ev:?}"
+                );
+            }
+            CveRun::Network(why) | CveRun::Failed(why) => panic!("{why}"),
+        }
+    }
+
+    #[test]
+    fn triage_ranks_known_exploited_above_any_score() {
+        let ke = Signals {
+            known_exploited: true,
+            ransomware: true,
+            epss: Some(0.01),
+            severity: Some("LOW".into()),
+            base_score: Some(3.1),
+        };
+        let (p, why) = triage(&ke).expect("a known-exploited CVE always triages");
+        assert_eq!(p, "act-now");
+        assert!(why.contains("CISA KEV") && why.contains("ransomware"));
+    }
+
+    #[test]
+    fn triage_tiers_follow_epss_and_severity() {
+        let sev = |s: &str, score, epss| Signals {
+            known_exploited: false,
+            ransomware: false,
+            epss,
+            severity: Some(s.into()),
+            base_score: score,
+        };
+        assert_eq!(
+            triage(&sev("CRITICAL", Some(9.8), Some(0.01))).unwrap().0,
+            "elevated"
+        );
+        assert_eq!(
+            triage(&sev("LOW", Some(3.1), Some(0.6))).unwrap().0,
+            "elevated"
+        ); // EPSS drives it
+        assert_eq!(
+            triage(&sev("MEDIUM", Some(5.3), Some(0.2))).unwrap().0,
+            "moderate"
+        );
+        assert_eq!(
+            triage(&sev("LOW", Some(2.0), Some(0.01))).unwrap().0,
+            "lower"
+        );
+    }
+
+    #[test]
+    fn triage_is_none_without_any_risk_signal() {
+        // Only that the CVE exists (OSV record, no NVD/EPSS/KEV): no invented urgency.
+        assert_eq!(triage(&Signals::default()), None);
+    }
+
+    #[test]
+    fn run_attaches_a_derived_triage_to_the_document() {
+        match run(&routed(), &kev_catalog(), "cve-2021-44228", 1) {
+            CveRun::Printed { report, text } => {
+                let doc = report
+                    .entities
+                    .iter()
+                    .find(|e| {
+                        e.kind == crate::entity::EntityKind::Document
+                            && e.raw_value == "CVE-2021-44228"
+                    })
+                    .expect("the CVE document");
+                assert!(doc.has_tag("triage"));
+                let ev = doc
+                    .evidence
+                    .iter()
+                    .find(|ev| {
+                        ev.attributes.get("assessment").map(String::as_str) == Some("derived")
+                    })
+                    .expect("a derived triage evidence item");
+                assert!(
+                    ev.is_inferred,
+                    "triage must be marked inferred, not a source claim"
+                );
+                assert_eq!(
+                    ev.attributes.get("triage_priority").map(String::as_str),
+                    Some("act-now")
+                );
+                assert!(
+                    text.contains("triage_priority"),
+                    "triage shows in the report: {text}"
                 );
             }
             CveRun::Network(why) | CveRun::Failed(why) => panic!("{why}"),
