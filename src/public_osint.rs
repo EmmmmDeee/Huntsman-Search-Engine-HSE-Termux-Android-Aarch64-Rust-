@@ -255,12 +255,12 @@ struct Parsed {
 
 /// Whether a notice names every word of `query`, in its title or in one of its `aliases`.
 fn notice_names_query(row: &Value, title: &str, query: &str) -> bool {
-    let wanted = crate::textnorm::name_tokens(query);
+    let wanted = crate::textnorm::name_match_keys(query);
     if wanted.is_empty() {
         return false;
     }
     let names_all = |name: &str| {
-        let have = crate::textnorm::name_tokens(name);
+        let have = crate::textnorm::name_match_keys(name);
         wanted.iter().all(|word| have.contains(word))
     };
     names_all(title)

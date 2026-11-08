@@ -289,6 +289,32 @@ pub fn name_tokens(full: &str) -> Vec<String> {
         .collect()
 }
 
+/// The transliteration-aware match keys of a name: each [`name_tokens`] token reduced to its
+/// canonical romanised ASCII form ([`crate::translit::match_key`]), with empty keys dropped. A name
+/// written in Cyrillic and its Latin transliteration produce the same keys, so the two meet. **Pure.**
+#[must_use]
+pub fn name_match_keys(full: &str) -> Vec<String> {
+    name_tokens(full)
+        .iter()
+        .map(|token| crate::translit::match_key(token))
+        .filter(|key| key.chars().nth(1).is_some())
+        .collect()
+}
+
+/// Whether `candidate` carries every word of `subject`, matching across scripts: both sides are
+/// reduced to transliteration-aware keys ([`name_match_keys`]), then every subject key must be a
+/// candidate key. `subject` with fewer than two keys never matches, as a single common name is too
+/// weak a signal on its own. **Pure.**
+#[must_use]
+pub fn subject_name_match(subject: &str, candidate: &str) -> bool {
+    let wanted = name_match_keys(subject);
+    if wanted.len() < 2 {
+        return false;
+    }
+    let have = name_match_keys(candidate);
+    wanted.iter().all(|key| have.contains(key))
+}
+
 /// `value` trimmed, or `None` when it is absent or blank. **Pure.**
 #[must_use]
 #[inline]
@@ -952,6 +978,21 @@ mod tests {
             "smith family"
         ));
         assert!(!shares_whole_word_token("Ø Smith", "Ø Jones"));
+    }
+
+    #[test]
+    fn subject_name_match_bridges_cyrillic_and_latin() {
+        // A Cyrillic query meets a Latin listing and the reverse, in any word order.
+        assert!(subject_name_match("Сергей Шойгу", "Sergey Shoygu"));
+        assert!(subject_name_match("Sergey Shoygu", "Шойгу Сергей"));
+        assert!(subject_name_match("Владимир Путин", "Vladimir Putin"));
+        // A listing missing one of the subject's words is never a match.
+        assert!(!subject_name_match("Сергей Шойгу", "Sergey Ivanov"));
+        // A single common name is too weak to match on its own.
+        assert!(!subject_name_match("Путин", "Putin"));
+        // Pure-ASCII behaviour is unchanged: still a whole-word subset match.
+        assert!(subject_name_match("Ada Lovelace", "ada k lovelace"));
+        assert!(!subject_name_match("Ada Lovelace", "ada byron"));
     }
 
     #[test]

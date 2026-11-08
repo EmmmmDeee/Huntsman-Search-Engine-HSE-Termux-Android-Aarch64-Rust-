@@ -105,9 +105,11 @@ struct Listing {
     fields: Vec<(&'static str, String)>,
 }
 
-/// Whether `listed` carries every word of `query`. **Pure.**
+/// Whether `listed` carries every word of `query`, matching across scripts. `query` is already the
+/// subject's transliteration-aware match keys ([`crate::textnorm::name_match_keys`]); `listed` is
+/// reduced the same way, so a Cyrillic listing and a Latin query (or the reverse) meet. **Pure.**
 fn names_query(listed: &str, query: &[String]) -> bool {
-    let have = crate::textnorm::name_tokens(listed);
+    let have = crate::textnorm::name_match_keys(listed);
     query.iter().all(|word| have.contains(word))
 }
 
@@ -127,7 +129,7 @@ pub fn check(
     if !transport.runs_module(SOURCE) {
         return (Vec::new(), Vec::new());
     }
-    let query = crate::textnorm::name_tokens(name);
+    let query = crate::textnorm::name_match_keys(name);
     if query.len() < 2 {
         return (Vec::new(), Vec::new());
     }

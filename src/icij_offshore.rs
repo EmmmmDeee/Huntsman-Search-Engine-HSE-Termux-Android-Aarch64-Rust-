@@ -34,11 +34,11 @@ pub fn request_body(name: &str) -> Vec<u8> {
 
 /// Whether `node_name` carries every word of `query`. **Pure.**
 fn names_query(node_name: &str, query: &str) -> bool {
-    let wanted = crate::textnorm::name_tokens(query);
+    let wanted = crate::textnorm::name_match_keys(query);
     if wanted.is_empty() {
         return false;
     }
-    let have = crate::textnorm::name_tokens(node_name);
+    let have = crate::textnorm::name_match_keys(node_name);
     wanted.iter().all(|word| have.contains(word))
 }
 
