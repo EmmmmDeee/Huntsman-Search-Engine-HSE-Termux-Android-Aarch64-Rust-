@@ -245,3 +245,78 @@ fn missing_ofac_aliases_cannot_prove_absence() {
     );
     assert_eq!(outcomes[1].kind, SourceOutcomeKind::ValidZero);
 }
+
+#[test]
+fn a_match_cap_is_reported_never_a_silent_complete_success() {
+    // 51 OFAC rows that all carry one name: the 50-match cap attaches 50 and the detail says one
+    // more matched. A capped result is a Success that admits it was cut off, never a clean count.
+    use std::fmt::Write as _;
+    let mut sdn = String::new();
+    for ent in 1000..1051 {
+        let _ = write!(
+            sdn,
+            "{ent},\"COMMON, Name\",\"individual\",\"X\",-0- ,-0- ,-0- ,-0- ,-0- ,-0- ,-0- ,-0- \r\n"
+        );
+    }
+    sdn.push('\u{1a}');
+    let sdn: &'static str = Box::leak(sdn.into_boxed_str());
+    let capped = Lists::new(
+        Box::new(RoutedTransport::new(&[
+            (OFAC_SDN.url, 200, sdn),
+            (OFAC_ALT.url, 200, ""),
+            (UN_SC.url, 200, UN_XML),
+            (EU_FSF.url, 200, EU_CSV),
+        ])),
+        None,
+    );
+    let (entities, outcomes) = check(&capped, "Name Common", "scan", 1);
+    let ofac: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.raw_value.starts_with("https://sanctionssearch.ofac"))
+        .collect();
+    assert_eq!(ofac.len(), 50, "at most the cap is attached");
+    assert_eq!(outcomes[0].module, OFAC);
+    assert_eq!(outcomes[0].kind, SourceOutcomeKind::Success);
+    assert!(
+        outcomes[0]
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("1 more matching listings beyond the first 50 were not attached"),
+        "{:?}",
+        outcomes[0]
+    );
+}
+
+#[test]
+fn unreadable_rows_block_a_clean_zero() {
+    // One readable listing that does not match, and one row too short to read: the subject could be
+    // in the unreadable row, so the outcome is Inconclusive, never a clean valid_zero.
+    const SHORT: &str = "306,\"BANCO NACIONAL DE CUBA\",-0- ,\"CUBA\",-0- ,-0- ,-0- ,-0- ,-0- ,-0- ,-0- ,\"a.k.a. 'BNC'.\"\r\n9,\"TOO FEW COLUMNS\"\r\n\x1a";
+    let partial = Lists::new(
+        Box::new(RoutedTransport::new(&[
+            (OFAC_SDN.url, 200, SHORT),
+            (OFAC_ALT.url, 200, ""),
+            (UN_SC.url, 200, UN_XML),
+            (EU_FSF.url, 200, EU_CSV),
+        ])),
+        None,
+    );
+    let (_entities, outcomes) = check(&partial, "Jane Doe", "scan", 1);
+    assert_eq!(outcomes[0].module, OFAC);
+    assert_eq!(
+        outcomes[0].kind,
+        SourceOutcomeKind::Inconclusive,
+        "{:?}",
+        outcomes[0]
+    );
+    assert!(
+        outcomes[0]
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("rows could not be read"),
+        "{:?}",
+        outcomes[0]
+    );
+}

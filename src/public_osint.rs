@@ -238,6 +238,7 @@ fn parse(source: Source, body: &Value, query: &str, scan_id: &str) -> Result<Par
         entities,
         skipped,
         other_people,
+        page_rows: rows.len(),
     })
 }
 
@@ -247,18 +248,18 @@ struct Parsed {
     entities: Vec<Entity>,
     skipped: usize,
     other_people: usize,
+    /// How many rows this one page held, before the [`MAX_ROWS`] cap, so a `total` larger than the
+    /// page can be recognised as unseen later pages rather than a clean negative.
+    page_rows: usize,
 }
 
 /// Whether a notice names every word of `query`, in its title or in one of its `aliases`.
 fn notice_names_query(row: &Value, title: &str, query: &str) -> bool {
-    let wanted = crate::textnorm::name_tokens(query);
+    let wanted = crate::textnorm::name_match_keys(query);
     if wanted.is_empty() {
         return false;
     }
-    let names_all = |name: &str| {
-        let have = crate::textnorm::name_tokens(name);
-        wanted.iter().all(|word| have.contains(word))
-    };
+    let names_all = |name: &str| crate::textnorm::carries_every_key(name, &wanted);
     names_all(title)
         || row
             .get("aliases")
@@ -389,46 +390,19 @@ fn classify_document(
     now: u64,
 ) -> (Vec<Entity>, SourceExecutionOutcome) {
     let label = name(source);
+    // The provider's full match count, so later pages this one request never fetched are not read
+    // as a clean negative. Saturating: a count past usize can only mean "more than were fetched".
+    let total = usize::try_from(document.get("total").and_then(Value::as_u64).unwrap_or(0))
+        .unwrap_or(usize::MAX);
+    let unit = match source {
+        Source::Notices => "notices",
+        _ => "articles",
+    };
     match parse(source, document, query, scan_id) {
-        Ok(Parsed {
-            entities, skipped, ..
-        }) if !entities.is_empty() => {
-            let mut outcome =
-                SourceExecutionOutcome::success(label, now, entities.len()).with_http_status(200);
-            if skipped > 0 {
-                outcome = outcome.with_detail(format!(
-                    "{skipped} invalid, duplicate, or over-limit records omitted"
-                ));
-            }
-            (entities, outcome)
+        Ok(parsed) if !parsed.entities.is_empty() => {
+            classify_match(label, unit, total, now, parsed)
         }
-        Ok(Parsed {
-            skipped,
-            other_people,
-            ..
-        }) => {
-            let total = document.get("total").and_then(Value::as_u64).unwrap_or(0);
-            if skipped == 0 && (total == 0 || other_people > 0) {
-                let mut zero = SourceExecutionOutcome::valid_zero(label, now).with_http_status(200);
-                if other_people > 0 {
-                    zero = zero.with_detail(format!(
-                        "{other_people} notices the search returned name other people"
-                    ));
-                }
-                (Vec::new(), zero)
-            } else {
-                (
-                    Vec::new(),
-                    SourceExecutionOutcome::failed(
-                        label,
-                        now,
-                        SourceOutcomeKind::SchemaDrift,
-                        Some(200),
-                        "result rows could not be validated",
-                    ),
-                )
-            }
-        }
+        Ok(parsed) => classify_zero(label, unit, total, now, &parsed),
         Err(why) => (
             Vec::new(),
             SourceExecutionOutcome::failed(
@@ -440,6 +414,109 @@ fn classify_document(
             ),
         ),
     }
+}
+
+/// A page with at least one matching entity: keep the entities, and count on the outcome both the
+/// results that named other people and the matches this one page never fetched, so a success
+/// never reads as the whole corpus.
+fn classify_match(
+    label: &str,
+    unit: &str,
+    total: usize,
+    now: u64,
+    parsed: Parsed,
+) -> (Vec<Entity>, SourceExecutionOutcome) {
+    let Parsed {
+        entities,
+        skipped,
+        other_people,
+        ..
+    } = parsed;
+    let examined = entities.len() + other_people + skipped;
+    let mut remarks = Vec::new();
+    if other_people > 0 {
+        remarks.push(format!(
+            "{other_people} {unit} the search returned name other people"
+        ));
+    }
+    if skipped > 0 {
+        remarks.push(format!(
+            "{skipped} invalid, duplicate, or over-limit records omitted"
+        ));
+    }
+    if total > examined {
+        remarks.push(format!(
+            "{} more {unit} beyond this page were not fetched",
+            total - examined
+        ));
+    }
+    let mut outcome =
+        SourceExecutionOutcome::success(label, now, entities.len()).with_http_status(200);
+    if !remarks.is_empty() {
+        outcome = outcome.with_detail(remarks.join("; "));
+    }
+    (entities, outcome)
+}
+
+/// A page with no matching entity. Schema drift when a row could not be validated or the page was
+/// empty against a positive total; inconclusive when more rows exist on pages this request never
+/// fetched; only a fully-seen page of other people is a verified zero.
+fn classify_zero(
+    label: &str,
+    unit: &str,
+    total: usize,
+    now: u64,
+    parsed: &Parsed,
+) -> (Vec<Entity>, SourceExecutionOutcome) {
+    let Parsed {
+        skipped,
+        other_people,
+        page_rows,
+        ..
+    } = *parsed;
+    // A page that held no rows while the total is positive is a contradiction, and so is a row
+    // that could not be validated: neither is a verified zero.
+    if skipped > 0 || (page_rows == 0 && total > 0) {
+        return (
+            Vec::new(),
+            SourceExecutionOutcome::failed(
+                label,
+                now,
+                SourceOutcomeKind::SchemaDrift,
+                Some(200),
+                "result rows could not be validated",
+            ),
+        );
+    }
+    // Every row on this page named someone else, but the total says more rows exist on pages this
+    // request never fetched: the subject may be among them.
+    if total > other_people {
+        let mut inconclusive = SourceExecutionOutcome::failed(
+            label,
+            now,
+            SourceOutcomeKind::Inconclusive,
+            Some(200),
+            format!(
+                "no {unit} on the first page named the query; {} more were not fetched",
+                total - other_people
+            ),
+        );
+        if other_people > 0 {
+            inconclusive = inconclusive.with_detail(format!(
+                "{other_people} {unit} on the first page name other people; {} more {unit} were not fetched",
+                total - other_people
+            ));
+        }
+        return (Vec::new(), inconclusive);
+    }
+    // Every matching row was seen and none named the query: a verified zero.
+    let mut zero = SourceExecutionOutcome::valid_zero(label, now).with_http_status(200);
+    if other_people > 0 {
+        zero = zero.with_detail(format!(
+            "{other_people} {unit} the search returned name other people"
+        ));
+    }
+    (Vec::new(), zero)
 }
 
 fn web_search<T: Transport + ?Sized>(
@@ -778,6 +855,49 @@ mod tests {
         .unwrap();
         assert_eq!(report.entities.len(), 1, "{:?}", report.entities);
         assert_eq!(report.entities[0].value, "https://www.fbi.gov/wanted/c");
+    }
+
+    /// Every notice on the one page the request fetched named someone else, but the provider's
+    /// `total` says more notices exist on pages never fetched. The subject could be among them, so
+    /// the reading is Inconclusive, never a clean zero that reads as "no FBI notice names them".
+    #[test]
+    fn an_unfetched_page_over_the_total_blocks_a_clean_zero() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"items":[
+              {"title":"AHLAM AHMAD AL-TAMIMI","url":"https://www.fbi.gov/wanted/a"},
+              {"title":"JOHN DOE","url":"https://www.fbi.gov/wanted/b"}
+            ],"total":5}"#,
+        );
+        let report = search(&fake, Source::Notices, "Jane Smith", "s", 1).unwrap();
+        assert!(report.entities.is_empty(), "{:?}", report.entities);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+    }
+
+    /// A match is kept, but the provider's `total` exceeds what this one page held: the success
+    /// detail must count both the notices naming other people and the notices never fetched, so a
+    /// reader never mistakes one page for the whole corpus.
+    #[test]
+    fn a_match_with_more_notices_unfetched_reports_the_shortfall() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"items":[
+              {"title":"JANE SMITH","url":"https://www.fbi.gov/wanted/match"},
+              {"title":"JOHN DOE","url":"https://www.fbi.gov/wanted/other"}
+            ],"total":5}"#,
+        );
+        let report = search(&fake, Source::Notices, "Jane Smith", "s", 1).unwrap();
+        assert_eq!(report.entities.len(), 1, "{:?}", report.entities);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
+        let detail = report.outcomes[0].detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("name other people"),
+            "other-people remark missing: {detail}"
+        );
+        assert!(
+            detail.contains("more notices beyond this page were not fetched"),
+            "unfetched-page remark missing: {detail}"
+        );
     }
 
     #[test]

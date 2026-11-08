@@ -16,6 +16,7 @@ use huntsman_recon::clock;
 use huntsman_recon::company_cli::{self, COMPANY_USAGE, CompanyArgs};
 use huntsman_recon::concurrent;
 use huntsman_recon::crypto_cli::{self, CRYPTO_USAGE, CryptoArgs};
+use huntsman_recon::cve_cli::{self, CVE_USAGE, CveArgs};
 use huntsman_recon::dehashed;
 use huntsman_recon::docmeta::{self, DOCMETA_USAGE, DocmetaArgs};
 use huntsman_recon::domain_cli::{DOMAIN_USAGE, DomainArgs};
@@ -48,6 +49,7 @@ use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::seeknow_collector::LookupLeg;
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceRun};
 use huntsman_recon::stolen_tax;
+use huntsman_recon::telegram_network;
 use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::threat_feeds::{self, Feeds};
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
@@ -748,6 +750,51 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
     match source_report(itunes_cli::run(
         &transport,
         &parsed.keyword,
+        clock::unix_now(),
+    )) {
+        Ok((text, _)) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+pub(in crate::cli) fn telegram_network_cmd(args: &[String]) -> ExitCode {
+    let parsed = match telegram_network::Args::parse(args) {
+        Ok(p) => p,
+        Err(e) => return fail(EX_USAGE, &format!("{e}\n{}", telegram_network::USAGE)),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match telegram_network::crawl(&transport, &parsed.seed, parsed.limits, clock::unix_now()) {
+        Ok(network) => {
+            print!("{}", telegram_network::render(&network));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_UNAVAILABLE, &e.to_string()),
+    }
+}
+
+pub(in crate::cli) fn cve_cmd(args: &[String]) -> ExitCode {
+    let parsed = match CveArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, CVE_USAGE),
+    };
+    // The CISA KEV catalogue is one keyless download kept in the feed directory, read on its own
+    // larger-bodied transport, as the threat feeds and sanctions lists are. Built before the HTTP
+    // transport binding so the `transport` function is not shadowed.
+    let catalog = huntsman_recon::kev::Kev::new(
+        Box::new(transport(
+            &huntsman_recon::threat_feeds::transport_config(),
+            &Selection::all(),
+        )),
+        crate::cli::scans::default_feed_dir(),
+    );
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match source_report(cve_cli::run(
+        &transport,
+        &catalog,
+        &parsed.cve,
         clock::unix_now(),
     )) {
         Ok((text, _)) => {

@@ -195,6 +195,8 @@ cargo run -- network cell:505:01:17:91      # cell site from radar cells: OpenCe
 cargo run -- network -27.4698,153.0251     # point: WiGLE WiFi + Bluetooth nearby, and the OpenCelliD cell sites in the 1.8 km square (keyed)
 cargo run -- crypto 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa  # keyless blockchain.info: on-chain balance, lifetime totals, tx count, the 20 latest transactions' chronology and counterparties (paid_by, paid_to, co_input; never owners); network
 cargo run -- itunes "Example Co"  # keyless App Store search by keyword: matching apps, sellers, bundle identifiers; network
+cargo run -- cve CVE-2021-44228  # keyless CVE enrichment: OSV record and EPSS exploitation-probability score; network
+cargo run -- telegram-network durov --depth 1 --max 10  # keyless bounded map of the public channels a Telegram channel forwards from or links to; network
 cargo run -- wikidata "Douglas Adams"  # keyless Wikidata: bounded statement provenance (with omission counts), eligible website -> domain, coordinate and external-identifier (GitHub, X, VIAF, ORCID, IMDb) pivots; a candidate, not a confirmed identity; network
 cargo run -- gleif --jurisdiction AE-DU "Emirates"  # the same register searched for Dubai-registered entities; --country AE for any UAE legal address; Arabic names are searched as written
 cargo run -- gleif "5493001KJTIIGC8Y1R12"  # keyless GLEIF LEI register: an LEI or a name resolved to the registered legal entity, its legal + headquarters addresses as geocodable points, and an Australian entity's checksum-validated ACN; a candidate, not a confirmed identity; network

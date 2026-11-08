@@ -38,7 +38,7 @@ use crate::{duolingo, openpgp_keys};
 pub const EMAIL_USAGE: &str = "usage: huntsman-recon email ADDR [--save FILE]";
 pub const EMAIL_HELP: &str = "\
 email ADDR [--save FILE]
-Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile, any Duolingo account registered to it, and any OpenPGP key published for it on keys.openpgp.org. Kickbox Open says, from the domain alone, whether it is a disposable-mail provider. StopForumSpam forum-spam reports and the names of public breaches XposedOrNot lists for the address are asked without a key. Each keyed source runs when its key is set: IPQualityScore (HUNTSMAN_IPQS_KEY), the Hunter.io verifier (HUNTSMAN_HUNTER_KEY) and Whoxy reverse WHOIS (HUNTSMAN_WHOXY_KEY). --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile, any Duolingo account registered to it, and any OpenPGP key published for it on keys.openpgp.org. Kickbox Open says, from the domain alone, whether it is a disposable-mail provider. StopForumSpam forum-spam reports and the public breaches XposedOrNot lists for the address — each breach name with its exposed-data categories, date, record count, industry and an overall risk — are asked without a key. Each keyed source runs when its key is set: IPQualityScore (HUNTSMAN_IPQS_KEY), the Hunter.io verifier (HUNTSMAN_HUNTER_KEY) and Whoxy reverse WHOIS (HUNTSMAN_WHOXY_KEY). --save FILE writes an unverified ledger that verify can reload.";
 
 const CONF_DOMAIN: f64 = 0.80;
 const CONF_USERNAME_CORPORATE: f64 = 0.70;
@@ -760,7 +760,10 @@ mod tests {
                 r#"{"success":1,"email":{"value":"ada@example.com","appears":0,"frequency":0}}"#,
             )),
             Ok(reply(200, r#"{"disposable":false}"#)),
-            Ok(reply(200, r#"{"breaches":[["Artsy","MyHeritage"]]}"#)),
+            Ok(reply(
+                200,
+                r#"{"ExposedBreaches":{"breaches_details":[{"breach":"Artsy","industry":"Arts","xposed_data":"Email addresses;Passwords","xposed_date":"2018","xposed_records":1070000,"verified":"Yes"},{"breach":"MyHeritage","industry":"Genealogy","xposed_data":"Email addresses","xposed_date":"2017","xposed_records":92000000,"verified":"Yes"}]},"BreachMetrics":{"risk":[{"risk_label":"High","risk_score":70}]}}"#,
+            )),
         ]);
         let EmailRun::Printed { report, .. } =
             run_keyed(&unkeyed, &Keys::default(), "ada@example.com", 1)
@@ -785,6 +788,14 @@ mod tests {
                 .any(|r| r.tag == crate::tags::BREACH && r.weight == 20),
             "{reasons:?}"
         );
+        // The keyless leg's exposed-data categories include "Passwords", so the same shared scorer
+        // the keyed legs feed now escalates this address's credentials as at risk.
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.tag == crate::tags::PASSWORD_AT_RISK && r.weight == 30),
+            "{reasons:?}"
+        );
     }
 
     #[test]
@@ -805,7 +816,10 @@ mod tests {
                 r#"{"success":1,"email":{"value":"ada@example.com","appears":1,"frequency":3}}"#,
             )),
             Ok(reply(200, r#"{"disposable":true}"#)),
-            Ok(reply(200, r#"{"breaches":[["Artsy"]]}"#)),
+            Ok(reply(
+                200,
+                r#"{"ExposedBreaches":{"breaches_details":[{"breach":"Artsy","industry":"Arts","xposed_data":"Email addresses","xposed_date":"2018","xposed_records":1070000,"verified":"Yes"}]}}"#,
+            )),
             Ok(reply(
                 200,
                 r#"{"success":true,"valid":true,"disposable":true,"leaked":true,"fraud_score":40,"sanitized_email":"ada@example.com"}"#,

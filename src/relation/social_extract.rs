@@ -58,6 +58,15 @@ fn extract_username_from_profile_url(url: &str) -> Option<ProfileHandle> {
             .contains(&handle.to_ascii_lowercase().as_str());
         return valid.then(|| ProfileHandle::Instagram(handle.to_ascii_lowercase()));
     }
+    // Only a bare `t.me/name` is the account's own page; a post, preview or invite is not.
+    if host == "t.me" || host == "telegram.me" {
+        let [name] = segments.as_slice() else {
+            return None;
+        };
+        let handle =
+            crate::value_syntax::telegram_handle_from_link(&format!("https://t.me/{name}"))?;
+        return canonical_handle(&handle).map(ProfileHandle::Existing);
+    }
     let candidate = match host {
         "github.com" | "twitter.com" | "x.com" => segments.first().copied(),
         "tiktok.com" => segments
@@ -184,6 +193,26 @@ mod tests {
         );
         assert_eq!(
             extract_username_from_profile_url("https://unknown.example.com/x"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_telegram_page_url_names_its_handle_but_a_post_or_invite_does_not() {
+        assert_eq!(
+            extract_username_from_profile_url("https://t.me/Some_Channel"),
+            canonical_handle("some_channel").map(ProfileHandle::Existing)
+        );
+        assert_eq!(
+            extract_username_from_profile_url("https://t.me/some_channel/42"),
+            None
+        );
+        assert_eq!(
+            extract_username_from_profile_url("https://t.me/s/some_channel"),
+            None
+        );
+        assert_eq!(
+            extract_username_from_profile_url("https://t.me/joinchat/AbCdEf"),
             None
         );
     }

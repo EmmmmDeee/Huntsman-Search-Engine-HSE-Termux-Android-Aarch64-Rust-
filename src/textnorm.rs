@@ -289,6 +289,40 @@ pub fn name_tokens(full: &str) -> Vec<String> {
         .collect()
 }
 
+/// The transliteration-aware match keys of a name: each [`name_tokens`] token reduced to its
+/// canonical romanised ASCII form ([`crate::translit::match_key`]), with empty keys dropped. A name
+/// written in Cyrillic and its Latin transliteration produce the same keys, so the two meet. **Pure.**
+#[must_use]
+pub fn name_match_keys(full: &str) -> Vec<String> {
+    name_tokens(full)
+        .iter()
+        .map(|token| crate::translit::match_key(token))
+        .filter(|key| key.chars().nth(1).is_some())
+        .collect()
+}
+
+/// Whether `candidate` carries every word of `subject`, matching across scripts: both sides are
+/// reduced to transliteration-aware keys ([`name_match_keys`]), then every subject key must be a
+/// candidate key. `subject` with fewer than two keys never matches, as a single common name is too
+/// weak a signal on its own. **Pure.**
+#[must_use]
+pub fn subject_name_match(subject: &str, candidate: &str) -> bool {
+    let wanted = name_match_keys(subject);
+    if wanted.len() < 2 {
+        return false;
+    }
+    carries_every_key(candidate, &wanted)
+}
+
+/// Whether `candidate` carries every one of `wanted`, the subject's match keys from
+/// [`name_match_keys`], matching across scripts. The one subset rule every subject-name matcher
+/// shares; callers keep their own rule for how few keys a subject may have. **Pure.**
+#[must_use]
+pub fn carries_every_key(candidate: &str, wanted: &[String]) -> bool {
+    let have = name_match_keys(candidate);
+    wanted.iter().all(|key| have.contains(key))
+}
+
 /// `value` trimmed, or `None` when it is absent or blank. **Pure.**
 #[must_use]
 #[inline]
@@ -710,9 +744,23 @@ fn eq_ignore_case(a: &str, b: &str) -> bool {
 }
 
 /// True when every alphanumeric token of `needle` appears as a whole word in `haystack`, ignoring
-/// case for Unicode letters as well as ASCII.
+/// case for Unicode letters as well as ASCII. When either side is written in Cyrillic, both are
+/// also compared in their romanised form ([`crate::translit::romanize`]), so a Cyrillic name meets
+/// its Latin transliteration in a register. Text with no Cyrillic never takes that path, so its
+/// result is exactly the plain comparison.
 #[must_use]
 pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
+    let has_cyrillic = |text: &str| text.chars().any(crate::translit::is_cyrillic);
+    exact_whole_word_token_match(haystack, needle)
+        || ((has_cyrillic(haystack) || has_cyrillic(needle))
+            && exact_whole_word_token_match(
+                &crate::translit::romanize(haystack),
+                &crate::translit::romanize(needle),
+            ))
+}
+
+/// [`whole_word_token_match`] without transliteration: case-insensitive whole words only.
+fn exact_whole_word_token_match(haystack: &str, needle: &str) -> bool {
     let words: Vec<&str> = haystack
         .split(|c: char| !c.is_alphanumeric())
         .filter(|part| !part.is_empty())
@@ -952,6 +1000,58 @@ mod tests {
             "smith family"
         ));
         assert!(!shares_whole_word_token("Ø Smith", "Ø Jones"));
+    }
+
+    #[test]
+    fn whole_word_token_match_bridges_cyrillic_to_a_latin_register_entry() {
+        // A Cyrillic subject meets a register written in Latin, in either direction and order.
+        assert!(whole_word_token_match("PUTIN, Vladimir", "Владимир Путин"));
+        assert!(whole_word_token_match("Путин Владимир", "Vladimir Putin"));
+        // Every word must still match: a namesake with a different surname is no match.
+        assert!(!whole_word_token_match(
+            "PUTIN, Vladimir",
+            "Владимир Иванов"
+        ));
+        assert!(!whole_word_token_match("IVANOV, Ivan", "Владимир Путин"));
+    }
+
+    #[test]
+    fn whole_word_token_match_is_unchanged_for_text_without_cyrillic() {
+        // The transliteration path is only taken when Cyrillic is present, so every Latin and
+        // accented-Latin pair gives exactly the plain comparison's answer.
+        let pairs = [
+            ("Linus Torvalds", "linus torvalds"),
+            ("Mildred Smith", "red"),
+            ("ZOLA, EMILE", "emile zola"),
+            ("ÉMILE ZOLA", "émile zola"),
+            ("Ada Lovelace", "ada byron"),
+            ("O'Brien-Smith", "smith o brien"),
+            ("Zürich Holdings", "zurich"),
+            ("", "anything"),
+            ("anything", ""),
+        ];
+        for (haystack, needle) in pairs {
+            assert_eq!(
+                whole_word_token_match(haystack, needle),
+                exact_whole_word_token_match(haystack, needle),
+                "{haystack:?} / {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subject_name_match_bridges_cyrillic_and_latin() {
+        // A Cyrillic query meets a Latin listing and the reverse, in any word order.
+        assert!(subject_name_match("Сергей Шойгу", "Sergey Shoygu"));
+        assert!(subject_name_match("Sergey Shoygu", "Шойгу Сергей"));
+        assert!(subject_name_match("Владимир Путин", "Vladimir Putin"));
+        // A listing missing one of the subject's words is never a match.
+        assert!(!subject_name_match("Сергей Шойгу", "Sergey Ivanov"));
+        // A single common name is too weak to match on its own.
+        assert!(!subject_name_match("Путин", "Putin"));
+        // Pure-ASCII behaviour is unchanged: still a whole-word subset match.
+        assert!(subject_name_match("Ada Lovelace", "ada k lovelace"));
+        assert!(!subject_name_match("Ada Lovelace", "ada byron"));
     }
 
     #[test]

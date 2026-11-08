@@ -1,7 +1,7 @@
 //! An email lookup keeps every breach name `XposedOrNot` lists for the address. These run
 //! `indicator_legs::run`, which `email --keys`, `scan` and the web UI's email lookups call for an
-//! address, through a transport that answers `XposedOrNot`'s `check-email` shape with 60 breaches
-//! and refuses every other host.
+//! address, through a transport that answers `XposedOrNot`'s `breach-analytics` shape with 60
+//! breaches and refuses every other host.
 
 use huntsman_recon::entity::EntityKind;
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
@@ -11,15 +11,26 @@ use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 fn xposedornot_answer() -> String {
-    let names: Vec<String> = (0..60).map(|n| format!(r#""Breach{n:02}""#)).collect();
-    format!(r#"{{"breaches":[[{}]]}}"#, names.join(","))
+    let details: Vec<String> = (0..60)
+        .map(|n| {
+            format!(
+                r#"{{"breach":"Breach{n:02}","industry":"Tech","xposed_data":"Email addresses","xposed_date":"2020","xposed_records":{},"verified":"Yes"}}"#,
+                1000 + n
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"ExposedBreaches":{{"breaches_details":[{}]}},"BreachMetrics":{{"risk":[{{"risk_label":"High","risk_score":70}}]}}}}"#,
+        details.join(",")
+    )
 }
 
 struct OnlyXposedOrNot;
 
 impl Transport for OnlyXposedOrNot {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        if request.url == "https://api.xposedornot.com/v1/check-email/test%40example.com" {
+        if request.url == "https://api.xposedornot.com/v1/breach-analytics?email=test%40example.com"
+        {
             return Ok(Response {
                 status: 200,
                 headers: Vec::new(),

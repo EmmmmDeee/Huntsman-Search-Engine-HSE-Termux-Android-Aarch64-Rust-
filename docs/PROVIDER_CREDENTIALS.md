@@ -71,8 +71,9 @@ spends more than one provider's quota.
 | QLDTraffic | `HUNTSMAN_QLDTRAFFIC_KEY` | used by `traffic-cameras` (CLI) for the one request it makes to the QLDTraffic webcam feed, sent only as the `apikey` query parameter; without it the command sends nothing and exits 66. The API specification (v1.10, §2.1.1.1) prints a shared public developer key limited to 100 requests a minute across everyone using it; TMR also issues keys to developers. No key is built into the binary; see [QLD_TRAFFIC_CAMERAS.md](QLD_TRAFFIC_CAMERAS.md) |
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required. HIBP's own private `~/.config/hibp/api_key`, which the HIBP lookups read last, counts as this slot's key in `credential-status`, its probe and the web UI's key settings |
 | ABN Lookup (Australian Business Register) | `HUNTSMAN_ABR_GUID` | used by `company ABN|ACN` when set: the free web-services GUID from https://abr.business.gov.au/Tools/WebServices; an unrecognised GUID is reported as a rejected key; not probed by `credential-status --probe`, because the ABR answers a bad GUID with HTTP 200; credential is operator-supplied and never committed |
-| SeekNow | `HUNTSMAN_SEEKNOW_KEY` | native `seeknow` CLI and keyed lookup leg; generate an API key from the [SeekNow account](https://see-know.ru/register); website search quotas do not establish API entitlements or available credits; credential is operator-supplied and never committed |
+| SeekNow | `HUNTSMAN_SEEKNOW_KEY` | native `seeknow` CLI and keyed lookup leg; generate an API key from the [SeekNow account](https://see-know.ru/register); website search quotas do not establish API entitlements or available credits; credential is operator-supplied and never committed. SeekNow's own private `~/.config/seeknow/api_key`, read last through the same slot rule as DeHashed and HIBP, counts as this slot's key in `credential-status`, its probe, the web UI's key settings and every lookup — so a Termux install driven through the web UI can hold the key in a file without a persistent env var |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
+| XposedOrNot | `HUNTSMAN_XPOSEDORNOT_KEY` | optional; used by `email` and email scans for the keyless breach-analytics lookup; sent in the `x-api-key` header only to raise the per-minute rate limit; the leg runs keyless without it |
 | DeHashed | `HUNTSMAN_DEHASHED_KEY` | used by `exposure` and `email` (CLI, `scan`, web UI), and by explicit `dehashed search --purpose ...`. Every path, `credential-status` and the web UI's key settings included, reads the private `~/.huntsman.env` slot, then the process environment, then the legacy private `~/.config/dehashed/api_key` file; a file others can read is named with its fix and not used. Keys are sent only to DeHashed's fixed API origin. One search costs one credit; `credential-status --probe` checks the key on `/v2/search-password`, which DeHashed documents as needing no credit. See [DEHASHED.md](DEHASHED.md) |
 | stolen.tax | `HUNTSMAN_STOLEN_TAX_KEY` | used by `exposure` and the `email` and `username` lookups (CLI, `scan`, web UI) when set |
 | Exa | `HUNTSMAN_EXA_KEY` | account confirmed; current credential not recovered |
@@ -154,6 +155,7 @@ HUNTSMAN_QLDTRAFFIC_KEY=
 HUNTSMAN_HIBP_KEY=
 HUNTSMAN_SEEKNOW_KEY=
 HUNTSMAN_OATHNET_KEY=
+HUNTSMAN_XPOSEDORNOT_KEY=
 HUNTSMAN_DEHASHED_KEY=
 HUNTSMAN_STOLEN_TAX_KEY=
 HUNTSMAN_EXA_KEY=

@@ -35,6 +35,7 @@ use crate::lookup_report;
 use crate::mastodon_user;
 use crate::npm_author;
 use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
+use crate::telegram;
 use crate::tiktok_public_contact;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
@@ -88,7 +89,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     original: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 19] {
+) -> [(&'static str, Job<'a, Found>); 20] {
     [
         (
             github_user::SRC,
@@ -145,6 +146,13 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
             tiktok_public_contact::SRC,
             Box::new(move || {
                 tiktok_public_contact::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            telegram::SRC,
+            Box::new(move || {
+                telegram::lookup(transport, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -399,6 +407,7 @@ mod tests {
     const WIKIPEDIA: &str = "en.wikipedia.org";
     const MASTODON: &str = "mastodon.social";
     const TIKTOK: &str = "www.tiktok.com";
+    const TELEGRAM: &str = "t.me";
     const NPM: &str = "registry.npmjs.org";
     const CRATES_IO: &str = "crates.io";
     const HACKER_NEWS: &str = "hacker-news.firebaseio.com";
@@ -644,6 +653,7 @@ mod tests {
             (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
             (MASTODON, response(404, r#"{"error":"Record not found"}"#)),
             (TIKTOK, response(404, "")),
+            (TELEGRAM, response(404, "")),
             (NPM, response(200, r#"{"objects":[],"total":0}"#)),
             (
                 CRATES_IO,
@@ -679,6 +689,7 @@ mod tests {
                     wikipedia::SRC,
                     mastodon_user::SRC,
                     tiktok_public_contact::SRC,
+                    telegram::SRC,
                     npm_author::SRC,
                     crates_io::SRC,
                     hacker_news::SRC,
@@ -729,6 +740,7 @@ mod tests {
             (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
             (MASTODON, response(404, r#"{"error":"Record not found"}"#)),
             (TIKTOK, response(404, "")),
+            (TELEGRAM, response(404, "")),
             (NPM, response(200, r#"{"objects":[],"total":0}"#)),
             (
                 CRATES_IO,
@@ -774,7 +786,7 @@ mod tests {
         let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
             panic!("the lookup should print a report");
         };
-        assert_eq!(report.outcomes.len(), 19);
+        assert_eq!(report.outcomes.len(), 20);
         let peak = slow.2.load(Ordering::SeqCst);
         assert!(
             peak >= 4,

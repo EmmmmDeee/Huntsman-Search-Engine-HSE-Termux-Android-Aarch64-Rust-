@@ -75,7 +75,8 @@ impl ProviderKeyFile {
 }
 
 /// The provider key files read beside the keys file: `DeHashed`'s legacy
-/// `~/.config/dehashed/api_key` and HIBP's `~/.config/hibp/api_key`.
+/// `~/.config/dehashed/api_key`, HIBP's `~/.config/hibp/api_key` and `SeekNow`'s
+/// `~/.config/seeknow/api_key`.
 pub const PROVIDER_KEY_FILES: &[ProviderKeyFile] = &[
     ProviderKeyFile {
         slot: environment::DEHASHED_KEY_ENV,
@@ -84,6 +85,10 @@ pub const PROVIDER_KEY_FILES: &[ProviderKeyFile] = &[
     ProviderKeyFile {
         slot: environment::HUNTSMAN_HIBP_KEY_ENV,
         path: &[".config", "hibp", "api_key"],
+    },
+    ProviderKeyFile {
+        slot: environment::SEEKNOW_KEY_ENV,
+        path: &[".config", "seeknow", "api_key"],
     },
 ];
 

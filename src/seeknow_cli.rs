@@ -162,7 +162,7 @@ pub fn run_with_keys<T: Transport + ?Sized>(
 
     // A missing key is missing input (exit 66), as `hibp` and `recon stolen-tax` treat it;
     // only a key that is present but cannot be approved is a permission failure (exit 77).
-    if keys.get(KEY_SLOT).is_none() {
+    if crate::provider_credentials::secret_for_slot(keys, KEY_SLOT).is_none() {
         return SeekNowCliRun::Input(format!("credential {KEY_SLOT} is not configured"));
     }
     let credential = match credential_from_keys(keys, now_unix) {
@@ -452,6 +452,45 @@ mod tests {
                 assert!(message.contains("egress-policy"), "{message}");
             }
             other => panic!("expected a refusal (NoPerm, exit 77), got {other:?}"),
+        }
+    }
+
+    /// `SeekNow`'s own key file `~/.config/seeknow/api_key` supplies the key on a Termux install
+    /// that has no persistent shell environment. The credential builder must read that file
+    /// through the same slot rule as `DeHashed` and HIBP, so the key need not sit in an env var.
+    /// The slot itself is unset here, so this would fail if the builder still read `keys.get`.
+    #[test]
+    fn seeknow_s_own_key_file_builds_the_operator_credential() {
+        let keys = Keys::parse("")
+            .unwrap_or_else(|error| panic!("fixture keys: {error}"))
+            .with_provider_file(KEY_SLOT, "file-only-seeknow-key");
+        assert!(
+            keys.get(KEY_SLOT).is_none(),
+            "the slot must be unset so the file is the only source under test"
+        );
+        credential_from_keys(&keys, 1)
+            .unwrap_or_else(|error| panic!("file-supplied credential: {error}"));
+    }
+
+    /// The same file must let the CLI past its not-configured gate: a file-only key is a
+    /// configured key, so `seeknow search` proceeds to build and send a request.
+    #[test]
+    fn a_file_only_key_passes_the_cli_configured_gate() {
+        let keys = Keys::parse("")
+            .unwrap_or_else(|error| panic!("fixture keys: {error}"))
+            .with_provider_file(KEY_SLOT, "file-only-seeknow-key");
+        let args = [
+            "search".to_owned(),
+            "email".to_owned(),
+            "ada@example.com".to_owned(),
+        ];
+        match run_with_keys(&Blocked, &args, &keys, 1) {
+            // The gate let it through; the egress refusal is the expected downstream outcome.
+            SeekNowCliRun::NoPerm(_) => {}
+            SeekNowCliRun::Input(message) => {
+                panic!("file-only key read as not configured: {message}")
+            }
+            other => panic!("expected the request to be attempted, got {other:?}"),
         }
     }
 }

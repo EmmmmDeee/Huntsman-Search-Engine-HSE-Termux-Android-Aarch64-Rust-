@@ -106,6 +106,8 @@ fn is_network(args: &[String]) -> bool {
         || args.first().is_some_and(|a| a == "network")
         || args.first().is_some_and(|a| a == "crypto")
         || args.first().is_some_and(|a| a == "itunes")
+        || args.first().is_some_and(|a| a == "cve")
+        || args.first().is_some_and(|a| a == "telegram-network")
         || args.first().is_some_and(|a| a == "wikidata")
         || args.first().is_some_and(|a| a == "gleif")
         || args.first().is_some_and(|a| a == "company")
