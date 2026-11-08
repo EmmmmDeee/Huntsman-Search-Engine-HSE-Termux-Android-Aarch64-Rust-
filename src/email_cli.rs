@@ -788,6 +788,14 @@ mod tests {
                 .any(|r| r.tag == crate::tags::BREACH && r.weight == 20),
             "{reasons:?}"
         );
+        // The keyless leg's exposed-data categories include "Passwords", so the same shared scorer
+        // the keyed legs feed now escalates this address's credentials as at risk.
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.tag == crate::tags::PASSWORD_AT_RISK && r.weight == 30),
+            "{reasons:?}"
+        );
     }
 
     #[test]

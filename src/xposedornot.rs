@@ -136,6 +136,96 @@ fn as_count(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// The distinct breaches an answer lists, with what they expose. **Pure.**
+struct Breaches {
+    /// Each breach name once, in answer order.
+    names: Vec<String>,
+    /// One `Name (date, N records, verified)` row per name.
+    rows: Vec<String>,
+    industries: BTreeSet<String>,
+    /// The union of every breach's exposed-data categories.
+    categories: BTreeSet<String>,
+}
+
+impl Breaches {
+    /// Whether any breach exposed passwords. The category names the kind of data, never a value.
+    fn password_exposed(&self) -> bool {
+        self.categories
+            .iter()
+            .any(|category| category.to_ascii_lowercase().contains("password"))
+    }
+}
+
+/// One breach's row: its name, then its date, record count and verified flag when known. **Pure.**
+fn breach_row(name: &str, detail: &BreachDetail) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(date) = api_leg::clean(Some(&detail.xposed_date)) {
+        parts.push(date);
+    }
+    if let Some(records) = as_count(&detail.xposed_records) {
+        parts.push(format!("{records} records"));
+    }
+    if detail.verified.eq_ignore_ascii_case("yes") {
+        parts.push("verified".to_owned());
+    }
+    if parts.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} ({})", parts.join(", "))
+    }
+}
+
+/// Every distinct, readable breach in `details`, folded once each. **Pure.**
+fn collect_breaches(details: &[BreachDetail]) -> Breaches {
+    let mut breaches = Breaches {
+        names: Vec::new(),
+        rows: Vec::new(),
+        industries: BTreeSet::new(),
+        categories: BTreeSet::new(),
+    };
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for detail in details {
+        let Some(name) = api_leg::clean(Some(&detail.breach)) else {
+            continue;
+        };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(industry) = api_leg::clean(Some(&detail.industry)) {
+            breaches.industries.insert(industry);
+        }
+        for category in detail.xposed_data.split(';') {
+            if let Some(category) = api_leg::clean(Some(category)) {
+                breaches.categories.insert(category);
+            }
+        }
+        breaches.rows.push(breach_row(&name, detail));
+        breaches.names.push(name);
+    }
+    breaches
+}
+
+/// The finding's one-line summary for `breaches` breaches and `pastes` pastes. **Pure.**
+fn summary(breaches: usize, pastes: u64) -> String {
+    let plural = |n: u64, one: &'static str, many: &'static str| if n == 1 { one } else { many };
+    let b = breaches as u64;
+    match (breaches, pastes) {
+        (0, p) => format!(
+            "XposedOrNot: the address is in {p} public {}",
+            plural(p, "paste", "pastes")
+        ),
+        (_, 0) => format!(
+            "XposedOrNot: the address is in {b} public {}",
+            plural(b, "breach", "breaches")
+        ),
+        (_, p) => format!(
+            "XposedOrNot: the address is in {b} public {} and {p} public {}",
+            plural(b, "breach", "breaches"),
+            plural(p, "paste", "pastes")
+        ),
+    }
+}
+
 /// One answer body. **Pure.**
 ///
 /// # Errors
@@ -146,96 +236,43 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         .exposed
         .map(|exposed| exposed.breaches_details)
         .unwrap_or_default();
-    let paste_count = body
+    let pastes = body
         .pastes
         .as_ref()
         .and_then(|p| p.cnt.as_u64())
         .unwrap_or(0);
+    let breaches = collect_breaches(&details);
+    let total = breaches.names.len();
     // An address in no breach and no paste is a valid zero. An address only in pastes is still
-    // exposed, so it must not be read as a clean zero.
-    if details.is_empty() && paste_count == 0 {
+    // exposed, so it must never read as a clean zero.
+    if total == 0 && pastes == 0 {
         return Ok(None);
     }
 
-    let mut names: Vec<String> = Vec::new();
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut industries: BTreeSet<String> = BTreeSet::new();
-    let mut categories: BTreeSet<String> = BTreeSet::new();
-    let mut per_breach: Vec<String> = Vec::new();
-    for detail in &details {
-        let Some(name) = api_leg::clean(Some(&detail.breach)) else {
-            continue;
-        };
-        if !seen.insert(name.clone()) {
-            continue;
-        }
-        if let Some(industry) = api_leg::clean(Some(&detail.industry)) {
-            industries.insert(industry);
-        }
-        for category in detail.xposed_data.split(';') {
-            if let Some(category) = api_leg::clean(Some(category)) {
-                categories.insert(category);
-            }
-        }
-        let date = api_leg::clean(Some(&detail.xposed_date));
-        let records = as_count(&detail.xposed_records);
-        let verified = detail.verified.eq_ignore_ascii_case("yes");
-        let mut row = name.clone();
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(date) = &date {
-            parts.push(date.clone());
-        }
-        if let Some(records) = &records {
-            parts.push(format!("{records} records"));
-        }
-        if verified {
-            parts.push("verified".to_owned());
-        }
-        if !parts.is_empty() {
-            use std::fmt::Write as _;
-            let _ = write!(row, " ({})", parts.join(", "));
-        }
-        per_breach.push(row);
-        names.push(name);
-    }
-
-    let total = names.len();
-    // No readable breach name and no paste: nothing to report.
-    if total == 0 && paste_count == 0 {
-        return Ok(None);
-    }
-
-    let summary = match (total, paste_count) {
-        (0, p) => format!(
-            "XposedOrNot: the address is in {p} public paste{}",
-            if p == 1 { "" } else { "s" }
-        ),
-        (b, 0) => format!(
-            "XposedOrNot: the address is in {b} public breach{}",
-            if b == 1 { "" } else { "es" }
-        ),
-        (b, p) => format!(
-            "XposedOrNot: the address is in {b} public breach{} and {p} public paste{}",
-            if b == 1 { "" } else { "es" },
-            if p == 1 { "" } else { "s" }
-        ),
-    };
-    let mut finding = Finding::new(summary).tag(tags::BREACH);
+    // Feed the shared exposure scorer the same tags the keyed legs do: a breach is a breach, a
+    // paste-only exposure is paste-exposed, and exposed passwords put the credentials at risk.
+    let mut finding = Finding::new(summary(total, pastes));
     if total > 0 {
         finding = finding
+            .tag(tags::BREACH)
             .attr("breach_count", total.to_string())
-            .list_attr("breaches", &names)
-            .list_attr("breach_detail", &per_breach);
+            .list_attr("breaches", &breaches.names)
+            .list_attr("breach_detail", &breaches.rows);
     }
-    if paste_count > 0 {
-        finding = finding.attr("paste_count", paste_count.to_string());
+    if pastes > 0 {
+        finding = finding
+            .tag(tags::PASTE_EXPOSED)
+            .attr("paste_count", pastes.to_string());
     }
-    if !categories.is_empty() {
-        let categories: Vec<String> = categories.into_iter().collect();
+    if breaches.password_exposed() {
+        finding = finding.tag(tags::PASSWORD_AT_RISK);
+    }
+    if !breaches.categories.is_empty() {
+        let categories: Vec<&String> = breaches.categories.iter().collect();
         finding = finding.list_attr("exposed_data", &categories);
     }
-    if !industries.is_empty() {
-        let industries: Vec<String> = industries.into_iter().collect();
+    if !breaches.industries.is_empty() {
+        let industries: Vec<&String> = breaches.industries.iter().collect();
         finding = finding.list_attr("breach_industries", &industries);
     }
     if let Some(risk) = body.metrics.and_then(|m| m.risk.into_iter().next()) {
@@ -288,7 +325,9 @@ mod tests {
             f.summary,
             "XposedOrNot: the address is in 2 public breaches"
         );
-        assert_eq!(f.tags, [tags::BREACH]);
+        assert!(f.tags.contains(&tags::BREACH));
+        // RECORDED exposes the "Passwords" category, so the address's credentials are at risk.
+        assert!(f.tags.contains(&tags::PASSWORD_AT_RISK));
         assert_eq!(attr(&f, "breach_count"), Some("2"));
         assert_eq!(attr(&f, "breaches"), Some("Artsy,MyHeritage"));
     }
@@ -326,7 +365,7 @@ mod tests {
         // No breaches but public pastes: the address is exposed and must not read as a clean zero.
         let f = finding(r#"{"ExposedBreaches": null, "PastesSummary": {"cnt": 3}}"#);
         assert_eq!(f.summary, "XposedOrNot: the address is in 3 public pastes");
-        assert_eq!(f.tags, [tags::BREACH]);
+        assert_eq!(f.tags, [tags::PASTE_EXPOSED]);
         assert_eq!(attr(&f, "paste_count"), Some("3"));
         assert_eq!(attr(&f, "breach_count"), None);
     }
@@ -344,6 +383,10 @@ mod tests {
         );
         assert_eq!(attr(&f, "breach_count"), Some("1"));
         assert_eq!(attr(&f, "paste_count"), Some("2"));
+        assert!(f.tags.contains(&tags::BREACH));
+        assert!(f.tags.contains(&tags::PASTE_EXPOSED));
+        // This fixture's only category is "Email addresses": no password-at-risk escalation.
+        assert!(!f.tags.contains(&tags::PASSWORD_AT_RISK));
     }
 
     #[test]
