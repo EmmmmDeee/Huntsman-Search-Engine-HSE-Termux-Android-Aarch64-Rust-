@@ -152,6 +152,7 @@ pub mod isc;
 pub mod itunes;
 pub mod itunes_cli;
 pub mod json;
+pub mod kev;
 pub mod key_import;
 pub mod keybase;
 pub mod keys;

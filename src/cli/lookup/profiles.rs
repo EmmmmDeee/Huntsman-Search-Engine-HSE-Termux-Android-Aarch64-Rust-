@@ -780,8 +780,23 @@ pub(in crate::cli) fn cve_cmd(args: &[String]) -> ExitCode {
         Ok(p) => p,
         Err(e) => return usage_failure(&e, CVE_USAGE),
     };
+    // The CISA KEV catalogue is one keyless download kept in the feed directory, read on its own
+    // larger-bodied transport, as the threat feeds and sanctions lists are. Built before the HTTP
+    // transport binding so the `transport` function is not shadowed.
+    let catalog = huntsman_recon::kev::Kev::new(
+        Box::new(transport(
+            &huntsman_recon::threat_feeds::transport_config(),
+            &Selection::all(),
+        )),
+        crate::cli::scans::default_feed_dir(),
+    );
     let transport = transport(&TransportConfig::default(), &Selection::all());
-    match source_report(cve_cli::run(&transport, &parsed.cve, clock::unix_now())) {
+    match source_report(cve_cli::run(
+        &transport,
+        &catalog,
+        &parsed.cve,
+        clock::unix_now(),
+    )) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS

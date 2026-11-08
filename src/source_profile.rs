@@ -123,6 +123,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("certspotter", C::Other, Some(C::Infra)),
     row("chess_com", C::Social, None),
     row("cinsscore", C::Other, None),
+    row("cisa_kev", C::Other, None),
     row("classify_module", C::Other, None),
     row("cleanbrowsing", C::Other, None),
     row("cleantalk", C::Other, None),

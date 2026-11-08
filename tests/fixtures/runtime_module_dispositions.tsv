@@ -125,6 +125,7 @@ itunes_cli	adapter	itunes keyword front-end reached from the itunes command
 osv	adapter	keyless OSV per-CVE vulnerability record client reached through cve_cli from the cve command
 nvd	adapter	keyless NVD per-CVE record client reached through cve_cli from the cve command
 epss	adapter	keyless FIRST EPSS per-CVE exploitation-probability client reached through cve_cli from the cve command
+kev	adapter	keyless CISA KEV known-exploited catalogue, one download kept in the feed directory, matched locally, reached through cve_cli from the cve command
 cve_cli	adapter	cve front-end reached from the cve command, merging osv and epss into one CVE document
 isc	adapter	Internet Storm Center leg reached through indicator_legs from ip, scan and /api/lookup
 json	exporter	canonical JSON support

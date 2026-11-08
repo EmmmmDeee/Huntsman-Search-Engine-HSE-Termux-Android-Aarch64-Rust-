@@ -6,12 +6,12 @@
 use crate::error::Error;
 use crate::http::Transport;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::{epss, lookup_report, nvd, osv};
+use crate::{epss, kev, lookup_report, nvd, osv};
 
 pub const CVE_USAGE: &str = "usage: huntsman-recon cve CVE-ID";
 pub const CVE_HELP: &str = "\
 cve CVE-ID
-Enrich one CVE identifier (e.g. CVE-2021-44228) across the keyless vulnerability sources: the OSV record (summary, CVSS severity, aliases, references, publication dates), the NVD record (authoritative NIST description, CVSS base score and CWE weaknesses) and the EPSS exploitation-probability score, merged into one CVE document. Keyless, from api.osv.dev, services.nvd.nist.gov and api.first.org. A record is a public vulnerability observation, not proof any given system is affected or exploited. Makes network requests.";
+Enrich one CVE identifier (e.g. CVE-2021-44228) across the keyless vulnerability sources: the OSV record (summary, CVSS severity, aliases, references, publication dates), the NVD record (authoritative NIST description, CVSS base score and CWE weaknesses) the EPSS exploitation-probability score, and the CISA KEV known-exploited flag, merged into one CVE document. Keyless, from api.osv.dev, services.nvd.nist.gov, api.first.org and the CISA KEV catalogue (downloaded once and kept). A record is a public vulnerability observation, not proof any given system is affected or exploited. Makes network requests.";
 
 /// What the lookup found: its entities and each source's row.
 pub type Report = crate::lookup_report::LookupReport;
@@ -38,9 +38,16 @@ impl CveArgs {
     }
 }
 
-/// Enrich `cve` across OSV and EPSS, each leg only when the transport's lookup asks its module.
+/// Enrich `cve` across OSV, NVD and EPSS over the shared HTTP transport, then the CISA KEV
+/// catalogue over its own download-and-keep `kev`, each leg only when its module is chosen. All
+/// legs key on the one CVE id, so the report merges them into one CVE document.
 #[must_use]
-pub fn run<T: Transport + ?Sized>(transport: &T, cve: &str, now_unix: u64) -> CveRun {
+pub fn run<T: Transport + ?Sized>(
+    transport: &T,
+    kev: &kev::Kev,
+    cve: &str,
+    now_unix: u64,
+) -> CveRun {
     let Some(cve) = osv::canonical_cve(cve) else {
         return CveRun::Failed(format!("{cve:?} is not a CVE identifier"));
     };
@@ -64,6 +71,9 @@ pub fn run<T: Transport + ?Sized>(transport: &T, cve: &str, now_unix: u64) -> Cv
             )),
         }
     }
+    let catalog = kev::check(kev, &cve, &scan_id, now_unix);
+    report.entities.extend(catalog.entities);
+    report.outcomes.push(catalog.outcome);
     crate::entity::merge_by_uid(&mut report.entities);
     lookup_report::finish(report, &format!("no source answered for {cve}"))
 }
@@ -75,6 +85,17 @@ mod tests {
     use super::*;
     use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::RoutedTransport;
+
+    const KEV_URL: &str =
+        "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
+    const KEV_BODY: &str = r#"{"catalogVersion":"2026.11.06","vulnerabilities":[{"cveID":"CVE-2021-44228","vendorProject":"Apache","product":"Log4j2","dateAdded":"2021-12-10","dueDate":"2021-12-24","knownRansomwareCampaignUse":"Known"}]}"#;
+
+    fn kev_catalog() -> kev::Kev {
+        kev::Kev::new(
+            Box::new(RoutedTransport::new(&[(KEV_URL, 200, KEV_BODY)])),
+            None,
+        )
+    }
 
     fn routed() -> RoutedTransport {
         RoutedTransport::new(&[
@@ -109,11 +130,12 @@ mod tests {
 
     #[test]
     fn run_merges_osv_and_epss_into_one_cve_document() {
-        match run(&routed(), "cve-2021-44228", 1) {
+        match run(&routed(), &kev_catalog(), "cve-2021-44228", 1) {
             CveRun::Printed { report, text } => {
                 assert!(text.contains("osv\tsuccess"), "{text}");
                 assert!(text.contains("nvd\tsuccess"), "{text}");
                 assert!(text.contains("epss\tsuccess"), "{text}");
+                assert!(text.contains("cisa_kev\tsuccess"), "{text}");
                 let docs: Vec<_> = report
                     .entities
                     .iter()
@@ -156,7 +178,7 @@ mod tests {
                 r#"{"data":[]}"#,
             ),
         ]);
-        match run(&t, "CVE-2000-0001", 1) {
+        match run(&t, &kev_catalog(), "CVE-2000-0001", 1) {
             CveRun::Printed { report, .. } => {
                 assert!(report.entities.is_empty());
                 assert!(
@@ -172,7 +194,7 @@ mod tests {
 
     #[test]
     fn an_invalid_cve_fails_without_network() {
-        match run(&RoutedTransport::new(&[]), "nope", 1) {
+        match run(&RoutedTransport::new(&[]), &kev::Kev::none(), "nope", 1) {
             CveRun::Failed(_) => {}
             other => panic!(
                 "expected failure, got printed={}",
