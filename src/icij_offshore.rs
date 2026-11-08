@@ -38,8 +38,7 @@ fn names_query(node_name: &str, query: &str) -> bool {
     if wanted.is_empty() {
         return false;
     }
-    let have = crate::textnorm::name_match_keys(node_name);
-    wanted.iter().all(|word| have.contains(word))
+    crate::textnorm::carries_every_key(node_name, &wanted)
 }
 
 /// Look up `name` in the Offshore Leaks databases.

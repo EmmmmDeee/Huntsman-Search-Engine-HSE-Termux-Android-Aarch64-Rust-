@@ -311,6 +311,14 @@ pub fn subject_name_match(subject: &str, candidate: &str) -> bool {
     if wanted.len() < 2 {
         return false;
     }
+    carries_every_key(candidate, &wanted)
+}
+
+/// Whether `candidate` carries every one of `wanted`, the subject's match keys from
+/// [`name_match_keys`], matching across scripts. The one subset rule every subject-name matcher
+/// shares; callers keep their own rule for how few keys a subject may have. **Pure.**
+#[must_use]
+pub fn carries_every_key(candidate: &str, wanted: &[String]) -> bool {
     let have = name_match_keys(candidate);
     wanted.iter().all(|key| have.contains(key))
 }

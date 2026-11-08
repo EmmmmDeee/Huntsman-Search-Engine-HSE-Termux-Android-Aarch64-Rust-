@@ -109,8 +109,7 @@ struct Listing {
 /// subject's transliteration-aware match keys ([`crate::textnorm::name_match_keys`]); `listed` is
 /// reduced the same way, so a Cyrillic listing and a Latin query (or the reverse) meet. **Pure.**
 fn names_query(listed: &str, query: &[String]) -> bool {
-    let have = crate::textnorm::name_match_keys(listed);
-    query.iter().all(|word| have.contains(word))
+    crate::textnorm::carries_every_key(listed, query)
 }
 
 /// Match `name` against every consulted list: the listings that carry it, and one outcome per

@@ -259,10 +259,7 @@ fn notice_names_query(row: &Value, title: &str, query: &str) -> bool {
     if wanted.is_empty() {
         return false;
     }
-    let names_all = |name: &str| {
-        let have = crate::textnorm::name_match_keys(name);
-        wanted.iter().all(|word| have.contains(word))
-    };
+    let names_all = |name: &str| crate::textnorm::carries_every_key(name, &wanted);
     names_all(title)
         || row
             .get("aliases")
