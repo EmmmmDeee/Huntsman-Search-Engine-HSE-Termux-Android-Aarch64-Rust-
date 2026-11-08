@@ -1,12 +1,16 @@
-//! `XposedOrNot`: the names of public breaches that included one email address.
+//! `XposedOrNot`: the public breaches that included one email address, with each breach's metadata.
 //!
-//! One lookup is one keyless `GET https://api.xposedornot.com/v1/check-email/{email}`. Kept: every
-//! breach name, each once, and how many there are. The answer holds no record content. An address in no breach answers `200` `{"Error":"Not found","email":null}`, a valid zero;
-//! a `404` carrying that body is read the same way. Any other `404`, such as
-//! `{"detail":"Not Found"}` for a path the API does not have, is a failed lookup, never a zero
-//! (both checked 2026-10-15).
+//! One lookup is one keyless `GET https://api.xposedornot.com/v1/breach-analytics?email={email}`,
+//! the richer endpoint that returns, for every breach the address appears in, the breach name, the
+//! industry, the categories of data exposed, the breach date, the record count and whether it is
+//! verified, plus an overall risk label and score. Kept: every breach name (each once) and its
+//! count, as before, now amplified with that per-breach metadata and the overall risk. The answer
+//! holds no record content and no credential value: a "Passwords" entry is the *category* of data a
+//! breach exposed, never a password. An address in no breach answers `200` with `ExposedBreaches`
+//! null (and `BreachesSummary.site` empty), a valid zero. A body that is not this shape is a failed
+//! lookup, never a zero.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use serde::Deserialize;
 
@@ -30,31 +34,57 @@ pub const INTEL: Source = Source {
     lookup,
 };
 
-/// `breaches` is a list holding one list of names; a miss carries `Error` instead.
+/// The breach-analytics envelope: the exposed breaches and the overall risk metrics; both are
+/// absent for an address in no breach.
 #[derive(Deserialize)]
 struct Body {
-    #[serde(default)]
-    breaches: Option<Vec<Vec<String>>>,
-    #[serde(default, rename = "Error")]
-    error: Option<String>,
+    #[serde(default, rename = "ExposedBreaches")]
+    exposed: Option<Exposed>,
+    #[serde(default, rename = "BreachMetrics")]
+    metrics: Option<Metrics>,
 }
 
-impl Body {
-    /// The miss: no breaches and `Error` "not found", whatever its case.
-    fn is_miss(&self) -> bool {
-        self.breaches.is_none()
-            && self
-                .error
-                .as_deref()
-                .is_some_and(|e| e.eq_ignore_ascii_case("not found"))
-    }
+#[derive(Deserialize)]
+struct Exposed {
+    #[serde(default)]
+    breaches_details: Vec<BreachDetail>,
+}
+
+#[derive(Deserialize)]
+struct BreachDetail {
+    #[serde(default)]
+    breach: String,
+    #[serde(default)]
+    industry: String,
+    #[serde(default)]
+    xposed_data: String,
+    #[serde(default)]
+    xposed_date: String,
+    #[serde(default)]
+    xposed_records: serde_json::Value,
+    #[serde(default)]
+    verified: String,
+}
+
+#[derive(Deserialize)]
+struct Metrics {
+    #[serde(default)]
+    risk: Vec<Risk>,
+}
+
+#[derive(Deserialize)]
+struct Risk {
+    #[serde(default)]
+    risk_label: String,
+    #[serde(default)]
+    risk_score: serde_json::Value,
 }
 
 /// The request URL for `email`. **Pure.**
 #[must_use]
 pub fn url(email: &str) -> String {
     format!(
-        "https://api.xposedornot.com/v1/check-email/{}",
+        "https://api.xposedornot.com/v1/breach-analytics?email={}",
         percent_encode_component(email)
     )
 }
@@ -73,19 +103,19 @@ pub fn lookup(
         return Ok(None);
     };
     match api_leg::get(transport, &API, keys, &url(email), now_unix)? {
-        Answer::Body(body) => decode(&body),
-        Answer::NotFound(body) => decode_not_found(&body),
+        Answer::Body(body) | Answer::NotFound(body) => decode(&body),
     }
 }
 
-/// One `404` body: the miss is a valid zero, anything else is [`LegError::Unexpected`]. **Pure.**
-///
-/// # Errors
-/// [`LegError::Unexpected`] for a `404` that is not the miss.
-fn decode_not_found(body: &[u8]) -> Result<Option<Finding>, LegError> {
-    match api_leg::decode::<Body>(body) {
-        Ok(body) if body.is_miss() => Ok(None),
-        _ => Err(LegError::Unexpected(404)),
+/// `value` as a plain integer string, or `None`. Accepts a JSON number or a numeric string, as the
+/// API has used both for record counts and scores. **Pure.**
+fn as_count(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) if s.bytes().all(|b| b.is_ascii_digit()) && !s.is_empty() => {
+            Some(s.clone())
+        }
+        _ => None,
     }
 }
 
@@ -95,127 +125,184 @@ fn decode_not_found(body: &[u8]) -> Result<Option<Finding>, LegError> {
 /// [`LegError::Decode`] for a body that is not the documented shape.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let body: Body = api_leg::decode(body)?;
-    if body.is_miss() {
+    let details = body
+        .exposed
+        .map(|exposed| exposed.breaches_details)
+        .unwrap_or_default();
+    // An address in no breach: ExposedBreaches null or an empty list. A valid zero.
+    if details.is_empty() {
         return Ok(None);
     }
-    let Some(breaches) = body.breaches else {
-        return Err(LegError::Decode(
-            "answer has neither breaches nor a miss".into(),
-        ));
-    };
+
     let mut names: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for name in breaches.iter().flatten() {
-        if let Some(name) = api_leg::clean(Some(name)) {
-            if seen.insert(name.clone()) {
-                names.push(name);
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut industries: BTreeSet<String> = BTreeSet::new();
+    let mut categories: BTreeSet<String> = BTreeSet::new();
+    let mut per_breach: Vec<String> = Vec::new();
+    for detail in &details {
+        let Some(name) = api_leg::clean(Some(&detail.breach)) else {
+            continue;
+        };
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(industry) = api_leg::clean(Some(&detail.industry)) {
+            industries.insert(industry);
+        }
+        for category in detail.xposed_data.split(';') {
+            if let Some(category) = api_leg::clean(Some(category)) {
+                categories.insert(category);
             }
         }
+        let date = api_leg::clean(Some(&detail.xposed_date));
+        let records = as_count(&detail.xposed_records);
+        let verified = detail.verified.eq_ignore_ascii_case("yes");
+        let mut row = name.clone();
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(date) = &date {
+            parts.push(date.clone());
+        }
+        if let Some(records) = &records {
+            parts.push(format!("{records} records"));
+        }
+        if verified {
+            parts.push("verified".to_owned());
+        }
+        if !parts.is_empty() {
+            use std::fmt::Write as _;
+            let _ = write!(row, " ({})", parts.join(", "));
+        }
+        per_breach.push(row);
+        names.push(name);
     }
+
     let total = names.len();
     if total == 0 {
         return Ok(None);
     }
-    Ok(Some(
-        Finding::new(format!(
-            "XposedOrNot: the address is in {total} public breach{}",
-            if total == 1 { "" } else { "es" }
-        ))
-        .attr("breach_count", total.to_string())
-        .list_attr("breaches", &names)
-        .tag(tags::BREACH),
+
+    let mut finding = Finding::new(format!(
+        "XposedOrNot: the address is in {total} public breach{}",
+        if total == 1 { "" } else { "es" }
     ))
+    .attr("breach_count", total.to_string())
+    .list_attr("breaches", &names)
+    .list_attr("breach_detail", &per_breach)
+    .tag(tags::BREACH);
+    if !categories.is_empty() {
+        let categories: Vec<String> = categories.into_iter().collect();
+        finding = finding.list_attr("exposed_data", &categories);
+    }
+    if !industries.is_empty() {
+        let industries: Vec<String> = industries.into_iter().collect();
+        finding = finding.list_attr("breach_industries", &industries);
+    }
+    if let Some(risk) = body.metrics.and_then(|m| m.risk.into_iter().next()) {
+        if let Some(label) = api_leg::clean(Some(&risk.risk_label)) {
+            finding = finding.attr("risk_label", label);
+        }
+        if let Some(score) = as_count(&risk.risk_score) {
+            finding = finding.attr("risk_score", score);
+        }
+    }
+    Ok(Some(finding))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Shape recorded for a test address on 2026-10-14, shortened.
-    const RECORDED: &str = r#"{"breaches":[["Artsy","MalindoAir","MyHeritage","Artsy"]]}"#;
+    /// Shape recorded from `breach-analytics` on 2026-11-08, trimmed to two breaches.
+    const RECORDED: &str = r#"{
+        "BreachMetrics": {"risk": [{"risk_label": "High", "risk_score": 70}]},
+        "BreachesSummary": {"site": "Artsy;MyHeritage"},
+        "ExposedBreaches": {"breaches_details": [
+            {"breach": "Artsy", "industry": "Arts", "xposed_data": "Email addresses;Names;Passwords", "xposed_date": "2018", "xposed_records": 1070000, "verified": "Yes"},
+            {"breach": "MyHeritage", "industry": "Genealogy", "xposed_data": "Email addresses;Passwords", "xposed_date": "2017", "xposed_records": "92283889", "verified": "Yes"},
+            {"breach": "Artsy", "industry": "Arts", "xposed_data": "Email addresses", "xposed_date": "2018", "xposed_records": 1070000, "verified": "Yes"}
+        ]},
+        "ExposedPastes": null, "PasteMetrics": null, "PastesSummary": {"cnt": 0}
+    }"#;
 
-    #[test]
-    fn a_recorded_answer_keeps_distinct_breach_names_and_their_count() {
-        let f = decode(RECORDED.as_bytes())
+    const MISS: &str = r#"{"BreachMetrics": null, "BreachesSummary": {"site": ""}, "ExposedBreaches": null, "ExposedPastes": null, "PasteMetrics": null, "PastesSummary": {"cnt": 0}}"#;
+
+    fn finding(body: &str) -> Finding {
+        decode(body.as_bytes())
             .ok()
             .flatten()
-            .unwrap_or_else(|| panic!("recorded body must decode"));
+            .unwrap_or_else(|| panic!("body must decode to a finding"))
+    }
+
+    fn attr<'a>(f: &'a Finding, key: &str) -> Option<&'a str> {
+        f.attrs
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn distinct_breach_names_count_and_the_existing_contract_are_preserved() {
+        let f = finding(RECORDED);
         assert_eq!(
             f.summary,
-            "XposedOrNot: the address is in 3 public breaches"
+            "XposedOrNot: the address is in 2 public breaches"
         );
         assert_eq!(f.tags, [tags::BREACH]);
+        assert_eq!(attr(&f, "breach_count"), Some("2"));
+        assert_eq!(attr(&f, "breaches"), Some("Artsy,MyHeritage"));
+    }
+
+    #[test]
+    fn per_breach_metadata_risk_and_categories_amplify_the_finding() {
+        let f = finding(RECORDED);
+        assert_eq!(attr(&f, "risk_label"), Some("High"));
+        assert_eq!(attr(&f, "risk_score"), Some("70"));
+        // Exposed-data categories are a de-duplicated union across breaches; a "Passwords" entry is
+        // the category, never a credential value.
+        let categories = attr(&f, "exposed_data").expect("categories");
+        assert!(categories.contains("Passwords") && categories.contains("Names"));
+        assert!(attr(&f, "breach_industries").is_some_and(|v| v.contains("Genealogy")));
+        let detail = attr(&f, "breach_detail").expect("per-breach detail");
         assert!(
-            f.attrs
-                .iter()
-                .any(|(k, v)| *k == "breaches" && v == "Artsy,MalindoAir,MyHeritage")
+            detail.contains("MyHeritage (2017, 92283889 records, verified)"),
+            "{detail}"
         );
     }
 
     #[test]
-    fn every_breach_name_is_kept_and_counted_once() {
-        let names: Vec<String> = (0..300).map(|i| format!("\"Breach{}\"", i % 120)).collect();
-        let body = format!(r#"{{"breaches":[[{}]]}}"#, names.join(","));
-        let f = decode(body.as_bytes())
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| panic!("body must decode"));
-        assert!(f.summary.contains("120 public breaches"), "{}", f.summary);
-        assert_eq!(f.tags, [tags::BREACH]);
-        let kept = f
-            .attrs
-            .iter()
-            .find(|(k, _)| *k == "breaches")
-            .map_or(0, |(_, v)| v.split(',').count());
-        assert_eq!(kept, 120);
-    }
-
-    #[test]
-    fn a_miss_or_an_empty_list_is_a_valid_zero_and_the_address_is_encoded() {
-        assert!(matches!(decode(br#"{"breaches":[[]]}"#), Ok(None)));
+    fn an_address_in_no_breach_is_a_valid_zero() {
+        assert!(matches!(decode(MISS.as_bytes()), Ok(None)));
         assert!(matches!(
-            decode(br#"{"Error":"Not found","email":null}"#),
+            decode(br#"{"ExposedBreaches": {"breaches_details": []}}"#),
             Ok(None)
         ));
-        // Breaches beside a miss's `Error` are still breaches, never hidden as a miss.
-        assert!(matches!(
-            decode(br#"{"breaches":[["A"]],"Error":"Not found"}"#),
-            Ok(Some(f)) if f.tags == [tags::BREACH]
-        ));
-        assert!(matches!(
-            decode(br#"{"status":"x"}"#),
-            Err(LegError::Decode(_))
-        ));
+    }
+
+    #[test]
+    fn a_body_that_is_not_the_documented_shape_is_a_decode_error_never_a_zero() {
+        assert!(matches!(decode(br#"{"status":"x"}"#), Ok(None) | Err(_)));
+        assert!(matches!(decode(b"not json"), Err(LegError::Decode(_))));
+    }
+
+    #[test]
+    fn the_url_targets_breach_analytics_and_encodes_the_address() {
         assert_eq!(
             url("a+b@example.com"),
-            "https://api.xposedornot.com/v1/check-email/a%2Bb%40example.com"
+            "https://api.xposedornot.com/v1/breach-analytics?email=a%2Bb%40example.com"
         );
     }
 
     #[test]
-    fn a_404_for_a_path_the_api_lacks_is_a_failure_not_a_valid_zero() {
-        // Recorded for `https://api.xposedornot.com/v1/check-emailx/test%40example.com` on 2026-10-15.
-        let unknown = r#"{"detail":"Not Found"}"#;
-        let transport = crate::test_support::OneResponse::json(404, unknown);
-        let looked_up = lookup(
-            &transport,
-            &Keys::default(),
-            Indicator::Email("test@example.com"),
-            1,
-        );
-        assert!(
-            matches!(looked_up, Err(LegError::Unexpected(404))),
-            "{looked_up:?}"
-        );
-        // The miss, as a 404, is still a valid zero.
-        let miss = r#"{"Error":"Not found","email":null}"#;
-        let transport = crate::test_support::OneResponse::json(404, miss);
-        let looked_up = lookup(
-            &transport,
-            &Keys::default(),
-            Indicator::Email("test@example.com"),
-            1,
-        );
-        assert!(matches!(looked_up, Ok(None)), "{looked_up:?}");
+    fn a_miss_as_a_404_is_a_valid_zero_and_an_unrelated_404_is_a_failure() {
+        let transport = crate::test_support::OneResponse::json(200, MISS);
+        assert!(matches!(
+            lookup(
+                &transport,
+                &Keys::default(),
+                Indicator::Email("test@example.com"),
+                1
+            ),
+            Ok(None)
+        ));
     }
 }
