@@ -103,6 +103,7 @@ github_user	adapter	public GitHub profile source client
 graph	runtime	shared deterministic graph model
 graph_exec	leaf	public evidence-gated DAG execution and checkpoint API; exported library surface awaiting scan-service integration
 gravatar	adapter	public Gravatar profile source client
+h1dr4	adapter	keyless H1DR4 public-evidence connector reached from the h1dr4 command and web lookup, preserving each page raw bytes, SHA-256, status and URL
 greynoise	adapter	GreyNoise Community leg reached through ip_cli from ip, scan -k ip and /api/lookup
 hackertarget	adapter	HackerTarget leg reached through indicator_legs from ip, domain, scan and /api/lookup
 hibp	adapter	HIBP source adapter
