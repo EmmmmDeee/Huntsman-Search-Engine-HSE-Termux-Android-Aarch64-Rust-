@@ -49,6 +49,8 @@ struct Body {
     exposed: Option<Exposed>,
     #[serde(default, rename = "BreachMetrics")]
     metrics: Option<Metrics>,
+    #[serde(default, rename = "PastesSummary")]
+    pastes: Option<PastesSummary>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +79,14 @@ struct BreachDetail {
 struct Metrics {
     #[serde(default)]
     risk: Vec<Risk>,
+}
+
+/// The paste summary: how many public pastes the address appears in. Its per-paste details are not
+/// read (their shape is not relied on); the count is the reliable, documented signal.
+#[derive(Deserialize)]
+struct PastesSummary {
+    #[serde(default)]
+    cnt: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -136,8 +146,14 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         .exposed
         .map(|exposed| exposed.breaches_details)
         .unwrap_or_default();
-    // An address in no breach: ExposedBreaches null or an empty list. A valid zero.
-    if details.is_empty() {
+    let paste_count = body
+        .pastes
+        .as_ref()
+        .and_then(|p| p.cnt.as_u64())
+        .unwrap_or(0);
+    // An address in no breach and no paste is a valid zero. An address only in pastes is still
+    // exposed, so it must not be read as a clean zero.
+    if details.is_empty() && paste_count == 0 {
         return Ok(None);
     }
 
@@ -184,18 +200,36 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     }
 
     let total = names.len();
-    if total == 0 {
+    // No readable breach name and no paste: nothing to report.
+    if total == 0 && paste_count == 0 {
         return Ok(None);
     }
 
-    let mut finding = Finding::new(format!(
-        "XposedOrNot: the address is in {total} public breach{}",
-        if total == 1 { "" } else { "es" }
-    ))
-    .attr("breach_count", total.to_string())
-    .list_attr("breaches", &names)
-    .list_attr("breach_detail", &per_breach)
-    .tag(tags::BREACH);
+    let summary = match (total, paste_count) {
+        (0, p) => format!(
+            "XposedOrNot: the address is in {p} public paste{}",
+            if p == 1 { "" } else { "s" }
+        ),
+        (b, 0) => format!(
+            "XposedOrNot: the address is in {b} public breach{}",
+            if b == 1 { "" } else { "es" }
+        ),
+        (b, p) => format!(
+            "XposedOrNot: the address is in {b} public breach{} and {p} public paste{}",
+            if b == 1 { "" } else { "es" },
+            if p == 1 { "" } else { "s" }
+        ),
+    };
+    let mut finding = Finding::new(summary).tag(tags::BREACH);
+    if total > 0 {
+        finding = finding
+            .attr("breach_count", total.to_string())
+            .list_attr("breaches", &names)
+            .list_attr("breach_detail", &per_breach);
+    }
+    if paste_count > 0 {
+        finding = finding.attr("paste_count", paste_count.to_string());
+    }
     if !categories.is_empty() {
         let categories: Vec<String> = categories.into_iter().collect();
         finding = finding.list_attr("exposed_data", &categories);
@@ -277,12 +311,39 @@ mod tests {
     }
 
     #[test]
-    fn an_address_in_no_breach_is_a_valid_zero() {
+    fn an_address_in_no_breach_and_no_paste_is_a_valid_zero() {
         assert!(matches!(decode(MISS.as_bytes()), Ok(None)));
         assert!(matches!(
-            decode(br#"{"ExposedBreaches": {"breaches_details": []}}"#),
+            decode(
+                br#"{"ExposedBreaches": {"breaches_details": []}, "PastesSummary": {"cnt": 0}}"#
+            ),
             Ok(None)
         ));
+    }
+
+    #[test]
+    fn an_address_only_in_pastes_is_exposure_not_a_clean_zero() {
+        // No breaches but public pastes: the address is exposed and must not read as a clean zero.
+        let f = finding(r#"{"ExposedBreaches": null, "PastesSummary": {"cnt": 3}}"#);
+        assert_eq!(f.summary, "XposedOrNot: the address is in 3 public pastes");
+        assert_eq!(f.tags, [tags::BREACH]);
+        assert_eq!(attr(&f, "paste_count"), Some("3"));
+        assert_eq!(attr(&f, "breach_count"), None);
+    }
+
+    #[test]
+    fn breaches_and_pastes_are_both_reported() {
+        let body = r#"{
+            "ExposedBreaches": {"breaches_details": [{"breach": "Artsy", "xposed_data": "Email addresses", "xposed_date": "2018", "xposed_records": 1, "verified": "Yes", "industry": "Arts"}]},
+            "PastesSummary": {"cnt": 2}
+        }"#;
+        let f = finding(body);
+        assert_eq!(
+            f.summary,
+            "XposedOrNot: the address is in 1 public breach and 2 public pastes"
+        );
+        assert_eq!(attr(&f, "breach_count"), Some("1"));
+        assert_eq!(attr(&f, "paste_count"), Some("2"));
     }
 
     #[test]
