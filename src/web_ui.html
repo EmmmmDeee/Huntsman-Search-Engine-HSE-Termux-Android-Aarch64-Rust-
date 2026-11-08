@@ -139,7 +139,7 @@ if(PAGE_ID&&b.page&&b.page!==PAGE_ID)$('upgraded').hidden=false;
 $('ver').textContent='v'+b.version;$('sversion').textContent=b.version;
 $('sauth').textContent=b.auth==='token'?'token':'none';
 if(b.auth==='token'){
-needsToken=true;$('tokenpanel').hidden=false;
+        needsToken=true;$('tokenpanel').hidden=false;
 if(!token){askToken();open=false}else if(refused(await call('/api/command',{},{method:'HEAD'})))open=false;
 }
 else{needsToken=false;token='';store.set('hse-token','');$('tokenpanel').hidden=true}
