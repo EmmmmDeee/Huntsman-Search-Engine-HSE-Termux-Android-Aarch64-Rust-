@@ -736,9 +736,23 @@ fn eq_ignore_case(a: &str, b: &str) -> bool {
 }
 
 /// True when every alphanumeric token of `needle` appears as a whole word in `haystack`, ignoring
-/// case for Unicode letters as well as ASCII.
+/// case for Unicode letters as well as ASCII. When either side is written in Cyrillic, both are
+/// also compared in their romanised form ([`crate::translit::romanize`]), so a Cyrillic name meets
+/// its Latin transliteration in a register. Text with no Cyrillic never takes that path, so its
+/// result is exactly the plain comparison.
 #[must_use]
 pub fn whole_word_token_match(haystack: &str, needle: &str) -> bool {
+    let has_cyrillic = |text: &str| text.chars().any(crate::translit::is_cyrillic);
+    exact_whole_word_token_match(haystack, needle)
+        || ((has_cyrillic(haystack) || has_cyrillic(needle))
+            && exact_whole_word_token_match(
+                &crate::translit::romanize(haystack),
+                &crate::translit::romanize(needle),
+            ))
+}
+
+/// [`whole_word_token_match`] without transliteration: case-insensitive whole words only.
+fn exact_whole_word_token_match(haystack: &str, needle: &str) -> bool {
     let words: Vec<&str> = haystack
         .split(|c: char| !c.is_alphanumeric())
         .filter(|part| !part.is_empty())
@@ -978,6 +992,43 @@ mod tests {
             "smith family"
         ));
         assert!(!shares_whole_word_token("Ø Smith", "Ø Jones"));
+    }
+
+    #[test]
+    fn whole_word_token_match_bridges_cyrillic_to_a_latin_register_entry() {
+        // A Cyrillic subject meets a register written in Latin, in either direction and order.
+        assert!(whole_word_token_match("PUTIN, Vladimir", "Владимир Путин"));
+        assert!(whole_word_token_match("Путин Владимир", "Vladimir Putin"));
+        // Every word must still match: a namesake with a different surname is no match.
+        assert!(!whole_word_token_match(
+            "PUTIN, Vladimir",
+            "Владимир Иванов"
+        ));
+        assert!(!whole_word_token_match("IVANOV, Ivan", "Владимир Путин"));
+    }
+
+    #[test]
+    fn whole_word_token_match_is_unchanged_for_text_without_cyrillic() {
+        // The transliteration path is only taken when Cyrillic is present, so every Latin and
+        // accented-Latin pair gives exactly the plain comparison's answer.
+        let pairs = [
+            ("Linus Torvalds", "linus torvalds"),
+            ("Mildred Smith", "red"),
+            ("ZOLA, EMILE", "emile zola"),
+            ("ÉMILE ZOLA", "émile zola"),
+            ("Ada Lovelace", "ada byron"),
+            ("O'Brien-Smith", "smith o brien"),
+            ("Zürich Holdings", "zurich"),
+            ("", "anything"),
+            ("anything", ""),
+        ];
+        for (haystack, needle) in pairs {
+            assert_eq!(
+                whole_word_token_match(haystack, needle),
+                exact_whole_word_token_match(haystack, needle),
+                "{haystack:?} / {needle:?}"
+            );
+        }
     }
 
     #[test]
