@@ -205,6 +205,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("nominatim", C::Other, Some(C::Geoint)),
     row("npm_author", C::Code, None),
     row("numverify", C::Other, None),
+    row("nvd", C::Other, None),
     row("oathnet", C::Breach, None),
     row("official_x_recent_search", C::Search, None),
     row("opencellid", C::Other, Some(C::Rf)),

@@ -6,12 +6,12 @@
 use crate::error::Error;
 use crate::http::Transport;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::{epss, lookup_report, osv};
+use crate::{epss, lookup_report, nvd, osv};
 
 pub const CVE_USAGE: &str = "usage: huntsman-recon cve CVE-ID";
 pub const CVE_HELP: &str = "\
 cve CVE-ID
-Enrich one CVE identifier (e.g. CVE-2021-44228) across the keyless vulnerability sources: the OSV record (summary, CVSS severity, aliases, references, publication dates) and the EPSS exploitation-probability score, merged into one CVE document. Keyless, from api.osv.dev and api.first.org. A record is a public vulnerability observation, not proof any given system is affected or exploited. Makes network requests.";
+Enrich one CVE identifier (e.g. CVE-2021-44228) across the keyless vulnerability sources: the OSV record (summary, CVSS severity, aliases, references, publication dates), the NVD record (authoritative NIST description, CVSS base score and CWE weaknesses) and the EPSS exploitation-probability score, merged into one CVE document. Keyless, from api.osv.dev, services.nvd.nist.gov and api.first.org. A record is a public vulnerability observation, not proof any given system is affected or exploited. Makes network requests.";
 
 /// What the lookup found: its entities and each source's row.
 pub type Report = crate::lookup_report::LookupReport;
@@ -48,6 +48,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, cve: &str, now_unix: u64) -> Cv
     let mut report = Report::default();
     for (module, leg) in [
         (osv::SRC, osv::lookup as LegFn<T>),
+        (nvd::SRC, nvd::lookup as LegFn<T>),
         (epss::SRC, epss::lookup as LegFn<T>),
     ] {
         if !transport.runs_module(module) {
@@ -83,6 +84,11 @@ mod tests {
                 r#"{"id":"CVE-2021-44228","summary":"Log4Shell","aliases":["GHSA-jfh8-c2jp-5v3q"],"severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N"}],"references":[{"url":"https://nvd.nist.gov/vuln/detail/CVE-2021-44228"}]}"#,
             ),
             (
+                "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2021-44228",
+                200,
+                r#"{"totalResults":1,"vulnerabilities":[{"cve":{"id":"CVE-2021-44228","vulnStatus":"Analyzed","descriptions":[{"lang":"en","value":"Log4Shell"}],"metrics":{"cvssMetricV31":[{"cvssData":{"version":"3.1","baseScore":10.0,"baseSeverity":"CRITICAL","vectorString":"CVSS:3.1/AV:N"}}]},"weaknesses":[{"description":[{"lang":"en","value":"CWE-502"}]}]}}]}"#,
+            ),
+            (
                 "https://api.first.org/data/v1/epss?cve=CVE-2021-44228",
                 200,
                 r#"{"data":[{"cve":"CVE-2021-44228","epss":"0.99999","percentile":"1.0","date":"2026-11-07"}]}"#,
@@ -106,6 +112,7 @@ mod tests {
         match run(&routed(), "cve-2021-44228", 1) {
             CveRun::Printed { report, text } => {
                 assert!(text.contains("osv\tsuccess"), "{text}");
+                assert!(text.contains("nvd\tsuccess"), "{text}");
                 assert!(text.contains("epss\tsuccess"), "{text}");
                 let docs: Vec<_> = report
                     .entities
@@ -122,8 +129,8 @@ mod tests {
                     .map(|e| e.provenance.source.as_str())
                     .collect();
                 assert!(
-                    ev.contains(&"osv") && ev.contains(&"epss"),
-                    "both sources on the node: {ev:?}"
+                    ev.contains(&"osv") && ev.contains(&"nvd") && ev.contains(&"epss"),
+                    "all sources on the node: {ev:?}"
                 );
             }
             CveRun::Network(why) | CveRun::Failed(why) => panic!("{why}"),
@@ -137,6 +144,11 @@ mod tests {
                 "https://api.osv.dev/v1/vulns/CVE-2000-0001",
                 404,
                 r#"{"message":"not found"}"#,
+            ),
+            (
+                "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2000-0001",
+                200,
+                r#"{"totalResults":0,"vulnerabilities":[]}"#,
             ),
             (
                 "https://api.first.org/data/v1/epss?cve=CVE-2000-0001",

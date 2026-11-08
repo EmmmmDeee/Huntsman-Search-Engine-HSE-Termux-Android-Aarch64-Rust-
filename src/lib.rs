@@ -186,6 +186,7 @@ pub mod nominatim;
 pub mod nominatim_cli;
 pub mod npm_author;
 pub mod numverify;
+pub mod nvd;
 pub mod oathnet;
 pub mod openlibrary_author;
 pub mod openpgp_keys;
