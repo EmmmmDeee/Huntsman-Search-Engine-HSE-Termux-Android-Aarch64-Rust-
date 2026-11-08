@@ -38,6 +38,7 @@ bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 breach_record	leaf	what a breach record exposes, credentials held back, shared by the OathNet and DeHashed legs
 canonical	runtime	canonicalization for entities and provenance
+cvss	leaf	offline CVSS v3.0/v3.1 base-score and severity computation from a vector string
 censys	adapter	Censys Platform v3 IP host lookup reached through the indicator legs when a PAT is configured
 circuit	leaf	bounded circuit/cache state
 ckan	adapter	CKAN source adapter

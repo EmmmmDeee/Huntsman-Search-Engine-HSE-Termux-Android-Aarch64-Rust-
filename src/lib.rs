@@ -70,6 +70,7 @@ pub mod cross_scan;
 pub mod crtsh;
 pub mod crypto_cli;
 pub mod cve_cli;
+pub mod cvss;
 pub mod deadline;
 pub mod dehashed;
 pub mod dependency;

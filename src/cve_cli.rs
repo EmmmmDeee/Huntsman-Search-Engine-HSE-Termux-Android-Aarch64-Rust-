@@ -99,12 +99,26 @@ fn collect_signals(doc: &crate::entity::Entity) -> Signals {
             .find_map(|ev| ev.attributes.get(key))
             .cloned()
     };
+    // NVD states severity and base score directly. When it did not answer (its keyless tier is
+    // rate-limited) but a CVSS vector is on the document (NVD's own, or OSV's), compute the base
+    // score and band from the vector so the triage keeps a severity signal.
+    let mut severity = attr("nvd_cvss_severity").map(|v| v.to_ascii_uppercase());
+    let mut base_score = attr("nvd_cvss_base_score").and_then(|v| v.parse().ok());
+    if severity.is_none() {
+        if let Some(base) = attr("nvd_cvss_vector")
+            .or_else(|| attr("cvss"))
+            .and_then(|vector| crate::cvss::base_score(&vector))
+        {
+            severity = Some(base.severity.as_str().to_owned());
+            base_score = Some(base.score);
+        }
+    }
     Signals {
         known_exploited: attr("kev_known_exploited").as_deref() == Some("true"),
         ransomware: attr("kev_ransomware_use").is_some_and(|v| v.eq_ignore_ascii_case("known")),
         epss: attr("epss_probability").and_then(|v| v.parse().ok()),
-        severity: attr("nvd_cvss_severity").map(|v| v.to_ascii_uppercase()),
-        base_score: attr("nvd_cvss_base_score").and_then(|v| v.parse().ok()),
+        severity,
+        base_score,
     }
 }
 
@@ -295,6 +309,26 @@ mod tests {
         assert_eq!(
             triage(&sev("LOW", Some(2.0), Some(0.01))).unwrap().0,
             "lower"
+        );
+    }
+
+    #[test]
+    fn triage_derives_severity_from_a_vector_when_nvd_is_absent() {
+        // OSV returns a CVSS vector but NVD did not answer; the triage must still read severity
+        // from the vector via the cvss calculator.
+        use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+        let mut doc = Entity::new(EntityKind::Document, "CVE-2021-44228", 0.8, "scan");
+        doc.tag("cve");
+        doc.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("osv", "scan"), "osv")
+                .with_attr("cvss", "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"),
+        );
+        let sig = collect_signals(&doc);
+        assert_eq!(sig.severity.as_deref(), Some("CRITICAL"));
+        assert_eq!(sig.base_score, Some(10.0));
+        assert_eq!(
+            triage(&sig).expect("triages on derived severity").0,
+            "elevated"
         );
     }
 
