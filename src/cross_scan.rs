@@ -194,7 +194,11 @@ pub fn collect_direct_bridges<S: CrossScanStore>(
             continue;
         }
         if let Some(existing) = by_uid.get_mut(&entity.uid) {
+            // Absorb the distinct source evidence, but not an extra unsupported
+            // corroboration simply because the same page yielded the UID twice.
+            let corroboration = existing.entity.corroboration.max(entity.corroboration);
             existing.entity.absorb(entity.clone());
+            existing.entity.corroboration = corroboration;
             continue;
         }
         let historical = overlapping_scans(store, current_scan_id, entity)?;
