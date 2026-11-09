@@ -485,6 +485,53 @@ mod tests {
         let _ = fs::remove_dir_all(dir.parent().unwrap());
     }
 
+    #[test]
+    fn offline_synergy_keeps_valid_observation_when_same_uid_candidate_is_retained() {
+        let mut valid = Entity::new(EntityKind::Domain, "example.org", 0.9, "scan-mixed");
+        valid.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-mixed"), "observed A")
+                .with_attr("ip", "192.0.2.51"),
+        );
+        let mut candidate = Entity::new(EntityKind::Domain, "example.org", 0.9, "scan-mixed");
+        candidate.tag(crate::tags::CANDIDATE);
+        candidate.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("unconfirmed", "scan-mixed"), "weak A")
+                .with_attr("ip", "192.0.2.52"),
+        );
+        let mut valid_ip = Entity::new(EntityKind::IpAddress, "192.0.2.51", 0.9, "scan-mixed");
+        valid_ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-mixed"),
+            "independent address observation",
+        ));
+        let mut invalid_ip = Entity::new(EntityKind::IpAddress, "192.0.2.52", 0.9, "scan-mixed");
+        invalid_ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-mixed"),
+            "other address observation",
+        ));
+        let artifact = ScanArtifact::new(
+            "scan-mixed",
+            vec![valid, candidate, valid_ip, invalid_ip],
+            Vec::new(),
+        );
+        let dir = history_dir("candidate-synergy", &[artifact.clone()]);
+        let raw = fs::read(dir.join("0.json")).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let result = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        let links = result["synergy"]["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1, "{result}");
+        assert_eq!(links[0]["to_value"], "192.0.2.51");
+        assert_eq!(links[0]["source"], "dns");
+        assert_eq!(links[0]["status"], "separately_observed_target");
+        assert_eq!(result["synergy"]["truncated"], true);
+        assert_eq!(history.entities_for_scan_ref("scan-mixed"), artifact.entities);
+        assert_eq!(fs::read(dir.join("0.json")).unwrap(), raw);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("scan-artifact-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
