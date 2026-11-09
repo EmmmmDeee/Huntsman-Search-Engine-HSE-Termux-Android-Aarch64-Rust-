@@ -58,6 +58,17 @@ fn eligible(evidence: &Evidence) -> bool {
         && !is_non_corroborating_source(&evidence.provenance.corroboration_key())
 }
 
+/// Filter unverified and identity-inconsistent records only from derived joins.
+/// Original entities, including candidate observations, remain in raw evidence.
+#[must_use]
+pub(crate) fn admissible_entity(entity: &Entity) -> bool {
+    !entity
+        .tags
+        .iter()
+        .any(|tag| tag == crate::tags::CANDIDATE || tag == "quarantined" || tag == "promoted")
+        && entity.uid == crate::entity::derive_uid(&entity.kind, &entity.value)
+}
+
 fn target_observation<'a>(target: &'a Entity, source_family: &str) -> Option<&'a Evidence> {
     target
         .evidence
@@ -110,6 +121,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
     let mut index: BTreeMap<(EntityKind, String), Vec<&Entity>> = BTreeMap::new();
     for entity in inspected {
         if let Some(value) = normalize(&entity.kind, &entity.value) {
+            if !admissible_entity(entity) {
+                truncated = true;
+                continue;
+            }
             index
                 .entry((entity.kind.clone(), value))
                 .or_default()
@@ -118,6 +133,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
     }
     let mut links: BTreeMap<(String, String, &'static str), SynergyLink> = BTreeMap::new();
     'entities: for entity in inspected {
+        if !attributes(&entity.kind).is_empty() && !admissible_entity(entity) {
+            truncated = true;
+            continue;
+        }
         if entity.evidence.len() > MAX_EVIDENCE_PER_ENTITY {
             truncated = true;
         }
