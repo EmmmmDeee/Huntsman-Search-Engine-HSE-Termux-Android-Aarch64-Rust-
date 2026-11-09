@@ -715,6 +715,73 @@ mod tests {
     }
 
     #[test]
+    fn history_keeps_unverified_evidence_but_never_counts_it_as_a_bridge() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+
+        let current = scan_of("scan-current", &[(EntityKind::Email, "ada@example.com")]);
+        let uid = current.entities[0].uid.clone();
+        let mut candidate = Entity::new(
+            EntityKind::Email,
+            "ada@example.com",
+            0.9,
+            "scan-candidate",
+        );
+        candidate.tag(crate::tags::CANDIDATE);
+        candidate.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("unverified-source", "scan-candidate"),
+            "unverified claim retained without promotion",
+        ));
+        let weak = Entity::new(EntityKind::Email, "ada@example.com", 0.1, "scan-weak");
+        let person = Entity::new(EntityKind::Person, "Ada Lovelace", 0.9, "scan-person");
+        let dir = history_dir(
+            "history-bridge-evidence-gate",
+            &[
+                current.clone(),
+                ScanArtifact::new("scan-candidate", vec![candidate.clone()], Vec::new()),
+                ScanArtifact::new("scan-weak", vec![weak.clone()], Vec::new()),
+                ScanArtifact::new("scan-person", vec![person.clone()], Vec::new()),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let all: Vec<_> = history.scan_ids_for_entity_ref(&uid).collect();
+        assert_eq!(all, ["scan-candidate", "scan-current", "scan-weak"]);
+        assert_eq!(history.entities_for_scan_ref("scan-candidate"), &[candidate]);
+        assert_eq!(history.entities_for_scan_ref("scan-weak"), &[weak]);
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&person.uid).collect::<Vec<_>>(),
+            ["scan-person"],
+            "the raw/synergy index must retain non-bridgeable people",
+        );
+        assert!(
+            history.scan_ids_for_entity(&person.uid).unwrap().is_empty(),
+            "person names must not become identity bridges",
+        );
+        assert_eq!(
+            current
+                .cross_scan(&history, CrossScanOptions::default())
+                .unwrap(),
+            CrossScanCategory::None,
+            "historical candidate or weak evidence is not corroboration",
+        );
+
+        let trusted = scan_of("scan-trusted", &[(EntityKind::Email, "ada@example.com")]);
+        write(&dir.join("trusted.json"), &trusted).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        match current
+            .cross_scan(&history, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(matches[0].overlapping_scans, vec!["scan-trusted".to_string()]);
+            }
+            other => panic!("expected a bridge only to the trusted scan, got {other:?}"),
+        }
+        assert_eq!(history.entities_for_scan_ref("scan-candidate"), &[candidate]);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
     fn history_walks_related_entities_transitively_across_files() {
         use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
         let current = scan_of("scan-a", &[(EntityKind::IpAddress, "192.0.2.1")]);
