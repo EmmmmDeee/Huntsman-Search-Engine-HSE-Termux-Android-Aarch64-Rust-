@@ -71,6 +71,7 @@ fn verify_completion_contract(workflow: &str) -> Result<(), String> {
     let steps = [
         "cargo fmt --all -- --check",
         "cargo test --locked -p xtask",
+        "cargo test --locked --test completion_ci --test ci_toolchains",
         "cargo run --locked -p xtask -- completion write",
         "cargo run --locked -p xtask -- completion check",
         "cargo run --locked -p xtask -- roadmap check",
@@ -106,6 +107,10 @@ fn completion_workflow_guard_rejects_unsafe_mutations() {
         ("persist-credentials: false", "persist-credentials: true"),
         ("cargo fmt --all -- --check", "echo formatting skipped"),
         ("cargo test --locked -p xtask", "echo tests skipped"),
+        (
+            "cargo test --locked --test completion_ci --test ci_toolchains",
+            "echo completion CI safety checks skipped",
+        ),
         (
             "cargo run --locked -p xtask -- completion check",
             "echo completion validation skipped",
