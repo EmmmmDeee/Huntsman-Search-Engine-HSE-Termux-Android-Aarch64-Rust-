@@ -183,21 +183,31 @@ pub fn collect_direct_bridges<S: CrossScanStore>(
     current_scan_id: &str,
     entities: &[Entity],
 ) -> Result<Vec<BridgedEntity>, Error> {
-    let mut matches = Vec::new();
+    // Pages may repeat an entity UID in one scan. It is one cross-scan link, not
+    // independent corroboration. Merge only the derived bridge view; do not
+    // alter the store's original entity records or source evidence.
+    let mut by_uid = BTreeMap::<String, BridgedEntity>::new();
     for entity in entities {
+        // Check before merging: a quarantined candidate must never contaminate
+        // an independently bridgeable observation of the same identity.
         if !is_bridgeable(entity) {
+            continue;
+        }
+        if let Some(existing) = by_uid.get_mut(&entity.uid) {
+            existing.entity.absorb(entity.clone());
             continue;
         }
         let historical = overlapping_scans(store, current_scan_id, entity)?;
         if historical.is_empty() {
             continue;
         }
-        matches.push(BridgedEntity {
+        by_uid.insert(entity.uid.clone(), BridgedEntity {
             entity: entity.clone(),
             tier: bridge_tier(entity),
             overlapping_scans: historical,
         });
     }
+    let mut matches: Vec<_> = by_uid.into_values().collect();
     matches.sort_by(|left, right| {
         left.tier
             .cmp(&right.tier)
