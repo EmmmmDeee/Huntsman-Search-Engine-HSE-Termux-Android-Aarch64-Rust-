@@ -768,8 +768,8 @@ $('uresearch').onsubmit=async ev=>{
 };
 $('newscan').onsubmit=async ev=>{
   ev.preventDefault();
-  const raw=$('starget').value;
-  const target=$('skind').value==='network'&&raw.trimStart().startsWith('ssid:')?raw.trimStart():raw.trim();
+  const raw=$('starget').value.trimStart();
+  const target=$('skind').value==='network'&&raw.startsWith('ssid:')?raw:raw.trimEnd();
   if(!target){fail('nerror','Enter a scan target.');$('starget').focus();return}
   const depth=$('sdepth').value.trim()||'0';
   if($('sdepth').validity.badInput||!/^\d+$/.test(depth)){fail('nerror','Recursion depth is a whole number of hops, 0 or more.');$('sdepth').focus();return}
