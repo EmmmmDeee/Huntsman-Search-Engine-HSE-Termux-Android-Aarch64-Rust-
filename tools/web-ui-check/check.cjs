@@ -217,6 +217,42 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await ctx.close();
     }
 
+    // Exercise the actual phone-sized form, server and persistence path. SSID spaces are
+    // identity bytes, not formatting whitespace; no WiGLE account is configured in this run.
+    {
+      const ctx = await browser.newContext(PHONE);
+      const page = await ctx.newPage();
+      const exact = 'ssid: Cafe Guest ';
+      const posts = [];
+      await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
+      await page.selectOption('#skind', 'network');
+      await page.fill('#starget', exact);
+      await page.fill('#sname', '');
+      await page.fill('#sdepth', '0');
+      const observe = req => {
+        if (req.method() !== 'POST' || new URL(req.url()).pathname !== '/api/scans') return;
+        const url = new URL(req.url());
+        const form = new URLSearchParams(req.postData() || '');
+        posts.push({ target: form.get('target'), name: form.get('name'),
+          kind: form.get('kind'), urlSearch: url.search });
+      };
+      page.on('request', observe);
+      const response = page.waitForResponse(res => res.request().method() === 'POST' &&
+        new URL(res.url()).pathname === '/api/scans', { timeout: 20000 });
+      await page.click('#runscan');
+      const submitted = await response;
+      page.off('request', observe);
+      const created = submitted.ok() ? await submitted.json() : null;
+      const stored = created && created.id ? await api(page, '/api/scans/' + created.id) : null;
+      check('exact SSID survives mobile form POST and saved-scan persistence',
+        posts.length === 1 && posts[0].target === exact && posts[0].name === exact &&
+        posts[0].kind === 'network' && posts[0].urlSearch === '' &&
+        stored && stored.target === exact && stored.name === exact && stored.kind === 'network',
+        { posts, status: submitted.status(), stored: stored && { target: stored.target,
+          name: stored.name, kind: stored.kind } });
+      await ctx.close();
+    }
+
     // Delayed responses must never overwrite the term now on-screen or arm a stale mission.
     // Routes are mocked: this check does not contact search engines or use provider keys.
     {
