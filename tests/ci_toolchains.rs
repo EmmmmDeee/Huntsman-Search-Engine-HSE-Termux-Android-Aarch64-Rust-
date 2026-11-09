@@ -13,11 +13,12 @@ const MSRV: &str = "1.87";
 
 /// The workflows that build or test the crate. `audit.yml` is not among them: it only installs
 /// `cargo-audit` and reads the lockfile, so it may use the newest stable.
-const GATED_WORKFLOWS: [&str; 4] = [
+const GATED_WORKFLOWS: [&str; 5] = [
     ".github/workflows/ci.yml",
     ".github/workflows/release.yml",
     ".github/workflows/issue-fix.yml",
     ".github/workflows/dual-pass.yml",
+    ".github/workflows/completion.yml",
 ];
 
 fn workflow(path: &str) -> String {
