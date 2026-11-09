@@ -1,0 +1,1 @@
+- Prevent false cross-scan corroboration from repeated identities within one scan, ineligible historical observations, copied scan identities and mismatched persisted UIDs. Preserve all original saved entity/evidence records and the complete offline history index; only evidence-eligible derived bridge matches change.
