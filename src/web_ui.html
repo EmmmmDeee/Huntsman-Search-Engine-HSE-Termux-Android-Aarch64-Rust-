@@ -768,13 +768,12 @@ $('uresearch').onsubmit=async ev=>{
 };
 $('newscan').onsubmit=async ev=>{
   ev.preventDefault();
-  const typed=$('starget').value,kind=$('skind').value;
-  // An explicit SSID is byte-significant: keep its spaces through the form POST.
-  const target=kind==='network'&&typed.trimStart().startsWith('ssid:')?typed.trimStart():typed.trim();
+  const raw=$('starget').value;
+  const target=$('skind').value==='network'&&raw.trimStart().startsWith('ssid:')?raw.trimStart():raw.trim();
   if(!target){fail('nerror','Enter a scan target.');$('starget').focus();return}
   const depth=$('sdepth').value.trim()||'0';
   if($('sdepth').validity.badInput||!/^\d+$/.test(depth)){fail('nerror','Recursion depth is a whole number of hops, 0 or more.');$('sdepth').focus();return}
-  const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind,depth});
+  const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value,depth});
   if(ntab==='usecase')p.set('usecase',document.querySelector('input[name=usecase]:checked').value);
   else{
     const on=[...$('np-'+ntab).querySelectorAll('input:checked')].map(i=>i.value);
