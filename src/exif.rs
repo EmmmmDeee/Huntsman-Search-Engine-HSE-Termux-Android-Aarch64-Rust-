@@ -1008,8 +1008,8 @@ fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Directory) -> Option<GpsF
         }
     }
 
-    let lat = apply_sign(lat?, lat_ref.as_deref(), "S");
-    let lon = apply_sign(lon?, lon_ref.as_deref(), "W");
+    let lat = apply_sign(lat?, lat_ref.as_deref(), "N", "S")?;
+    let lon = apply_sign(lon?, lon_ref.as_deref(), "E", "W")?;
     Some(GpsFix {
         lat,
         lon,
@@ -1018,13 +1018,15 @@ fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Directory) -> Option<GpsF
     })
 }
 
-/// Negate `value` when its reference hemisphere is the negative one (`S` for latitude, `W` for
-/// longitude). **Pure.**
-fn apply_sign(value: f64, reference: Option<&str>, negative: &str) -> f64 {
-    if reference.map(str::trim) == Some(negative) {
-        -value
-    } else {
-        value
+/// Apply an explicit hemisphere to `value`.
+///
+/// Magnitudes alone do not identify a hemisphere. Keep decoded GPS tags as evidence, but return
+/// `None` unless the reference is exactly `positive` or `negative` (`N`/`S` or `E`/`W`). **Pure.**
+fn apply_sign(value: f64, reference: Option<&str>, positive: &str, negative: &str) -> Option<f64> {
+    match reference?.trim() {
+        reference if reference == positive => Some(value),
+        reference if reference == negative => Some(-value),
+        _ => None,
     }
 }
 

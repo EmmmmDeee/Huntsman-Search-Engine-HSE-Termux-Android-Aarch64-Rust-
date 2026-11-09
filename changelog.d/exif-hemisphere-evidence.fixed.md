@@ -1,0 +1,1 @@
+- EXIF GPS fixes now require an explicit, recognized hemisphere for each axis (N/S latitude and E/W longitude). Missing, blank, unknown, or wrong-axis references no longer silently fabricate north/east positions. All decoded GPS tags remain on the document as evidence; fully specified coordinates retain their existing values and signs.
