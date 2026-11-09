@@ -158,6 +158,8 @@ pub struct ScanPlan {
 /// # Errors
 /// [`ServiceError::BadRequest`] for an empty, over-long or unusable target or an unknown kind.
 pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> {
+    // Keep the original for explicitly named SSIDs: trailing spaces are network identity.
+    let raw_target = target;
     let target = target.trim();
     if target.is_empty() {
         return Err(ServiceError::BadRequest("a scan needs a target".into()));
@@ -194,7 +196,14 @@ pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> 
             kind
         }
     };
-    let canonical = canonical_selector(kind, target).ok_or_else(|| {
+    // The shared network selector trims unprefixed text, but must see the complete explicit
+    // `ssid:` value. Every other scan kind keeps the established outer-trimming contract.
+    let canonical_input = if kind == ScanKind::Network {
+        raw_target
+    } else {
+        target
+    };
+    let canonical = canonical_selector(kind, canonical_input).ok_or_else(|| {
         ServiceError::BadRequest(format!(
             "the target is not valid for a {} scan",
             kind.command()
