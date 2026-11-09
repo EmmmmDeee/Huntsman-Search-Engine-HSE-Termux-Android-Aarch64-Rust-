@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(original.len(), 2, "raw history must not be deduplicated");
         let bridges = collect_direct_bridges(&store, "scan-a", &original).unwrap();
         assert_eq!(bridges.len(), 1, "one UID is one cross-scan bridge");
-        assert_eq!(bridges[0].overlapping_scans, ["scan-b"]);
+        assert_eq!(bridges[0].overlapping_scans, vec!["scan-b".to_string()]);
         assert_eq!(bridges[0].entity.confidence, 0.9);
         assert_eq!(bridges[0].entity.evidence.len(), 2);
         let sources: BTreeSet<_> = bridges[0]
@@ -539,6 +539,22 @@ mod tests {
         };
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].entity.evidence.len(), 2);
+    }
+
+    #[test]
+    fn repeated_evidence_free_rows_do_not_inflate_corroboration() {
+        let mut store = FakeStore::default();
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-a"));
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-a"));
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-b"));
+
+        let original = store.entities_for_scan("scan-a").unwrap();
+        assert_eq!(original.len(), 2);
+        let bridges = collect_direct_bridges(&store, "scan-a", &original).unwrap();
+        assert_eq!(bridges.len(), 1);
+        assert_eq!(bridges[0].entity.corroboration, 1);
+        assert_eq!(bridges[0].entity.source_count(), 1);
+        assert_eq!(store.entities_for_scan("scan-a").unwrap(), original);
     }
 
     #[test]
