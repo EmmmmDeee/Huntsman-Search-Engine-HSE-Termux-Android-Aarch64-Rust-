@@ -590,6 +590,47 @@ mod tests {
     }
 
     #[test]
+    fn forged_uid_never_creates_a_cross_scan_bridge() {
+        let mut store = FakeStore::default();
+        let current = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-a");
+
+        // The UID belongs to Ada's email, but the retained row claims a
+        // different email. A deserialized artifact can carry this mismatch.
+        let mut mismatched_value = entity(EntityKind::Email, "bob@example.com", 0.9, "scan-b");
+        mismatched_value.uid.clone_from(&current.uid);
+        assert!(
+            !is_bridgeable(&mismatched_value),
+            "a forged UID must not pass the evidence bridge gate"
+        );
+
+        // A different kind of entity cannot impersonate the same UID either.
+        let mut mismatched_kind = entity(EntityKind::Username, "ada", 0.9, "scan-d");
+        mismatched_kind.uid.clone_from(&current.uid);
+        assert!(!is_bridgeable(&mismatched_kind));
+
+        store.insert(current.clone());
+        store.insert(mismatched_value);
+        store.insert(mismatched_kind);
+        let original = store.entities_for_scan("scan-a").unwrap();
+        assert_eq!(
+            category_from_entities(&store, "scan-a", &original, CrossScanOptions::default())
+                .unwrap(),
+            CrossScanCategory::None,
+        );
+
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.9, "scan-c"));
+        match category_from_entities(&store, "scan-a", &original, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(matches[0].overlapping_scans, vec!["scan-c".to_owned()]);
+            }
+            other => panic!("expected only the legitimate observation, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn related_entities_walk_transitively() {
         let mut store = FakeStore::default();
         store.insert(entity(EntityKind::IpAddress, "1.1.1.1", 0.9, "scan-a"));
