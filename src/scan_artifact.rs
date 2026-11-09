@@ -277,7 +277,13 @@ impl ArtifactHistory {
                 .entry(entity.uid.clone())
                 .or_default()
                 .insert(artifact.scan_id.clone());
-            if crate::cross_scan::is_bridgeable(&entity) {
+            // A retained entity copied from a different scan is not a new
+            // independent observation by this artifact. Keep its exact row in
+            // the raw/synergy index but never attribute it as corroboration to
+            // the artifact's scan ID.
+            if entity.scan_id == artifact.scan_id
+                && crate::cross_scan::is_bridgeable(&entity)
+            {
                 self.bridge_by_uid
                     .entry(entity.uid.clone())
                     .or_default()
@@ -778,6 +784,60 @@ mod tests {
             other => panic!("expected a bridge only to the trusted scan, got {other:?}"),
         }
         assert_eq!(history.entities_for_scan_ref("scan-candidate"), &[candidate]);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn copied_entity_does_not_manufacture_independent_historical_corroboration() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+
+        let current = scan_of("scan-current", &[(EntityKind::Email, "ada@example.com")]);
+        let copied = current.entities[0].clone();
+        // Reusing a saved entity in another artifact does not turn its original
+        // scan_id into a new observation. Both complete raw records are retained.
+        let dir = history_dir(
+            "history-copied-entity-not-corroboration",
+            &[
+                current.clone(),
+                ScanArtifact::new("scan-copy", vec![copied.clone()], Vec::new()),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&copied.uid).collect::<Vec<_>>(),
+            ["scan-copy", "scan-current"],
+            "the complete history/synergy index must preserve copied rows",
+        );
+        assert_eq!(history.entities_for_scan_ref("scan-copy"), &[copied.clone()]);
+        assert_eq!(
+            history.scan_ids_for_entity(&copied.uid).unwrap(),
+            vec!["scan-current".to_owned()],
+            "only the artifact whose scan ID agrees with the entity is eligible",
+        );
+        assert_eq!(
+            current.cross_scan(&history, CrossScanOptions::default()).unwrap(),
+            CrossScanCategory::None,
+            "a copied row cannot independently corroborate its origin",
+        );
+
+        // A separate observation with a genuinely matching scan ID can bridge.
+        let independent = scan_of("scan-independent", &[(EntityKind::Email, "ada@example.com")]);
+        write(&dir.join("independent.json"), &independent).unwrap();
+        let reloaded = ArtifactHistory::open(&dir).unwrap();
+        match current
+            .cross_scan(&reloaded, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(
+                    matches[0].overlapping_scans,
+                    vec!["scan-independent".to_owned()]
+                );
+            }
+            other => panic!("expected a genuine independent bridge, got {other:?}"),
+        }
+        assert_eq!(reloaded.entities_for_scan_ref("scan-copy"), &[copied]);
         let _ = fs::remove_dir_all(dir.parent().unwrap());
     }
 
