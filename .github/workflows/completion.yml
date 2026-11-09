@@ -31,6 +31,7 @@ jobs:
           set -euo pipefail
           cargo fmt --all -- --check
           cargo test --locked -p xtask
+          cargo test --locked --test completion_ci --test ci_toolchains
       - name: Generate and verify complete register
         run: |
           set -euo pipefail
