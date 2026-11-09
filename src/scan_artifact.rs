@@ -197,7 +197,10 @@ pub const MAX_HISTORY_BYTES: u64 = 128 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub struct ArtifactHistory {
     by_scan: BTreeMap<String, Vec<Entity>>,
+    // Complete raw-history index, also used by the non-verifying offline synergy view.
     by_uid: BTreeMap<String, BTreeSet<String>>,
+    // A separate, evidence-gated index: quarantined and weak rows are not bridges.
+    bridge_by_uid: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ArtifactHistory {
@@ -274,6 +277,12 @@ impl ArtifactHistory {
                 .entry(entity.uid.clone())
                 .or_default()
                 .insert(artifact.scan_id.clone());
+            if crate::cross_scan::is_bridgeable(&entity) {
+                self.bridge_by_uid
+                    .entry(entity.uid.clone())
+                    .or_default()
+                    .insert(artifact.scan_id.clone());
+            }
             scan.push(entity);
         }
     }
@@ -304,7 +313,7 @@ impl CrossScanStore for ArtifactHistory {
 
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>, crate::error::Error> {
         Ok(self
-            .by_uid
+            .bridge_by_uid
             .get(entity_uid)
             .map(|scans| scans.iter().cloned().collect())
             .unwrap_or_default())
