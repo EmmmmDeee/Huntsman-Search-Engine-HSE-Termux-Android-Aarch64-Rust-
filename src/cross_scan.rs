@@ -495,6 +495,76 @@ mod tests {
     }
 
     #[test]
+    fn repeated_uid_is_one_bridge_with_all_independent_evidence_retained() {
+        let mut store = FakeStore::default();
+        let mut first = entity(EntityKind::Email, "ada@example.com", 0.6, "scan-a");
+        first.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("hibp", "scan-a"),
+            "first source record",
+        ));
+        let mut second = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-a");
+        second.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("dehashed", "scan-a"),
+            "second source record",
+        ));
+        store.insert(first);
+        store.insert(second);
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-b"));
+
+        let original = store.entities_for_scan("scan-a").unwrap();
+        assert_eq!(original.len(), 2, "raw history must not be deduplicated");
+        let bridges = collect_direct_bridges(&store, "scan-a", &original).unwrap();
+        assert_eq!(bridges.len(), 1, "one UID is one cross-scan bridge");
+        assert_eq!(bridges[0].overlapping_scans, ["scan-b"]);
+        assert_eq!(bridges[0].entity.confidence, 0.9);
+        assert_eq!(bridges[0].entity.evidence.len(), 2);
+        let sources: BTreeSet<_> = bridges[0]
+            .entity
+            .evidence
+            .iter()
+            .map(|evidence| evidence.provenance.source.as_str())
+            .collect();
+        assert_eq!(sources, BTreeSet::from(["hibp", "dehashed"]));
+        assert_eq!(store.entities_for_scan("scan-a").unwrap(), original);
+
+        let category =
+            category_from_entities(&store, "scan-a", &original, CrossScanOptions::default())
+                .unwrap();
+        let CrossScanCategory::Historical { matches } = category else {
+            panic!("expected one historical bridge, got {category:?}");
+        };
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].entity.evidence.len(), 2);
+    }
+
+    #[test]
+    fn a_quarantined_duplicate_does_not_contaminate_the_valid_bridge() {
+        let mut store = FakeStore::default();
+        let mut candidate = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-a");
+        candidate.tag(tags::CANDIDATE);
+        candidate.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("unconfirmed", "scan-a"),
+            "not an admitted bridge",
+        ));
+        let mut observed = entity(EntityKind::Email, "ada@example.com", 0.8, "scan-a");
+        observed.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("observed", "scan-a"),
+            "admitted source",
+        ));
+        store.insert(candidate);
+        store.insert(observed);
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-b"));
+
+        let original = store.entities_for_scan("scan-a").unwrap();
+        let bridges = collect_direct_bridges(&store, "scan-a", &original).unwrap();
+        assert_eq!(bridges.len(), 1);
+        assert!(is_bridgeable(&bridges[0].entity));
+        assert_eq!(bridges[0].entity.evidence.len(), 1);
+        assert_eq!(bridges[0].entity.evidence[0].provenance.source, "observed");
+        assert_eq!(store.entities_for_scan("scan-a").unwrap(), original);
+    }
+
+    #[test]
     fn related_entities_walk_transitively() {
         let mut store = FakeStore::default();
         store.insert(entity(EntityKind::IpAddress, "1.1.1.1", 0.9, "scan-a"));
