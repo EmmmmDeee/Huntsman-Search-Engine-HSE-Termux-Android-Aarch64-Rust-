@@ -727,6 +727,49 @@ mod tests {
     }
 
     #[test]
+    fn direct_transitive_api_refuses_a_seed_owned_by_another_scan() {
+        let mut store = FakeStore::default();
+        let origin = entity(EntityKind::IpAddress, "198.51.100.8", 0.9, "scan-origin");
+        let other = entity(EntityKind::IpAddress, "198.51.100.8", 0.9, "scan-other");
+        store.insert(origin.clone());
+        store.insert(other.clone());
+
+        let copied_seed = BridgedEntity {
+            entity: other,
+            tier: BridgeTier::Related,
+            overlapping_scans: vec!["scan-other".to_owned()],
+        };
+        assert!(
+            transitive_closure(
+                &store,
+                "scan-origin",
+                &[copied_seed],
+                CrossScanOptions::default(),
+            )
+            .unwrap()
+            .is_empty(),
+            "the public traversal API must check seed ownership",
+        );
+
+        let genuine_seed = BridgedEntity {
+            entity: origin,
+            tier: BridgeTier::Related,
+            overlapping_scans: vec!["scan-other".to_owned()],
+        };
+        let links = transitive_closure(
+            &store,
+            "scan-origin",
+            &[genuine_seed],
+            CrossScanOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target_scan_id, "scan-other");
+        assert_eq!(links[0].depth, 1);
+        assert_eq!(store.entities_for_scan("scan-other").unwrap().len(), 1);
+    }
+
+    #[test]
     fn related_entities_walk_transitively() {
         let mut store = FakeStore::default();
         store.insert(entity(EntityKind::IpAddress, "1.1.1.1", 0.9, "scan-a"));
