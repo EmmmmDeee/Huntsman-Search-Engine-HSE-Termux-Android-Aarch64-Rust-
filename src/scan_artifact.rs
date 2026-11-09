@@ -842,6 +842,60 @@ mod tests {
     }
 
     #[test]
+    fn forged_uid_is_retained_but_cannot_masquerade_as_historical_corroboration() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+
+        let current = scan_of("scan-current", &[(EntityKind::Email, "ada@example.com")]);
+        let claimed_uid = current.entities[0].uid.clone();
+        let mut forged = Entity::new(EntityKind::Email, "bob@example.com", 0.9, "scan-forged");
+        forged.uid.clone_from(&claimed_uid);
+
+        let dir = history_dir(
+            "history-forged-entity-uid",
+            &[
+                current.clone(),
+                ScanArtifact::new("scan-forged", vec![forged.clone()], Vec::new()),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+
+        // The raw record and full searchable history are not altered.
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&claimed_uid).collect::<Vec<_>>(),
+            ["scan-current", "scan-forged"],
+        );
+        assert_eq!(history.entities_for_scan_ref("scan-forged"), &[forged.clone()]);
+        assert_eq!(read(&dir.join("1.json")).unwrap().entities, vec![forged.clone()]);
+
+        // A forged identifier is not a second independent observation.
+        assert_eq!(
+            history.scan_ids_for_entity(&claimed_uid).unwrap(),
+            vec!["scan-current".to_owned()],
+        );
+        assert_eq!(
+            current.cross_scan(&history, CrossScanOptions::default()).unwrap(),
+            CrossScanCategory::None,
+        );
+
+        let independently_seen =
+            scan_of("scan-independent", &[(EntityKind::Email, "ada@example.com")]);
+        write(&dir.join("independent.json"), &independently_seen).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        match current.cross_scan(&history, CrossScanOptions::default()).unwrap() {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(
+                    matches[0].overlapping_scans,
+                    vec!["scan-independent".to_owned()],
+                );
+            }
+            other => panic!("expected only independently seen identity, got {other:?}"),
+        }
+        assert_eq!(history.entities_for_scan_ref("scan-forged"), &[forged]);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
     fn history_walks_related_entities_transitively_across_files() {
         use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
         let current = scan_of("scan-a", &[(EntityKind::IpAddress, "192.0.2.1")]);
