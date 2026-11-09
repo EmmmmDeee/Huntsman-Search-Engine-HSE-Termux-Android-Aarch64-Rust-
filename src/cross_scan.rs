@@ -345,6 +345,12 @@ pub fn is_bridgeable(entity: &Entity) -> bool {
     if entity.value.trim().is_empty() || entity.scan_id.trim().is_empty() {
         return false;
     }
+    // Persisted entity IDs are input data, not authority. A stale or forged UID
+    // must not join unrelated kinds/values across scans. Retain the original
+    // record in raw history; only exclude it from the derived bridge view.
+    if entity.uid != crate::entity::derive_uid(&entity.kind, &entity.value) {
+        return false;
+    }
     if entity
         .tags
         .iter()
