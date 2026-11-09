@@ -193,7 +193,7 @@ pub fn collect_direct_bridges<S: CrossScanStore>(
     for entity in entities {
         // Check before merging: a quarantined candidate must never contaminate
         // an independently bridgeable observation of the same identity.
-        if !is_bridgeable(entity) {
+        if entity.scan_id != current_scan_id || !is_bridgeable(entity) {
             continue;
         }
         if let Some(existing) = by_uid.get_mut(&entity.uid) {
@@ -254,6 +254,11 @@ pub fn transitive_closure<S: CrossScanStore>(
     // A discovered scan reserves both one visited slot and one output slot.
     // The origin is counted in max_visited but never becomes a link.
     for seed in seeds {
+        // Direct callers must not turn a foreign scan's retained row into an
+        // observation by the origin scan.
+        if seed.entity.scan_id != origin_scan_id || !is_bridgeable(&seed.entity) {
+            continue;
+        }
         for scan_id in &seed.overlapping_scans {
             if visited_scans.len() >= options.max_visited
                 || visited_scans.len() > options.max_frontier
@@ -282,7 +287,9 @@ pub fn transitive_closure<S: CrossScanStore>(
             continue;
         }
         for entity in store.entities_for_scan(&scan_id)? {
-            if !is_bridgeable(&entity) {
+            // A copied row stored in this scan is not a new observation that
+            // can justify a transitive hop to another scan.
+            if entity.scan_id != scan_id || !is_bridgeable(&entity) {
                 continue;
             }
             for neighbor in overlapping_scans(store, &scan_id, &entity)? {
