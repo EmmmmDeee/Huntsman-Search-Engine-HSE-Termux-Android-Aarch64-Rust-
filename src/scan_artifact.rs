@@ -378,6 +378,113 @@ mod tests {
         assert_eq!(links[0]["source_scan_id"], "saved");
     }
 
+    #[test]
+    fn offline_synergy_refuses_forged_uid_evidence_without_losing_saved_records() {
+        let seed = Entity::new(EntityKind::Domain, "example.org", 0.8, "query");
+        let mut forged = Entity::new(EntityKind::Domain, "attacker.org", 0.9, "scan-forged");
+        forged.uid.clone_from(&seed.uid);
+        forged.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-forged"), "unrelated A")
+                .with_attr("ip", "192.0.2.5"),
+        );
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.5", 0.9, "scan-forged");
+        ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-forged"),
+            "observed address",
+        ));
+        let dir = history_dir(
+            "offline-forged-uid-synergy",
+            &[ScanArtifact::new(
+                "scan-forged",
+                vec![forged.clone(), ip.clone()],
+                Vec::new(),
+            )],
+        );
+        let original_bytes = fs::read(dir.join("0.json")).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&seed.uid).collect::<Vec<_>>(),
+            ["scan-forged"],
+            "the complete raw index retains the claimed UID",
+        );
+        let view = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        assert_eq!(
+            view["synergy"]["links"],
+            serde_json::json!([]),
+            "the source claim for attacker.org must not be attributed to example.org: {view}",
+        );
+        assert_eq!(view["synergy"]["truncated"], true);
+        assert_eq!(history.entities_for_scan_ref("scan-forged"), &[forged, ip]);
+        assert_eq!(fs::read(dir.join("0.json")).unwrap(), original_bytes);
+
+        // A genuinely matching historical domain and independently observed
+        // address still yield the original source-attributed lead.
+        let mut actual = Entity::new(EntityKind::Domain, "example.org", 0.9, "scan-valid");
+        actual.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-valid"), "actual A")
+                .with_attr("ip", "192.0.2.5"),
+        );
+        let mut seen = Entity::new(EntityKind::IpAddress, "192.0.2.5", 0.9, "scan-valid");
+        seen.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-valid"),
+            "independently seen address",
+        ));
+        write(
+            &dir.join("valid.json"),
+            &ScanArtifact::new("scan-valid", vec![actual, seen], Vec::new()),
+        )
+        .unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let valid_view = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        let links = valid_view["synergy"]["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1, "{valid_view}");
+        assert_eq!(links[0]["relation"], "reported_dns_address");
+        assert_eq!(links[0]["source_scan_id"], "scan-valid");
+        assert_eq!(links[0]["status"], "separately_observed_target");
+        assert_eq!(fs::read(dir.join("0.json")).unwrap(), original_bytes);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn offline_synergy_discards_forged_rows_even_when_a_valid_anchor_exists() {
+        let mut anchor = Entity::new(EntityKind::Domain, "example.org", 0.9, "mixed");
+        anchor.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("dns", "mixed"),
+            "valid unrelated DNS observation",
+        ));
+        let mut forged = Entity::new(EntityKind::Domain, "attacker.org", 0.9, "mixed");
+        forged.uid.clone_from(&anchor.uid);
+        forged.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "mixed"), "attacker A")
+                .with_attr("ip", "192.0.2.9"),
+        );
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.9", 0.9, "mixed");
+        ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "mixed"),
+            "address observation",
+        ));
+        let original = ScanArtifact::new("mixed", vec![anchor, forged, ip], Vec::new());
+        let dir = history_dir("offline-mixed-uid-synergy", &[original.clone()]);
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let view = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        assert_eq!(view["synergy"]["links"], serde_json::json!([]), "{view}");
+        assert_eq!(view["synergy"]["truncated"], true);
+        assert_eq!(read(&dir.join("0.json")).unwrap(), original);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("scan-artifact-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
