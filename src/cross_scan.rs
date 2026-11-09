@@ -637,6 +637,89 @@ mod tests {
     }
 
     #[test]
+    fn copied_row_cannot_impersonate_the_current_scans_observation() {
+        let mut store = FakeStore::default();
+        let original = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-original");
+        store.insert(original.clone());
+
+        // A saved scan can contain a retained entity from a different scan.
+        // Its UID is valid, but it is not an observation by scan-copied.
+        let copied = original.clone();
+        assert_eq!(
+            category_from_entities(
+                &store,
+                "scan-copied",
+                &[copied.clone()],
+                CrossScanOptions::default(),
+            )
+            .unwrap(),
+            CrossScanCategory::None,
+        );
+        assert_eq!(copied.scan_id, "scan-original");
+
+        store.insert(entity(
+            EntityKind::Email,
+            "ada@example.com",
+            0.9,
+            "scan-copied",
+        ));
+        let actual = store.entities_for_scan("scan-copied").unwrap();
+        match category_from_entities(&store, "scan-copied", &actual, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(
+                    matches[0].overlapping_scans,
+                    vec!["scan-original".to_owned()],
+                );
+            }
+            other => panic!("expected only the real current observation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copied_intermediate_row_cannot_invent_a_transitive_path() {
+        let mut store = FakeStore::default();
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.1", 0.9, "scan-a"));
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.1", 0.9, "scan-b"));
+        let copied = entity(EntityKind::IpAddress, "198.51.100.2", 0.9, "scan-c");
+        store.insert(copied.clone());
+        store
+            .by_scan
+            .entry("scan-b".to_owned())
+            .or_default()
+            .push(copied.clone());
+
+        let first = store.entities_for_scan("scan-a").unwrap();
+        let category =
+            category_from_entities(&store, "scan-a", &first, CrossScanOptions::default()).unwrap();
+        let CrossScanCategory::Transitive { links } = category else {
+            panic!("expected only the direct scan-b path, got {category:?}");
+        };
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].target_scan_id, "scan-b");
+        assert_eq!(links[0].depth, 1);
+        assert_eq!(store.entities_for_scan("scan-b").unwrap().len(), 2);
+
+        // The identical value really observed by scan-b admits the second hop.
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.2", 0.9, "scan-b"));
+        let category =
+            category_from_entities(&store, "scan-a", &first, CrossScanOptions::default()).unwrap();
+        let CrossScanCategory::Transitive { links } = category else {
+            panic!("expected a genuine second hop, got {category:?}");
+        };
+        assert!(links.iter().any(|link| {
+            link.target_scan_id == "scan-c" && link.depth == 2
+        }));
+        assert!(store
+            .entities_for_scan("scan-b")
+            .unwrap()
+            .iter()
+            .any(|item| item == &copied));
+    }
+
+    #[test]
     fn related_entities_walk_transitively() {
         let mut store = FakeStore::default();
         store.insert(entity(EntityKind::IpAddress, "1.1.1.1", 0.9, "scan-a"));
