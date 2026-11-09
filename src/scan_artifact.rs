@@ -1050,6 +1050,64 @@ mod tests {
     }
 
     #[test]
+    fn a_copied_only_artifact_is_not_an_observation_by_its_own_scan() {
+        use crate::cross_scan::{
+            CrossScanCategory, CrossScanOptions, category_for_scan_with,
+        };
+
+        let original = scan_of("scan-original", &[(EntityKind::Email, "ada@example.com")]);
+        let copied_entity = original.entities[0].clone();
+        let copied = ScanArtifact::new(
+            "scan-copied",
+            vec![copied_entity.clone()],
+            Vec::new(),
+        );
+        let dir = history_dir("copied-only-current-artifact", &[original, copied.clone()]);
+        let copied_path = dir.join("1.json");
+        let raw_bytes = fs::read(&copied_path).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&copied_entity.uid).collect::<Vec<_>>(),
+            ["scan-copied", "scan-original"],
+            "raw history must retain the copied row",
+        );
+        assert_eq!(
+            history.scan_ids_for_entity(&copied_entity.uid).unwrap(),
+            vec!["scan-original".to_owned()],
+            "a copied row must not enter the corroboration index",
+        );
+        assert_eq!(
+            copied.cross_scan(&history, CrossScanOptions::default()).unwrap(),
+            CrossScanCategory::None,
+            "copied-only current artifacts must not report historical matches",
+        );
+        assert_eq!(
+            category_for_scan_with(&history, "scan-copied", CrossScanOptions::default())
+                .unwrap(),
+            CrossScanCategory::None,
+            "the public history lookup must agree with ScanArtifact::cross_scan",
+        );
+
+        let independent = scan_of(
+            "scan-independent",
+            &[(EntityKind::Email, "ada@example.com")],
+        );
+        write(&dir.join("independent.json"), &independent).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let CrossScanCategory::Historical { matches } =
+            independent.cross_scan(&history, CrossScanOptions::default()).unwrap()
+        else {
+            panic!("a new genuine observation must bridge the original scan");
+        };
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].overlapping_scans, vec!["scan-original".to_owned()]);
+        assert_eq!(history.entities_for_scan_ref("scan-copied"), &[copied_entity]);
+        assert_eq!(fs::read(&copied_path).unwrap(), raw_bytes);
+        assert_eq!(read(&copied_path).unwrap(), copied);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
     fn history_walks_related_entities_transitively_across_files() {
         use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
         let current = scan_of("scan-a", &[(EntityKind::IpAddress, "192.0.2.1")]);
