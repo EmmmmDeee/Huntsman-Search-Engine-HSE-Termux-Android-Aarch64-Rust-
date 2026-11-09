@@ -115,6 +115,54 @@ fn selectors_parse_and_their_canonical_form_reads_back() {
     assert_eq!(NetworkSelector::parse_identifier("Cafe Guest"), None);
 }
 
+/// IEEE 802.11 SSID bytes can include leading/trailing ASCII spaces. A prefixed selector is
+/// explicit, so changing those bytes would search a different network and alter the seed.
+#[test]
+fn explicitly_prefixed_ssids_preserve_significant_spaces() {
+    for name in [" Cafe Guest ", "Cafe Guest ", " Cafe Guest", "ssid: Cafe Guest "] {
+        let raw = format!("ssid:{name}");
+        let selector = NetworkSelector::parse(&raw).expect("valid exact SSID");
+        assert_eq!(selector, NetworkSelector::Ssid(name.to_owned()));
+        assert_eq!(selector.canonical(), raw);
+        assert_eq!(NetworkSelector::parse(&selector.canonical()), Some(selector));
+    }
+
+    // Bare free-text selectors retain their established whitespace trimming.
+    assert_eq!(
+        NetworkSelector::parse(" Cafe Guest "),
+        Some(NetworkSelector::Ssid("Cafe Guest".into()))
+    );
+    // Exact byte limits and control rejection apply before any lookup can leave the host.
+    assert_eq!(NetworkSelector::parse("ssid:Cafe Guest\n"), None);
+    assert_eq!(NetworkSelector::parse(&format!("ssid: {}", "x".repeat(32))), None);
+    assert_eq!(NetworkSelector::parse("ssid:"), None);
+}
+
+#[test]
+fn exact_ssid_reaches_the_wigle_request_and_seed_unchanged() {
+    let raw = "ssid: Cafe Guest ";
+    let args = vec![raw.to_owned()];
+    let parsed = NetworkArgs::parse(&args).expect("valid explicit SSID");
+    assert_eq!(parsed.selector, raw);
+
+    let transport = Canned::json(
+        &serde_json::json!({"success": true, "totalResults": 0, "results": []}),
+    );
+    let (_, report) = printed(run(&transport, &keys(), &parsed.selector, 7));
+    let urls = transport.urls();
+    assert_eq!(urls.len(), 1, "{urls:?}");
+    assert!(
+        urls[0].contains("ssid=+Cafe+Guest+&resultsPerPage="),
+        "{urls:?}"
+    );
+    let seed = report
+        .entities
+        .iter()
+        .find(|entity| entity.kind == EntityKind::Ssid)
+        .expect("seed survives an empty WiGLE response");
+    assert_eq!(seed.value, " Cafe Guest ");
+}
+
 #[test]
 fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configured() {
     let (text, report) = printed(run(

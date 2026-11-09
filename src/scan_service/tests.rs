@@ -126,6 +126,38 @@ fn a_failed_checkpoint_retries_identical_progress_after_storage_recovers() {
 }
 
 #[test]
+fn explicit_ssid_is_exact_through_saved_scan_planning_and_persistence() {
+    let original = "ssid: Cafe Guest ";
+    let scan_plan = plan(original, Some("network")).expect("network scan plan");
+    assert_eq!(scan_plan.kind, ScanKind::Network);
+    assert_eq!(scan_plan.target, original);
+    assert_eq!(
+        plan(" Cafe Guest ", Some("network"))
+            .expect("legacy bare network name")
+            .target,
+        "Cafe Guest"
+    );
+
+    let (service, dir) = with_lookup(
+        "exact-ssid-persistence",
+        Arc::new(|_, _, _| Ok(LookupOutput::default())),
+    );
+    let (record, planned) = service
+        .create(&ScanRequest {
+            target: original.into(),
+            kind: Some("network".into()),
+            ..ScanRequest::default()
+        })
+        .expect("create exact-name network scan");
+    assert_eq!(planned.target, original);
+    assert_eq!(record.target, original);
+    assert_eq!(record.name, original);
+    assert_eq!(service.store().get(&record.id).unwrap().target, original);
+    assert_eq!(service.rerun_request(&record.id).unwrap().target, original);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn full_scan_store_is_a_conflict_not_a_bad_request() {
     let error = ServiceError::from(StoreError::Capacity(crate::scan_store::MAX_SCANS));
     assert_eq!(error.status(), 409);
