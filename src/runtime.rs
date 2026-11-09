@@ -185,17 +185,17 @@ pub fn investigate_offline_with_history(
                         && seen.kind == seed.kind
                         && seen.value == seed.value
                         && seen.scan_id == id
-                        && seen.uid == crate::entity::derive_uid(&seen.kind, &seen.value)
+                        && crate::osint_synergy::admissible_entity(seen)
                 }) {
                     incomplete = true;
                     continue;
                 }
                 visited.insert(id.to_owned());
                 for seen in saved {
-                    // Only exclude malformed rows from the derived analysis;
+                    // Only exclude malformed and unverified rows from derived analysis;
                     // original artifacts and the complete raw index are intact.
                     if seen.scan_id != id
-                        || seen.uid != crate::entity::derive_uid(&seen.kind, &seen.value)
+                        || !crate::osint_synergy::admissible_entity(seen)
                     {
                         incomplete = true;
                         continue;
