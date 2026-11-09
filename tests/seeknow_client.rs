@@ -54,6 +54,52 @@ fn fast_auto_search_omits_type_clamps_limit_and_sends_key_only_at_transport() {
 }
 
 #[test]
+fn unsupported_search_rows_are_reported_as_incomplete() {
+    let cases = [
+        (
+            r#"{"success":true,"data":[{"email":"alice@example.com"},null,3]}"#,
+            1,
+            SourceOutcomeKind::Success,
+            true,
+        ),
+        (
+            r#"{"success":true,"data":[null]}"#,
+            0,
+            SourceOutcomeKind::SchemaDrift,
+            true,
+        ),
+        (
+            r#"{"success":true,"data":[{"email":"alice@example.com"}]}"#,
+            1,
+            SourceOutcomeKind::Success,
+            false,
+        ),
+        (
+            r#"{"success":true,"data":[]}"#,
+            0,
+            SourceOutcomeKind::ValidZero,
+            false,
+        ),
+    ];
+
+    for (body, expected_rows, expected_kind, incomplete) in cases {
+        let transport = ScriptedTransport::new(vec![response(body)]);
+        let result = search_fast(&transport, &credential(), &auto_search(), 12).unwrap();
+
+        assert_eq!(result.rows.len(), expected_rows, "{body}");
+        assert_eq!(result.outcome.kind, expected_kind, "{body}");
+        assert_eq!(result.meta.normalized_rows_truncated, incomplete, "{body}");
+        if expected_rows > 0 {
+            assert_eq!(
+                result.rows[0].fields.get("email").map(String::as_str),
+                Some("alice@example.com"),
+                "{body}"
+            );
+        }
+    }
+}
+
+#[test]
 fn deep_typed_search_uses_documented_path_and_type() {
     let transport = ScriptedTransport::new(vec![response(r#"{"success":true,"results":[]}"#)]);
     let search = SeekNowSearch {

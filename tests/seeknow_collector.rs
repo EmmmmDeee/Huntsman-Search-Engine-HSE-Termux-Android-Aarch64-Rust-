@@ -121,6 +121,44 @@ fn fast_positive_stops_and_fast_failure_never_spends_deep_credit() {
 }
 
 #[test]
+fn incomplete_search_rows_propagate_to_collector_receipts() {
+    for (body, expected_incomplete) in [
+        (
+            r#"{"success":true,"data":[{"email":"alice@example.com","dbname":"Dataset A"},null,7]}"#,
+            true,
+        ),
+        (
+            r#"{"success":true,"data":[{"email":"alice@example.com","dbname":"Dataset A"}]}"#,
+            false,
+        ),
+    ] {
+        let transport = ScriptedTransport::new(vec![response(200, body)]);
+        let batch = collect_with_credential(
+            &selector(EntityKind::Email, "alice@example.com"),
+            &transport,
+            &credential(),
+            &CollectionLimits::default(),
+            SeekNowCollectionMode::FastOnly,
+            13,
+        )
+        .unwrap();
+
+        assert_eq!(transport.request_count(), 1, "{body}");
+        assert_eq!(batch.outcome, CollectionOutcome::Success, "{body}");
+        assert_eq!(batch.receipts.len(), 1, "{body}");
+        assert_eq!(batch.receipts[0].parsed_rows, 1, "{body}");
+        assert_eq!(
+            batch.receipts[0].outcome.kind,
+            SourceOutcomeKind::Success,
+            "{body}"
+        );
+        assert_eq!(batch.receipts[0].truncated, expected_incomplete, "{body}");
+        assert!(batch.receipts[0].response_sha256.is_some(), "{body}");
+        assert!(!batch.entities.is_empty(), "{body}");
+    }
+}
+
+#[test]
 fn validated_fast_zero_escalates_once_and_deep_failure_is_partial() {
     let success = ScriptedTransport::new(vec![
         response(200, r#"{"success":true,"data":[]}"#),

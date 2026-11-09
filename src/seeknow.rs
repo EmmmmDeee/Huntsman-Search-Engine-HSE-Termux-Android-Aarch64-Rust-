@@ -578,12 +578,18 @@ fn parse_search_response(
         return result_with_outcome(meta, outcome);
     }
 
-    meta.normalized_rows_truncated = items.len() > row_limit;
+    let inspected_rows = items.len().min(row_limit);
     let rows = items
         .iter()
         .take(row_limit)
         .filter_map(normalize_row)
         .collect::<Vec<_>>();
+    // The transport returned more rows than we kept, either because of the
+    // configured limit or because unsupported JSON values were skipped.
+    // Preserve the usable rows while recording that this was not a complete
+    // normalized response; otherwise evidence receipts silently lose data.
+    meta.normalized_rows_truncated =
+        items.len() > row_limit || rows.len() < inspected_rows;
     let mut outcome = SourceExecutionOutcome::success(module, now_unix, rows.len());
     outcome.http_status = Some(response.status);
     if rows.is_empty() {
