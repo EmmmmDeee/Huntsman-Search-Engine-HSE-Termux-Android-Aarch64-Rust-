@@ -110,7 +110,10 @@ fn completion_workflow_guard_rejects_unsafe_mutations() {
             "cargo run --locked -p xtask -- completion check",
             "echo completion validation skipped",
         ),
-        ("sha256sum -c HUNTSMAN_IMPLEMENTATION_MAP.sha256", "sha256sum HUNTSMAN_IMPLEMENTATION_MAP.sha256"),
+        (
+            "sha256sum -c HUNTSMAN_IMPLEMENTATION_MAP.sha256",
+            "sha256sum HUNTSMAN_IMPLEMENTATION_MAP.sha256",
+        ),
         ("  pull_request:", "  pull_request:\n    paths:\n      - 'docs/**'"),
         (
             "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
