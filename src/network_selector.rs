@@ -36,13 +36,15 @@ pub enum NetworkSelector {
 impl NetworkSelector {
     /// `raw` as a selector: `ssid:NAME` is always an SSID; `cell:` is a cell site or nothing, so
     /// a mistyped one is refused rather than searched for as a network name; otherwise a BSSID
-    /// (`:` or `-` separated), then a coordinate pair, then an SSID. `None` for an empty or
+    /// (`:` or `-` separated), then a coordinate pair, then an SSID. An explicit `ssid:`
+    /// selector preserves the exact name after the prefix, including leading/trailing spaces;
+    /// unprefixed free text retains the existing trimming behaviour. `None` for an empty or
     /// over-long SSID, or one with control characters. **Pure.**
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         let trimmed = raw.trim();
-        if let Some(name) = trimmed.strip_prefix(SSID_PREFIX) {
-            return ssid(name);
+        if let Some(name) = raw.trim_start().strip_prefix(SSID_PREFIX) {
+            return ssid_exact(name);
         }
         if trimmed
             .get(..CELL_PREFIX.len())
@@ -124,7 +126,11 @@ fn cell(raw: &str) -> Option<NetworkSelector> {
 }
 
 fn ssid(name: &str) -> Option<NetworkSelector> {
-    let name = name.trim();
+    ssid_exact(name.trim())
+}
+
+// An explicitly prefixed SSID names the literal network, not a trimmed or altered one.
+fn ssid_exact(name: &str) -> Option<NetworkSelector> {
     crate::textnorm::is_bounded_text(name, MAX_SSID_BYTES)
         .then(|| NetworkSelector::Ssid(name.to_owned()))
 }
