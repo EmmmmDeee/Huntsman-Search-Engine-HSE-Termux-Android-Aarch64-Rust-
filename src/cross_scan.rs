@@ -17,6 +17,9 @@ pub trait CrossScanStore {
     /// Returns storage-layer lookup failures.
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>, Error>;
 
+    /// Return only scan ids with at least one bridge-eligible observation of this UID.
+    /// Raw history may retain additional candidate/weak observations separately.
+    ///
     /// # Errors
     /// Returns storage-layer lookup failures.
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>, Error>;
@@ -431,10 +434,12 @@ mod tests {
 
     impl FakeStore {
         fn insert(&mut self, entity: Entity) {
-            self.by_uid
-                .entry(entity.uid.clone())
-                .or_default()
-                .push(entity.scan_id.clone());
+            if is_bridgeable(&entity) {
+                self.by_uid
+                    .entry(entity.uid.clone())
+                    .or_default()
+                    .push(entity.scan_id.clone());
+            }
             self.by_scan
                 .entry(entity.scan_id.clone())
                 .or_default()
