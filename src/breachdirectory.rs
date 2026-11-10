@@ -91,7 +91,7 @@ pub fn search<T: Transport + ?Sized>(
     selector: &str,
     now_unix: u64,
 ) -> (Option<Search>, SourceExecutionOutcome) {
-    let limiter = REQUEST_BUDGET.get_or_init(|| RateLimiter::per_minute(60));
+    let limiter = REQUEST_BUDGET.get_or_init(|| RateLimiter::new(1, Duration::from_secs(1)));
     search_with_limiter(transport, keys, selector, now_unix, limiter)
 }
 
