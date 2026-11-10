@@ -31,6 +31,13 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        // The OS may stop an Activity; offline status maintenance must not
+        // depend exclusively on the foreground process.
+        try {
+            HealthJobService.schedule(this);
+        } catch (RuntimeException ignored) {
+            // Foreground Rust watcher still performs refreshes while active.
+        }
         TextView status = new TextView(this);
         status.setText("Starting HUNTSMAN native engine…");
         status.setPadding(30, 50, 30, 30);
