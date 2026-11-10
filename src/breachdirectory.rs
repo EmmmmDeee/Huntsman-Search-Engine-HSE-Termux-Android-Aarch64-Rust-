@@ -188,11 +188,19 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Finding>, LegError> {
         return Ok(None);
     }
     let count = distinct.len();
-    let mut finding = Finding::new(format!(
-        "BreachDirectory: {} reported breach source{}",
-        count,
-        if count == 1 { "" } else { "s" }
-    ))
+    let summary = if count > 0 {
+        format!(
+            "BreachDirectory: {} reported breach source{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "BreachDirectory: {} matching records; no breach source names supplied",
+            reported_found.unwrap_or(0)
+        )
+    };
+    let mut finding = Finding::new(summary)
     .attr("source_count", count.to_string())
     .list_attr("breach_sources", &distinct)
     .tag(tags::BREACH);
@@ -221,7 +229,10 @@ mod tests {
         let fixture = br#"{"success":true,"found":3,"sources":["Breach A","breach a","Breach B"],"password":"test-secret","sha1":"test-hash","hash":"test-hash"}"#;
         let finding = decode(fixture).expect("fixture decodes").expect("breaches");
         assert_eq!(finding.tags, [tags::BREACH]);
-        assert!(finding.attrs.iter().any(|(key, val)| *key == "breach_sources" && val == "Breach A,Breach B"));
+        assert!(finding
+            .attrs
+            .iter()
+            .any(|(key, val)| *key == "breach_sources" && val == "Breach A,Breach B"));
         let rendered = format!("{finding:?}");
         assert!(!rendered.contains("test-secret"));
         assert!(!rendered.contains("test-hash"));
@@ -229,7 +240,8 @@ mod tests {
 
     #[test]
     fn nested_source_names_and_explicit_zeros() {
-        let fixture = br#"{"success":true,"found":2,"result":[{"sources":"A","password":"not-used"},{"sources":["B","A"]}]}"#;
+        let fixture =
+            br#"{"success":true,"found":2,"result":[{"sources":"A","password":"not-used"},{"sources":["B","A"]}]}"#;
         let finding = decode(fixture).expect("fixture decodes").expect("breaches");
         assert!(finding.attrs.iter().any(|(key, val)| *key == "breach_sources" && val == "A,B"));
         assert!(matches!(decode(br#"{"success":true,"sources":[]}"#), Ok(None)));
@@ -271,7 +283,15 @@ mod tests {
         let sent = transport.seen.borrow();
         assert_eq!(sent.len(), 1);
         assert!(sent[0].url.contains("func=sources&term=testuser"));
-        assert!(sent[0].headers.iter().any(|(name, val)| name.eq_ignore_ascii_case("X-RapidAPI-Host") && val == RAPIDAPI_HOST));
-        assert!(sent[0].headers.iter().any(|(name, val)| name.eq_ignore_ascii_case("X-RapidAPI-Key") && val == "integration-test-key-0123456789"));
+        assert!(sent[0]
+            .headers
+            .iter()
+            .any(|(name, val)| name.eq_ignore_ascii_case("X-RapidAPI-Host")
+                && val == RAPIDAPI_HOST));
+        assert!(sent[0]
+            .headers
+            .iter()
+            .any(|(name, val)| name.eq_ignore_ascii_case("X-RapidAPI-Key")
+                && val == "integration-test-key-0123456789"));
     }
 }
