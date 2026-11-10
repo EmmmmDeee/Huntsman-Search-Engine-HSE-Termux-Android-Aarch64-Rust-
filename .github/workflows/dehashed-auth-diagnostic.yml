@@ -1,0 +1,49 @@
+name: DeHashed authenticated credential diagnostic
+
+# Explicitly scoped branch push permits the initial diagnostic to run after installation.
+# After merge, the durable entry point is manual workflow_dispatch.
+# Never expose GitHub secrets to pull_request workflows.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/dehashed-auth-diagnostic-20261111
+    paths:
+      - .github/workflows/dehashed-auth-diagnostic.yml
+      - .github/scripts/dehashed-auth-diagnostic.sh
+      - tests/dehashed-auth-diagnostic.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dehashed-auth-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  credential-probe:
+    name: Probe DeHashed authentication (no search credits)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test diagnostic parsing and redaction offline
+        run: |
+          set -euo pipefail
+          bash -n .github/scripts/dehashed-auth-diagnostic.sh
+          bash -n tests/dehashed-auth-diagnostic.sh
+          bash tests/dehashed-auth-diagnostic.sh
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.99"
+      - name: Compile genuine HUNTSMAN binary (no secret in build environment)
+        run: cargo build --locked --bin huntsman-recon
+      - name: Probe configured DeHashed key without a paid search
+        shell: bash
+        env:
+          HUNTSMAN_DEHASHED_KEY: ${{ secrets.HUNTSMAN_DEHASHED_KEY || secrets.DEHASHED_API_KEY }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/dehashed-auth-diagnostic.sh ./target/debug/huntsman-recon
