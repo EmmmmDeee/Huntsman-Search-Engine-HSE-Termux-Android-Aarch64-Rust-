@@ -59,7 +59,11 @@ The exact three original APKs were recovered and hashed:
 
 Existing Rust: 83-entry unverified OSINT link catalogue; saved cases, notes, leads, favourites, history; schema-bounded offline NDEF/APDU/TLV interpretation; synthetic Bluetooth radio fixtures, Wi-Fi and cell survey processing; source-first evidence and Web UI API. These features are already in the canonical library, not new reimplementations.
 
-**Remaining RHINSER gap:** Android live NFC/BLE scanning/writing/permission callbacks, UI workflows, exact historical app behaviours, and method-by-method differential validation are **not 100% converted or device-tested**. Card emulation/remote-execution functionality present in original packages is not copied into the passive evidence engine. No hidden or stealth remote control is implemented. Android background policy may kill the monitor; this first scaffold is foreground-lifecycle scoped.
+**Remaining RHINSER gap:** Android live NFC/BLE scanning/writing/permission callbacks, UI workflows, exact historical app behaviours, and method-by-method differential validation are **not 100% converted or device-tested**. Card emulation/remote-execution functionality present in original packages is not copied into the passive evidence engine. No hidden or stealth remote control is implemented. Android background policy may kill the foreground watcher. The Android
+`HealthJobService` schedules **best-effort offline** updates every 30 minutes
+through `JobScheduler` with persistence across reboot where the OS permits.
+This scheduler is not exact, can be deferred under Doze or battery policies,
+and cannot guarantee continuous execution or rotate/recover credentials.
 
 ## Roadmap, in dependency order
 
