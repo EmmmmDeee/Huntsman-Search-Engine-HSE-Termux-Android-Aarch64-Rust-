@@ -16,5 +16,13 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    packaging { jniLibs { useLegacyPackaging = true } }
+    // These are executable Rust PIE binaries with .so package names.
+    // Extract them and never rewrite the signed, inspected ELF payloads.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols.add("**/libhuntsman.so")
+            keepDebugSymbols.add("**/libhuntsman_key_health.so")
+        }
+    }
 }
