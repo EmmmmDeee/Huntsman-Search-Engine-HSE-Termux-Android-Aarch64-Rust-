@@ -225,10 +225,12 @@ into source code, a workflow log, a pull request or chat.
 The manual workflow `.github/workflows/dehashed-auth-diagnostic.yml`
 offers `run_real_domain_search` (default **false**). With a current
 `HUNTSMAN_DEHASHED_KEY` (or fallback `DEHASHED_API_KEY`) and a working
-GitHub Actions runner, enabling it performs one actual DeHashed v2 search
+GitHub Actions runner, enabling it directly performs one actual DeHashed v2 search
 for `domain:telstra.com.au`, `size=1`. It consumes up to one search
 credit. The CLI output is filtered in memory; only a fixed success/failure
-verdict and aggregate record count can enter the workflow log. The
+verdict and aggregate record count can enter the workflow log. The paid
+branch is independent of the free probe and preserves the Rust CLI's failure
+classification even when stdout is empty. The
 workflow itself must first be reviewed and merged to `main` before
 manual dispatch. The separate offline contract cannot establish actual
 provider availability, authentication or entitlement.
