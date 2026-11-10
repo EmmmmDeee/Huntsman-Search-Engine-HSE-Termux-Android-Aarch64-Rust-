@@ -135,7 +135,7 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
             return fail(EX_USAGE, "usage: huntsman-recon query --exa QUERY...");
         }
         let query = terms.join(" ");
-        let home = std::env::var_os("HOME");
+        let home = huntsman_recon::environment::home();
         let keys = match Keys::resolve(None, home.as_deref()) {
             Ok(resolved) => resolved.keys,
             Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
