@@ -17,6 +17,9 @@ pub trait CrossScanStore {
     /// Returns storage-layer lookup failures.
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>, Error>;
 
+    /// Return only scan ids with at least one bridge-eligible observation of this UID.
+    /// Raw history may retain additional candidate/weak observations separately.
+    ///
     /// # Errors
     /// Returns storage-layer lookup failures.
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>, Error>;
@@ -183,21 +186,35 @@ pub fn collect_direct_bridges<S: CrossScanStore>(
     current_scan_id: &str,
     entities: &[Entity],
 ) -> Result<Vec<BridgedEntity>, Error> {
-    let mut matches = Vec::new();
+    // Pages may repeat an entity UID in one scan. It is one cross-scan link, not
+    // independent corroboration. Merge only the derived bridge view; do not
+    // alter the store's original entity records or source evidence.
+    let mut by_uid = BTreeMap::<String, BridgedEntity>::new();
     for entity in entities {
-        if !is_bridgeable(entity) {
+        // Check before merging: a quarantined candidate must never contaminate
+        // an independently bridgeable observation of the same identity.
+        if entity.scan_id != current_scan_id || !is_bridgeable(entity) {
+            continue;
+        }
+        if let Some(existing) = by_uid.get_mut(&entity.uid) {
+            // Absorb the distinct source evidence, but not an extra unsupported
+            // corroboration simply because the same page yielded the UID twice.
+            let corroboration = existing.entity.corroboration.max(entity.corroboration);
+            existing.entity.absorb(entity.clone());
+            existing.entity.corroboration = corroboration;
             continue;
         }
         let historical = overlapping_scans(store, current_scan_id, entity)?;
         if historical.is_empty() {
             continue;
         }
-        matches.push(BridgedEntity {
+        by_uid.insert(entity.uid.clone(), BridgedEntity {
             entity: entity.clone(),
             tier: bridge_tier(entity),
             overlapping_scans: historical,
         });
     }
+    let mut matches: Vec<_> = by_uid.into_values().collect();
     matches.sort_by(|left, right| {
         left.tier
             .cmp(&right.tier)
@@ -237,14 +254,32 @@ pub fn transitive_closure<S: CrossScanStore>(
     // A discovered scan reserves both one visited slot and one output slot.
     // The origin is counted in max_visited but never becomes a link.
     for seed in seeds {
+        // Direct callers must not turn a foreign scan's retained row into an
+        // observation by the origin scan.
+        if seed.entity.scan_id != origin_scan_id || !is_bridgeable(&seed.entity) {
+            continue;
+        }
+        // BridgedEntity is public and deserializable: supplied neighbours and
+        // tier are claims, not evidence. Revalidate against the store before
+        // reserving a frontier slot, even for direct API callers.
+        let verified_scans = overlapping_scans(store, origin_scan_id, &seed.entity)?;
+        let verified_tier = bridge_tier(&seed.entity);
         for scan_id in &seed.overlapping_scans {
+            if verified_scans.binary_search(scan_id).is_err() {
+                continue;
+            }
             if visited_scans.len() >= options.max_visited
                 || visited_scans.len() > options.max_frontier
             {
                 break;
             }
             if visited_scans.insert(scan_id.clone()) {
-                queue.push_back((scan_id.clone(), seed.entity.uid.clone(), 1usize, seed.tier));
+                queue.push_back((
+                    scan_id.clone(),
+                    seed.entity.uid.clone(),
+                    1usize,
+                    verified_tier,
+                ));
             }
         }
     }
@@ -265,7 +300,9 @@ pub fn transitive_closure<S: CrossScanStore>(
             continue;
         }
         for entity in store.entities_for_scan(&scan_id)? {
-            if !is_bridgeable(&entity) {
+            // A copied row stored in this scan is not a new observation that
+            // can justify a transitive hop to another scan.
+            if entity.scan_id != scan_id || !is_bridgeable(&entity) {
                 continue;
             }
             for neighbor in overlapping_scans(store, &scan_id, &entity)? {
@@ -326,6 +363,12 @@ pub fn bridge_tier(entity: &Entity) -> BridgeTier {
 #[must_use]
 pub fn is_bridgeable(entity: &Entity) -> bool {
     if entity.value.trim().is_empty() || entity.scan_id.trim().is_empty() {
+        return false;
+    }
+    // Persisted entity IDs are input data, not authority. A stale or forged UID
+    // must not join unrelated kinds/values across scans. Retain the original
+    // record in raw history; only exclude it from the derived bridge view.
+    if entity.uid != crate::entity::derive_uid(&entity.kind, &entity.value) {
         return false;
     }
     if entity
@@ -417,10 +460,12 @@ mod tests {
 
     impl FakeStore {
         fn insert(&mut self, entity: Entity) {
-            self.by_uid
-                .entry(entity.uid.clone())
-                .or_default()
-                .push(entity.scan_id.clone());
+            if is_bridgeable(&entity) {
+                self.by_uid
+                    .entry(entity.uid.clone())
+                    .or_default()
+                    .push(entity.scan_id.clone());
+            }
             self.by_scan
                 .entry(entity.scan_id.clone())
                 .or_default()
@@ -482,6 +527,317 @@ mod tests {
             }
             other => panic!("expected historical bridge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn repeated_uid_is_one_bridge_with_all_independent_evidence_retained() {
+        let mut store = FakeStore::default();
+        let mut first = entity(EntityKind::Email, "ada@example.com", 0.6, "scan-a");
+        first.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("hibp", "scan-a"),
+            "first source record",
+        ));
+        let mut second = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-a");
+        second.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("dehashed", "scan-a"),
+            "second source record",
+        ));
+        store.insert(first);
+        store.insert(second);
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-b"));
+
+        let original = store.entities_for_scan("scan-a").unwrap();
+        assert_eq!(original.len(), 2, "raw history must not be deduplicated");
+        let bridges = collect_direct_bridges(&store, "scan-a", &original).unwrap();
+        assert_eq!(bridges.len(), 1, "one UID is one cross-scan bridge");
+        assert_eq!(bridges[0].overlapping_scans, vec!["scan-b".to_string()]);
+        assert_eq!(bridges[0].entity.confidence, 0.9);
+        assert_eq!(bridges[0].entity.evidence.len(), 2);
+        let sources: BTreeSet<_> = bridges[0]
+            .entity
+            .evidence
+            .iter()
+            .map(|evidence| evidence.provenance.source.as_str())
+            .collect();
+        assert_eq!(sources, BTreeSet::from(["hibp", "dehashed"]));
+        assert_eq!(store.entities_for_scan("scan-a").unwrap(), original);
+
+        let category =
+            category_from_entities(&store, "scan-a", &original, CrossScanOptions::default())
+                .unwrap();
+        let CrossScanCategory::Historical { matches } = category else {
+            panic!("expected one historical bridge, got {category:?}");
+        };
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].entity.evidence.len(), 2);
+    }
+
+    #[test]
+    fn repeated_evidence_free_rows_do_not_inflate_corroboration() {
+        let mut store = FakeStore::default();
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-a"));
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-a"));
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-b"));
+
+        let original = store.entities_for_scan("scan-a").unwrap();
+        assert_eq!(original.len(), 2);
+        let bridges = collect_direct_bridges(&store, "scan-a", &original).unwrap();
+        assert_eq!(bridges.len(), 1);
+        assert_eq!(bridges[0].entity.corroboration, 1);
+        assert_eq!(bridges[0].entity.source_count(), 1);
+        assert_eq!(store.entities_for_scan("scan-a").unwrap(), original);
+    }
+
+    #[test]
+    fn a_quarantined_duplicate_does_not_contaminate_the_valid_bridge() {
+        let mut store = FakeStore::default();
+        let mut candidate = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-a");
+        candidate.tag(tags::CANDIDATE);
+        candidate.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("unconfirmed", "scan-a"),
+            "not an admitted bridge",
+        ));
+        let mut observed = entity(EntityKind::Email, "ada@example.com", 0.8, "scan-a");
+        observed.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("observed", "scan-a"),
+            "admitted source",
+        ));
+        store.insert(candidate);
+        store.insert(observed);
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.8, "scan-b"));
+
+        let original = store.entities_for_scan("scan-a").unwrap();
+        let bridges = collect_direct_bridges(&store, "scan-a", &original).unwrap();
+        assert_eq!(bridges.len(), 1);
+        assert!(is_bridgeable(&bridges[0].entity));
+        assert_eq!(bridges[0].entity.evidence.len(), 1);
+        assert_eq!(bridges[0].entity.evidence[0].provenance.source, "observed");
+        assert_eq!(store.entities_for_scan("scan-a").unwrap(), original);
+    }
+
+    #[test]
+    fn forged_uid_never_creates_a_cross_scan_bridge() {
+        let mut store = FakeStore::default();
+        let current = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-a");
+
+        // The UID belongs to Ada's email, but the retained row claims a
+        // different email. A deserialized artifact can carry this mismatch.
+        let mut mismatched_value = entity(EntityKind::Email, "bob@example.com", 0.9, "scan-b");
+        mismatched_value.uid.clone_from(&current.uid);
+        assert!(
+            !is_bridgeable(&mismatched_value),
+            "a forged UID must not pass the evidence bridge gate"
+        );
+
+        // A different kind of entity cannot impersonate the same UID either.
+        let mut mismatched_kind = entity(EntityKind::Username, "ada", 0.9, "scan-d");
+        mismatched_kind.uid.clone_from(&current.uid);
+        assert!(!is_bridgeable(&mismatched_kind));
+
+        store.insert(current.clone());
+        store.insert(mismatched_value);
+        store.insert(mismatched_kind);
+        let original = store.entities_for_scan("scan-a").unwrap();
+        assert_eq!(
+            category_from_entities(&store, "scan-a", &original, CrossScanOptions::default())
+                .unwrap(),
+            CrossScanCategory::None,
+        );
+
+        store.insert(entity(EntityKind::Email, "ada@example.com", 0.9, "scan-c"));
+        match category_from_entities(&store, "scan-a", &original, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(matches[0].overlapping_scans, vec!["scan-c".to_owned()]);
+            }
+            other => panic!("expected only the legitimate observation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copied_row_cannot_impersonate_the_current_scans_observation() {
+        let mut store = FakeStore::default();
+        let original = entity(EntityKind::Email, "ada@example.com", 0.9, "scan-original");
+        store.insert(original.clone());
+
+        // A saved scan can contain a retained entity from a different scan.
+        // Its UID is valid, but it is not an observation by scan-copied.
+        let copied = original.clone();
+        assert_eq!(
+            category_from_entities(
+                &store,
+                "scan-copied",
+                &[copied.clone()],
+                CrossScanOptions::default(),
+            )
+            .unwrap(),
+            CrossScanCategory::None,
+        );
+        assert_eq!(copied.scan_id, "scan-original");
+
+        store.insert(entity(
+            EntityKind::Email,
+            "ada@example.com",
+            0.9,
+            "scan-copied",
+        ));
+        let actual = store.entities_for_scan("scan-copied").unwrap();
+        match category_from_entities(&store, "scan-copied", &actual, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(
+                    matches[0].overlapping_scans,
+                    vec!["scan-original".to_owned()],
+                );
+            }
+            other => panic!("expected only the real current observation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copied_intermediate_row_cannot_invent_a_transitive_path() {
+        let mut store = FakeStore::default();
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.1", 0.9, "scan-a"));
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.1", 0.9, "scan-b"));
+        let copied = entity(EntityKind::IpAddress, "198.51.100.2", 0.9, "scan-c");
+        store.insert(copied.clone());
+        store
+            .by_scan
+            .entry("scan-b".to_owned())
+            .or_default()
+            .push(copied.clone());
+
+        let first = store.entities_for_scan("scan-a").unwrap();
+        let category =
+            category_from_entities(&store, "scan-a", &first, CrossScanOptions::default()).unwrap();
+        let CrossScanCategory::Transitive { links } = category else {
+            panic!("expected only the direct scan-b path, got {category:?}");
+        };
+        assert_eq!(links.len(), 1, "{links:?}");
+        assert_eq!(links[0].target_scan_id, "scan-b");
+        assert_eq!(links[0].depth, 1);
+        assert_eq!(store.entities_for_scan("scan-b").unwrap().len(), 2);
+
+        // The identical value really observed by scan-b admits the second hop.
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.2", 0.9, "scan-b"));
+        let category =
+            category_from_entities(&store, "scan-a", &first, CrossScanOptions::default()).unwrap();
+        let CrossScanCategory::Transitive { links } = category else {
+            panic!("expected a genuine second hop, got {category:?}");
+        };
+        assert!(links.iter().any(|link| {
+            link.target_scan_id == "scan-c" && link.depth == 2
+        }));
+        assert!(store
+            .entities_for_scan("scan-b")
+            .unwrap()
+            .iter()
+            .any(|item| item == &copied));
+    }
+
+    #[test]
+    fn direct_transitive_api_refuses_a_seed_owned_by_another_scan() {
+        let mut store = FakeStore::default();
+        let origin = entity(EntityKind::IpAddress, "198.51.100.8", 0.9, "scan-origin");
+        let other = entity(EntityKind::IpAddress, "198.51.100.8", 0.9, "scan-other");
+        store.insert(origin.clone());
+        store.insert(other.clone());
+
+        let copied_seed = BridgedEntity {
+            entity: other,
+            tier: BridgeTier::Related,
+            overlapping_scans: vec!["scan-other".to_owned()],
+        };
+        assert!(
+            transitive_closure(
+                &store,
+                "scan-origin",
+                &[copied_seed],
+                CrossScanOptions::default(),
+            )
+            .unwrap()
+            .is_empty(),
+            "the public traversal API must check seed ownership",
+        );
+
+        let genuine_seed = BridgedEntity {
+            entity: origin,
+            tier: BridgeTier::Related,
+            overlapping_scans: vec!["scan-other".to_owned()],
+        };
+        let links = transitive_closure(
+            &store,
+            "scan-origin",
+            &[genuine_seed],
+            CrossScanOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target_scan_id, "scan-other");
+        assert_eq!(links[0].depth, 1);
+        assert_eq!(store.entities_for_scan("scan-other").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn public_transitive_api_rejects_invented_neighbors_and_tier() {
+        let mut store = FakeStore::default();
+        let origin = entity(EntityKind::IpAddress, "198.51.100.8", 0.9, "scan-origin");
+        store.insert(origin.clone());
+        store.insert(entity(
+            EntityKind::IpAddress,
+            "198.51.100.8",
+            0.9,
+            "scan-real",
+        ));
+        store.insert(entity(
+            EntityKind::IpAddress,
+            "198.51.100.9",
+            0.9,
+            "scan-unrelated",
+        ));
+        let before = store.entities_for_scan("scan-origin").unwrap();
+        let claimed = BridgedEntity {
+            entity: origin.clone(),
+            // A public API caller can forge both the claimed tier and neighbors.
+            tier: BridgeTier::Direct,
+            overlapping_scans: vec![
+                "scan-unrelated".to_owned(),
+                "scan-real".to_owned(),
+                "scan-absent".to_owned(),
+            ],
+        };
+        let links = transitive_closure(
+            &store,
+            "scan-origin",
+            &[claimed],
+            CrossScanOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(links.len(), 1, "unverified neighbors must be excluded");
+        assert_eq!(links[0].target_scan_id, "scan-real");
+        assert_eq!(links[0].depth, 1);
+        assert_eq!(links[0].tier, BridgeTier::Related);
+
+        let unsupported_only = BridgedEntity {
+            entity: origin,
+            tier: BridgeTier::Related,
+            overlapping_scans: vec!["scan-absent".to_owned()],
+        };
+        assert!(
+            transitive_closure(
+                &store,
+                "scan-origin",
+                &[unsupported_only],
+                CrossScanOptions::default(),
+            )
+            .unwrap()
+            .is_empty(),
+        );
+        assert_eq!(store.entities_for_scan("scan-origin").unwrap(), before);
     }
 
     #[test]

@@ -176,8 +176,30 @@ pub fn investigate_offline_with_history(
                     incomplete = true;
                     break 'seeds;
                 }
+                // The raw UID index deliberately preserves malformed records. Do
+                // not let a row with a forged UID pull an unrelated scan into the
+                // derived synergy view, or consume a trusted scan budget.
+                let saved = history.entities_for_scan_ref(id);
+                if !saved.iter().any(|seen| {
+                    seen.uid == seed.uid
+                        && seen.kind == seed.kind
+                        && seen.value == seed.value
+                        && seen.scan_id == id
+                        && crate::osint_synergy::admissible_entity(seen)
+                }) {
+                    incomplete = true;
+                    continue;
+                }
                 visited.insert(id.to_owned());
-                for seen in history.entities_for_scan_ref(id) {
+                for seen in saved {
+                    // Only exclude malformed and unverified rows from derived analysis;
+                    // original artifacts and the complete raw index are intact.
+                    if seen.scan_id != id
+                        || !crate::osint_synergy::admissible_entity(seen)
+                    {
+                        incomplete = true;
+                        continue;
+                    }
                     if combined.len() >= MAX_JOIN_ENTITIES {
                         incomplete = true;
                         break 'seeds;

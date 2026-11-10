@@ -58,6 +58,17 @@ fn eligible(evidence: &Evidence) -> bool {
         && !is_non_corroborating_source(&evidence.provenance.corroboration_key())
 }
 
+/// Filter unverified and identity-inconsistent records only from derived joins.
+/// Original entities, including candidate observations, remain in raw evidence.
+#[must_use]
+pub(crate) fn admissible_entity(entity: &Entity) -> bool {
+    !entity
+        .tags
+        .iter()
+        .any(|tag| tag == crate::tags::CANDIDATE || tag == "quarantined" || tag == "promoted")
+        && entity.uid == crate::entity::derive_uid(&entity.kind, &entity.value)
+}
+
 fn target_observation<'a>(target: &'a Entity, source_family: &str) -> Option<&'a Evidence> {
     target
         .evidence
@@ -110,6 +121,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
     let mut index: BTreeMap<(EntityKind, String), Vec<&Entity>> = BTreeMap::new();
     for entity in inspected {
         if let Some(value) = normalize(&entity.kind, &entity.value) {
+            if !admissible_entity(entity) {
+                truncated = true;
+                continue;
+            }
             index
                 .entry((entity.kind.clone(), value))
                 .or_default()
@@ -118,6 +133,10 @@ pub fn discover(entities: &[Entity]) -> SynergyReport {
     }
     let mut links: BTreeMap<(String, String, &'static str), SynergyLink> = BTreeMap::new();
     'entities: for entity in inspected {
+        if !attributes(&entity.kind).is_empty() && !admissible_entity(entity) {
+            truncated = true;
+            continue;
+        }
         if entity.evidence.len() > MAX_EVIDENCE_PER_ENTITY {
             truncated = true;
         }
@@ -308,6 +327,76 @@ mod tests {
         assert_eq!(report.links[0].status, JoinStatus::SeparatelyObservedTarget);
         assert_eq!(report.links[0].independence_status, "not_proven");
         assert!(report.links[0].interpretation.contains("not proven"));
+    }
+
+    #[test]
+    fn candidate_and_quarantined_entities_cannot_supply_synergy_links() {
+        let mut candidate = observed(EntityKind::Domain, "example.org", "dns", "scan-a");
+        candidate.tag(crate::tags::CANDIDATE);
+        candidate.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-a"), "unverified A")
+                .with_attr("ip", "192.0.2.40"),
+        );
+        let address = observed(EntityKind::IpAddress, "192.0.2.40", "rdap", "scan-b");
+        let candidate_result = discover(&[candidate, address.clone()]);
+        assert!(candidate_result.links.is_empty());
+        assert!(candidate_result.truncated);
+
+        let mut valid = observed(EntityKind::Domain, "example.org", "dns", "scan-a");
+        valid.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-a"), "confirmed A")
+                .with_attr("ip", "192.0.2.40"),
+        );
+        let mut quarantined_address = address.clone();
+        quarantined_address.tag("quarantined");
+        let quarantined = discover(&[valid.clone(), quarantined_address]);
+        assert!(quarantined.links.is_empty());
+        assert!(quarantined.truncated);
+
+        let mut candidate_address = address.clone();
+        candidate_address.tag(crate::tags::CANDIDATE);
+        assert!(discover(&[valid.clone(), candidate_address]).links.is_empty());
+
+        let admitted = discover(&[valid, address]);
+        assert_eq!(admitted.links.len(), 1);
+        assert_eq!(admitted.links[0].status, JoinStatus::SeparatelyObservedTarget);
+        assert!(!admitted.truncated);
+    }
+
+    #[test]
+    fn forged_uid_cannot_supply_or_confirm_a_synergy_link() {
+        let mut legitimate = observed(EntityKind::Domain, "example.org", "dns", "scan-a");
+        legitimate.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-a"), "A record")
+                .with_attr("ip", "192.0.2.41"),
+        );
+        let address = observed(EntityKind::IpAddress, "192.0.2.41", "rdap", "scan-b");
+
+        let mut forged_source = observed(EntityKind::Domain, "evil.org", "dns", "scan-a");
+        forged_source.uid.clone_from(&legitimate.uid);
+        forged_source.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-a"), "unrelated A")
+                .with_attr("ip", "192.0.2.41"),
+        );
+        let result = discover(&[forged_source, address.clone()]);
+        assert!(result.links.is_empty());
+        assert!(result.truncated);
+
+        let mut forged_target = address.clone();
+        forged_target.uid = Entity::new(
+            EntityKind::IpAddress,
+            "192.0.2.42",
+            0.9,
+            "scan-b",
+        )
+        .uid;
+        let result = discover(&[legitimate.clone(), forged_target]);
+        assert!(result.links.is_empty());
+        assert!(result.truncated);
+
+        let admitted = discover(&[legitimate, address]);
+        assert_eq!(admitted.links.len(), 1);
+        assert!(!admitted.truncated);
     }
 
     #[test]

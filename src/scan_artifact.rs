@@ -197,7 +197,10 @@ pub const MAX_HISTORY_BYTES: u64 = 128 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub struct ArtifactHistory {
     by_scan: BTreeMap<String, Vec<Entity>>,
+    // Complete raw-history index, also used by the non-verifying offline synergy view.
     by_uid: BTreeMap<String, BTreeSet<String>>,
+    // A separate, evidence-gated index: quarantined and weak rows are not bridges.
+    bridge_by_uid: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl ArtifactHistory {
@@ -274,6 +277,18 @@ impl ArtifactHistory {
                 .entry(entity.uid.clone())
                 .or_default()
                 .insert(artifact.scan_id.clone());
+            // A retained entity copied from a different scan is not a new
+            // independent observation by this artifact. Keep its exact row in
+            // the raw/synergy index but never attribute it as corroboration to
+            // the artifact's scan ID.
+            if entity.scan_id == artifact.scan_id
+                && crate::cross_scan::is_bridgeable(&entity)
+            {
+                self.bridge_by_uid
+                    .entry(entity.uid.clone())
+                    .or_default()
+                    .insert(artifact.scan_id.clone());
+            }
             scan.push(entity);
         }
     }
@@ -304,7 +319,7 @@ impl CrossScanStore for ArtifactHistory {
 
     fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>, crate::error::Error> {
         Ok(self
-            .by_uid
+            .bridge_by_uid
             .get(entity_uid)
             .map(|scans| scans.iter().cloned().collect())
             .unwrap_or_default())
@@ -361,6 +376,160 @@ mod tests {
         assert_eq!(links[0]["relation"], "reported_dns_address");
         assert_eq!(links[0]["status"], "separately_observed_target");
         assert_eq!(links[0]["source_scan_id"], "saved");
+    }
+
+    #[test]
+    fn offline_synergy_refuses_forged_uid_evidence_without_losing_saved_records() {
+        let seed = Entity::new(EntityKind::Domain, "example.org", 0.8, "query");
+        let mut forged = Entity::new(EntityKind::Domain, "attacker.org", 0.9, "scan-forged");
+        forged.uid.clone_from(&seed.uid);
+        forged.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-forged"), "unrelated A")
+                .with_attr("ip", "192.0.2.5"),
+        );
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.5", 0.9, "scan-forged");
+        ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-forged"),
+            "observed address",
+        ));
+        let dir = history_dir(
+            "offline-forged-uid-synergy",
+            &[ScanArtifact::new(
+                "scan-forged",
+                vec![forged.clone(), ip.clone()],
+                Vec::new(),
+            )],
+        );
+        let original_bytes = fs::read(dir.join("0.json")).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&seed.uid).collect::<Vec<_>>(),
+            ["scan-forged"],
+            "the complete raw index retains the claimed UID",
+        );
+        let view = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        assert_eq!(
+            view["synergy"]["links"],
+            serde_json::json!([]),
+            "the source claim for attacker.org must not be attributed to example.org: {view}",
+        );
+        assert_eq!(view["synergy"]["truncated"], true);
+        assert_eq!(history.entities_for_scan_ref("scan-forged"), &[forged, ip]);
+        assert_eq!(fs::read(dir.join("0.json")).unwrap(), original_bytes);
+
+        // A genuinely matching historical domain and independently observed
+        // address still yield the original source-attributed lead.
+        let mut actual = Entity::new(EntityKind::Domain, "example.org", 0.9, "scan-valid");
+        actual.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-valid"), "actual A")
+                .with_attr("ip", "192.0.2.5"),
+        );
+        let mut seen = Entity::new(EntityKind::IpAddress, "192.0.2.5", 0.9, "scan-valid");
+        seen.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-valid"),
+            "independently seen address",
+        ));
+        write(
+            &dir.join("valid.json"),
+            &ScanArtifact::new("scan-valid", vec![actual, seen], Vec::new()),
+        )
+        .unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let valid_view = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        let links = valid_view["synergy"]["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1, "{valid_view}");
+        assert_eq!(links[0]["relation"], "reported_dns_address");
+        assert_eq!(links[0]["source_scan_id"], "scan-valid");
+        assert_eq!(links[0]["status"], "separately_observed_target");
+        assert_eq!(fs::read(dir.join("0.json")).unwrap(), original_bytes);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn offline_synergy_discards_forged_rows_even_when_a_valid_anchor_exists() {
+        let mut anchor = Entity::new(EntityKind::Domain, "example.org", 0.9, "mixed");
+        anchor.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("dns", "mixed"),
+            "valid unrelated DNS observation",
+        ));
+        let mut forged = Entity::new(EntityKind::Domain, "attacker.org", 0.9, "mixed");
+        forged.uid.clone_from(&anchor.uid);
+        forged.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "mixed"), "attacker A")
+                .with_attr("ip", "192.0.2.9"),
+        );
+        let mut ip = Entity::new(EntityKind::IpAddress, "192.0.2.9", 0.9, "mixed");
+        ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "mixed"),
+            "address observation",
+        ));
+        let original = ScanArtifact::new("mixed", vec![anchor, forged, ip], Vec::new());
+        let dir = history_dir("offline-mixed-uid-synergy", &[original.clone()]);
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let view = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        assert_eq!(view["synergy"]["links"], serde_json::json!([]), "{view}");
+        assert_eq!(view["synergy"]["truncated"], true);
+        assert_eq!(read(&dir.join("0.json")).unwrap(), original);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn offline_synergy_keeps_valid_observation_when_same_uid_candidate_is_retained() {
+        let mut valid = Entity::new(EntityKind::Domain, "example.org", 0.9, "scan-mixed");
+        valid.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "scan-mixed"), "observed A")
+                .with_attr("ip", "192.0.2.51"),
+        );
+        let mut candidate = Entity::new(EntityKind::Domain, "example.org", 0.9, "scan-mixed");
+        candidate.tag(crate::tags::CANDIDATE);
+        candidate.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("unconfirmed", "scan-mixed"), "weak A")
+                .with_attr("ip", "192.0.2.52"),
+        );
+        let mut valid_ip = Entity::new(EntityKind::IpAddress, "192.0.2.51", 0.9, "scan-mixed");
+        valid_ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-mixed"),
+            "independent address observation",
+        ));
+        let mut invalid_ip = Entity::new(EntityKind::IpAddress, "192.0.2.52", 0.9, "scan-mixed");
+        invalid_ip.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("rdap", "scan-mixed"),
+            "other address observation",
+        ));
+        let artifact = ScanArtifact::new(
+            "scan-mixed",
+            vec![valid, candidate, valid_ip, invalid_ip],
+            Vec::new(),
+        );
+        let dir = history_dir("candidate-synergy", &[artifact.clone()]);
+        let raw = fs::read(dir.join("0.json")).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let result = crate::runtime::analyze_offline_with_history(
+            &["example.org".to_owned()],
+            Some(&history),
+        )
+        .unwrap();
+        let links = result["synergy"]["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1, "{result}");
+        assert_eq!(links[0]["to_value"], "192.0.2.51");
+        assert_eq!(links[0]["source"], "dns");
+        assert_eq!(links[0]["status"], "separately_observed_target");
+        assert_eq!(result["synergy"]["truncated"], true);
+        assert_eq!(history.entities_for_scan_ref("scan-mixed"), artifact.entities);
+        assert_eq!(fs::read(dir.join("0.json")).unwrap(), raw);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -703,6 +872,239 @@ mod tests {
             }
             other => panic!("expected a historical bridge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn history_keeps_unverified_evidence_but_never_counts_it_as_a_bridge() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+
+        let current = scan_of("scan-current", &[(EntityKind::Email, "ada@example.com")]);
+        let uid = current.entities[0].uid.clone();
+        let mut candidate = Entity::new(
+            EntityKind::Email,
+            "ada@example.com",
+            0.9,
+            "scan-candidate",
+        );
+        candidate.tag(crate::tags::CANDIDATE);
+        candidate.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("unverified-source", "scan-candidate"),
+            "unverified claim retained without promotion",
+        ));
+        let weak = Entity::new(EntityKind::Email, "ada@example.com", 0.1, "scan-weak");
+        let person = Entity::new(EntityKind::Person, "Ada Lovelace", 0.9, "scan-person");
+        let dir = history_dir(
+            "history-bridge-evidence-gate",
+            &[
+                current.clone(),
+                ScanArtifact::new("scan-candidate", vec![candidate.clone()], Vec::new()),
+                ScanArtifact::new("scan-weak", vec![weak.clone()], Vec::new()),
+                ScanArtifact::new("scan-person", vec![person.clone()], Vec::new()),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let all: Vec<_> = history.scan_ids_for_entity_ref(&uid).collect();
+        assert_eq!(all, ["scan-candidate", "scan-current", "scan-weak"]);
+        assert_eq!(history.entities_for_scan_ref("scan-candidate"), &[candidate]);
+        assert_eq!(history.entities_for_scan_ref("scan-weak"), &[weak]);
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&person.uid).collect::<Vec<_>>(),
+            ["scan-person"],
+            "the raw/synergy index must retain non-bridgeable people",
+        );
+        assert!(
+            history.scan_ids_for_entity(&person.uid).unwrap().is_empty(),
+            "person names must not become identity bridges",
+        );
+        assert_eq!(
+            current
+                .cross_scan(&history, CrossScanOptions::default())
+                .unwrap(),
+            CrossScanCategory::None,
+            "historical candidate or weak evidence is not corroboration",
+        );
+
+        let trusted = scan_of("scan-trusted", &[(EntityKind::Email, "ada@example.com")]);
+        write(&dir.join("trusted.json"), &trusted).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        match current
+            .cross_scan(&history, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(matches[0].overlapping_scans, vec!["scan-trusted".to_string()]);
+            }
+            other => panic!("expected a bridge only to the trusted scan, got {other:?}"),
+        }
+        assert_eq!(history.entities_for_scan_ref("scan-candidate"), &[candidate]);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn copied_entity_does_not_manufacture_independent_historical_corroboration() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+
+        let current = scan_of("scan-current", &[(EntityKind::Email, "ada@example.com")]);
+        let copied = current.entities[0].clone();
+        // Reusing a saved entity in another artifact does not turn its original
+        // scan_id into a new observation. Both complete raw records are retained.
+        let dir = history_dir(
+            "history-copied-entity-not-corroboration",
+            &[
+                current.clone(),
+                ScanArtifact::new("scan-copy", vec![copied.clone()], Vec::new()),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&copied.uid).collect::<Vec<_>>(),
+            ["scan-copy", "scan-current"],
+            "the complete history/synergy index must preserve copied rows",
+        );
+        assert_eq!(history.entities_for_scan_ref("scan-copy"), &[copied.clone()]);
+        assert_eq!(
+            history.scan_ids_for_entity(&copied.uid).unwrap(),
+            vec!["scan-current".to_owned()],
+            "only the artifact whose scan ID agrees with the entity is eligible",
+        );
+        assert_eq!(
+            current.cross_scan(&history, CrossScanOptions::default()).unwrap(),
+            CrossScanCategory::None,
+            "a copied row cannot independently corroborate its origin",
+        );
+
+        // A separate observation with a genuinely matching scan ID can bridge.
+        let independent = scan_of("scan-independent", &[(EntityKind::Email, "ada@example.com")]);
+        write(&dir.join("independent.json"), &independent).unwrap();
+        let reloaded = ArtifactHistory::open(&dir).unwrap();
+        match current
+            .cross_scan(&reloaded, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(
+                    matches[0].overlapping_scans,
+                    vec!["scan-independent".to_owned()]
+                );
+            }
+            other => panic!("expected a genuine independent bridge, got {other:?}"),
+        }
+        assert_eq!(reloaded.entities_for_scan_ref("scan-copy"), &[copied]);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn forged_uid_is_retained_but_cannot_masquerade_as_historical_corroboration() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+
+        let current = scan_of("scan-current", &[(EntityKind::Email, "ada@example.com")]);
+        let claimed_uid = current.entities[0].uid.clone();
+        let mut forged = Entity::new(EntityKind::Email, "bob@example.com", 0.9, "scan-forged");
+        forged.uid.clone_from(&claimed_uid);
+
+        let dir = history_dir(
+            "history-forged-entity-uid",
+            &[
+                current.clone(),
+                ScanArtifact::new("scan-forged", vec![forged.clone()], Vec::new()),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+
+        // The raw record and full searchable history are not altered.
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&claimed_uid).collect::<Vec<_>>(),
+            ["scan-current", "scan-forged"],
+        );
+        assert_eq!(history.entities_for_scan_ref("scan-forged"), &[forged.clone()]);
+        assert_eq!(read(&dir.join("1.json")).unwrap().entities, vec![forged.clone()]);
+
+        // A forged identifier is not a second independent observation.
+        assert_eq!(
+            history.scan_ids_for_entity(&claimed_uid).unwrap(),
+            vec!["scan-current".to_owned()],
+        );
+        assert_eq!(
+            current.cross_scan(&history, CrossScanOptions::default()).unwrap(),
+            CrossScanCategory::None,
+        );
+
+        let independently_seen =
+            scan_of("scan-independent", &[(EntityKind::Email, "ada@example.com")]);
+        write(&dir.join("independent.json"), &independently_seen).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        match current.cross_scan(&history, CrossScanOptions::default()).unwrap() {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(
+                    matches[0].overlapping_scans,
+                    vec!["scan-independent".to_owned()],
+                );
+            }
+            other => panic!("expected only independently seen identity, got {other:?}"),
+        }
+        assert_eq!(history.entities_for_scan_ref("scan-forged"), &[forged]);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn a_copied_only_artifact_is_not_an_observation_by_its_own_scan() {
+        use crate::cross_scan::{
+            CrossScanCategory, CrossScanOptions, category_for_scan_with,
+        };
+
+        let original = scan_of("scan-original", &[(EntityKind::Email, "ada@example.com")]);
+        let copied_entity = original.entities[0].clone();
+        let copied = ScanArtifact::new(
+            "scan-copied",
+            vec![copied_entity.clone()],
+            Vec::new(),
+        );
+        let dir = history_dir("copied-only-current-artifact", &[original, copied.clone()]);
+        let copied_path = dir.join("1.json");
+        let raw_bytes = fs::read(&copied_path).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(
+            history.scan_ids_for_entity_ref(&copied_entity.uid).collect::<Vec<_>>(),
+            ["scan-copied", "scan-original"],
+            "raw history must retain the copied row",
+        );
+        assert_eq!(
+            history.scan_ids_for_entity(&copied_entity.uid).unwrap(),
+            vec!["scan-original".to_owned()],
+            "a copied row must not enter the corroboration index",
+        );
+        assert_eq!(
+            copied.cross_scan(&history, CrossScanOptions::default()).unwrap(),
+            CrossScanCategory::None,
+            "copied-only current artifacts must not report historical matches",
+        );
+        assert_eq!(
+            category_for_scan_with(&history, "scan-copied", CrossScanOptions::default())
+                .unwrap(),
+            CrossScanCategory::None,
+            "the public history lookup must agree with ScanArtifact::cross_scan",
+        );
+
+        let independent = scan_of(
+            "scan-independent",
+            &[(EntityKind::Email, "ada@example.com")],
+        );
+        write(&dir.join("independent.json"), &independent).unwrap();
+        let history = ArtifactHistory::open(&dir).unwrap();
+        let CrossScanCategory::Historical { matches } =
+            independent.cross_scan(&history, CrossScanOptions::default()).unwrap()
+        else {
+            panic!("a new genuine observation must bridge the original scan");
+        };
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].overlapping_scans, vec!["scan-original".to_owned()]);
+        assert_eq!(history.entities_for_scan_ref("scan-copied"), &[copied_entity]);
+        assert_eq!(fs::read(&copied_path).unwrap(), raw_bytes);
+        assert_eq!(read(&copied_path).unwrap(), copied);
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[test]
