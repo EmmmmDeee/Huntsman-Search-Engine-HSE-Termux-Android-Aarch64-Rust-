@@ -39,6 +39,7 @@
 use std::path::PathBuf;
 
 use crate::breach_hybrid::{self, BreachLeg};
+use crate::breachdirectory;
 use crate::canonical::{canonical_email, canonical_url};
 use crate::concurrent::{self, Job};
 use crate::dehashed::{
@@ -65,7 +66,7 @@ use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
 pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR|HANDLE [--save FILE]";
 pub const EXPOSURE_HELP: &str = "\
 exposure ADDR|HANDLE [--save FILE]
-Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs at once, reported in this order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). The lookup takes as long as its slowest leg. A leg without its key makes no request and reports not_configured. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, title, breach date, indexed range, whether a password or hash is exposed, and the exposed field types (at most 64, each named in ASCII letters, digits and _ within 48 bytes and shown in lower case; a field named otherwise is left out), followed by one oathnet_value row (field=value) per distinct non-credential value its records hold (at most 64 per field; a value over 1024 bytes is left out, never cut). A field whose name holds pass, pwd, hash or salt in any case is a credential, except that a pass beginning passport does not count: neither its value nor a list or object holding such a field at any depth is shown or kept. The row says a password or hash is exposed when such a field whose words name one holds a value, as a field or inside a list or object, even if the field's name is left out: a word beginning password, passwd, passwort, passphrase or passcode, a word pwd, pwdhash, passhash, userpass or salt, or pass or hash alone or beside another such word or one such as user, old or md5, but never a field that describes one (pwdLastSet, password_changed_at). Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records, whether a password or hash is exposed and the exposed field types, each followed by one dehashed_value row per distinct non-credential value its records hold, as OathNet's are; a password, hash or salt is shown only as exposed, never its value. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs at once, reported in this order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only), then BreachDirectory source-only search (email or username, operator RapidAPI key required). The lookup takes as long as its slowest leg. A leg without its key makes no request and reports not_configured. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, title, breach date, indexed range, whether a password or hash is exposed, and the exposed field types (at most 64, each named in ASCII letters, digits and _ within 48 bytes and shown in lower case; a field named otherwise is left out), followed by one oathnet_value row (field=value) per distinct non-credential value its records hold (at most 64 per field; a value over 1024 bytes is left out, never cut). A field whose name holds pass, pwd, hash or salt in any case is a credential, except that a pass beginning passport does not count: neither its value nor a list or object holding such a field at any depth is shown or kept. The row says a password or hash is exposed when such a field whose words name one holds a value, as a field or inside a list or object, even if the field's name is left out: a word beginning password, passwd, passwort, passphrase or passcode, a word pwd, pwdhash, passhash, userpass or salt, or pass or hash alone or beside another such word or one such as user, old or md5, but never a field that describes one (pwdLastSet, password_changed_at). Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records, whether a password or hash is exposed and the exposed field types, each followed by one dehashed_value row per distinct non-credential value its records hold, as OathNet's are; a password, hash or salt is shown only as exposed, never its value. BreachDirectory returns source names only, as uncorroborated leads; it never requests password or hash material. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = crate::hibp::ACCOUNT_SOURCE;
@@ -78,6 +79,8 @@ pub const OATHNET_SOURCE: &str = oathnet::SOURCE;
 /// Source label for the `DeHashed` leg. The same label the standalone collector uses, so both
 /// paths relaying one `DeHashed` dataset share one evidence root family.
 pub const DEHASHED_SOURCE: &str = dehashed::COLLECTOR_ID;
+/// Source label for the source-only RapidAPI breach leads.
+pub const BREACHDIRECTORY_SOURCE: &str = breachdirectory::SOURCE;
 
 /// The longest incident summary or attribution, in characters. Longer text is cut on a character
 /// boundary and ends with [`ELLIPSIS`], which counts toward the limit.
@@ -304,6 +307,7 @@ pub struct Sources<'a> {
     pub stolen_tax: Option<(&'a (dyn Transport + Sync), &'a Keys)>,
     pub oathnet: Option<(&'a (dyn Transport + Sync), &'a Keys)>,
     pub dehashed: Option<&'a DehashedClient>,
+    pub breachdirectory: Option<(&'a (dyn Transport + Sync), &'a Keys)>,
     /// The modules the lookup asks; `None` asks every one. A leg it leaves out sends nothing and
     /// leaves no row, configured or not.
     pub selection: Option<&'a Selection>,
@@ -322,7 +326,8 @@ impl Sources<'_> {
         canonical_selector(selector).is_some()
             && (email_only
                 || (self.stolen_tax.is_some() && self.runs(STOLEN_TAX_SOURCE))
-                || (self.oathnet.is_some() && self.runs(OATHNET_SOURCE)))
+                || (self.oathnet.is_some() && self.runs(OATHNET_SOURCE))
+                || (self.breachdirectory.is_some() && self.runs(BREACHDIRECTORY_SOURCE)))
     }
 
     /// Whether the lookup asks `module`.
@@ -510,7 +515,7 @@ fn searches(leg: BreachLeg, kind: &EntityKind) -> bool {
     match leg {
         BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => false,
         BreachLeg::HibpAccount | BreachLeg::DeHashed => *kind == EntityKind::Email,
-        BreachLeg::StolenTax | BreachLeg::OathNet => true,
+        BreachLeg::StolenTax | BreachLeg::OathNet | BreachLeg::BreachDirectory => true,
     }
 }
 
@@ -521,6 +526,7 @@ fn leg_module(leg: BreachLeg) -> &'static str {
         BreachLeg::StolenTax => STOLEN_TAX_SOURCE,
         BreachLeg::OathNet => OATHNET_SOURCE,
         BreachLeg::DeHashed => DEHASHED_SOURCE,
+        BreachLeg::BreachDirectory => BREACHDIRECTORY_SOURCE,
     }
 }
 
@@ -554,6 +560,12 @@ fn run_leg(
         BreachLeg::DeHashed => match sources.dehashed {
             None => missing_key(DEHASHED_SOURCE, now_unix),
             Some(client) => dehashed_leg(client, seed.1, scan_id, now_unix, &mut found),
+        },
+        BreachLeg::BreachDirectory => match sources.breachdirectory {
+            None => missing_key(BREACHDIRECTORY_SOURCE, now_unix),
+            Some((transport, keys)) => {
+                breachdirectory_leg(transport, keys, seed, scan_id, now_unix, &mut found)
+            }
         },
         BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => return None,
     };
@@ -989,6 +1001,38 @@ fn oathnet_entities(
         entities.push(entity);
     }
     entities
+}
+
+/// Fold source-only BreachDirectory leads into the ordinary evidence graph. Every
+/// listed breach source is one uncorroborated lead from the same provider, so it
+/// does not count as an independently verified second source.
+fn breachdirectory_leg(
+    transport: &dyn Transport,
+    keys: &Keys,
+    seed: (&EntityKind, &str),
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+) -> SourceExecutionOutcome {
+    let (found, outcome) = breachdirectory::search(transport, keys, seed.1, now_unix);
+    if let Some(search) = found {
+        if !search.sources.is_empty() {
+            let mut entity = Entity::new(seed.0.clone(), seed.1, 0.60, scan_id);
+            entity.tag(tags::BREACH);
+            for name in search.sources {
+                entity.add_evidence(
+                    Evidence::new(
+                        EvidenceProvenance::for_scan(BREACHDIRECTORY_SOURCE, scan_id),
+                        "BreachDirectory lists a potential breach source for this identifier",
+                    )
+                    .with_attr("breach_source", name)
+                    .with_attr("verification", "provider_reported_only"),
+                );
+            }
+            report.entities.push(entity);
+        }
+    }
+    outcome
 }
 
 fn dehashed_leg(
