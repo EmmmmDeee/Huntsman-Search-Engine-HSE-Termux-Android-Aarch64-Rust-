@@ -62,6 +62,9 @@ jobs:
           bash -n .github/scripts/dehashed-auth-diagnostic.sh
           bash -n tests/dehashed-auth-diagnostic.sh
           bash tests/dehashed-auth-diagnostic.sh
+          bash -n scripts/dehashed-live-domain-acceptance.sh
+          bash -n tests/dehashed-live-domain-acceptance.sh
+          bash tests/dehashed-live-domain-acceptance.sh
 
   web-ui:
     name: Web UI in a phone browser
