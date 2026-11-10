@@ -342,6 +342,18 @@ pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Er
     write_atomic_mode(path, body, max, true)
 }
 
+/// Atomically persist a private status file under the existing exclusive
+/// single-writer guard. No existing writer behaviour or data format changes.
+///
+/// # Errors
+/// Returns an error without altering the last complete file if the lock is
+/// occupied, the destination is unsafe, or the atomic write fails.
+pub fn write_atomic_private_locked(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
+    let _lock = ExclusiveLock::acquire(path, Duration::from_secs(2))
+        .map_err(|_| Error::Store("private status file writer is busy".to_owned()))?;
+    write_atomic_private(path, body, max)
+}
+
 /// [`write_atomic_private`] of `value` as pretty JSON, serialised within `max` bytes: a value
 /// over the ceiling is refused with the size it needs, and never written in part.
 ///
