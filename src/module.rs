@@ -1401,6 +1401,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "XposedOrNot names of public breaches that included the address",
     },
     ReachableModule {
+        name: "breachdirectory",
+        command: "email ADDR | username HANDLE",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.002"],
+        description: "BreachDirectory's RapidAPI source-name lookup; no password, hash or dehash request",
+    },
+    ReachableModule {
         name: "kickbox",
         command: "email ADDR",
         access: "keyless",
