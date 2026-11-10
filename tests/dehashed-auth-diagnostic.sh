@@ -33,7 +33,9 @@ cat > "$temp/mock" <<'MOCK'
 # Any extra provider credential reaching the mock would cause a second live probe.
 [[ -z "${HUNTSMAN_SHODAN_KEY:-}" && -z "${HIBP_API_KEY:-}" && -z "${HSE_TEST_KEY:-}" ]] || exit 86
 printf '%s\n' 'provider=Other	state=configured	probe=valid'
-printf 'provider=DeHashed\tstate=%s\tprobe=%s\tHUNTSMAN_DEHASHED_KEY=set\n' "${MOCK_STATE:-configured}" "${MOCK_PROBE:-valid}"
+slot=set
+[[ "${MOCK_STATE:-configured}" == incomplete ]] && slot=unset
+printf 'provider=DeHashed\tstate=%s\tprobe=%s\tHUNTSMAN_DEHASHED_KEY=%s\n' "${MOCK_STATE:-configured}" "${MOCK_PROBE:-valid}" "$slot"
 printf '%s\n' "${HUNTSMAN_DEHASHED_KEY:-}" >&2
 MOCK
 chmod 700 "$temp/mock"
@@ -104,5 +106,30 @@ chmod 700 "$temp/malformed"
 code=0
 result="$(HUNTSMAN_DEHASHED_KEY=offline-test-secret-marker bash "$script" "$temp/malformed")" || code=$?
 [[ "$code" == 9 && "$result" == 'dehashed_probe=malformed_status' ]] || exit 1
+
+# Inconsistent state/slot fields must not turn a mock success into valid_response.
+cat > "$temp/contradiction" <<'CONTRADICTION'
+#!/usr/bin/env bash
+printf 'provider=DeHashed\tstate=configured\tprobe=valid\tHUNTSMAN_DEHASHED_KEY=unset\n'
+CONTRADICTION
+chmod 700 "$temp/contradiction"
+code=0
+result="$(HUNTSMAN_DEHASHED_KEY=offline-test-secret-marker bash "$script" "$temp/contradiction")" || code=$?
+[[ "$code" == 9 && "$result" == 'dehashed_probe=malformed_status' ]] || {
+  echo 'contradictory configured/unset row accepted'
+  exit 1
+}
+
+cat > "$temp/duplicate-slot" <<'DUPLICATE_SLOT'
+#!/usr/bin/env bash
+printf 'provider=DeHashed\tstate=configured\tprobe=valid\tHUNTSMAN_DEHASHED_KEY=set\tHUNTSMAN_DEHASHED_KEY=unset\n'
+DUPLICATE_SLOT
+chmod 700 "$temp/duplicate-slot"
+code=0
+result="$(HUNTSMAN_DEHASHED_KEY=offline-test-secret-marker bash "$script" "$temp/duplicate-slot")" || code=$?
+[[ "$code" == 9 && "$result" == 'dehashed_probe=malformed_status' ]] || {
+  echo 'duplicate slot row accepted'
+  exit 1
+}
 
 printf 'dehashed probe offline checks passed\n'
