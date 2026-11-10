@@ -280,6 +280,27 @@ pub fn get<T: Transport + ?Sized>(
     send(transport, api, keys, Request::get(url), now_unix)
 }
 
+/// GET with additional fixed, non-secret provider headers (for gateways that
+/// require a host-selector header). Credentials still enter only in `send`,
+/// origin-pinned by the same fetch path as `get`.
+///
+/// # Errors
+/// The same credential, transport, HTTP and decode errors as `get`.
+pub fn get_with_headers<T: Transport + ?Sized>(
+    transport: &T,
+    api: &Api,
+    keys: &Keys,
+    url: &str,
+    headers: &[(&str, &str)],
+    now_unix: u64,
+) -> Result<Answer, LegError> {
+    let mut request = Request::get(url);
+    for &(name, value) in headers {
+        request = request.header(name, value);
+    }
+    send(transport, api, keys, request, now_unix)
+}
+
 /// `POST url` with the JSON `body` for `api`, with its key from `keys` when it has one.
 ///
 /// # Errors
