@@ -106,6 +106,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             seeknow_collector::COLLECTOR_ID,
             crate::stolen_tax::SOURCE,
             oathnet::SOURCE,
+            crate::breachdirectory::SOURCE,
         ],
         ScanKind::Phone => {
             let mut phone = vec![numverify::SOURCE];

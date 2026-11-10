@@ -270,6 +270,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::DEHASHED_KEY_ENV],
     },
     Provider {
+        name: "BreachDirectory",
+        get_key_url: "https://rapidapi.com/rohan-patra/api/breachdirectory",
+        free_tier: "RapidAPI: plan and quota must be checked; a key alone does not guarantee a subscription",
+        slots: &[crate::environment::BREACHDIRECTORY_KEY_ENV],
+    },
+    Provider {
         name: "stolen.tax",
         get_key_url: "https://stolen.tax",
         free_tier: "paid API",
