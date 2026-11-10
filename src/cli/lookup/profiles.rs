@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::cli::{fail, usage_error};
 use huntsman_recon::api_leg;
+use huntsman_recon::breachdirectory;
 use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs};
 use huntsman_recon::clock;
 use huntsman_recon::company_cli::{self, COMPANY_USAGE, CompanyArgs};
@@ -361,6 +362,7 @@ fn exposure_legs(
         });
     let transport = UreqTransport::new(&stolen_tax::transport_config());
     let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
+    let breachdirectory_transport = UreqTransport::new(&api_leg::transport_config());
     // DeHashed reuses the opt-in client; its key comes from the same lookup keys.
     let dehashed_client = dehashed::client::client_for_lookup(
         keys,
@@ -377,6 +379,10 @@ fn exposure_legs(
             .is_some()
             .then_some((&oathnet_transport as &(dyn Transport + Sync), keys)),
         dehashed: dehashed_client.as_ref(),
+        breachdirectory: keys
+            .get(breachdirectory::KEY_SLOT)
+            .is_some()
+            .then_some((&breachdirectory_transport as &(dyn Transport + Sync), keys)),
         selection: Some(chosen),
     };
     if folded {
