@@ -21,7 +21,7 @@ use huntsman_recon::module::reachable_modules;
 use huntsman_recon::provider_credentials;
 
 fn diagnostics_snapshot() -> diagnostics::Diagnostics {
-    let home = env::var_os("HOME");
+    let home = huntsman_recon::environment::home();
     match Keys::resolve(None, home.as_deref()) {
         Ok(resolved) => {
             let resolution = if resolved.warning.is_some() {
@@ -97,7 +97,7 @@ pub(super) fn credential_status_cmd(args: &[String]) -> ExitCode {
         }
     }
 
-    let home = env::var_os("HOME");
+    let home = huntsman_recon::environment::home();
     match Keys::resolve(explicit, home.as_deref()) {
         Ok(resolved) => {
             if let Some(warning) = resolved.warning {
@@ -368,7 +368,7 @@ fn keys_change(slot: &str, value: Option<&str>) -> ExitCode {
             "invalid key slot name (use uppercase letters, digits and '_')",
         );
     }
-    let Some(path) = keys::default_keys_path(env::var_os("HOME").as_deref()) else {
+    let Some(path) = keys::default_keys_path(huntsman_recon::environment::home().as_deref()) else {
         return fail(
             EX_USAGE,
             "HOME must be an absolute path to manage credentials",

@@ -80,7 +80,7 @@ fn state_dir() -> Option<PathBuf> {
     env::var_os(HUNTSMAN_HOME_ENV)
         .and_then(absolute)
         .or_else(|| {
-            env::var_os("HOME")
+            huntsman_recon::environment::home()
                 .and_then(absolute)
                 .map(|home| home.join(STATE_DIR))
         })

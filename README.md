@@ -1,3 +1,9 @@
+> **HUNTSMAN × RHINSER Android source candidate (not a released APK).**
+> Start with [the canonical integration guide](docs/CANONICAL_GUIDE.md). It covers
+> the single-APK build path, Rust ownership, Android permission boundaries,
+> API-key health, original RHINSER parity, known gaps and exact release gates.
+> Historical documents remain for reproducibility until safe archival is verified.
+
 # Huntsman Search Engine
 
 Rust OSINT search engine and SpiderFoot-compatible recon for Termux on Android ARM64 (aarch64), no root, with a phone Web UI.

@@ -149,6 +149,7 @@ fn exposure_component(source: &str) -> Option<&'static str> {
         "stolen_tax" => Some("src/stolen_tax.rs"),
         "oathnet" => Some("src/oathnet.rs"),
         crate::dehashed::COLLECTOR_ID => Some("src/dehashed/exposure.rs"),
+        crate::breachdirectory::SOURCE => Some("src/breachdirectory.rs"),
         _ => None,
     }
 }

@@ -1527,6 +1527,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "explicit DeHashed exact-match search with a declared purpose",
     },
     ReachableModule {
+        name: "breachdirectory",
+        command: "exposure EMAIL|USERNAME | email ADDR | username HANDLE",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
+        description: "BreachDirectory RapidAPI sources-only breach leads; no credential retrieval",
+    },
+    ReachableModule {
         name: "hibp_account",
         command: "exposure ADDR",
         access: "operator_key",

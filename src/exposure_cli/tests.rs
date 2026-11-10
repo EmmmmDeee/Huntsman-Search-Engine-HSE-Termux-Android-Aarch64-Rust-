@@ -17,7 +17,8 @@ fn no_key_makes_no_request_and_reports_not_configured() {
             (SOURCE, SourceOutcomeKind::NotConfigured),
             (STOLEN_TAX_SOURCE, SourceOutcomeKind::NotConfigured),
             (OATHNET_SOURCE, SourceOutcomeKind::NotConfigured),
-            (DEHASHED_SOURCE, SourceOutcomeKind::NotConfigured)
+            (DEHASHED_SOURCE, SourceOutcomeKind::NotConfigured),
+            (BREACHDIRECTORY_SOURCE, SourceOutcomeKind::NotConfigured)
         ],
         "every keyed leg is reported, in breach_hybrid order"
     );

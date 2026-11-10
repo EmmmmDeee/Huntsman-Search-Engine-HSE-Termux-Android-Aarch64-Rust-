@@ -274,7 +274,7 @@ struct Place {
 impl Place {
     fn read() -> Self {
         Self {
-            home: absolute(env::var_os(environment::HOME_ENV)),
+            home: absolute(environment::home()),
             state_dir_override: absolute(env::var_os(HUNTSMAN_HOME_ENV)),
             env_file_override: env::var_os(HUNTSMAN_ENV_FILE_ENV)
                 .filter(|value| !value.is_empty())

@@ -1,6 +1,5 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-use std::env;
 use std::fmt::Write as _;
 use std::io::Write;
 use std::path::Path;
@@ -70,7 +69,7 @@ pub(super) fn dehashed_cmd(args: &[String]) -> ExitCode {
 pub(super) fn seeknow_cmd(args: &[String]) -> ExitCode {
     let transport = UreqTransport::new(&TransportConfig::default());
     let now = clock::unix_now();
-    match huntsman_recon::seeknow_cli::run(&transport, args, env::var_os("HOME").as_deref(), now) {
+    match huntsman_recon::seeknow_cli::run(&transport, args, huntsman_recon::environment::home().as_deref(), now) {
         SeekNowCliRun::Usage => fail(EX_USAGE, SEEKNOW_USAGE),
         SeekNowCliRun::Printed(text) => {
             print!("{text}");
@@ -356,7 +355,7 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
     let Some((slot, style)) = &args.auth else {
         return Ok(None);
     };
-    let resolved = Keys::resolve(args.keys_file.as_deref(), env::var_os("HOME").as_deref())?;
+    let resolved = Keys::resolve(args.keys_file.as_deref(), huntsman_recon::environment::home().as_deref())?;
     if let Some(warning) = &resolved.warning {
         eprintln!("{warning}");
     }

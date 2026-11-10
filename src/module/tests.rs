@@ -123,6 +123,7 @@ fn every_source_a_lookup_records_is_a_reachable_module() {
         crate::stolen_tax::SOURCE,
         crate::oathnet::SOURCE,
         crate::dehashed::COLLECTOR_ID,
+        crate::breachdirectory::SOURCE,
         crate::oui::SOURCE,
         crate::wigle::SOURCE,
         crate::wigle::BLUETOOTH_SOURCE,

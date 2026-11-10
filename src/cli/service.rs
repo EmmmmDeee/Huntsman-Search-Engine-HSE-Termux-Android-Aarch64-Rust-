@@ -470,7 +470,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
                 None => server,
             };
             // The Settings page saves keys into the file lookups read, so only an absolute HOME.
-            match env::var_os("HOME").map(PathBuf::from) {
+            match huntsman_recon::environment::home().map(PathBuf::from) {
                 Some(home) if home.is_absolute() => server.with_keys_home(home),
                 _ => server,
             }
