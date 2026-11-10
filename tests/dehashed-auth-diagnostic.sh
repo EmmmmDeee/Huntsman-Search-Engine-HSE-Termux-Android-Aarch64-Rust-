@@ -30,6 +30,8 @@ fi
 cat > "$temp/mock" <<'MOCK'
 #!/usr/bin/env bash
 [[ "${1:-}" == credential-status && "${2:-}" == --probe ]] || exit 28
+# Any extra provider credential reaching the mock would cause a second live probe.
+[[ -z "${HUNTSMAN_SHODAN_KEY:-}" && -z "${HIBP_API_KEY:-}" && -z "${HSE_TEST_KEY:-}" ]] || exit 86
 printf '%s\n' 'provider=Other	state=configured	probe=valid'
 printf 'provider=DeHashed\tstate=%s\tprobe=%s\tHUNTSMAN_DEHASHED_KEY=set\n' "${MOCK_STATE:-configured}" "${MOCK_PROBE:-valid}"
 printf '%s\n' "${HUNTSMAN_DEHASHED_KEY:-}" >&2
@@ -54,6 +56,18 @@ check 8 'dehashed_probe=inconclusive' configured unavailable
 check 8 'dehashed_probe=inconclusive' configured unsupported
 check 2 'dehashed_probe=not_configured' incomplete not_configured
 check 9 'dehashed_probe=unexpected_verdict' configured future_verdict
+
+# The caller's other provider environment variables must never reach HUNTSMAN.
+code=0
+result="$(HUNTSMAN_DEHASHED_KEY=offline-test-secret-marker \
+          HUNTSMAN_SHODAN_KEY=offline-other-provider-key \
+          HIBP_API_KEY=offline-hibp-alias-key \
+          HSE_TEST_KEY=offline-hse-slot-key \
+          bash "$script" "$temp/mock")" || code=$?
+[[ "$code" == 0 && "$result" == 'dehashed_probe=valid_response' ]] || {
+  echo 'ambient provider credential leaked into DeHashed-only probe'
+  exit 1
+}
 
 code=0
 result="$(env -u HUNTSMAN_DEHASHED_KEY bash "$script" "$temp/mock")" || code=$?
