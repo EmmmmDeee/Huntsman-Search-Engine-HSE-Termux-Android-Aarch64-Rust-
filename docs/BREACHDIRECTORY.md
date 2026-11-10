@@ -9,16 +9,16 @@ direct-backend endpoints.
 
 | Item | Value |
 | --- | --- |
-| Module | \`breachdirectory\` |
-| Credential slot | \`HUNTSMAN_BREACHDIRECTORY_KEY\` |
-| Endpoint | \`GET https://breachdirectory.p.rapidapi.com/\` |
-| Query | \`func=sources&term=<percent-encoded exact email or username>\` |
-| Required headers | \`X-RapidAPI-Key\`, \`X-RapidAPI-Host: breachdirectory.p.rapidapi.com\` |
-| Pin | \`https://breachdirectory.p.rapidapi.com:443\` |
+| Module | `breachdirectory` |
+| Credential slot | `HUNTSMAN_BREACHDIRECTORY_KEY` |
+| Endpoint | `GET https://breachdirectory.p.rapidapi.com/` |
+| Query | `func=sources&term=<percent-encoded exact email or username>` |
+| Required headers | `X-RapidAPI-Key`, `X-RapidAPI-Host: breachdirectory.p.rapidapi.com` |
+| Pin | `https://breachdirectory.p.rapidapi.com:443` |
 | Redirects | None |
 | Request timeout | 20 seconds |
 | Client pacing | Conservative shared 60/minute |
-| Parsing | \`sources\` must be a JSON array of nonempty source-name strings |
+| Parsing | `sources` must be a JSON array of nonempty source-name strings |
 | Max names | 256, each at most 256 bytes |
 | Output | One provider evidence source, not independent corroboration per named breach |
 
@@ -28,15 +28,15 @@ Sources:
 - https://stackoverflow.com/questions/69969361/loop-through-axios-data-and-perform-another-axios-request-and-concat-the-two-res
 
 The actual provider response schema has **not** been confirmed using an
-authenticated request. \`sources: []\` is treated as a valid zero; null, omitted,
-oversized or malformed \`sources\` are **inconclusive** until a real, authorised
+authenticated request. `sources: []` is treated as a valid zero; null, omitted,
+oversized or malformed `sources` are **inconclusive** until a real, authorised
 provider response demonstrates a different zero contract. A 200 response with
-\`success: false\` or a non-null error is likewise inconclusive.
+`success: false` or a non-null error is likewise inconclusive.
 
-The provider has modes that return passwords or hashes (\`auto\`, \`dehash\`).
+The provider has modes that return passwords or hashes (`auto`, `dehash`).
 This collector intentionally does **not** implement them. It does not retrieve,
 cache, print or save such values. Source names are saved as leads under a single
-\`breachdirectory\` provenance key, without claiming independent corroboration.
+`breachdirectory` provenance key, without claiming independent corroboration.
 
 ## Command and Web UI
 
@@ -45,16 +45,16 @@ After installing a build that contains this module:
 1. Create/reuse a RapidAPI account and subscribe to the official API. Verify
    the provider and current plan, quota and overage terms on RapidAPI.
 2. Store a valid operator-owned RapidAPI key privately in
-   \`$HOME/.huntsman.env\`:
-   \`HUNTSMAN_BREACHDIRECTORY_KEY=YOUR_REAL_RAPIDAPI_KEY\`
-   and \`chmod 600 "$HOME/.huntsman.env"\`.
-3. Run \`huntsman-recon exposure YOUR_AUTHORISED_EMAIL\`, or choose
-   \`breachdirectory\` on the New Scan page for email, username or exposure.
-4. Look for \`breachdirectory\` in the Sources table. For a positive response,
-   a named breach source is stored in the seed entity's \`breach_source\`
-   evidence attribute, with \`verification=provider_reported_only\`.
+   `$HOME/.huntsman.env`:
+   `HUNTSMAN_BREACHDIRECTORY_KEY=YOUR_REAL_RAPIDAPI_KEY`
+   and `chmod 600 "$HOME/.huntsman.env"`.
+3. Run `huntsman-recon exposure YOUR_AUTHORISED_EMAIL`, or choose
+   `breachdirectory` on the New Scan page for email, username or exposure.
+4. Look for `breachdirectory` in the Sources table. For a positive response,
+   a named breach source is stored in the seed entity's `breach_source`
+   evidence attribute, with `verification=provider_reported_only`.
 
-A standalone \`breachdirectory\` subcommand and a spending-key validation probe
+A standalone `breachdirectory` subcommand and a spending-key validation probe
 are **not** implemented. That is deliberate: probing through search would
 consume paid quota. A configured slot is not proof of a working subscription.
 
