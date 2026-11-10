@@ -16,7 +16,7 @@ use std::time::Duration;
 use huntsman_recon::clock;
 use huntsman_recon::fsio::{self, ExclusiveLock};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::keys::Keys;
+use huntsman_recon::keys::{Keys, ResolvedKeys};
 use huntsman_recon::provider_credentials::{self, ProbeState, ProviderProbeStatus, ProviderStatus};
 use serde::Serialize;
 
@@ -146,8 +146,30 @@ fn assemble(
 }
 
 fn refresh(probe_requested: bool, output: &Path, interval_secs: u64) -> Result<Report, String> {
-    let home = env::var_os("HOME");
+    let home = huntsman_recon::environment::home();
     let resolved = Keys::for_lookup(home.as_deref());
+    persist_resolved(resolved, probe_requested, output, interval_secs)
+}
+
+/// One native Android check, using the operator's explicit app-private HOME.
+/// Neither the OS process environment nor existing credential files are modified.
+/// The periodic Java JobScheduler invokes this using the same code as Termux.
+pub(crate) fn refresh_in_home(home: &Path, probe_requested: bool) -> Result<(), String> {
+    if !home.is_absolute() || !home.is_dir() {
+        return Err("Android app HOME must be an absolute existing directory".to_owned());
+    }
+    let keys = Keys::resolve(None, Some(home.as_os_str()))
+        .map_err(|_| "could not resolve app-owned credentials".to_owned())?;
+    let output = home.join(".huntsman").join("api-key-health.json");
+    persist_resolved(keys, probe_requested, &output, DEFAULT_INTERVAL_SECS).map(|_| ())
+}
+
+fn persist_resolved(
+    resolved: ResolvedKeys,
+    probe_requested: bool,
+    output: &Path,
+    interval_secs: u64,
+) -> Result<Report, String> {
     let statuses = provider_credentials::status(&resolved.keys);
     // Live probes are opt-in: endpoints can consume requests or quota. They use
     // the already hardened guarded transport and existing provider probe contracts.
@@ -336,6 +358,12 @@ mod tests {
         let validation = row(configured, Some(ProbeState::Valid));
         assert!(validation.authenticated_probe_success);
         assert_eq!(validation.health, "authenticated_probe_success");
+    }
+
+    #[test]
+    fn app_home_must_be_absolute_and_exist() {
+        let invalid = Path::new("relative-dir");
+        assert!(refresh_in_home(invalid, false).is_err());
     }
 
     #[test]
