@@ -189,7 +189,7 @@ Never place populated values in this repository, release artifacts, logs,
 examples, documentation, or issue/PR text.
 
 
-## GitHub Actions DeHashed credential check
+## GitHub Actions DeHashed probe-response check
 
 For a **read-only probe-response diagnostic**, manually dispatch
 `.github/workflows/dehashed-auth-diagnostic.yml` on `main` using GitHub
