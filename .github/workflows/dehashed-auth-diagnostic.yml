@@ -4,6 +4,12 @@ name: DeHashed credential probe (manual)
 # reviewed default branch. Pull requests and branch pushes never receive it.
 on:
   workflow_dispatch:
+    inputs:
+      run_real_domain_search:
+        description: "Spend one DeHashed search credit testing telstra.com.au; never publish records"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,14 +37,20 @@ jobs:
           bash -n .github/scripts/dehashed-auth-diagnostic.sh
           bash -n tests/dehashed-auth-diagnostic.sh
           bash tests/dehashed-auth-diagnostic.sh
+          bash -n scripts/dehashed-live-domain-acceptance.sh
+          bash -n tests/dehashed-live-domain-acceptance.sh
+          bash tests/dehashed-live-domain-acceptance.sh
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
         with:
           toolchain: "1.99"
       - name: Compile HUNTSMAN without provider secrets
         run: cargo build --locked --bin huntsman-recon
-      - name: Evaluate the DeHashed no-credit probe response
+      - name: Probe DeHashed and optionally perform one paid real-domain search
         env:
           HUNTSMAN_DEHASHED_KEY: ${{ secrets.HUNTSMAN_DEHASHED_KEY || secrets.DEHASHED_API_KEY }}
         run: |
           set -euo pipefail
           bash .github/scripts/dehashed-auth-diagnostic.sh ./target/debug/huntsman-recon
+          if [[ "${{ inputs.run_real_domain_search }}" == "true" ]]; then
+            bash scripts/dehashed-live-domain-acceptance.sh --allow-one-paid-search ./target/debug/huntsman-recon
+          fi
