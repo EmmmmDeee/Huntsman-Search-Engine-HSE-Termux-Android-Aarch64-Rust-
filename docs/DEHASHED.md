@@ -190,7 +190,8 @@ and pull requests cannot invoke a secret-bearing probe.
   paid-search entitlement, current credit balance or an individual's exposure.
 - `not_configured` means no key reached the job; `rejected` is the provider
   response classification; `inconclusive` covers indeterminate/unavailable
-  responses. Malformed or duplicate provider output is rejected. The job fails
+  responses. Missing, duplicate or contradictory provider state, verdict, or
+  DeHashed key-slot fields are rejected. The job fails
   on anything other than `valid_response`.
 - Run the offline diagnostic contract checks with
   `bash tests/dehashed-auth-diagnostic.sh`. These use only synthetic outputs
