@@ -17,7 +17,8 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    breachdirectory, censys, hackertarget, hudsonrock, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse,
+    breachdirectory, censys, hackertarget, hudsonrock, hunter, ipinfo, ipqs, isc, kickbox, leakix,
+    maltiverse,
     netlas, opencellid, otx, phishstats, pulsedive, robtex, securitytrails, shodan, stopforumspam,
     submd, tags, threatfox, urlhaus, urlscan, whoxy, xposedornot,
 };
