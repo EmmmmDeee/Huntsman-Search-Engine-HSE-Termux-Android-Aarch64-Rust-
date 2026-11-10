@@ -10,6 +10,13 @@ trap 'rm -rf "$temp"' EXIT
 cat > "$temp/fake" <<'FAKE'
 #!/usr/bin/env bash
 [[ "$*" == "dehashed search --domain telstra.com.au --purpose security-research --size 1 --page 1" ]] || exit 65
+# Real CLI failures emit stderr and return nonzero without a success header.
+case "${MOCK_MODE:-record}" in
+  deny_empty) printf 'AUTH-ERROR-SECRET' >&2; exit 77 ;;
+  key_empty) printf 'NO-KEY-SECRET' >&2; exit 66 ;;
+  outage_empty) printf 'UPSTREAM-SECRET' >&2; exit 69 ;;
+  partial_empty) exit 1 ;;
+esac
 printf '%s\n' 'source=DeHashed' 'purpose=security-research'
 case "${MOCK_MODE:-record}" in
   wrong_query) printf '%s\n' 'query=domain:other.com' ;;
@@ -59,6 +66,10 @@ check zero 'dehashed_live=api_success_no_records domain=telstra.com.au' 0
 check deny 'dehashed_live=auth_or_entitlement_denied' 1
 check key 'dehashed_live=missing_key' 1
 check outage 'dehashed_live=upstream_unavailable' 1
+check deny_empty 'dehashed_live=auth_or_entitlement_denied' 1
+check key_empty 'dehashed_live=missing_key' 1
+check outage_empty 'dehashed_live=upstream_unavailable' 1
+check partial_empty 'dehashed_live=failed' 1
 check partial 'dehashed_live=failed' 1
 check wrong_query 'dehashed_live=failed' 1
 check duplicate 'dehashed_live=failed' 1
