@@ -48,8 +48,10 @@ fi
 
 state=""
 probe=""
+slot=""
 state_seen=0
 probe_seen=0
+slot_seen=0
 IFS=$'\t' read -r -a fields <<< "$line"
 for field in "${fields[@]}"; do
   case "$field" in
@@ -61,16 +63,29 @@ for field in "${fields[@]}"; do
       (( probe_seen += 1 ))
       probe="${field#probe=}"
       ;;
+    HUNTSMAN_DEHASHED_KEY=*)
+      (( slot_seen += 1 ))
+      slot="${field#HUNTSMAN_DEHASHED_KEY=}"
+      ;;
   esac
 done
-if [[ "$state_seen" != 1 || "$probe_seen" != 1 ]]; then
+if [[ "$state_seen" != 1 || "$probe_seen" != 1 || "$slot_seen" != 1 ]]; then
   printf 'dehashed_probe=malformed_status\n'
   exit 9
 fi
-if [[ "$state" != configured ]]; then
-  printf 'dehashed_probe=not_configured\n'
-  exit 2
-fi
+# The production status writer emits the slot beside state and verdict.
+# Contradictory or unknown values are malformed, never evidence of a valid key.
+case "$state:$slot" in
+  incomplete:unset)
+    printf 'dehashed_probe=not_configured\n'
+    exit 2
+    ;;
+  configured:set) ;;
+  *)
+    printf 'dehashed_probe=malformed_status\n'
+    exit 9
+    ;;
+esac
 case "$probe" in
   valid)
     printf 'dehashed_probe=valid_response\n'
