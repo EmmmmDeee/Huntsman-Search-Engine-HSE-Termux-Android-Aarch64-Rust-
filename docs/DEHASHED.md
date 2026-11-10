@@ -201,3 +201,35 @@ To configure a repository secret, use the GitHub repository's
 **Settings → Secrets and variables → Actions → New repository secret**.
 Set `HUNTSMAN_DEHASHED_KEY` (preferred) or `DEHASHED_API_KEY`. Do not commit
 a secret to source, a workflow YAML file, an issue, or a log.
+
+## One-credit live acceptance against a real entity
+
+An explicit live acceptance command uses the real DeHashed v2 client against
+the public Australian company domain `telstra.com.au`:
+
+```bash
+bash scripts/dehashed-live-domain-acceptance.sh --allow-one-paid-search ./target/debug/huntsman-recon
+```
+
+It submits exactly one `dehashed search --domain telstra.com.au
+--purpose security-research --size 1 --page 1` request, costing up to one
+search credit. It is not an unauthenticated or simulated test. The script
+accepts a successful, structurally valid API response and reports only
+`api_success_with_record` or `api_success_no_records`; any error,
+inconsistent header or exit code is a failure. It filters output in memory
+and never prints or stores breach entries, email addresses, credential
+values, or the provider's raw error response.
+
+The manual, main-only workflow
+`.github/workflows/dehashed-auth-diagnostic.yml` has an optional
+`run_real_domain_search` input, default **false**, which runs that paid
+acceptance only after the no-credit probe. Automated CI runs only
+`bash tests/dehashed-live-domain-acceptance.sh`, which uses synthetic
+fake-binary output and spends no credits.
+
+**Verification limits:** The offline contract verifies safe formatting,
+argument selection and failure propagation, not an authenticated API
+result. At the time of writing, GitHub-hosted runners did not start on
+PR #1811; no current DeHashed key was accessible in the chat execution
+environment. Accordingly, this live acceptance path remains **untested**
+until explicitly executed with an available key and a working runner.
