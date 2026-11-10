@@ -19,6 +19,7 @@ mod native_framework;
 mod network_config;
 mod risk;
 mod rotation;
+pub mod rhinser_dex;
 mod sdk;
 mod signer;
 
@@ -130,6 +131,10 @@ pub struct Analysis {
     /// Bounded AOSP proof-of-rotation observations, with explicit authentication status.
     pub rotation_chains: Vec<RotationChain>,
     pub code: CodeUrls,
+    /// Application class/method-name references from RHINSER/EMV packages only.
+    /// Static names are not method bodies or evidence of functional parity.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rhinser_method_inventories: Vec<rhinser_dex::Inventory>,
     /// The app's displayed name (`android:label`), resolved from `resources.arsc` when it is a
     /// resource reference, or taken inline when the manifest gives a literal. The manifest's own
     /// claim, never verified against a store listing.
@@ -760,10 +765,25 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
         }
     }
     fold_signing_certificates(&mut analysis, certificates);
+    // The general APK scanner remains unchanged for non-RHINSER apps:
+    // enumerate application method names only for the original package family.
+    let rhinser_app = analysis
+        .manifest
+        .as_ref()
+        .and_then(|manifest| manifest.package.as_deref())
+        .is_some_and(|package| package.starts_with("com.rhinse") || package.starts_with("com.emv."));
     for member in &archive.dex {
         if let Some(bytes) = read(member, MAX_APK_DEX_BYTES, &mut analysis) {
             if let Err(error) = analysis.code.read(&bytes) {
                 analysis.unread.push(format!("{}: {error}", member.name));
+            }
+            if rhinser_app {
+                match rhinser_dex::inspect(&bytes) {
+                    Ok(found) => analysis.rhinser_method_inventories.push(found),
+                    Err(error) => analysis
+                        .unread
+                        .push(format!("{}: RHINSER DEX inventory: {error}", member.name)),
+                }
             }
         }
     }
@@ -1141,6 +1161,20 @@ fn document_evidence(
         put(
             "apk_signer_android_debug_key",
             signer.android_debug.to_string(),
+        );
+    }
+    if !analysis.rhinser_method_inventories.is_empty() {
+        put(
+            "apk_rhinser_defined_class_entries",
+            analysis.rhinser_method_inventories.iter().map(|x| x.app_classes_defined.len()).sum::<usize>().to_string(),
+        );
+        put(
+            "apk_rhinser_method_name_pairs",
+            analysis.rhinser_method_inventories.iter().map(|x| x.app_method_name_pairs.len()).sum::<usize>().to_string(),
+        );
+        put(
+            "apk_rhinser_unowned_method_references",
+            analysis.rhinser_method_inventories.iter().map(|x| x.method_references_without_class_definition).sum::<usize>().to_string(),
         );
     }
     put(
