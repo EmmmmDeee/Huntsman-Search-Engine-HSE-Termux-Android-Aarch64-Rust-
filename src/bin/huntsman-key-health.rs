@@ -60,6 +60,8 @@ struct Slot {
 struct Report {
     schema_version: u8,
     observed_at_unix: u64,
+    expected_refresh_interval_secs: u64,
+    stale_after_unix: u64,
     status: &'static str,
     safety: &'static str,
     probe_requested: bool,
@@ -106,6 +108,7 @@ fn assemble(
     keys: &Keys,
     now: u64,
     key_resolution_warning_present: bool,
+    interval_secs: u64,
 ) -> Report {
     let probe_requested = probed.is_some();
     let providers: Vec<Row> = match probed {
@@ -118,6 +121,8 @@ fn assemble(
     Report {
         schema_version: SCHEMA_VERSION,
         observed_at_unix: now,
+        expected_refresh_interval_secs: interval_secs,
+        stale_after_unix: now.saturating_add(interval_secs).saturating_add(60),
         status: "provider_credential_health_not_credential_store",
         safety: "no_key_values; no_automatic_rotation; authenticated_probe_is_not_scan_use",
         probe_requested,
@@ -140,7 +145,7 @@ fn assemble(
     }
 }
 
-fn refresh(probe_requested: bool, output: &Path) -> Result<Report, String> {
+fn refresh(probe_requested: bool, output: &Path, interval_secs: u64) -> Result<Report, String> {
     let home = env::var_os("HOME");
     let resolved = Keys::for_lookup(home.as_deref());
     let statuses = provider_credentials::status(&resolved.keys);
@@ -156,6 +161,7 @@ fn refresh(probe_requested: bool, output: &Path) -> Result<Report, String> {
         &resolved.keys,
         clock::unix_now(),
         resolved.warning.is_some(),
+        interval_secs,
     );
     let bytes = serde_json::to_vec_pretty(&report)
         .map_err(|_| "health register JSON serialization failed".to_owned())?;
@@ -260,7 +266,7 @@ fn run() -> Result<(), String> {
         Some(opts) => opts,
     };
     loop {
-        match refresh(opts.probe, &opts.output) {
+        match refresh(opts.probe, &opts.output, opts.interval_secs) {
             Ok(report) => println!(
                 "credential_health_updated={} providers={} configured={} authenticated_probe_success={} probe_requested={}",
                 report.observed_at_unix,
@@ -300,7 +306,7 @@ mod tests {
     #[test]
     fn missing_key_never_claims_functional() {
         let keys = Keys::default();
-        let status = assemble(provider_credentials::status(&keys), None, &keys, 123, false);
+        let status = assemble(provider_credentials::status(&keys), None, &keys, 123, false, DEFAULT_INTERVAL_SECS);
         assert_eq!(status.authenticated_probe_success_count, 0);
         assert!(status.providers.iter().all(|p| !p.authenticated_probe_success));
     }
@@ -310,7 +316,7 @@ mod tests {
         let slot = provider_credentials::PROVIDERS[0].slots[0];
         let secret = "do-not-expose-api-secret-for-test";
         let keys = Keys::parse(&format!("{slot}={secret}")).unwrap();
-        let report = assemble(provider_credentials::status(&keys), None, &keys, 124, false);
+        let report = assemble(provider_credentials::status(&keys), None, &keys, 124, false, DEFAULT_INTERVAL_SECS);
         assert_eq!(report.authenticated_probe_success_count, 0);
         assert!(report.providers.iter().all(|p| !p.runtime_use_verified));
         assert!(!serde_json::to_string(&report).unwrap().contains(secret));
