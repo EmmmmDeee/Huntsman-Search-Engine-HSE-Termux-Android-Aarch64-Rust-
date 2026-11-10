@@ -259,14 +259,27 @@ pub fn transitive_closure<S: CrossScanStore>(
         if seed.entity.scan_id != origin_scan_id || !is_bridgeable(&seed.entity) {
             continue;
         }
+        // BridgedEntity is public and deserializable: supplied neighbours and
+        // tier are claims, not evidence. Revalidate against the store before
+        // reserving a frontier slot, even for direct API callers.
+        let verified_scans = overlapping_scans(store, origin_scan_id, &seed.entity)?;
+        let verified_tier = bridge_tier(&seed.entity);
         for scan_id in &seed.overlapping_scans {
+            if verified_scans.binary_search(scan_id).is_err() {
+                continue;
+            }
             if visited_scans.len() >= options.max_visited
                 || visited_scans.len() > options.max_frontier
             {
                 break;
             }
             if visited_scans.insert(scan_id.clone()) {
-                queue.push_back((scan_id.clone(), seed.entity.uid.clone(), 1usize, seed.tier));
+                queue.push_back((
+                    scan_id.clone(),
+                    seed.entity.uid.clone(),
+                    1usize,
+                    verified_tier,
+                ));
             }
         }
     }
@@ -767,6 +780,64 @@ mod tests {
         assert_eq!(links[0].target_scan_id, "scan-other");
         assert_eq!(links[0].depth, 1);
         assert_eq!(store.entities_for_scan("scan-other").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn public_transitive_api_rejects_invented_neighbors_and_tier() {
+        let mut store = FakeStore::default();
+        let origin = entity(EntityKind::IpAddress, "198.51.100.8", 0.9, "scan-origin");
+        store.insert(origin.clone());
+        store.insert(entity(
+            EntityKind::IpAddress,
+            "198.51.100.8",
+            0.9,
+            "scan-real",
+        ));
+        store.insert(entity(
+            EntityKind::IpAddress,
+            "198.51.100.9",
+            0.9,
+            "scan-unrelated",
+        ));
+        let before = store.entities_for_scan("scan-origin").unwrap();
+        let claimed = BridgedEntity {
+            entity: origin.clone(),
+            // A public API caller can forge both the claimed tier and neighbors.
+            tier: BridgeTier::Direct,
+            overlapping_scans: vec![
+                "scan-unrelated".to_owned(),
+                "scan-real".to_owned(),
+                "scan-absent".to_owned(),
+            ],
+        };
+        let links = transitive_closure(
+            &store,
+            "scan-origin",
+            &[claimed],
+            CrossScanOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(links.len(), 1, "unverified neighbors must be excluded");
+        assert_eq!(links[0].target_scan_id, "scan-real");
+        assert_eq!(links[0].depth, 1);
+        assert_eq!(links[0].tier, BridgeTier::Related);
+
+        let unsupported_only = BridgedEntity {
+            entity: origin,
+            tier: BridgeTier::Related,
+            overlapping_scans: vec!["scan-absent".to_owned()],
+        };
+        assert!(
+            transitive_closure(
+                &store,
+                "scan-origin",
+                &[unsupported_only],
+                CrossScanOptions::default(),
+            )
+            .unwrap()
+            .is_empty(),
+        );
+        assert_eq!(store.entities_for_scan("scan-origin").unwrap(), before);
     }
 
     #[test]
