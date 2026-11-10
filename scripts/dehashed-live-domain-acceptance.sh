@@ -36,6 +36,11 @@ summary="$(
     !in_entry && $0 == "purpose=security-research" { purpose++ }
     !in_entry && $0 == "query=domain:telstra.com.au" { query++ }
     !in_entry && $0 == "page=1" { page++ }
+    !in_entry && /^total=([0-9]+|<none>)$/ { total++ }
+    !in_entry && /^balance=([0-9]+|<none>)$/ { balance++ }
+    # The real CLI emits only these header names before the first entry.
+    # Unexpected fields (including a spurious record on an empty answer) fail.
+    !in_entry && $0 !~ /^(source=DeHashed|purpose=security-research|query=domain:telstra[.]com[.]au|page=1|results=[0-9]+|total=([0-9]+|<none>)|balance=([0-9]+|<none>)|took=.*)$/ { invalid=1 }
     !in_entry && /^results=[0-9]+$/ {
       results++
       count=substr($0,9)
@@ -43,7 +48,8 @@ summary="$(
     }
     END {
       if (source == 1 && purpose == 1 && query == 1 &&
-          page == 1 && results == 1 && !invalid &&
+          page == 1 && total == 1 && balance == 1 &&
+          results == 1 && !invalid &&
           ((count == 0 && entries == 0) || (count == 1 && entries == 1))) {
         printf "results=%d", count
       } else {
