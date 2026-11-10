@@ -38,6 +38,7 @@ pub mod blockchain;
 pub mod bluesky_user;
 pub mod breach_hybrid;
 pub mod breach_record;
+pub mod breachdirectory;
 pub mod canonical;
 pub mod cell_radar;
 pub mod censys;
