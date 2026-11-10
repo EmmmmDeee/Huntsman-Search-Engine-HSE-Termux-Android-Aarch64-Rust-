@@ -68,6 +68,8 @@ pub const ABR_GUID_ENV: &str = "HUNTSMAN_ABR_GUID";
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
 pub const ABUSEIPDB_KEY_ENV: &str = "HUNTSMAN_ABUSEIPDB_KEY";
 pub const BRAVE_KEY_ENV: &str = "HUNTSMAN_BRAVE_KEY";
+/// RapidAPI application key for the BreachDirectory source-only lookup.
+pub const BREACHDIRECTORY_KEY_ENV: &str = "HUNTSMAN_BREACHDIRECTORY_KEY";
 pub const CENSYS_ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
 pub const CERTSPOTTER_KEY_ENV: &str = "HUNTSMAN_CERTSPOTTER_KEY";
 pub const CENSYS_SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
@@ -153,6 +155,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     ABUSECH_KEY_ENV,
     ABUSEIPDB_KEY_ENV,
     BRAVE_KEY_ENV,
+    BREACHDIRECTORY_KEY_ENV,
     CENSYS_ID_ENV,
     CERTSPOTTER_KEY_ENV,
     CENSYS_SECRET_ENV,
