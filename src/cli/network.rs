@@ -1,6 +1,5 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
-use std::env;
 use std::fmt::Write as _;
 use std::io::Write;
 use std::path::Path;
