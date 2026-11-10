@@ -219,3 +219,16 @@ run `huntsman-recon credential-status --probe` there directly.
 For the GitHub runner, add the key separately in the repository's
 **Settings → Secrets and variables → Actions**. Do not copy any key
 into source code, a workflow log, a pull request or chat.
+
+### Real-company paid-search acceptance
+
+The manual workflow `.github/workflows/dehashed-auth-diagnostic.yml`
+offers `run_real_domain_search` (default **false**). With a current
+`HUNTSMAN_DEHASHED_KEY` (or fallback `DEHASHED_API_KEY`) and a working
+GitHub Actions runner, enabling it performs one actual DeHashed v2 search
+for `domain:telstra.com.au`, `size=1`. It consumes up to one search
+credit. The CLI output is filtered in memory; only a fixed success/failure
+verdict and aggregate record count can enter the workflow log. The
+workflow itself must first be reviewed and merged to `main` before
+manual dispatch. The separate offline contract cannot establish actual
+provider availability, authentication or entitlement.
