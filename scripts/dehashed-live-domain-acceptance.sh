@@ -27,7 +27,11 @@ summary="$(
     --purpose security-research \
     --size 1 --page 1 2>/dev/null |
   awk '
-    /^entry=/ { in_entry=1 }
+    /^entry=/ {
+      in_entry=1
+      entries++
+      if ($0 != "entry=1") invalid=1
+    }
     !in_entry && $0 == "source=DeHashed" { source++ }
     !in_entry && $0 == "purpose=security-research" { purpose++ }
     !in_entry && $0 == "query=domain:telstra.com.au" { query++ }
@@ -39,7 +43,8 @@ summary="$(
     }
     END {
       if (source == 1 && purpose == 1 && query == 1 &&
-          page == 1 && results == 1 && !invalid) {
+          page == 1 && results == 1 && !invalid &&
+          ((count == 0 && entries == 0) || (count == 1 && entries == 1))) {
         printf "results=%d", count
       } else {
         exit 91
