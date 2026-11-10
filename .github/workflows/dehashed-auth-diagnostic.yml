@@ -1,4 +1,4 @@
-name: DeHashed credential probe (manual)
+name: DeHashed credential or live-domain acceptance (manual)
 
 # The production key is available only to a manually dispatched run of the
 # reviewed default branch. Pull requests and branch pushes never receive it.
@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   credential-probe:
-    name: DeHashed v2 probe response (not a paid-search test)
+    name: DeHashed v2 free probe or opt-in paid domain acceptance
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -50,7 +50,10 @@ jobs:
           HUNTSMAN_DEHASHED_KEY: ${{ secrets.HUNTSMAN_DEHASHED_KEY || secrets.DEHASHED_API_KEY }}
         run: |
           set -euo pipefail
-          bash .github/scripts/dehashed-auth-diagnostic.sh ./target/debug/huntsman-recon
           if [[ "${{ inputs.run_real_domain_search }}" == "true" ]]; then
+            # The paid search gives a conclusive entitlement result independently
+            # of the free endpoint's potentially inconclusive response shape.
             bash scripts/dehashed-live-domain-acceptance.sh --allow-one-paid-search ./target/debug/huntsman-recon
+          else
+            bash .github/scripts/dehashed-auth-diagnostic.sh ./target/debug/huntsman-recon
           fi
