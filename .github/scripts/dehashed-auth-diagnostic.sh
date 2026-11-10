@@ -18,7 +18,19 @@ fi
 # Avoid probing any unrelated configured provider; never log raw command output.
 probe_home="$(mktemp -d)"
 trap 'rm -rf "$probe_home"' EXIT
-if ! report="$(HOME="$probe_home" "$binary" credential-status --probe 2>/dev/null)"; then
+# credential-status --probe examines every configured provider. A temporary
+# HOME alone does not remove ambient process credentials, so drop unrelated
+# provider slots *inside the subshell* before invoking the production binary.
+# Keep the selected key in the environment rather than an argv assignment.
+if ! report="$(
+  while IFS= read -r slot; do
+    case "$slot" in
+      HUNTSMAN_DEHASHED_KEY) ;;
+      HUNTSMAN_*|HSE_*|HIBP_API_KEY) unset "$slot" ;;
+    esac
+  done < <(compgen -e)
+  HOME="$probe_home" "$binary" credential-status --probe 2>/dev/null
+)"; then
   printf 'dehashed_probe=execution_failed\n'
   exit 4
 fi
