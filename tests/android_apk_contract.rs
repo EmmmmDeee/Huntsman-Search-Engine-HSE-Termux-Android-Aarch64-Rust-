@@ -45,6 +45,8 @@ fn apk_manifest_wires_only_declared_android_adapters() {
     assert!(launcher.contains("new SecureRandom()"));
     assert!(job.contains("setPersisted(true)"));
     assert!(job.contains("setPeriodic(REFRESH_PERIOD_MS)"));
+    assert!(job.contains("needsReschedule = process.waitFor() != 0"));
+    assert!(job.contains("jobFinished(params, needsReschedule)"));
     assert!(build.contains("--bin huntsman-recon --bin huntsman-key-health"));
     assert!(packaging.contains("useLegacyPackaging = true"));
     assert!(packaging.contains("keepDebugSymbols.add(\"**/libhuntsman.so\")"));
