@@ -1,64 +1,82 @@
 #!/usr/bin/env bash
-# Credit-free DeHashed key diagnostic, using HUNTSMAN's production credential probe.
-# Never print the key, arbitrary provider output, or error response bodies.
+# Read-only, credit-free HUNTSMAN DeHashed probe. A valid response is NOT
+# independent proof that the key was authenticated or that paid search works.
 set -euo pipefail
+set +x
+umask 077
 
 binary="${1:-./target/debug/huntsman-recon}"
 if [[ -z "${HUNTSMAN_DEHASHED_KEY:-}" ]]; then
-  printf 'dehashed_auth=not_configured\n'
+  printf 'dehashed_probe=not_configured\n'
   exit 2
 fi
 if [[ ! -x "$binary" ]]; then
-  printf 'dehashed_auth=binary_unavailable\n'
+  printf 'dehashed_probe=binary_unavailable\n'
   exit 3
 fi
 
-# A clean HOME prevents a runner's other saved provider credentials being probed.
+# Avoid probing any unrelated configured provider; never log raw command output.
 probe_home="$(mktemp -d)"
 trap 'rm -rf "$probe_home"' EXIT
 if ! report="$(HOME="$probe_home" "$binary" credential-status --probe 2>/dev/null)"; then
-  printf 'dehashed_auth=probe_execution_failed\n'
+  printf 'dehashed_probe=execution_failed\n'
   exit 4
 fi
 
-# HUNTSMAN emits tab-delimited status fields. Consume just DeHashed's status
-# and discard all other provider output; never echo raw output to CI logs.
-line="$(printf '%s\n' "$report" | awk -F '\t' '$1 == "provider=DeHashed" { print; exit }')"
+# Exactly one DeHashed row is necessary. No pipelines with an early-exiting
+# reader under pipefail, and no line or value from upstream is printed.
+line="$(awk -F '\t' '
+  $1 == "provider=DeHashed" { count++; candidate=$0 }
+  END { if (count == 1) print candidate }
+' <<< "$report")"
 if [[ -z "$line" ]]; then
-  printf 'dehashed_auth=provider_not_reported\n'
+  printf 'dehashed_probe=missing_or_duplicate_provider\n'
   exit 5
 fi
+
 state=""
 probe=""
+state_seen=0
+probe_seen=0
 IFS=$'\t' read -r -a fields <<< "$line"
 for field in "${fields[@]}"; do
   case "$field" in
-    state=*) state="${field#state=}" ;;
-    probe=*) probe="${field#probe=}" ;;
+    state=*)
+      (( state_seen += 1 ))
+      state="${field#state=}"
+      ;;
+    probe=*)
+      (( probe_seen += 1 ))
+      probe="${field#probe=}"
+      ;;
   esac
 done
+if [[ "$state_seen" != 1 || "$probe_seen" != 1 ]]; then
+  printf 'dehashed_probe=malformed_status\n'
+  exit 9
+fi
 if [[ "$state" != configured ]]; then
-  printf 'dehashed_auth=not_configured\n'
+  printf 'dehashed_probe=not_configured\n'
   exit 2
 fi
 case "$probe" in
   valid)
-    printf 'dehashed_auth=accepted\n'
+    printf 'dehashed_probe=valid_response\n'
     ;;
   rejected)
-    printf 'dehashed_auth=rejected\n'
+    printf 'dehashed_probe=rejected\n'
     exit 6
     ;;
   rate_limited)
-    printf 'dehashed_auth=rate_limited\n'
+    printf 'dehashed_probe=rate_limited\n'
     exit 7
     ;;
   indeterminate|unavailable|unsupported|not_configured)
-    printf 'dehashed_auth=inconclusive\n'
+    printf 'dehashed_probe=inconclusive\n'
     exit 8
     ;;
   *)
-    printf 'dehashed_auth=unexpected_probe_result\n'
+    printf 'dehashed_probe=unexpected_verdict\n'
     exit 9
     ;;
 esac
