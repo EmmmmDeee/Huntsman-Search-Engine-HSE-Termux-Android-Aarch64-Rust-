@@ -22,11 +22,12 @@ use crate::{
 };
 
 /// The breach legs an email address's lookup folds in.
-const BREACH: [&str; 4] = [
+const BREACH: [&str; 5] = [
     exposure_cli::HIBP_MODULE,
     crate::stolen_tax::SOURCE,
     oathnet::SOURCE,
     dehashed::COLLECTOR_ID,
+    crate::breachdirectory::SOURCE,
 ];
 
 /// Every module `kind`'s lookup may ask, each once, in the order it asks them. **Pure.**
@@ -106,6 +107,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             seeknow_collector::COLLECTOR_ID,
             crate::stolen_tax::SOURCE,
             oathnet::SOURCE,
+            crate::breachdirectory::SOURCE,
         ],
         ScanKind::Phone => {
             let mut phone = vec![numverify::SOURCE];
