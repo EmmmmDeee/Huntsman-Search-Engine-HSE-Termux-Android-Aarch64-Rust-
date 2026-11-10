@@ -207,7 +207,9 @@ The wrapper executes `credential-status --probe` in an isolated HOME
 and removes other provider credential environment slots in a subshell.
 Without that second isolation step, the command would also probe unrelated
 providers supplied by the ambient environment. It publishes one fixed
-`dehashed_probe=` status and sends no paid DeHashed search. `valid_response` means that the response matched HUNTSMAN's
+`dehashed_probe=` status and sends no paid DeHashed search. The wrapper
+rejects inconsistent state and key-slot fields rather than reporting
+`valid_response` from a contradictory row. `valid_response` means that the response matched HUNTSMAN's
 existing probe schema. The endpoint was not checked against an unauthenticated
 negative control, so this is **not independent proof of key acceptance**,
 paid-search entitlement or an individual's exposed records.
