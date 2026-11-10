@@ -1,3 +1,5 @@
+> **Android single-APK development candidate (unmerged):** See [the canonical HUNTSMAN × RHINSER Android/runbook](docs/ANDROID_RHINSER_SINGLE_APK.md) for the ARM64 one-APK build source, private Rust API-key health watcher, current functional-parity limitations, acceptance tests and roadmap. **No installable APK or 100% RHINSER parity is yet verified.** Existing Termux and Web UI operations are unchanged by default.
+
 # Huntsman Search Engine
 
 Rust OSINT search engine and SpiderFoot-compatible recon for Termux on Android ARM64 (aarch64), no root, with a phone Web UI.
