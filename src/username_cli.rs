@@ -287,6 +287,49 @@ pub fn run<T: Transport + Sync + ?Sized>(
             )),
         }
     }
+    // One operator-keyed BreachDirectory query for this exact handle. It uses
+    // the same bounded, credential-pinned fetch path as the email indicator leg.
+    // An absent key is a not-configured row, never a clean negative.
+    if transport.runs_module(crate::breachdirectory::SOURCE) {
+        let api = &crate::breachdirectory::API;
+        if api.wanted(keys) {
+            match crate::breachdirectory::lookup_username(transport, keys, &username, now_unix) {
+                Ok(Some(finding)) => {
+                    let mut entity = Entity::new(EntityKind::Username, &username, 0.9, &scan_id);
+                    for tag in finding.tags {
+                        entity.tag(tag);
+                    }
+                    let mut evidence = Evidence::new(
+                        EvidenceProvenance::for_scan(crate::breachdirectory::SOURCE, &scan_id),
+                        finding.summary,
+                    );
+                    for (key, value) in finding.attrs {
+                        evidence = evidence.with_attr(key, value);
+                    }
+                    entity.add_evidence(evidence);
+                    report.entities.push(entity);
+                    report.outcomes.push(
+                        SourceExecutionOutcome::success(
+                            crate::breachdirectory::SOURCE,
+                            now_unix,
+                            1,
+                        )
+                        .with_http_status(200),
+                    );
+                }
+                Ok(None) => report.outcomes.push(SourceExecutionOutcome::valid_zero(
+                    crate::breachdirectory::SOURCE,
+                    now_unix,
+                )),
+                Err(error) => report.outcomes.push(error.outcome(api, now_unix)),
+            }
+        } else {
+            report
+                .outcomes
+                .extend(api.unasked_for_want_of_a_key(transport, keys, now_unix));
+        }
+    }
+
     merge_by_uid(&mut report.entities);
 
     // When no profile source answered, the lookup ends from its rows: a request refused before
