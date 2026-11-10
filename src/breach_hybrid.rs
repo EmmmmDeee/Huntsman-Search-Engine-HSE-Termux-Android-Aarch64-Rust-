@@ -21,6 +21,8 @@ pub enum BreachLeg {
     /// non-credential value a record holds leaves it; a password, hash or salt leaves only as
     /// exposed.
     DeHashed,
+    /// BreachDirectory source names only via the operator's RapidAPI key.
+    BreachDirectory,
 }
 
 /// Free legs always. Keyed legs only when an operator key is present.
@@ -32,6 +34,7 @@ pub fn exposure_order(has_operator_key: bool) -> Vec<BreachLeg> {
         order.push(BreachLeg::StolenTax);
         order.push(BreachLeg::OathNet);
         order.push(BreachLeg::DeHashed);
+        order.push(BreachLeg::BreachDirectory);
     }
     order
 }
@@ -65,7 +68,8 @@ mod tests {
                 BreachLeg::HibpAccount,
                 BreachLeg::StolenTax,
                 BreachLeg::OathNet,
-                BreachLeg::DeHashed
+                BreachLeg::DeHashed,
+                BreachLeg::BreachDirectory
             ]
         );
     }
