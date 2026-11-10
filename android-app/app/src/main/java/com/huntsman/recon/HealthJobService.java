@@ -29,10 +29,11 @@ public final class HealthJobService extends JobService {
 
     @Override public boolean onStartJob(JobParameters params) {
         new Thread(() -> {
+            boolean needsReschedule = false;
             try {
                 File executable = new File(getApplicationInfo().nativeLibraryDir,
                         "libhuntsman_key_health.so");
-                if (!executable.isFile()) return;
+                if (!executable.isFile()) { needsReschedule = true; return; }
                 ProcessBuilder builder = new ProcessBuilder(executable.getAbsolutePath());
                 builder.environment().put("HOME", getFilesDir().getAbsolutePath());
                 builder.redirectErrorStream(true);
@@ -44,12 +45,13 @@ public final class HealthJobService extends JobService {
                         // Discard process output; secret strings never enter Android logs.
                     }
                 }
-                process.waitFor();
+                needsReschedule = process.waitFor() != 0;
             } catch (Exception ignored) {
                 // A failed refresh leaves the last atomic Rust report intact.
+                needsReschedule = true;
             } finally {
                 active = null;
-                jobFinished(params, false);
+                jobFinished(params, needsReschedule);
             }
         }, "huntsman-health-refresh").start();
         return true;
