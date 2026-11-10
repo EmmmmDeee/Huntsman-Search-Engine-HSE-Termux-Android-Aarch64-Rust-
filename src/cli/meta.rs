@@ -97,7 +97,7 @@ pub(super) fn credential_status_cmd(args: &[String]) -> ExitCode {
         }
     }
 
-    let home = env::var_os("HOME");
+    let home = huntsman_recon::environment::home();
     match Keys::resolve(explicit, home.as_deref()) {
         Ok(resolved) => {
             if let Some(warning) = resolved.warning {
