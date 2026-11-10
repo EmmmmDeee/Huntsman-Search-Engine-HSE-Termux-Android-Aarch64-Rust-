@@ -1,0 +1,78 @@
+name: Android AArch64 HUNTSMAN APK (candidate)
+
+on:
+  pull_request:
+    paths:
+      - "android-app/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "tests/android_apk_contract.rs"
+      - ".github/workflows/android-rhinser-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and inspect one ARM64 debug APK
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DIST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.1.0'
+      - name: Install Rust and Android target
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup default 1.99.0
+          rustup target add aarch64-linux-android
+      - name: Resolve Android SDK and NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ANDROID_HOME:?Runner has no Android SDK}"
+          test -d "$ANDROID_HOME/ndk" || { echo "No Android NDK" >&2; exit 1; }
+          ndk="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          test -n "$ndk" || { echo "No NDK revision" >&2; exit 1; }
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+      - name: Check native Rust integration tests
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked --test android_apk_contract
+          cargo test --locked --bin huntsman-key-health
+      - name: Compile and package exactly one APK
+        run: bash android-app/build-apk.sh
+      - name: Inspect APK members and Android manifest
+        run: |
+          set -euo pipefail
+          apk=android-app/app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          unzip -t "$apk"
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libhuntsman.so'
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libhuntsman_key_health.so'
+          sha256sum "$apk" | tee android-app/APK_SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: huntsman-android-aarch64-debug-apk
+          path: |
+            android-app/app/build/outputs/apk/debug/app-debug.apk
+            android-app/APK_SHA256.txt
+          retention-days: 14
+          if-no-files-found: error
