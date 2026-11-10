@@ -191,20 +191,24 @@ examples, documentation, or issue/PR text.
 
 ## GitHub Actions DeHashed credential check
 
-For automated **key-authentication diagnostics only**, run
-`.github/workflows/dehashed-auth-diagnostic.yml` using GitHub Actions.
-The job accepts existing GitHub repository secrets `HUNTSMAN_DEHASHED_KEY`
-(preferred) or `DEHASHED_API_KEY` (fallback). Neither secret is stored
-in the repository or recovered from historical logs; if both are absent,
-the job reports `dehashed_auth=not_configured`.
+For a **read-only probe-response diagnostic**, manually dispatch
+`.github/workflows/dehashed-auth-diagnostic.yml` on `main` using GitHub
+Actions after review and merge. The workflow has no push or pull-request
+trigger. It accepts existing repository secrets `HUNTSMAN_DEHASHED_KEY`
+(preferred) or `DEHASHED_API_KEY` (fallback), supplied only to the
+probe step. The existence and validity of a GitHub secret have **not**
+been independently verified. Historical workflow logs cannot reveal
+the value of a properly stored GitHub secret.
 
 The job first runs the offline contract
-`bash tests/dehashed-auth-diagnostic.sh`, then builds the production
-`huntsman-recon` binary **without** exposing a secret to the compiler,
-and finally runs `credential-status --probe` in an isolated HOME. The
-wrapper prints only fixed authentication statuses and sends **no**
-paid DeHashed search. A valid authentication response is not proof of
-paid search entitlement or of a record matching any individual.
+`bash tests/dehashed-auth-diagnostic.sh`, then builds the genuine
+`huntsman-recon` binary without exposing a secret to its compiler.
+The wrapper executes `credential-status --probe` in an isolated HOME,
+publishes one fixed `dehashed_probe=` status and sends no paid DeHashed
+search. `valid_response` means that the response matched HUNTSMAN's
+existing probe schema. The endpoint was not checked against an unauthenticated
+negative control, so this is **not independent proof of key acceptance**,
+paid-search entitlement or an individual's exposed records.
 
 If you already have a working DeHashed key on the Termux handset,
 run `huntsman-recon credential-status --probe` there directly.
