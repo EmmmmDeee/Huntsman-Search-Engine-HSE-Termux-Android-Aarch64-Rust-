@@ -75,6 +75,8 @@ pub const CENSYS_SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
 pub const CENSYS_TOKEN_ENV: &str = "HUNTSMAN_CENSYS_TOKEN";
 pub const CRIMINALIP_KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 pub const DEHASHED_KEY_ENV: &str = "HUNTSMAN_DEHASHED_KEY";
+/// RapidAPI key explicitly configured for the BreachDirectory source-only lookup.
+pub const BREACHDIRECTORY_KEY_ENV: &str = "HUNTSMAN_BREACHDIRECTORY_KEY";
 pub const DOMAINSDB_KEY_ENV: &str = "HUNTSMAN_DOMAINSDB_KEY";
 pub const X_BEARER_TOKEN_ENV: &str = "HUNTSMAN_X_BEARER_TOKEN";
 pub const EXA_KEY_ENV: &str = "HUNTSMAN_EXA_KEY";
@@ -159,6 +161,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     CENSYS_TOKEN_ENV,
     CRIMINALIP_KEY_ENV,
     DEHASHED_KEY_ENV,
+    BREACHDIRECTORY_KEY_ENV,
     DOMAINSDB_KEY_ENV,
     X_BEARER_TOKEN_ENV,
     EXA_KEY_ENV,
