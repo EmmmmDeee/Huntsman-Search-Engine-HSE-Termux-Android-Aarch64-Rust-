@@ -153,7 +153,17 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Finding>, LegError> {
     let mut explicit_sources = false;
     if let Some(source_field) = object.get("sources") {
         explicit_sources = true;
-        add_sources(source_field, &mut names)?;
+        // Some historical clients treat null as no sources. Only a reported
+        // zero can make that interpretation safe; otherwise fail closed.
+        if source_field.is_null() {
+            if reported_found != Some(0) {
+                return Err(LegError::Decode(
+                    "null BreachDirectory sources without an explicit zero".into(),
+                ));
+            }
+        } else {
+            add_sources(source_field, &mut names)?;
+        }
     }
     if let Some(result) = object.get("result") {
         explicit_sources = true;
@@ -201,9 +211,9 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Finding>, LegError> {
         )
     };
     let mut finding = Finding::new(summary)
-    .attr("source_count", count.to_string())
-    .list_attr("breach_sources", &distinct)
-    .tag(tags::BREACH);
+        .attr("source_count", count.to_string())
+        .list_attr("breach_sources", &distinct)
+        .tag(tags::BREACH);
     if let Some(found) = reported_found {
         finding = finding.attr("reported_found", found.to_string());
     }
@@ -246,6 +256,10 @@ mod tests {
         assert!(finding.attrs.iter().any(|(key, val)| *key == "breach_sources" && val == "A,B"));
         assert!(matches!(decode(br#"{"success":true,"sources":[]}"#), Ok(None)));
         assert!(matches!(decode(br#"{"success":true,"found":0}"#), Ok(None)));
+        assert!(matches!(
+            decode(br#"{"success":true,"found":0,"sources":null}"#),
+            Ok(None)
+        ));
     }
 
     #[test]
