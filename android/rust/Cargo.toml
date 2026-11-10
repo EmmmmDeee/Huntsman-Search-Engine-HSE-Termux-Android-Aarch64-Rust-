@@ -14,3 +14,9 @@ crate-type = ["cdylib"]
 [dependencies]
 huntsman-recon = { path = "../.." }
 jni = { version = "0.21", default-features = false }
+
+# Keep one native library while retaining unwind for the resilient web server.
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
