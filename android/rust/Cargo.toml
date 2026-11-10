@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "huntsman-android"
+version = "0.2.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "huntsman_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+huntsman-recon = { path = "../.." }
+jni = { version = "0.21", default-features = false }
