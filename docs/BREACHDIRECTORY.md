@@ -17,7 +17,7 @@ direct-backend endpoints.
 | Pin | `https://breachdirectory.p.rapidapi.com:443` |
 | Redirects | None |
 | Request timeout | 20 seconds |
-| Client pacing | Conservative shared 60/minute |
+| Client pacing | Shared one-request-per-second sliding window (no initial burst) |
 | Parsing | `sources` must be a JSON array of nonempty source-name strings |
 | Max names | 256, each at most 256 bytes |
 | Output | One provider evidence source, not independent corroboration per named breach |
