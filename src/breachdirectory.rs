@@ -54,7 +54,7 @@ pub fn decode_sources(body: &[u8]) -> Result<Search, SourceOutcomeKind> {
         serde_json::from_slice(body).map_err(|_| SourceOutcomeKind::ParserDrift)?;
     let object = data.as_object().ok_or(SourceOutcomeKind::SchemaDrift)?;
     if object.get("success") == Some(&Value::Bool(false))
-        || object.get("error").is_some_and(|error| !error.is_null() && error != false)
+        || object.get("error").is_some_and(|error| !error.is_null() && error != &Value::Bool(false))
     {
         return Err(SourceOutcomeKind::Inconclusive);
     }
