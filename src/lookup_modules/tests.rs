@@ -204,6 +204,7 @@ fn keys() -> Keys {
     slots.extend([
         stolen_tax::KEY_SLOT,
         oathnet::KEY_SLOT,
+        crate::breachdirectory::KEY_SLOT,
         wigle::USER_SLOT,
         wigle::TOKEN_SLOT,
         environment::GITHUB_TOKEN_ENV,
@@ -340,6 +341,7 @@ fn exposure<N: Transport + Clone + Send + Sync + 'static>(
         stolen_tax: Some((transport, keys)),
         oathnet: Some((transport, keys)),
         dehashed: Some(&dehashed),
+        breachdirectory: Some((transport, keys)),
         selection: Some(chosen),
     };
     match exposure_cli::run(sources, target, now) {
