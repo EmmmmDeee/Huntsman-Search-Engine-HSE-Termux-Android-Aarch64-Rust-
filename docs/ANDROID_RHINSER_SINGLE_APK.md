@@ -26,6 +26,21 @@ Expected **output only after successful build**:
 
 The build script refuses a non-Bionic executable; both Rust bins must have the Android `/system/bin/linker64` interpreter. Android 10+ cannot execute app-writable home binaries, so the ABI-specific executables are packaged as `lib*.so` and extracted to `nativeLibraryDir`. The original Rust engine is not rewritten.
 
+## Phone-only APK acquisition from GitHub Actions
+
+The source repository now includes `.github/workflows/android-rhinser-apk.yml`.
+On a branch pull request it attempts a credential-free ARM64 debug APK build,
+runs the new Rust tests, inspects the APK's native libraries and uploads an
+artifact named `huntsman-android-aarch64-debug-apk` containing the APK and
+`APK_SHA256.txt`. After an **actually successful** run a phone can open
+**GitHub → Actions → successful run → Artifacts**, download the APK,
+independently compare the SHA-256 digest and install it. This is debug signed,
+not a supported release; stable release signing, update/migration testing,
+and a physical handset acceptance are separate requirements.
+
+GitHub Actions are still failing before runner allocation, so this workflow
+has not produced any downloadable APK. Its existence is not build evidence.
+
 **Not established:** This environment lacks Cargo, Android SDK, Gradle and an Android device. Neither an APK binary, APK signature, installation, WebView navigation nor Android background-process behaviour has passed on a physical AArch64 phone.
 
 ## Run and verification gates
