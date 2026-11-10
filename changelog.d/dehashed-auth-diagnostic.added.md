@@ -3,3 +3,14 @@
 - Isolate the diagnostic from ambient process credentials as well as HOME files. The existing `credential-status --probe` checks all configured providers, so inherited `HUNTSMAN_*` slots and `HIBP_API_KEY` otherwise trigger unrelated provider probes. A new regression first failed on the old wrapper, then passed after the minimal Bash fix; the selected DeHashed key is never placed in a command-line argument.
 - Fail closed when a DeHashed status reports `state=configured` and `probe=valid` but its key slot is `unset`, missing or duplicated. New synthetic regressions reproduced the earlier false-positive success and now pass after correcting the parser.
 - Correct stale DeHashed documentation: November 2026 authenticated live tests fixed domain-query syntax, but neither their commit logs nor the credit-free `search-password` response prove that a currently accessible GitHub secret works for paid searches. The existing probe's `results_found` schema check is represented as `valid_response`, not independently verified authentication.
+
+- Add an explicit one-credit real-company acceptance command and opt-in
+  `workflow_dispatch` input using `telstra.com.au` (real public-domain
+  target). It invokes the unchanged Rust DeHashed client with one
+  `security-research` exact-match search of one record, suppresses all
+  raw breach/provider output, and reports only structural API success
+  and aggregate result count. An offline fake-binary contract tests
+  successful and empty responses, invalid/mismatched output, missing keys,
+  provider failures and `pipefail` handling. No authenticated live
+  execution has yet occurred on PR #1811 because GitHub-hosted runners
+  cannot be allocated and an accessible current key is unavailable.
