@@ -4,7 +4,7 @@
 
 `src/bin/huntsman-key-health.rs` is a native Rust executable linked to the canonical `huntsman-recon` library. It continuously refreshes a **non-secret JSON status file** while running, using exactly the same credential-slot resolver and provider catalogue as `huntsman-recon credential-status`.
 
-The JSON snapshot is **not a file of API keys**. Real key values remain in the operator-owned `$HOME/.huntsman.env`, provider-specific private files or environment variables. The health report contains provider names, slot names, configuration presence, non-sensitive probe verdicts and timestamps. It does not contain secret values, tokens, credentials, raw API bodies or user-targeted lookup data.
+The JSON snapshot is **not a file of API keys**. Real key values remain in the operator-owned `$HOME/.huntsman.env`, provider-specific private files or environment variables. The health report contains provider names, slot names, configuration presence, non-sensitive probe verdicts, observed timestamps and a `stale_after_unix` expiry. It does not contain secret values, tokens, credentials, raw API bodies or user-targeted lookup data.
 
 ## Run on Termux / host
 
@@ -23,6 +23,7 @@ Default status location: `$HOME/.huntsman/api-key-health.json` (private JSON fil
 - `runtime_use_verified=false` is deliberate. Provider subscription validity is not evidence of actual search execution. A future module-level source execution ledger can supply that proof.
 - There is **no automatic procurement, key guessing, rotation or renewal**. Each provider controls issuance, revocation and expiry. Automated rotation is possible only for an explicitly connected provider supporting official managed rotation.
 - `--probe` is opt-in because provider tests can consume API quota. The same existing single guarded HTTP client, origin guards and service contracts are reused.
+- Consumers **must treat the snapshot as stale** once the current Unix timestamp passes `stale_after_unix`; a formerly working key is not proof of continued validity.
 - The refresh loop operates only while the process runs; Android power management, crashes and disconnections can stop it. Set up a supported foreground service / process supervisor for restart and verified uptime; this program alone cannot promise perpetual maintenance.
 
 ## Acceptance and limitations
