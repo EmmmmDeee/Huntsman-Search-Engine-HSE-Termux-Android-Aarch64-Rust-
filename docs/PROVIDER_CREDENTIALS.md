@@ -187,3 +187,27 @@ HUNTSMAN_X_BEARER_TOKEN=
 
 Never place populated values in this repository, release artifacts, logs,
 examples, documentation, or issue/PR text.
+
+
+## GitHub Actions DeHashed credential check
+
+For automated **key-authentication diagnostics only**, run
+`.github/workflows/dehashed-auth-diagnostic.yml` using GitHub Actions.
+The job accepts existing GitHub repository secrets `HUNTSMAN_DEHASHED_KEY`
+(preferred) or `DEHASHED_API_KEY` (fallback). Neither secret is stored
+in the repository or recovered from historical logs; if both are absent,
+the job reports `dehashed_auth=not_configured`.
+
+The job first runs the offline contract
+`bash tests/dehashed-auth-diagnostic.sh`, then builds the production
+`huntsman-recon` binary **without** exposing a secret to the compiler,
+and finally runs `credential-status --probe` in an isolated HOME. The
+wrapper prints only fixed authentication statuses and sends **no**
+paid DeHashed search. A valid authentication response is not proof of
+paid search entitlement or of a record matching any individual.
+
+If you already have a working DeHashed key on the Termux handset,
+run `huntsman-recon credential-status --probe` there directly.
+For the GitHub runner, add the key separately in the repository's
+**Settings → Secrets and variables → Actions**. Do not copy any key
+into source code, a workflow log, a pull request or chat.
