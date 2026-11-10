@@ -22,7 +22,7 @@ if grep -Eq '^[[:space:]]+(contents|issues|pull-requests|actions): write' "$work
   echo 'credential workflow requests write permission'
   exit 1
 fi
-if [[ $(grep -c '\$\{\{ secrets\.' "$workflow") != 1 ]]; then
+if [[ $(grep -F -c '${{ secrets.' "$workflow") != 1 ]]; then
   echo 'credential must be injected in one probe step only'
   exit 1
 fi
