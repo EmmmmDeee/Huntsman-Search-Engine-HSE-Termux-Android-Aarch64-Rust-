@@ -17,14 +17,19 @@ case "${MOCK_MODE:-record}" in
 esac
 printf '%s\n' 'page=1'
 case "${MOCK_MODE:-record}" in
-  zero) printf '%s\n' 'results=0' ;;
+  zero|zero_has_entry) printf '%s\n' 'results=0' ;;
   duplicate) printf '%s\n' 'results=1' 'results=1' ;;
   wrong_count) printf '%s\n' 'results=2' ;;
   *) printf '%s\n' 'results=1' ;;
 esac
-printf '%s\n' 'total=72' 'balance=901' 'entry=1' \
-  'database=FAKE-RECORD' 'email=DO-NOT-DISCLOSE@example.invalid' \
-  'has_password=true'
+printf '%s\n' 'total=72' 'balance=901'
+case "${MOCK_MODE:-record}" in
+  zero|missing_entry) ;;
+  extra_entry) printf '%s\n' 'entry=1' 'entry=2' ;;
+  *) printf '%s\n' 'entry=1' ;;
+esac
+printf '%s\n' 'database=FAKE-RECORD' 'email=DO-NOT-DISCLOSE@example.invalid' \
+  'has_password=true' 
 printf '%s\n' 'DO-NOT-DISCLOSE-ERROR' >&2
 case "${MOCK_MODE:-record}" in
   deny) exit 77 ;;
@@ -58,6 +63,9 @@ check partial 'dehashed_live=failed' 1
 check wrong_query 'dehashed_live=failed' 1
 check duplicate 'dehashed_live=failed' 1
 check wrong_count 'dehashed_live=failed' 1
+check missing_entry 'dehashed_live=failed' 1
+check extra_entry 'dehashed_live=failed' 1
+check zero_has_entry 'dehashed_live=failed' 1
 
 code=0
 result="$(bash "$script" "$temp/fake")" || code=$?
