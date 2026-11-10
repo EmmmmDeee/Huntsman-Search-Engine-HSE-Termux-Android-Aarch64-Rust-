@@ -26,3 +26,23 @@ fn apk_loopback_rejects_token_control_characters() {
         "127.0.0.1:8080", Some(format!("{}\n", "x".repeat(64)))
     ).is_err());
 }
+
+#[test]
+fn apk_manifest_wires_only_declared_android_adapters() {
+    let manifest = include_str!("../android-app/app/src/main/AndroidManifest.xml");
+    let launcher = include_str!("../android-app/app/src/main/java/com/huntsman/recon/MainActivity.java");
+    let job = include_str!("../android-app/app/src/main/java/com/huntsman/recon/HealthJobService.java");
+    let build = include_str!("../android-app/build-apk.sh");
+    assert!(manifest.contains("android.permission.INTERNET"));
+    assert!(manifest.contains("android.permission.RECEIVE_BOOT_COMPLETED"));
+    assert!(manifest.contains("android.permission.BIND_JOB_SERVICE"));
+    assert!(manifest.contains(".HealthJobService"));
+    assert!(manifest.contains(".MainActivity"));
+    assert!(launcher.contains("HealthJobService.schedule(this)"));
+    assert!(launcher.contains("/api/health"));
+    assert!(launcher.contains("HSE_APK_LOOPBACK_AUTH"));
+    assert!(launcher.contains("new SecureRandom()"));
+    assert!(job.contains("setPersisted(true)"));
+    assert!(job.contains("setPeriodic(REFRESH_PERIOD_MS)"));
+    assert!(build.contains("--bin huntsman-recon --bin huntsman-key-health"));
+}
