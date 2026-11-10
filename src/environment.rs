@@ -213,9 +213,37 @@ pub fn is_known_variable(name: &str) -> bool {
     KNOWN_VARIABLES.contains(&name) || name.starts_with(PROVIDER_COST_ENV_PREFIX)
 }
 
-/// `$HOME`, when it is set. Its value need not be valid Unicode.
+/// Android-only private application HOME override. This avoids process-global
+/// environment mutation in Android's multi-threaded JVM/NDK process.
+#[cfg(target_os = "android")]
+static ANDROID_APP_HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Bind the Android instance to one existing app-private directory, once.
+/// The ordinary Termux process path remains unchanged.
+#[cfg(target_os = "android")]
+pub fn set_android_app_home(home: &std::path::Path) -> Result<(), &'static str> {
+    if !home.is_absolute() {
+        return Err("Android app HOME must be absolute");
+    }
+    let metadata = std::fs::symlink_metadata(home).map_err(|_| "Android app HOME is unreadable")?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("Android app HOME must be a real directory");
+    }
+    match ANDROID_APP_HOME.get() {
+        Some(existing) if existing == home => Ok(()),
+        Some(_) => Err("Android app HOME cannot change after startup"),
+        None => ANDROID_APP_HOME.set(home.to_path_buf()).map_err(|_| "Android app HOME already set"),
+    }
+}
+
+/// The operator's `$HOME` under Termux; the app-private directory under an
+/// APK-native Android process. Neither path changes global process environment.
 #[must_use]
 pub fn home() -> Option<OsString> {
+    #[cfg(target_os = "android")]
+    if let Some(path) = ANDROID_APP_HOME.get() {
+        return Some(path.as_os_str().to_owned());
+    }
     std::env::var_os(HOME_ENV)
 }
 
