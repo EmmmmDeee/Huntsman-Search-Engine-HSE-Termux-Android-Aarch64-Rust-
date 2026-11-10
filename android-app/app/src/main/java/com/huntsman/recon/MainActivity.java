@@ -100,7 +100,7 @@ public final class MainActivity extends Activity {
             HttpURLConnection connection = null;
             try {
                 connection = (HttpURLConnection) new URL(
-                        "http://127.0.0.1:" + port + "/health").openConnection();
+                        "http://127.0.0.1:" + port + "/api/health").openConnection();
                 connection.setConnectTimeout(250);
                 connection.setReadTimeout(250);
                 if (connection.getResponseCode() == 200) {
