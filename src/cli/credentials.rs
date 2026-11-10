@@ -1,7 +1,6 @@
 //! The keys a lookup runs with, read once per command from the places `credential-status`
 //! reads.
 
-use std::env;
 use std::io::Write as _;
 
 use huntsman_recon::environment::HUNTSMAN_HIBP_KEY_ENV;
