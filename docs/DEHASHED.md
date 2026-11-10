@@ -30,11 +30,16 @@ The key is sent only to `https://api.dehashed.com:443`, and redirects are not fo
 
 ## The API, as verified
 
-Facts come from DeHashed's API documentation (v2, "Updated April 23, 2025"), live unauthenticated
-probes of `api.dehashed.com` on 2026-11-06, and third-party clients.
-- **Where the documentation was read.** DeHashed's own pages sit behind a bot challenge, so it
-  was read from a published copy.
-- **What is not verified.** Nothing here has been checked against a live key.
+Facts come from DeHashed's v2 API documentation (updated 2025-04-23), live unauthenticated
+probes on 2026-11-06, live authenticated acceptance tests reported in commits
+`44a1b57af55b18032e6e5e97104ce0ef0ee48a75` and
+`40c4802776c154cb1e7e68054797c960f0d8209d` on 2026-11-07, and third-party clients.
+- **Documentation provenance.** DeHashed's documentation was read from a published copy
+  because its own pages presented a bot challenge.
+- **Authenticated verification boundary.** Those commits report successful live exact
+  domain/email searches and raw-response comparison. No usable key was found in the inspected
+  source files or three sampled CI job logs; that limited inspection cannot establish that a
+  current key exists in GitHub Actions.
 
 | Fact | Source | What Huntsman does |
 |---|---|---|
@@ -49,11 +54,12 @@ probes of `api.dehashed.com` on 2026-11-06, and third-party clients.
 | Error bodies are JSON sent as `text/plain` | Live | Read as JSON whatever their type |
 | `POST /v2/search-password {"sha256_hashed_password": ...}` "does not require credits or a subscription" | Documentation (two third-party clients send `hash` instead) | The credential probe |
 
-**Query syntax.** A search is one field-scoped, quoted, exact value: `email:"a@example.com"`,
-`username:"ada"` or `domain:"example.com"`.
+**Query syntax.** Exact email and username values are quoted, for example
+`email:"a@example.com"` and `username:"ada"`; domain values are **unquoted**,
+for example `domain:example.com`. Live v2 testing on 2026-11-07 found that the
+quoted domain form fails with HTTP 400, whereas unquoted domains match exactly.
 - **Refused before any request.** Wildcards, regex, lists, quotes, backslashes, whitespace and
   non-ASCII input (`src/dehashed/query.rs`), so no search widens into a sweep.
-- **Unverified.** One third-party client says domains reject quotes.
 
 ## What is kept
 
@@ -115,14 +121,19 @@ value.
 `credential-status --probe` posts to `/v2/search-password` the SHA-256 of the fixed string
 `huntsman-credential-probe`, never a password.
 - **Cost.** DeHashed documents the endpoint as free, so the probe spends no search credit.
-- **Valid key.** A 200 proves the key only when it carries that endpoint's answer, `results_found`.
-- **Rejected key.** A 401 or 403 is a rejected key.
+- **Structurally valid response.** A 200 is accepted only when it carries a numeric
+  `results_found` field. This is evidence that the endpoint responded in the expected shape,
+  **not independent proof** that the supplied key was authenticated: the repository does not
+  test whether the same endpoint accepts a request without a key.
+- **Rejected response.** A 401 or 403 is classified rejected (subject to the WAF check).
 - **Indeterminate.** Anything else, including a 400 from a body field DeHashed reads differently.
 
 ## Not verified
 
-- Behaviour with a live key: an invalid query's answer, 5xx bodies, whether `Retry-After` is sent,
-  whether a page costs one credit or each record does, and the success `Content-Type`.
+- Historical live-key tests covered exact domain and email searches, record decoding and
+  collector evidence. They did **not** establish current key availability in GitHub Actions.
+- Remaining uncertainties include some 5xx bodies, live `Retry-After` behaviour,
+  plan-specific credit accounting, and the success `Content-Type`.
 - The current Search Guide's full field list, and any change after 2025-04-23.
 - The live headers `x-ratelimit-limit: 20` and `x-ratelimit-reset: 1` disagree with the documented
   10 per second. Huntsman keeps the documented, lower rate.
@@ -152,3 +163,79 @@ Each risk has a test that fails when the behaviour it guards breaks. Test names 
 
 **Mutation check.** The record tests were run with `breach_record::expose` stubbed out and the
 balance dropped: all six failed. They pass on the real code.
+
+
+## GitHub Actions probe-response diagnostic
+
+The repository workflow `.github/workflows/dehashed-auth-diagnostic.yml` uses the
+production `huntsman-recon credential-status --probe` command. It has **manual dispatch
+only**, and the job explicitly requires `refs/heads/main`. Development-branch pushes
+and pull requests cannot invoke a secret-bearing probe.
+
+- The workflow reads the GitHub Actions secret `HUNTSMAN_DEHASHED_KEY`, with
+  `DEHASHED_API_KEY` as a fallback. GitHub **does not** make a historical secret
+  recoverable from Actions logs, and the presence of earlier live-test commits
+  does not imply a currently configured repository secret. The workflow is not
+  available for manual dispatch on `main` until it is reviewed and merged.
+- The binary is compiled **without** any secret in its build environment.
+  The secret is supplied only to the probe step as an environment variable.
+  The probe uses a fresh temporary HOME, strips unrelated configured-provider
+  environment slots (including the HIBP alias), and does not search for leaked accounts.
+  This matters because the existing `credential-status --probe` command otherwise
+  checks **all** configured providers, not just DeHashed.
+- The wrapper `.github/scripts/dehashed-auth-diagnostic.sh` prints only a
+  fixed `dehashed_probe=` verdict, never the key, provider response or records.
+  `valid_response` means only that the existing HUNTSMAN probe classified the
+  API response as structurally valid. It does not prove key authentication,
+  paid-search entitlement, current credit balance or an individual's exposure.
+- `not_configured` means no key reached the job; `rejected` is the provider
+  response classification; `inconclusive` covers indeterminate/unavailable
+  responses. Missing, duplicate or contradictory provider state, verdict, or
+  DeHashed key-slot fields are rejected. In free-probe mode the job fails
+  on anything other than `valid_response`; paid real-domain mode runs
+  independently and reports its own API outcome.
+- Run the offline diagnostic contract checks with
+  `bash tests/dehashed-auth-diagnostic.sh`. These use only synthetic outputs
+  and do not require a provider key or network access.
+
+To configure a repository secret, use the GitHub repository's
+**Settings → Secrets and variables → Actions → New repository secret**.
+Set `HUNTSMAN_DEHASHED_KEY` (preferred) or `DEHASHED_API_KEY`. Do not commit
+a secret to source, a workflow YAML file, an issue, or a log.
+
+## One-credit live acceptance against a real entity
+
+An explicit live acceptance command uses the real DeHashed v2 client against
+the public Australian company domain `telstra.com.au`:
+
+```bash
+bash scripts/dehashed-live-domain-acceptance.sh --allow-one-paid-search ./target/debug/huntsman-recon
+```
+
+It submits exactly one `dehashed search --domain telstra.com.au
+--purpose security-research --size 1 --page 1` request, costing up to one
+search credit when actually executed with a usable key. The script is intended
+for a real authenticated API request, not the simulated offline contract.
+It accepts a successful, structurally valid API response and reports only
+`api_success_with_record` or `api_success_no_records`; any error, nonzero CLI exit, malformed header, stray record fields in an
+empty result or mismatched entry count is a failure. The CLI's original
+exit classification (missing key, denied entitlement, upstream failure)
+is preserved even when the provider emits no stdout. It filters output in memory
+and never prints or stores breach entries, email addresses, credential
+values, or the provider's raw error response.
+
+The manual, main-only workflow
+`.github/workflows/dehashed-auth-diagnostic.yml` has an optional
+`run_real_domain_search` input, default **false**, which runs that paid
+acceptance **instead of** the no-credit probe, since an inconclusive free
+endpoint response must not block an explicitly requested paid validation.
+Automated CI runs only
+`bash tests/dehashed-live-domain-acceptance.sh`, which uses synthetic
+fake-binary output and spends no credits.
+
+**Verification limits:** The offline contract verifies safe formatting,
+argument selection and failure propagation, not an authenticated API
+result. At the time of writing, GitHub-hosted runners did not start on
+PR #1811; no current DeHashed key was accessible in the chat execution
+environment. Accordingly, this live acceptance path remains **untested**
+until explicitly executed with an available key and a working runner.

@@ -187,3 +187,50 @@ HUNTSMAN_X_BEARER_TOKEN=
 
 Never place populated values in this repository, release artifacts, logs,
 examples, documentation, or issue/PR text.
+
+
+## GitHub Actions DeHashed probe-response check
+
+For a **read-only probe-response diagnostic**, manually dispatch
+`.github/workflows/dehashed-auth-diagnostic.yml` on `main` using GitHub
+Actions after review and merge. The workflow has no push or pull-request
+trigger. It accepts existing repository secrets `HUNTSMAN_DEHASHED_KEY`
+(preferred) or `DEHASHED_API_KEY` (fallback), supplied only to the
+probe step. The existence and validity of a GitHub secret have **not**
+been independently verified. Historical workflow logs cannot reveal
+the value of a properly stored GitHub secret.
+
+The job first runs the offline contract
+`bash tests/dehashed-auth-diagnostic.sh`, then builds the genuine
+`huntsman-recon` binary without exposing a secret to its compiler.
+The wrapper executes `credential-status --probe` in an isolated HOME
+and removes other provider credential environment slots in a subshell.
+Without that second isolation step, the command would also probe unrelated
+providers supplied by the ambient environment. It publishes one fixed
+`dehashed_probe=` status and sends no paid DeHashed search. The wrapper
+rejects inconsistent state and key-slot fields rather than reporting
+`valid_response` from a contradictory row. `valid_response` means that the response matched HUNTSMAN's
+existing probe schema. The endpoint was not checked against an unauthenticated
+negative control, so this is **not independent proof of key acceptance**,
+paid-search entitlement or an individual's exposed records.
+
+If you already have a working DeHashed key on the Termux handset,
+run `huntsman-recon credential-status --probe` there directly.
+For the GitHub runner, add the key separately in the repository's
+**Settings → Secrets and variables → Actions**. Do not copy any key
+into source code, a workflow log, a pull request or chat.
+
+### Real-company paid-search acceptance
+
+The manual workflow `.github/workflows/dehashed-auth-diagnostic.yml`
+offers `run_real_domain_search` (default **false**). With a current
+`HUNTSMAN_DEHASHED_KEY` (or fallback `DEHASHED_API_KEY`) and a working
+GitHub Actions runner, enabling it directly performs one actual DeHashed v2 search
+for `domain:telstra.com.au`, `size=1`. It consumes up to one search
+credit. The CLI output is filtered in memory; only a fixed success/failure
+verdict and aggregate record count can enter the workflow log. The paid
+branch is independent of the free probe and preserves the Rust CLI's failure
+classification even when stdout is empty. The
+workflow itself must first be reviewed and merged to `main` before
+manual dispatch. The separate offline contract cannot establish actual
+provider availability, authentication or entitlement.
