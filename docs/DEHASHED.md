@@ -165,7 +165,7 @@ Each risk has a test that fails when the behaviour it guards breaks. Test names 
 balance dropped: all six failed. They pass on the real code.
 
 
-## GitHub Actions authenticated diagnostic
+## GitHub Actions probe-response diagnostic
 
 The repository workflow `.github/workflows/dehashed-auth-diagnostic.yml` uses the
 production `huntsman-recon credential-status --probe` command. It has **manual dispatch
