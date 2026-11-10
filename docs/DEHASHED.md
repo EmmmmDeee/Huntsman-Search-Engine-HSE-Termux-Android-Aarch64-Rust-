@@ -37,8 +37,9 @@ probes on 2026-11-06, live authenticated acceptance tests reported in commits
 - **Documentation provenance.** DeHashed's documentation was read from a published copy
   because its own pages presented a bot challenge.
 - **Authenticated verification boundary.** Those commits report successful live exact
-  domain/email searches and raw-response comparison. The repo does not retain the API key
-  in source or logs; successful historical tests do not establish a key usable today.
+  domain/email searches and raw-response comparison. No usable key was found in the inspected
+  source files or three sampled CI job logs; that limited inspection cannot establish that a
+  current key exists in GitHub Actions.
 
 | Fact | Source | What Huntsman does |
 |---|---|---|
@@ -120,8 +121,11 @@ value.
 `credential-status --probe` posts to `/v2/search-password` the SHA-256 of the fixed string
 `huntsman-credential-probe`, never a password.
 - **Cost.** DeHashed documents the endpoint as free, so the probe spends no search credit.
-- **Valid key.** A 200 proves the key only when it carries that endpoint's answer, `results_found`.
-- **Rejected key.** A 401 or 403 is a rejected key.
+- **Structurally valid response.** A 200 is accepted only when it carries a numeric
+  `results_found` field. This is evidence that the endpoint responded in the expected shape,
+  **not independent proof** that the supplied key was authenticated: the repository does not
+  test whether the same endpoint accepts a request without a key.
+- **Rejected response.** A 401 or 403 is classified rejected (subject to the WAF check).
 - **Indeterminate.** Anything else, including a 400 from a body field DeHashed reads differently.
 
 ## Not verified
@@ -164,24 +168,27 @@ balance dropped: all six failed. They pass on the real code.
 ## GitHub Actions authenticated diagnostic
 
 The repository workflow `.github/workflows/dehashed-auth-diagnostic.yml` uses the
-production `huntsman-recon credential-status --probe` command. It can run by
-manual `workflow_dispatch` after merge; its initial source-branch push is also
-scoped to `fix/dehashed-auth-diagnostic-20261111`.
+production `huntsman-recon credential-status --probe` command. It has **manual dispatch
+only**, and the job explicitly requires `refs/heads/main`. Development-branch pushes
+and pull requests cannot invoke a secret-bearing probe.
 
 - The workflow reads the GitHub Actions secret `HUNTSMAN_DEHASHED_KEY`, with
   `DEHASHED_API_KEY` as a fallback. GitHub **does not** make a historical secret
   recoverable from Actions logs, and the presence of earlier live-test commits
-  does not imply a configured repository secret.
+  does not imply a currently configured repository secret. The workflow is not
+  available for manual dispatch on `main` until it is reviewed and merged.
 - The binary is compiled **without** any secret in its build environment.
   The secret is supplied only to the probe step as an environment variable.
   The probe uses a fresh temporary HOME and does not search for leaked accounts.
 - The wrapper `.github/scripts/dehashed-auth-diagnostic.sh` prints only a
-  fixed status, never the key, provider response, or records. `accepted`
-  means the existing probe accepted its response; it does not prove paid-search
-  entitlement, current credit balance or that any named individual has a match.
-- `not_configured` means no key reached the job; `rejected` indicates rejection;
-  `inconclusive` covers indeterminate/unavailable responses. Other errors are
-  reported distinctly. The job fails on anything other than `accepted`.
+  fixed `dehashed_probe=` verdict, never the key, provider response or records.
+  `valid_response` means only that the existing HUNTSMAN probe classified the
+  API response as structurally valid. It does not prove key authentication,
+  paid-search entitlement, current credit balance or an individual's exposure.
+- `not_configured` means no key reached the job; `rejected` is the provider
+  response classification; `inconclusive` covers indeterminate/unavailable
+  responses. Malformed or duplicate provider output is rejected. The job fails
+  on anything other than `valid_response`.
 - Run the offline diagnostic contract checks with
   `bash tests/dehashed-auth-diagnostic.sh`. These use only synthetic outputs
   and do not require a provider key or network access.
