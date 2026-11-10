@@ -47,7 +47,7 @@ summary="$(
           ((count == 0 && entries == 0) || (count == 1 && entries == 1))) {
         printf "results=%d", count
       } else {
-        exit 91
+        printf "invalid"
       }
     }
   '
@@ -64,6 +64,12 @@ if [[ "$code" -ne 0 ]]; then
   esac
   exit 1
 fi
+# A failed output parser must not mask the actual HUNTSMAN exit status.
+# "invalid" is a fixed in-memory sentinel; no provider data reaches stdout.
+case "$summary" in
+  results=0|results=1) ;;
+  *) printf 'dehashed_live=failed\n'; exit 1 ;;
+esac
 if [[ "$summary" == "results=0" ]]; then
   printf 'dehashed_live=api_success_no_records domain=telstra.com.au\n'
 else
