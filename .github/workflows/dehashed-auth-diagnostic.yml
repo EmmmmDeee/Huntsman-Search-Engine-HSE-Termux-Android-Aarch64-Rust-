@@ -1,35 +1,31 @@
-name: DeHashed authenticated credential diagnostic
+name: DeHashed credential probe (manual)
 
-# Explicitly scoped branch push permits the initial diagnostic to run after installation.
-# After merge, the durable entry point is manual workflow_dispatch.
-# Never expose GitHub secrets to pull_request workflows.
+# The production key is available only to a manually dispatched run of the
+# reviewed default branch. Pull requests and branch pushes never receive it.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - fix/dehashed-auth-diagnostic-20261111
-    paths:
-      - .github/workflows/dehashed-auth-diagnostic.yml
-      - .github/scripts/dehashed-auth-diagnostic.sh
-      - tests/dehashed-auth-diagnostic.sh
 
 permissions:
   contents: read
 
 concurrency:
-  group: dehashed-auth-diagnostic-${{ github.ref }}
+  group: dehashed-probe-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   credential-probe:
-    name: Probe DeHashed authentication (no search credits)
+    name: DeHashed v2 probe response (not a paid-search test)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Test diagnostic parsing and redaction offline
+      - name: Verify offline probe contract and secret isolation
         run: |
           set -euo pipefail
           bash -n .github/scripts/dehashed-auth-diagnostic.sh
@@ -38,10 +34,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
         with:
           toolchain: "1.99"
-      - name: Compile genuine HUNTSMAN binary (no secret in build environment)
+      - name: Compile HUNTSMAN without provider secrets
         run: cargo build --locked --bin huntsman-recon
-      - name: Probe configured DeHashed key without a paid search
-        shell: bash
+      - name: Evaluate the DeHashed no-credit probe response
         env:
           HUNTSMAN_DEHASHED_KEY: ${{ secrets.HUNTSMAN_DEHASHED_KEY || secrets.DEHASHED_API_KEY }}
         run: |
