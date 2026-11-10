@@ -179,7 +179,10 @@ and pull requests cannot invoke a secret-bearing probe.
   available for manual dispatch on `main` until it is reviewed and merged.
 - The binary is compiled **without** any secret in its build environment.
   The secret is supplied only to the probe step as an environment variable.
-  The probe uses a fresh temporary HOME and does not search for leaked accounts.
+  The probe uses a fresh temporary HOME, strips unrelated configured-provider
+  environment slots (including the HIBP alias), and does not search for leaked accounts.
+  This matters because the existing `credential-status --probe` command otherwise
+  checks **all** configured providers, not just DeHashed.
 - The wrapper `.github/scripts/dehashed-auth-diagnostic.sh` prints only a
   fixed `dehashed_probe=` verdict, never the key, provider response or records.
   `valid_response` means only that the existing HUNTSMAN probe classified the
