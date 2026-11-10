@@ -15,7 +15,7 @@ use huntsman_recon::provider_credentials::secret_for_slot_outside_its_file;
 /// write, not `eprintln!`, so a stderr whose reader has gone cannot end the lookup before it
 /// saves, or a running `serve`.
 pub(super) fn lookup_keys() -> Keys {
-    let resolved = Keys::for_lookup(env::var_os("HOME").as_deref());
+    let resolved = Keys::for_lookup(huntsman_recon::environment::home().as_deref());
     if let Some(warning) = resolved.warning {
         let _ = writeln!(std::io::stderr(), "{warning}");
     }
