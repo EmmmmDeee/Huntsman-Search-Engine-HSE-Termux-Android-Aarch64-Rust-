@@ -1,0 +1,55 @@
+name: Android APK acceptance candidate
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'src/cli/**'
+      - 'src/environment.rs'
+      - 'src/bin/huntsman-key-health.rs'
+      - 'scripts/build-android-apk.sh'
+      - '.github/workflows/android-apk.yml'
+permissions:
+  contents: read
+jobs:
+  arm64-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;26.3.11579264'
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Rust host format and test gate
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked
+      - name: Compile native Rust and package one Android APK
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.3.11579264
+        run: ./scripts/build-android-apk.sh
+      - name: APK contents, ABI and hash
+        run: |
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
+          unzip -t android/app/build/outputs/apk/debug/app-debug.apk
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libhuntsman_android.so'
+          sha256sum android/app/build/outputs/apk/debug/app-debug.apk > android-app-debug.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: huntsman-android-arm64-debug-unverified-on-device
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android-app-debug.sha256
