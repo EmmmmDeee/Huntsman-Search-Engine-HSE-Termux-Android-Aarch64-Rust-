@@ -437,11 +437,12 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     let token = env::var(SERVE_TOKEN_ENV).ok();
     let token_supplied = token.is_some();
     // APK mode is strictly opt-in and leaves Termux's existing loopback contract unchanged.
-    let config = match if env::var(APK_LOOPBACK_AUTH_ENV).ok().as_deref() == Some("1") {
+    let parsed_config = if env::var(APK_LOOPBACK_AUTH_ENV).ok().as_deref() == Some("1") {
         ServeConfig::parse_apk_loopback(&bind, token)
     } else {
         ServeConfig::parse(&bind, token)
-    } {
+    };
+    let config = match parsed_config {
         Ok(config) => config,
         Err(Error::MissingCredential(message)) => return fail(EX_NOINPUT, &message),
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
