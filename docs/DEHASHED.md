@@ -191,8 +191,9 @@ and pull requests cannot invoke a secret-bearing probe.
 - `not_configured` means no key reached the job; `rejected` is the provider
   response classification; `inconclusive` covers indeterminate/unavailable
   responses. Missing, duplicate or contradictory provider state, verdict, or
-  DeHashed key-slot fields are rejected. The job fails
-  on anything other than `valid_response`.
+  DeHashed key-slot fields are rejected. In free-probe mode the job fails
+  on anything other than `valid_response`; paid real-domain mode runs
+  independently and reports its own API outcome.
 - Run the offline diagnostic contract checks with
   `bash tests/dehashed-auth-diagnostic.sh`. These use only synthetic outputs
   and do not require a provider key or network access.
@@ -213,17 +214,22 @@ bash scripts/dehashed-live-domain-acceptance.sh --allow-one-paid-search ./target
 
 It submits exactly one `dehashed search --domain telstra.com.au
 --purpose security-research --size 1 --page 1` request, costing up to one
-search credit. It is not an unauthenticated or simulated test. The script
-accepts a successful, structurally valid API response and reports only
-`api_success_with_record` or `api_success_no_records`; any error,
-inconsistent header or exit code is a failure. It filters output in memory
+search credit when actually executed with a usable key. The script is intended
+for a real authenticated API request, not the simulated offline contract.
+It accepts a successful, structurally valid API response and reports only
+`api_success_with_record` or `api_success_no_records`; any error, nonzero CLI exit, malformed header, stray record fields in an
+empty result or mismatched entry count is a failure. The CLI's original
+exit classification (missing key, denied entitlement, upstream failure)
+is preserved even when the provider emits no stdout. It filters output in memory
 and never prints or stores breach entries, email addresses, credential
 values, or the provider's raw error response.
 
 The manual, main-only workflow
 `.github/workflows/dehashed-auth-diagnostic.yml` has an optional
 `run_real_domain_search` input, default **false**, which runs that paid
-acceptance only after the no-credit probe. Automated CI runs only
+acceptance **instead of** the no-credit probe, since an inconclusive free
+endpoint response must not block an explicitly requested paid validation.
+Automated CI runs only
 `bash tests/dehashed-live-domain-acceptance.sh`, which uses synthetic
 fake-binary output and spends no credits.
 
