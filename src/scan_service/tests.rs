@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[test]
-fn autonomous_scan_dispatches_evidence_driven_geocoding_and_preserves_legacy_zero_depth() {
+fn autonomous_scan_dispatches_source_observed_geocoding_and_preserves_legacy_zero_depth() {
     let calls = Arc::new(Mutex::new(Vec::<ScanKind>::new()));
     let seen = Arc::clone(&calls);
     let (service, dir) = with_lookup(
@@ -17,7 +17,7 @@ fn autonomous_scan_dispatches_evidence_driven_geocoding_and_preserves_legacy_zer
                 vec![Entity::builder(EntityKind::Address, "Brisbane, Australia", 0.9, "test")
                     .evidence(Evidence::new(
                         EvidenceProvenance::for_scan("public_register", "scan"),
-                        "independently observed place",
+                        "source-observed place",
                     ))
                     .build()]
             } else {
@@ -37,7 +37,7 @@ fn autonomous_scan_dispatches_evidence_driven_geocoding_and_preserves_legacy_zer
         ..ScanRequest::default()
     }).unwrap();
     assert_eq!(legacy.options.depth, 0);
-    assert_eq!(*calls.lock().unwrap(), [ScanKind::People]);
+    assert_eq!(calls.lock().unwrap().as_slice(), &[ScanKind::People]);
 
     calls.lock().unwrap().clear();
     let active = service.run(&ScanRequest {
