@@ -6,6 +6,59 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[test]
+fn autonomous_scan_dispatches_source_observed_geocoding_and_preserves_legacy_zero_depth() {
+    let calls = Arc::new(Mutex::new(Vec::<ScanKind>::new()));
+    let seen = Arc::clone(&calls);
+    let (service, dir) = with_lookup(
+        "attack-autonomous-live-route",
+        Arc::new(move |kind: ScanKind, _: &str, _: &Selection| {
+            callsafe_push(&seen, kind);
+            let entities = if kind == ScanKind::People {
+                vec![Entity::builder(EntityKind::Address, "Brisbane, Australia", 0.9, "test")
+                    .evidence(Evidence::new(
+                        EvidenceProvenance::for_scan("public_register", "scan"),
+                        "source-observed place",
+                    ))
+                    .build()]
+            } else {
+                Vec::new()
+            };
+            Ok(LookupOutput {
+                entities,
+                outcomes: vec![SourceExecutionOutcome::success("fixture", 1, 1)],
+                ..LookupOutput::default()
+            })
+        }),
+    );
+    let legacy = service.run(&ScanRequest {
+        target: "Ada Lovelace".into(),
+        kind: Some("people".into()),
+        options: ScanOptions { usecase: "all".into(), ..ScanOptions::default() },
+        ..ScanRequest::default()
+    }).unwrap();
+    assert_eq!(legacy.options.depth, 0);
+    assert_eq!(calls.lock().unwrap().as_slice(), &[ScanKind::People]);
+
+    calls.lock().unwrap().clear();
+    let active = service.run(&ScanRequest {
+        target: "Ada Lovelace".into(),
+        kind: Some("people".into()),
+        options: ScanOptions { usecase: "autonomous".into(), ..ScanOptions::default() },
+        ..ScanRequest::default()
+    }).unwrap();
+    assert_eq!(active.options.depth, 3);
+    assert_eq!(active.status, ScanStatus::Finished);
+    let dispatched = calls.lock().unwrap().clone();
+    assert!(dispatched.contains(&ScanKind::People));
+    assert!(dispatched.contains(&ScanKind::Place), "{dispatched:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn callsafe_push(calls: &Arc<Mutex<Vec<ScanKind>>>, kind: ScanKind) {
+    calls.lock().unwrap().push(kind);
+}
+
+#[test]
 fn failed_scan_log_write_remains_observable_after_successful_status_update() {
     let (service, dir) = with_lookup(
         "log-persistence-error",

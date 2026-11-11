@@ -15,7 +15,7 @@ use crate::module::reachable_modules;
 use crate::navigator;
 
 pub const ATTACK_USAGE: &str =
-    "usage: huntsman-recon attack status|coverage|gaps [--json] | attack navigator";
+    "usage: huntsman-recon attack status|coverage|gaps [--json] | attack navigator | attack run TARGET [-k KIND] [--depth N] [--json]";
 
 /// An `attack` invocation outside the grammar; it displays as [`ATTACK_USAGE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

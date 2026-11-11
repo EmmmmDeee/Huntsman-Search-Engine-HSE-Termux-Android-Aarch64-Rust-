@@ -71,7 +71,7 @@ Commands:
   scans                 Run, list, read, export, flag, rerun and delete saved Spiderfoot-style scans
   serve                 Start the embedded Web UI and JSON API
   modules               List only currently reachable rebuilt modules
-  attack                MITRE ATT&CK Reconnaissance posture, coverage, gaps, or Navigator JSON
+  attack                Run ATT&CK-guided live OSINT or inspect Recon coverage/exports
   classify              Classify an HTTP status and response body
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)

@@ -149,7 +149,7 @@ impl ScanStatus {
 /// What the operator asked for when starting the scan, as Spiderfoot's New Scan page offers it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanOptions {
-    /// `all`, `footprint`, `investigate` or `passive`.
+    /// `all`, `footprint`, `investigate`, `passive` or `autonomous`.
     pub usecase: String,
     /// Modules asked for by name; empty means every module the target's kind runs.
     #[serde(default)]

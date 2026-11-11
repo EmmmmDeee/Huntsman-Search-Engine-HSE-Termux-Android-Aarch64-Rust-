@@ -68,7 +68,7 @@ pub const MAX_NAME_BYTES: usize = 200;
 /// whose end it was not told of, as when its thread could not start, is seen soon all the same.
 const WAIT_SLICE: Duration = Duration::from_millis(250);
 /// The use cases Spiderfoot offers.
-pub const USE_CASES: [&str; 4] = ["all", "footprint", "investigate", "passive"];
+pub const USE_CASES: [&str; 5] = ["all", "footprint", "investigate", "passive", "autonomous"];
 /// The `kind` of a scan kept from `/api/inspect`: the command that read the file, not a lookup the
 /// service can run again, since the file's bytes are not kept with the scan.
 pub const INSPECT_KIND: &str = "inspect";
@@ -216,7 +216,7 @@ fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> 
     };
     if !USE_CASES.contains(&usecase.as_str()) {
         return Err(ServiceError::BadRequest(format!(
-            "unknown use case {usecase}; choose all, footprint, investigate or passive"
+            "unknown use case {usecase}; choose all, footprint, investigate, passive or autonomous"
         )));
     }
     let mut types = Vec::new();
@@ -233,11 +233,17 @@ fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> 
         }
     }
     crate::module::selection(&modules).map_err(ServiceError::BadRequest)?;
+    // Keep the existing zero-hop default for every established scan mode.
+    let depth = if usecase == "autonomous" && options.depth == 0 {
+        3
+    } else {
+        options.depth
+    };
     Ok(ScanOptions {
         usecase,
         modules,
         types,
-        depth: options.depth,
+        depth,
     })
 }
 
@@ -1496,6 +1502,7 @@ impl ScanService {
         let policy = RecursionPolicy {
             max_generations: options.depth,
             expose_emails: exposes,
+            autonomous_focus: (options.usecase == "autonomous").then_some(plan.kind),
             ..RecursionPolicy::default()
         };
         let mut collector = ScanCollector::new(self, id, plan, &options, &chosen);

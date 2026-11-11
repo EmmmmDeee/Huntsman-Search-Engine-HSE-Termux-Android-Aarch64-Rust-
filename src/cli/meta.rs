@@ -270,6 +270,14 @@ pub(super) fn domain_lifecycle_cmd(args: &[String]) -> ExitCode {
 }
 
 pub(super) fn attack_cmd(args: &[String]) -> ExitCode {
+    if args.first().is_some_and(|word| word == "run") {
+        // Reuse the exact saved-scan transport, persistence, Web API and
+        // cancellation path; ATT&CK is an operational mode, not a second engine.
+        let mut forwarded = args.to_vec();
+        forwarded.push("-u".into());
+        forwarded.push("autonomous".into());
+        return super::scans::scans_cmd(&forwarded);
+    }
     match render_attack(args) {
         Ok(body) => {
             print!("{body}");

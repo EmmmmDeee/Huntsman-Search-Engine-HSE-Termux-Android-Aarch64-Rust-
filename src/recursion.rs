@@ -133,6 +133,8 @@ pub struct RecursionPolicy {
     /// Also run the keyed breach `exposure` lookup on every e-mail the crawl reaches, so a
     /// configured paid source is never skipped (it reports `not_configured` when no key is set).
     pub expose_emails: bool,
+    /// Optional ATT&CK-informed objective. None preserves legacy dispatch exactly.
+    pub autonomous_focus: Option<ScanKind>,
 }
 
 impl Default for RecursionPolicy {
@@ -145,6 +147,7 @@ impl Default for RecursionPolicy {
             max_entities: limits.max_entities,
             max_frontier_per_generation: limits.max_targets,
             expose_emails: true,
+            autonomous_focus: None,
         }
     }
 }
@@ -287,8 +290,24 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     if entity.confidence < policy.expand_confidence_floor {
         return Vec::new();
     }
-    let Some(kind) = expansion_kind(&entity.kind) else {
-        return Vec::new();
+    let kind = match expansion_kind(&entity.kind) {
+        Some(kind) => kind,
+        // Explicit autonomous investigations may geocode independently observed
+        // places; legacy scans keep their historical expansion boundary.
+        None if policy.autonomous_focus.is_some()
+            && matches!(&entity.kind, EntityKind::Address | EntityKind::Coordinates)
+            && entity.evidence.iter().any(|evidence| {
+                !evidence.is_operator_seed()
+                    && !evidence.is_inferred
+                    && !crate::entity::ENRICHMENT_ONLY_SOURCES
+                        .contains(&evidence.provenance.source.as_str())
+            }) =>
+        {
+            // A named place is actionable only when a source actually
+            // observed it; an operator seed or an inferred guess is not.
+            ScanKind::Place
+        }
+        None => return Vec::new(),
     };
     if entity.kind == EntityKind::Email && !names_a_mailbox_holder(&entity.value) {
         return Vec::new();
@@ -452,6 +471,12 @@ impl Frontier {
     /// The queue in dispatch order: one target of each kind in turn, each kind in the order it
     /// was queued, so a budget that stops a generation early has followed every kind.
     fn into_queue(self) -> Vec<Target> {
+        self.into_queue_for(None)
+    }
+
+    /// Reorder lookup *types* for an ATT&CK-inspired investigative objective,
+    /// while preserving one-target-per-type round-robin fairness and dedup.
+    fn into_queue_for(self, focus: Option<ScanKind>) -> Vec<Target> {
         let mut by_kind: BTreeMap<&'static str, VecDeque<Target>> = BTreeMap::new();
         let mut order: Vec<&'static str> = Vec::new();
         for target in self.queue {
@@ -460,6 +485,18 @@ impl Frontier {
                 order.push(kind);
             }
             by_kind.entry(kind).or_default().push_back(target);
+        }
+        if let Some(focus) = focus {
+            let weight = |name: &&str| {
+                crate::scan_route::parse_kind(name)
+                    .ok()
+                    .map_or(0, |kind| crate::attack_operational::priority(focus, kind))
+            };
+            order.sort_by(|left, right| {
+                weight(right)
+                    .cmp(&weight(left))
+                    .then_with(|| left.cmp(right))
+            });
         }
         let mut out = Vec::new();
         loop {
@@ -667,7 +704,7 @@ impl CrawlState {
             dispatched,
             entities_after: self.entities.len(),
         });
-        (next.into_queue(), stopped)
+        (next.into_queue_for(policy.autonomous_focus), stopped)
     }
 
     /// Reduce what one dispatch of `target` returned into the crawl: its outcomes, and each entity
@@ -926,6 +963,62 @@ fn crawl<C: SelectorCollector>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autonomous_priority_changes_dispatch_order_without_losing_kind_fairness() {
+        let mut queue = Frontier::default();
+        for (kind, selector) in [
+            (ScanKind::Domain, "example.org"),
+            (ScanKind::Domain, "www.example.org"),
+            (ScanKind::Ip, "8.8.8.8"),
+            (ScanKind::Email, "research@example.org"),
+            (ScanKind::Username, "researcher"),
+        ] {
+            assert!(queue.push(Target { kind, selector: selector.to_owned() }));
+        }
+        let order = queue.into_queue_for(Some(ScanKind::People));
+        assert_eq!(order.len(), 5);
+        assert_eq!(order[0].kind, ScanKind::Email);
+        assert_eq!(order[1].kind, ScanKind::Username);
+        assert_eq!(order[2].kind, ScanKind::Domain);
+        assert_eq!(order[3].kind, ScanKind::Ip);
+        assert_eq!(order[4].kind, ScanKind::Domain);
+    }
+
+    #[test]
+    fn autonomous_mode_can_follow_observed_place_leads_without_changing_legacy() {
+        let address = observed(EntityKind::Address, "Brisbane, Australia", "public_register");
+        assert!(expansions(&address, &RecursionPolicy::default()).is_empty());
+        let policy = RecursionPolicy {
+            autonomous_focus: Some(ScanKind::People),
+            ..RecursionPolicy::default()
+        };
+        let pivots = expansions(&address, &policy);
+        assert_eq!(pivots.len(), 1);
+        assert_eq!(pivots[0].kind, ScanKind::Place);
+        let mut unverified = crate::entity::Entity::new(
+            EntityKind::Address,
+            "Sydney, Australia",
+            0.99,
+            "scan",
+        );
+        unverified.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan("operator_input", "scan"),
+            "the user typed this",
+        ));
+        assert!(expansions(&unverified, &policy).is_empty());
+        let mut inferred = crate::entity::Entity::new(
+            EntityKind::Address,
+            "Perth, Australia",
+            0.99,
+            "scan",
+        );
+        inferred.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan("public_register", "scan"),
+            "a guess, not an observation",
+        ).inferred());
+        assert!(expansions(&inferred, &policy).is_empty());
+    }
 
     /// A large domain's flood of subdomains takes at most half of a generation, so the address,
     /// email and number it also found are still followed, and dispatch takes each kind in turn.
