@@ -545,6 +545,69 @@ fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
     (accepted, rejected, frontier.into_queue())
 }
 
+/// Prefer high-value, independently sourced pivots while retaining one lookup kind per turn.
+/// Runtime observations, not ATT&CK label mappings, control this order. The original seed
+/// frontier is never reprioritised: operator-supplied targets retain their order.
+fn prioritize_frontier(
+    frontier: Vec<Target>,
+    followed_at: &BTreeMap<(String, String), f64>,
+    source_support: &BTreeMap<(String, String), usize>,
+) -> Vec<Target> {
+    let total = frontier.len();
+    let mut order = Vec::new();
+    let mut by_kind: BTreeMap<&'static str, Vec<(usize, Target)>> = BTreeMap::new();
+    for (index, target) in frontier.into_iter().enumerate() {
+        let kind = target.kind.command();
+        if !by_kind.contains_key(kind) {
+            order.push(kind);
+        }
+        by_kind.entry(kind).or_default().push((index, target));
+    }
+
+    let value = |target: &Target| {
+        let key = target.owned_key();
+        let confidence = followed_at
+            .get(&key)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        // Independent source families add information but cannot overwhelm a much
+        // better-calibrated confidence. Repeated reports from one family count once.
+        let support = source_support.get(&key).copied().unwrap_or(0).min(3);
+        confidence * 0.8 + f64::from(u32::try_from(support).unwrap_or(3)) * (0.2 / 3.0)
+    };
+
+    let mut groups = BTreeMap::new();
+    for (kind, mut targets) in by_kind {
+        targets.sort_by(|(left_index, left), (right_index, right)| {
+            value(right)
+                .total_cmp(&value(left))
+                .then_with(|| left_index.cmp(right_index))
+        });
+        groups.insert(
+            kind,
+            targets
+                .into_iter()
+                .map(|(_, target)| target)
+                .collect::<VecDeque<_>>(),
+        );
+    }
+
+    let mut result = Vec::with_capacity(total);
+    loop {
+        let before = result.len();
+        for kind in &order {
+            if let Some(target) = groups.get_mut(kind).and_then(VecDeque::pop_front) {
+                result.push(target);
+            }
+        }
+        if result.len() == before {
+            break;
+        }
+    }
+    result
+}
+
 /// The accumulating state of one crawl, threaded across generations.
 #[derive(Default)]
 struct CrawlState {
@@ -553,6 +616,8 @@ struct CrawlState {
     /// pivot's lookup may hold it at, as the lookup's echo of its selector says nothing of it. An
     /// echo is followed from at no more than the pivot it echoes ([`pivot_held_at`]).
     followed_at: BTreeMap<(String, String), f64>,
+    /// Distinct independent source families supporting each currently queued pivot.
+    source_support: BTreeMap<(String, String), usize>,
     entities: Vec<Entity>,
     edges: Vec<PivotEdge>,
     outcomes: Vec<SourceExecutionOutcome>,
@@ -579,6 +644,11 @@ impl CrawlState {
         let mut next = Frontier::default();
         let mut dispatched = 0usize;
         let mut stopped = false;
+        let frontier = if generation == 0 {
+            frontier
+        } else {
+            prioritize_frontier(frontier, &self.followed_at, &self.source_support)
+        };
         let mut remaining = frontier.into_iter().peekable();
 
         while let Some(first) = remaining.next() {
@@ -761,6 +831,7 @@ impl CrawlState {
         policy: &RecursionPolicy,
         next: &mut Frontier,
     ) {
+        let support = entity.corroborating_sources().len();
         for candidate in expansions(entity, policy) {
             let key = candidate.owned_key();
             // Already dispatched, or already queued for the next generation: skip before the cap
@@ -770,20 +841,22 @@ impl CrawlState {
                 continue;
             }
             if next.contains_key(&key) {
-                self.follow_at(key, held_at);
+                self.follow_at(key, held_at, support);
                 continue;
             }
             if next.full_for(candidate.kind.command(), policy.max_frontier_per_generation) {
                 self.resource_limited = true;
                 continue;
             }
-            self.follow_at(key, held_at);
+            self.follow_at(key, held_at, support);
             next.push(candidate);
         }
     }
 
     /// Record that the target keyed `key` is followed from an entity held at `confidence`.
-    fn follow_at(&mut self, key: (String, String), confidence: f64) {
+    fn follow_at(&mut self, key: (String, String), confidence: f64, support: usize) {
+        let known_support = self.source_support.entry(key.clone()).or_default();
+        *known_support = (*known_support).max(support);
         let held = self.followed_at.entry(key).or_insert(confidence);
         *held = held.max(confidence);
     }
@@ -926,6 +999,54 @@ fn crawl<C: SelectorCollector>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observed_pivots_use_evidence_priority_with_cross_kind_fairness() {
+        let domain = |value: &str| Target {
+            kind: ScanKind::Domain,
+            selector: value.to_owned(),
+        };
+        let email = Target {
+            kind: ScanKind::Email,
+            selector: "researcher@example.test".into(),
+        };
+        let low = domain("low.example.test");
+        let high = domain("high.example.test");
+        let mid = domain("mid.example.test");
+        let frontier = vec![low.clone(), email.clone(), mid.clone(), high.clone()];
+        let confidence = BTreeMap::from([
+            (low.owned_key(), 0.3),
+            (mid.owned_key(), 0.6),
+            (high.owned_key(), 0.9),
+            (email.owned_key(), 0.8),
+        ]);
+        let sources = BTreeMap::from([
+            (low.owned_key(), 1),
+            (mid.owned_key(), 2),
+            (high.owned_key(), 2),
+            (email.owned_key(), 1),
+        ]);
+        assert_eq!(
+            prioritize_frontier(frontier.clone(), &confidence, &sources),
+            vec![high, email, mid, low]
+        );
+        // The dispatch order for operator-given seeds is not changed by this function:
+        // CrawlState::step only invokes it for generations after generation zero.
+        assert_eq!(frontier[0].selector, "low.example.test");
+    }
+
+    #[test]
+    fn independent_source_families_break_equal_confidence_ties() {
+        let a = Target { kind: ScanKind::Ip, selector: "1.1.1.1".into() };
+        let b = Target { kind: ScanKind::Ip, selector: "8.8.8.8".into() };
+        let confidence = BTreeMap::from([(a.owned_key(), 0.7), (b.owned_key(), 0.7)]);
+        let support = BTreeMap::from([(a.owned_key(), 1), (b.owned_key(), 3)]);
+        assert_eq!(
+            prioritize_frontier(vec![a.clone(), b.clone()], &confidence, &support),
+            vec![b, a]
+        );
+    }
+
 
     /// A large domain's flood of subdomains takes at most half of a generation, so the address,
     /// email and number it also found are still followed, and dispatch takes each kind in turn.
