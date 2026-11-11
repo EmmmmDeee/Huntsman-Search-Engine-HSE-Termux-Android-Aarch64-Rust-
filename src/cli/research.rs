@@ -10,16 +10,18 @@ use huntsman_recon::research_route::{self, ResearchAction};
 
 use super::{fail, lookup};
 
-pub(super) const RESEARCH_HELP: &str = "research [--plan] [--all] TERM...\nResearch arbitrary text using an existing Huntsman capability. Recognised exact identifiers use the established typed scan route; general phrases use the keyless adaptive web search over Bing, Brave and Mojeek. A coordinate point uses geocode rather than the older scan radio-area default. --plan selects and prints the route offline without fetching. --all asks all 13 keyless engines on the adaptive web route instead, inside one 110-second budget, as query --adaptive --all does; a typed scan route is unchanged. A typed scan can invoke existing configured source integrations; for guaranteed keyless research use query --adaptive. Does not require root or a runtime LLM.";
+pub(super) const RESEARCH_HELP: &str = "research [--plan] [--all] [--single] TERM...\nAutonomously research exact public identifiers with a bounded, evidence-driven fetch-expand-fetch crawl (two expansion generations); general phrases use the established keyless adaptive web search. A geographic coordinate uses the geocode route. --single restores a single typed scan without pivots. --plan prints the chosen route without network access. --all selects 13 keyless engines for a free-text adaptive query, with the existing 110-second overall budget. Existing provider and key requirements still apply; no root or runtime LLM is required.";
 
 pub(super) fn research_cmd(args: &[String]) -> ExitCode {
     let mut preview = false;
     let mut all = false;
+    let mut single = false;
     let mut offset = 0;
     while let Some(flag) = args.get(offset).map(String::as_str) {
         match flag {
             "--plan" if !preview => preview = true,
             "--all" if !all => all = true,
+            "--single" if !single => single = true,
             _ => break,
         }
         offset += 1;
@@ -28,7 +30,7 @@ pub(super) fn research_cmd(args: &[String]) -> ExitCode {
     if terms.is_empty() || terms.iter().any(|value| value.starts_with("--")) {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon research [--plan] [--all] TERM...",
+            "usage: huntsman-recon research [--plan] [--all] [--single] TERM...",
         );
     }
 
@@ -39,12 +41,37 @@ pub(super) fn research_cmd(args: &[String]) -> ExitCode {
     };
     match action {
         ResearchAction::Targeted { kind, selector } => {
+            // The existing recursive collector infers the kind of each seed. A canonical
+            // username loses its leading @, so put it back before recursive dispatch.
+            // Coordinates retain the existing geocode path rather than changing to Wi-Fi.
+            let recursive = !single && kind != huntsman_recon::scan_route::ScanKind::Place;
             if preview {
-                println!("route=scan\tkind={}", kind.command());
+                if recursive {
+                    println!(
+                        "route=recursive_scan\tkind={}\tmax_generations=2",
+                        kind.command()
+                    );
+                } else {
+                    println!("route=scan\tkind={}", kind.command());
+                }
                 return ExitCode::SUCCESS;
             }
-            // An explicit kind prevents inference changing the target after canonicalisation.
-            lookup::scan_cmd(&[selector, "-k".into(), kind.command().into()])
+            if recursive {
+                let seed = if kind == huntsman_recon::scan_route::ScanKind::Username {
+                    format!("@{selector}")
+                } else {
+                    selector
+                };
+                lookup::scan_cmd(&[
+                    "--recurse".into(),
+                    seed,
+                    "--max-generations".into(),
+                    "2".into(),
+                ])
+            } else {
+                // Explicit kind retains the precise single-scan/coordinate routing.
+                lookup::scan_cmd(&[selector, "-k".into(), kind.command().into()])
+            }
         }
         ResearchAction::AdaptiveWeb { query } => {
             if preview {
