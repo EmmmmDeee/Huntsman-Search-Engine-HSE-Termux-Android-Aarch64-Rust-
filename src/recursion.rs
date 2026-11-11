@@ -1056,7 +1056,7 @@ mod tests {
         assert_eq!(frontier.into_queue(), vec![duplicate, earlier]);
         let mut seed_frontier = Frontier::default();
         assert!(seed_frontier.push(earlier.clone()));
-        assert!(seed_frontier.push(earlier.clone()) == false);
+        assert!(!seed_frontier.push(earlier.clone()));
         assert_eq!(seed_frontier.into_queue(), vec![earlier]);
     }
 
