@@ -1960,3 +1960,43 @@ fn every_view_of_a_saved_scan_agrees_field_by_field() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn compendium_api_round_trips_saved_scan_and_log_without_mutation() {
+    let (api, dir) = api("compendium-fidelity");
+    let record = api
+        .service()
+        .run(&ScanRequest {
+            target: "1.1.1.1".into(),
+            ..ScanRequest::default()
+        })
+        .unwrap();
+    let path = format!("/api/scans/{}/compendium", record.id);
+    let response = api.handle("GET", &path, "");
+    assert_eq!(
+        response.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let text = String::from_utf8(response.body).unwrap();
+    assert!(text.contains("COMPREHENSIVE MULTI-SOURCE OPEN-SOURCE INTELLIGENCE COMPENDIUM"));
+    let raw = text
+        .split_once("BEGIN_FULL_SAVED_EVIDENCE_JSON\n")
+        .unwrap()
+        .1
+        .split_once("\nEND_FULL_SAVED_EVIDENCE_JSON")
+        .unwrap()
+        .0;
+    let saved: Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(saved["scan_record"]["id"], record.id);
+    assert_eq!(saved["scan_results"]["text"], "report");
+    assert_eq!(
+        saved["scan_log"],
+        body(&api.handle("GET", &format!("/api/scans/{}/log", record.id), ""))
+    );
+    let second = api.handle("GET", &path, "");
+    assert_eq!(text.as_bytes(), second.body.as_slice());
+    assert_eq!(api.handle("POST", &path, "").status, 405);
+    let _ = std::fs::remove_dir_all(dir);
+}
