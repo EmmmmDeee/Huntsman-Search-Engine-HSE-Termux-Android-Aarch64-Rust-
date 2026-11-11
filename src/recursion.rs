@@ -466,6 +466,7 @@ impl Frontier {
     fn into_queue(self) -> Vec<Target> {
         let mut ranked: BTreeMap<&'static str, Vec<(usize, u16, Target)>> = BTreeMap::new();
         let mut order: Vec<&'static str> = Vec::new();
+        let mut kind_priorities: BTreeMap<&'static str, u16> = BTreeMap::new();
         for (index, target) in self.queue.into_iter().enumerate() {
             let kind = target.kind.command();
             if !ranked.contains_key(kind) {
@@ -477,7 +478,14 @@ impl Frontier {
                 .copied()
                 .unwrap_or_default();
             ranked.entry(kind).or_default().push((index, priority, target));
+            let best = kind_priorities.entry(kind).or_default();
+            *best = (*best).max(priority);
         }
+        // Highest ATT&CK-informed evidence gain is dispatched first, even
+        // across different target kinds. Stable sorting preserves legacy order
+        // for seeds and equal scores; the round-robin below still protects
+        // independent investigation routes from starvation.
+        order.sort_by_key(|kind| std::cmp::Reverse(kind_priorities.get(kind).copied().unwrap_or(0)));
         // Highest expected intelligence gain first WITHIN each route kind. Keep
         // the original order for equal scores and interleave kinds as before:
         // a domain flood cannot displace an IP or identity lead.
@@ -1041,6 +1049,35 @@ mod tests {
         assert!(report.entities.iter().any(|e| e.value == "weak.example.org"));
         assert!(report.entities.iter().any(|e| e.value == "strong.example.org"));
         assert!(report.truncated, "the remaining live pivot is budget-limited");
+    }
+
+    #[test]
+    fn attack_priority_reorders_kinds_but_preserves_round_robin_coverage() {
+        let mut frontier = Frontier::default();
+        let weak_domain = Target {
+            kind: ScanKind::Domain,
+            selector: "weak.example.org".to_owned(),
+        };
+        let strong_ip = Target {
+            kind: ScanKind::Ip,
+            selector: "8.8.8.8".to_owned(),
+        };
+        let weak_ip = Target {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".to_owned(),
+        };
+        let strong_domain = Target {
+            kind: ScanKind::Domain,
+            selector: "strong.example.org".to_owned(),
+        };
+        frontier.push_ranked(weak_domain.clone(), 15);
+        frontier.push_ranked(strong_ip.clone(), 100);
+        frontier.push_ranked(weak_ip.clone(), 10);
+        frontier.push_ranked(strong_domain.clone(), 70);
+        assert_eq!(
+            frontier.into_queue(),
+            vec![strong_ip, strong_domain, weak_ip, weak_domain]
+        );
     }
 
     #[test]
