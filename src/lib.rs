@@ -138,6 +138,7 @@ pub mod icij_offshore;
 pub mod identity;
 pub mod identity_resolution;
 pub mod indicator_legs;
+pub mod intelligence_compendium;
 pub mod indicator_sources;
 pub mod infrastructure;
 pub mod intelligence;
