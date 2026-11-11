@@ -794,8 +794,12 @@ impl CrawlState {
         policy: &RecursionPolicy,
         next: &mut Frontier,
     ) {
+        let candidates = expansions(entity, policy);
+        if candidates.is_empty() {
+            return;
+        }
         let priority = crate::attack::live_pivot_priority(entity, held_at);
-        for candidate in expansions(entity, policy) {
+        for candidate in candidates {
             let key = candidate.owned_key();
             // Already dispatched, or already queued for the next generation: skip before the cap
             // check so a duplicate never counts as overflow. A queued target is still followed
