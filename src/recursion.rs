@@ -485,7 +485,10 @@ impl Frontier {
         // across different target kinds. Stable sorting preserves legacy order
         // for seeds and equal scores; the round-robin below still protects
         // independent investigation routes from starvation.
-        order.sort_by_key(|kind| std::cmp::Reverse(kind_priorities.get(kind).copied().unwrap_or(0)));
+        order.sort_by_key(|kind| {
+            let priority = kind_priorities.get(kind).copied().unwrap_or_default();
+            std::cmp::Reverse(priority)
+        });
         // Highest expected intelligence gain first WITHIN each route kind. Keep
         // the original order for equal scores and interleave kinds as before:
         // a domain flood cannot displace an IP or identity lead.
