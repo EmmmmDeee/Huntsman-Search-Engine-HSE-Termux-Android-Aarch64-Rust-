@@ -67,6 +67,7 @@ use crate::api_leg::Api;
 use crate::correlator::rule_catalog;
 use crate::entity_reality;
 use crate::evidence_register;
+use crate::intelligence_compendium;
 use crate::module::reachable_modules;
 use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::scan_alert::{self, Policy};
@@ -373,6 +374,7 @@ impl ScanApi {
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "analyze"], false) => self.analyze(id),
             (["scans", id, "evidence"], false) => self.evidence(id, &param),
+            (["scans", id, "compendium"], false) => self.compendium(id),
             (["scans", id, "matrix"], false) => self.matrix(id, &param),
             (["scans", id, "reality"], false) => self.reality(id, param.get("uid")),
             (["scans", _, "reality"], true) => error(405, "entity reality is read-only"),
@@ -1116,6 +1118,37 @@ impl ScanApi {
         ok(200, &json!({ "nodes": nodes, "edges": edges }))
     }
 
+    /// Full-fidelity, no-network compendium for a saved scan. The existing
+    /// authenticated scan API guards also protect this unredacted evidence.
+    fn compendium(&self, id: &str) -> ApiResponse {
+        let limit = intelligence_compendium::MAX_COMPENDIUM_BYTES as u64;
+        let record = match self.record(id) {
+            Ok(record) => record,
+            Err(response) => return response,
+        };
+        let (results, _) = match self.service.store().results_with_byte_budget(id, limit) {
+            Ok(found) => found,
+            Err(crate::scan_store::StoreError::Invalid(message)) => {
+                return error(413, &message);
+            }
+            Err(failure) => return service_error(&failure.into()),
+        };
+        let results = results.unwrap_or_else(|| empty_results(&record));
+        let log = match self.service.store().log(id) {
+            Ok(log) => log,
+            Err(failure) => return service_error(&failure.into()),
+        };
+        match intelligence_compendium::render(&record, &results, &log) {
+            Ok(body) => ApiResponse::export(scan_export::Export {
+                body,
+                content_type: "text/plain; charset=utf-8",
+                filename: format!("{}-Huntsman-compendium.txt", record.id),
+            }),
+            Err(message) if message.contains("exceeds") => error(413, &message),
+            Err(message) => error(400, &message),
+        }
+    }
+
     fn export(&self, id: &str, param: &Params) -> ApiResponse {
         let limit = u64::try_from(PipelineLimits::default().max_export_bytes).unwrap_or(u64::MAX);
         self.export_with_budget(id, param, limit)
@@ -1433,6 +1466,7 @@ fn route_exists(segments: &[&str], write: bool) -> bool {
                     "summary"
                         | "analyze"
                         | "evidence"
+                        | "compendium"
                         | "matrix"
                         | "elements"
                         | "correlations"
