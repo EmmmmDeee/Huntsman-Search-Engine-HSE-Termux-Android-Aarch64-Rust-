@@ -11,3 +11,5 @@ curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HS
 It ends by printing `Web UI: running at http://127.0.0.1:8080`; open that address in the phone's browser (if it is not running, `huntsman start`).
 
 Full usage, commands and reference: [docs/USAGE.md](docs/USAGE.md). Installation details: [docs/INSTALL.md](docs/INSTALL.md).
+
+ATT&CK-informed autonomous OSINT: `huntsman-recon attack run TARGET` or New Scan → Autonomous ATT&CK OSINT. [How it works and limitations](docs/ATTACK_OPERATIONAL.md).
