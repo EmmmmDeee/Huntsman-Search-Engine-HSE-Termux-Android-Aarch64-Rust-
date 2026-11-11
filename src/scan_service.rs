@@ -233,17 +233,17 @@ fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> 
         }
     }
     crate::module::selection(&modules).map_err(ServiceError::BadRequest)?;
+    // Keep the existing zero-hop default for every established scan mode.
+    let depth = if usecase == "autonomous" && options.depth == 0 {
+        3
+    } else {
+        options.depth
+    };
     Ok(ScanOptions {
         usecase,
         modules,
         types,
-        // Autonomous mode begins actual multi-hop collection even when the Web UI
-        // or CLI supplied its ordinary zero-depth default. Other modes are unchanged.
-        depth: if usecase == "autonomous" && options.depth == 0 {
-            3
-        } else {
-            options.depth
-        },
+        depth,
     })
 }
 
