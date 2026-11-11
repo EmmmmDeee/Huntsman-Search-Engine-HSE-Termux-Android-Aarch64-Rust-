@@ -248,6 +248,7 @@ pub mod scan_artifact;
 pub mod scan_batch;
 pub mod scan_compare;
 pub mod scan_coverage;
+pub mod intelligence_compendium;
 pub mod scan_export;
 pub mod scan_retention;
 pub mod scan_route;
