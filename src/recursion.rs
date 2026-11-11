@@ -420,19 +420,31 @@ struct Frontier {
     queue: Vec<Target>,
     /// How many queued targets each lookup kind holds.
     per_kind: BTreeMap<&'static str, usize>,
+    /// Highest evidence-backed ATT&CK investigative utility for each queued route.
+    /// Seeds and direct non-ranked callers preserve their original dispatch order.
+    priorities: BTreeMap<(String, String), u16>,
 }
 
 impl Frontier {
     /// Queue `target` unless one with an equal `(kind, selector identity)` is already queued.
     /// Returns whether it was newly queued.
     fn push(&mut self, target: Target) -> bool {
-        if self.seen.insert(target.owned_key()) {
-            *self.per_kind.entry(target.kind.command()).or_default() += 1;
-            self.queue.push(target);
-            true
-        } else {
-            false
+        self.push_ranked(target, 0)
+    }
+
+    /// Preserve the earliest routed spelling while retaining the strongest
+    /// evidence score if independent observations discover the same target.
+    fn push_ranked(&mut self, target: Target, priority: u16) -> bool {
+        let key = target.owned_key();
+        if !self.seen.insert(key.clone()) {
+            let existing = self.priorities.entry(key).or_default();
+            *existing = (*existing).max(priority);
+            return false;
         }
+        self.priorities.insert(key, priority);
+        *self.per_kind.entry(target.kind.command()).or_default() += 1;
+        self.queue.push(target);
+        true
     }
 
     /// Whether this de-duplication key is already queued.
@@ -452,14 +464,46 @@ impl Frontier {
     /// The queue in dispatch order: one target of each kind in turn, each kind in the order it
     /// was queued, so a budget that stops a generation early has followed every kind.
     fn into_queue(self) -> Vec<Target> {
-        let mut by_kind: BTreeMap<&'static str, VecDeque<Target>> = BTreeMap::new();
+        let mut ranked: BTreeMap<&'static str, Vec<(usize, u16, Target)>> = BTreeMap::new();
         let mut order: Vec<&'static str> = Vec::new();
-        for target in self.queue {
+        let mut kind_priorities: BTreeMap<&'static str, u16> = BTreeMap::new();
+        for (index, target) in self.queue.into_iter().enumerate() {
             let kind = target.kind.command();
-            if !by_kind.contains_key(kind) {
+            if !ranked.contains_key(kind) {
                 order.push(kind);
             }
-            by_kind.entry(kind).or_default().push_back(target);
+            let priority = self
+                .priorities
+                .get(&target.owned_key())
+                .copied()
+                .unwrap_or_default();
+            ranked.entry(kind).or_default().push((index, priority, target));
+            let best = kind_priorities.entry(kind).or_default();
+            *best = (*best).max(priority);
+        }
+        // Highest ATT&CK-informed evidence gain is dispatched first, even
+        // across different target kinds. Stable sorting preserves legacy order
+        // for seeds and equal scores; the round-robin below still protects
+        // independent investigation routes from starvation.
+        order.sort_by_key(|kind| {
+            let priority = kind_priorities.get(kind).copied().unwrap_or_default();
+            std::cmp::Reverse(priority)
+        });
+        // Highest expected intelligence gain first WITHIN each route kind. Keep
+        // the original order for equal scores and interleave kinds as before:
+        // a domain flood cannot displace an IP or identity lead.
+        let mut by_kind: BTreeMap<&'static str, VecDeque<Target>> = BTreeMap::new();
+        for (kind, mut candidates) in ranked {
+            candidates.sort_by(|left, right| {
+                right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0))
+            });
+            by_kind.insert(
+                kind,
+                candidates
+                    .into_iter()
+                    .map(|(_, _, target)| target)
+                    .collect(),
+            );
         }
         let mut out = Vec::new();
         loop {
@@ -761,7 +805,12 @@ impl CrawlState {
         policy: &RecursionPolicy,
         next: &mut Frontier,
     ) {
-        for candidate in expansions(entity, policy) {
+        let candidates = expansions(entity, policy);
+        if candidates.is_empty() {
+            return;
+        }
+        let priority = crate::attack::live_pivot_priority(entity, held_at);
+        for candidate in candidates {
             let key = candidate.owned_key();
             // Already dispatched, or already queued for the next generation: skip before the cap
             // check so a duplicate never counts as overflow. A queued target is still followed
@@ -771,6 +820,7 @@ impl CrawlState {
             }
             if next.contains_key(&key) {
                 self.follow_at(key, held_at);
+                next.push_ranked(candidate, priority);
                 continue;
             }
             if next.full_for(candidate.kind.command(), policy.max_frontier_per_generation) {
@@ -778,7 +828,7 @@ impl CrawlState {
                 continue;
             }
             self.follow_at(key, held_at);
-            next.push(candidate);
+            next.push_ranked(candidate, priority);
         }
     }
 
@@ -962,6 +1012,97 @@ mod tests {
         );
     }
     use std::collections::BTreeMap;
+
+    #[test]
+    fn attack_reconnaissance_priority_drives_real_pivot_dispatch_under_budget() {
+        // Both domains are real follow-up lookup targets. The first was
+        // encountered earlier, but the second has independent observations.
+        // A tight budget must execute the better-evidenced target first and
+        // preserve BOTH findings rather than silently discarding the other.
+        let weak = ent(EntityKind::Domain, "weak.example.org", 0.75);
+        let mut strong = ent(EntityKind::Domain, "strong.example.org", 0.75);
+        strong.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::new("crtsh"),
+            "certificate observation",
+        ));
+        strong.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::new("rdap"),
+            "registration observation",
+        ));
+        let mut collector = Scripted::new().on(
+            ScanKind::Domain,
+            "example.org",
+            vec![weak, strong],
+        );
+        let policy = RecursionPolicy {
+            max_dispatches: 2,
+            max_generations: 1,
+            expose_emails: false,
+            ..policy()
+        };
+        let report = run(&["example.org".to_owned()], &policy, &mut collector);
+        assert_eq!(
+            collector.calls,
+            [
+                ("domain".to_owned(), "example.org".to_owned()),
+                ("domain".to_owned(), "strong.example.org".to_owned()),
+            ]
+        );
+        assert_eq!(report.dispatches, 2);
+        assert!(report.entities.iter().any(|e| e.value == "weak.example.org"));
+        assert!(report.entities.iter().any(|e| e.value == "strong.example.org"));
+        assert!(report.truncated, "the remaining live pivot is budget-limited");
+    }
+
+    #[test]
+    fn attack_priority_reorders_kinds_but_preserves_round_robin_coverage() {
+        let mut frontier = Frontier::default();
+        let weak_domain = Target {
+            kind: ScanKind::Domain,
+            selector: "weak.example.org".to_owned(),
+        };
+        let strong_ip = Target {
+            kind: ScanKind::Ip,
+            selector: "8.8.8.8".to_owned(),
+        };
+        let weak_ip = Target {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".to_owned(),
+        };
+        let strong_domain = Target {
+            kind: ScanKind::Domain,
+            selector: "strong.example.org".to_owned(),
+        };
+        frontier.push_ranked(weak_domain.clone(), 15);
+        frontier.push_ranked(strong_ip.clone(), 100);
+        frontier.push_ranked(weak_ip.clone(), 10);
+        frontier.push_ranked(strong_domain.clone(), 70);
+        assert_eq!(
+            frontier.into_queue(),
+            vec![strong_ip, strong_domain, weak_ip, weak_domain]
+        );
+    }
+
+    #[test]
+    fn duplicate_pivots_adopt_stronger_evidence_without_changing_seed_order() {
+        let duplicate = Target {
+            kind: ScanKind::Domain,
+            selector: "shared.example.org".to_owned(),
+        };
+        let earlier = Target {
+            kind: ScanKind::Domain,
+            selector: "earlier.example.org".to_owned(),
+        };
+        let mut frontier = Frontier::default();
+        assert!(frontier.push_ranked(earlier.clone(), 40));
+        assert!(frontier.push_ranked(duplicate.clone(), 5));
+        assert!(!frontier.push_ranked(duplicate.clone(), 80));
+        assert_eq!(frontier.into_queue(), vec![duplicate, earlier]);
+        let mut seed_frontier = Frontier::default();
+        assert!(seed_frontier.push(earlier.clone()));
+        assert!(!seed_frontier.push(earlier.clone()));
+        assert_eq!(seed_frontier.into_queue(), vec![earlier]);
+    }
 
     #[test]
     fn lineage_links_resolve_both_endpoints_or_drop_the_edge() {

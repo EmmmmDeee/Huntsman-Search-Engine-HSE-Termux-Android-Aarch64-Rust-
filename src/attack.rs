@@ -39,6 +39,54 @@ const RECONNAISSANCE_V19_2_OVERLAY: &[Technique] = &[
     },
 ];
 
+/// Rank actual public-source OSINT pivots using the ATT&CK Reconnaissance model and
+/// the evidence already collected by Huntsman. This is a scheduler decision, not an
+/// assertion that a technique was executed or that an identity was verified.
+///
+/// Reuse the embedded technique relationships without downloading an ATT&CK library
+/// or requiring a model, network request, API key, or extra dependency. Highest
+/// tactical value is assigned to identity, open-web and technical-database leads;
+/// source independence and pivot-held confidence determine which real lookup runs
+/// first when a generation has limited resources.
+#[must_use]
+pub fn live_pivot_priority(entity: &Entity, held_at: f64) -> u16 {
+    let tactical_gain = techniques_for_entity_kind(&entity.kind)
+        .iter()
+        .filter_map(|id| technique(id))
+        .filter(|item| item.tactics.contains(&"reconnaissance"))
+        .map(|item| match item.id {
+            // Identity, social discovery, domain registration and DNS.
+            "T1589.002" | "T1593.001" | "T1590.001" | "T1596.002" => 50_u16,
+            // Open technical datasets, digital infrastructure, and business location.
+            "T1590.005" | "T1596.005" | "T1591.001" | "T1593.002" => 45,
+            // Other applicable Reconnaissance techniques still receive a signal.
+            _ => 25,
+        })
+        .max()
+        .unwrap_or(0);
+    let confidence_gain: u16 = if held_at >= 0.90 {
+        50
+    } else if held_at >= 0.75 {
+        35
+    } else if held_at >= 0.60 {
+        20
+    } else {
+        0
+    };
+    let independent_sources: u16 = match entity.corroborating_sources().len() {
+        0 => 0,
+        1 => 10,
+        2 => 20,
+        _ => 30,
+    };
+    let directly_observed: u16 = if !entity.evidence.is_empty() && entity.is_observed() {
+        20
+    } else {
+        0
+    };
+    tactical_gain + confidence_gain + independent_sources + directly_observed
+}
+
 pub const TACTIC_ID: &str = "TA0043";
 pub const TACTIC_NAME: &str = "Reconnaissance";
 
