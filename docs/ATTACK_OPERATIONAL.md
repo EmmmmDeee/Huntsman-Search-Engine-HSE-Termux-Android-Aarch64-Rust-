@@ -23,8 +23,8 @@ The active mode starts with three pivot generations unless a nonzero
 `--depth` is provided. Each generation collects live results through the
 existing selected lookup modules, preserves source outcomes and provenance,
 and proposes identity/infrastructure targets from observed entities. It also
-permits geocoding an independently observed address or coordinate as an
-additional route. The target's own type gives the objective:
+permits geocoding a source-observed, non-inferred address or coordinate as
+an additional route. The target's own type gives the objective:
 
 - People, usernames, email and phone: follow identity-bearing discoveries
   earlier, then associated places and infrastructure.
