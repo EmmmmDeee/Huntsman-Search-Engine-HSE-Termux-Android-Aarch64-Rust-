@@ -137,7 +137,7 @@
 <nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="analysis">Analysis</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
-<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button><button type="button" data-format="html">Report</button></div></details>
+<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button><button type="button" data-format="html">Report</button><button type="button" data-format="compendium">Intelligence Compendium TXT</button></div></details>
 <details class="menu" id="scevidence"><summary class="btn">Evidence</summary><div class="menu-list"><button type="button" data-eformat="raw">Raw TXT</button><button type="button" data-eformat="json">JSON</button><button type="button" data-eformat="delta">Delta TXT</button><button type="button" data-eformat="matrix-json">Matrix JSON</button><button type="button" data-eformat="matrix-raw">Matrix TXT</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
@@ -1328,6 +1328,10 @@ $('llevel').onchange=showLog;$('lfilter').oninput=showLog;
 const csv=v=>{const s=v==null?'':String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 $('ldownload').onclick=()=>download(new Blob([['Date','Component','Type','Event'].join(',')+'\r\n'+logs.map(x=>[when(x.time),x.component,x.level,x.message].map(csv).join(',')).join('\r\n')],{type:'text/csv'}),'huntsman-'+sid+'-log.csv');
 async function exportFile(format){
+  if(format==='compendium'){
+    await fetchFile(base()+'/compendium','huntsman-'+sid+'-compendium.txt');
+    return;
+  }
   const p=new URLSearchParams({format}),type=tab==='browse'?btype:'';if(type)p.set('type',type);
   await fetchFile(base()+'/export?'+p,'huntsman-'+sid+(type?'-'+type:'')+'.'+format);
 }
