@@ -6,7 +6,6 @@
 //! scan record, scan results, and saved execution log are embedded as JSON.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 use serde::Serialize;
 
