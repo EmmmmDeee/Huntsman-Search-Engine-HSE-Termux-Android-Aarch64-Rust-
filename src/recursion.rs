@@ -1117,8 +1117,14 @@ mod tests {
 
     #[test]
     fn independent_source_families_break_equal_confidence_ties() {
-        let a = Target { kind: ScanKind::Ip, selector: "1.1.1.1".into() };
-        let b = Target { kind: ScanKind::Ip, selector: "8.8.8.8".into() };
+        let a = Target {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".into(),
+        };
+        let b = Target {
+            kind: ScanKind::Ip,
+            selector: "8.8.8.8".into(),
+        };
         let confidence = BTreeMap::from([(a.owned_key(), 0.7), (b.owned_key(), 0.7)]);
         let support = BTreeMap::from([(a.owned_key(), 1), (b.owned_key(), 3)]);
         assert_eq!(
