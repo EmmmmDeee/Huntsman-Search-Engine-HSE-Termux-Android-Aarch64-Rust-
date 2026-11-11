@@ -435,6 +435,23 @@ impl Frontier {
         }
     }
 
+    /// Drop one not-yet-dispatched target, keeping the remaining queue's original order.
+    /// Called only to replace a weaker target of the same lookup kind at the frontier cap.
+    fn remove_index(&mut self, index: usize) {
+        let removed = self.queue.remove(index);
+        self.seen.remove(&removed.owned_key());
+        let kind = removed.kind.command();
+        let delete_kind = if let Some(count) = self.per_kind.get_mut(kind) {
+            *count -= 1;
+            *count == 0
+        } else {
+            false
+        };
+        if delete_kind {
+            self.per_kind.remove(kind);
+        }
+    }
+
     /// Whether this de-duplication key is already queued.
     fn contains_key(&self, key: &(String, String)) -> bool {
         self.seen.contains(key)
@@ -545,6 +562,30 @@ fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
     (accepted, rejected, frontier.into_queue())
 }
 
+/// A deterministic estimate of the information a live pivot can provide. Calibrated
+/// confidence remains dominant; distinct provenance families contribute a bounded bonus.
+fn pivot_information_value(confidence: f64, independent_sources: usize) -> f64 {
+    let confidence = if confidence.is_finite() {
+        confidence.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let sources = u32::try_from(independent_sources.min(3)).unwrap_or(3);
+    confidence * 0.8 + f64::from(sources) * (0.2 / 3.0)
+}
+
+fn queued_pivot_value(
+    target: &Target,
+    followed_at: &BTreeMap<(String, String), f64>,
+    source_support: &BTreeMap<(String, String), usize>,
+) -> f64 {
+    let key = target.owned_key();
+    pivot_information_value(
+        followed_at.get(&key).copied().unwrap_or(0.0),
+        source_support.get(&key).copied().unwrap_or(0),
+    )
+}
+
 /// Prefer high-value, independently sourced pivots while retaining one lookup kind per turn.
 /// Runtime observations, not ATT&CK label mappings, control this order. The original seed
 /// frontier is never reprioritised: operator-supplied targets retain their order.
@@ -564,24 +605,11 @@ fn prioritize_frontier(
         by_kind.entry(kind).or_default().push((index, target));
     }
 
-    let value = |target: &Target| {
-        let key = target.owned_key();
-        let confidence = followed_at
-            .get(&key)
-            .copied()
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0);
-        // Independent source families add information but cannot overwhelm a much
-        // better-calibrated confidence. Repeated reports from one family count once.
-        let support = source_support.get(&key).copied().unwrap_or(0).min(3);
-        confidence * 0.8 + f64::from(u32::try_from(support).unwrap_or(3)) * (0.2 / 3.0)
-    };
-
     let mut groups = BTreeMap::new();
     for (kind, mut targets) in by_kind {
         targets.sort_by(|(left_index, left), (right_index, right)| {
-            value(right)
-                .total_cmp(&value(left))
+            queued_pivot_value(right, followed_at, source_support)
+                .total_cmp(&queued_pivot_value(left, followed_at, source_support))
                 .then_with(|| left_index.cmp(right_index))
         });
         groups.insert(
@@ -846,7 +874,40 @@ impl CrawlState {
             }
             if next.full_for(candidate.kind.command(), policy.max_frontier_per_generation) {
                 self.resource_limited = true;
-                continue;
+                // When a publisher floods the same kind of observable, arrival order must
+                // not determine which lead receives the scarce dispatch. Retain the
+                // highest-quality candidate of that kind; do not evict a different kind,
+                // so diversity and the existing per-kind cap remain intact.
+                let replacement = next
+                    .queue
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, queued)| queued.kind == candidate.kind)
+                    .min_by(|(_, left), (_, right)| {
+                        queued_pivot_value(left, &self.followed_at, &self.source_support)
+                            .total_cmp(&queued_pivot_value(
+                                right,
+                                &self.followed_at,
+                                &self.source_support,
+                            ))
+                    })
+                    .map(|(index, weaker)| {
+                        (
+                            index,
+                            queued_pivot_value(
+                                weaker,
+                                &self.followed_at,
+                                &self.source_support,
+                            ),
+                        )
+                    });
+                let Some((index, weakest)) = replacement else {
+                    continue;
+                };
+                if pivot_information_value(held_at, support) <= weakest {
+                    continue;
+                }
+                next.remove_index(index);
             }
             self.follow_at(key, held_at, support);
             next.push(candidate);
@@ -1033,6 +1094,25 @@ mod tests {
         // The dispatch order for operator-given seeds is not changed by this function:
         // CrawlState::step only invokes it for generations after generation zero.
         assert_eq!(frontier[0].selector, "low.example.test");
+    }
+
+    #[test]
+    fn stronger_live_pivot_replaces_weak_early_sighting_at_kind_cap() {
+        let mut state = CrawlState::default();
+        let mut next = Frontier::default();
+        let policy = RecursionPolicy {
+            max_frontier_per_generation: 2,
+            expand_confidence_floor: 0.1,
+            ..RecursionPolicy::default()
+        };
+        let weak = Entity::new(EntityKind::Domain, "weak.example.test", 0.3, "scan");
+        let strong = Entity::new(EntityKind::Domain, "strong.example.test", 0.9, "scan");
+        state.queue_expansions(&weak, 0.3, &policy, &mut next);
+        state.queue_expansions(&strong, 0.9, &policy, &mut next);
+        assert_eq!(next.queue.len(), 1);
+        assert_eq!(next.queue[0].selector, "strong.example.test");
+        assert!(state.resource_limited);
+        assert!(!next.contains_key(&(String::from("domain"), String::from("weak.example.test"))));
     }
 
     #[test]
