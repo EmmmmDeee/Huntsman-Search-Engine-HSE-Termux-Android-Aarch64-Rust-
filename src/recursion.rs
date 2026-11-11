@@ -295,8 +295,16 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
         // Explicit autonomous investigations may geocode independently observed
         // places; legacy scans keep their historical expansion boundary.
         None if policy.autonomous_focus.is_some()
-            && matches!(&entity.kind, EntityKind::Address | EntityKind::Coordinates) =>
+            && matches!(&entity.kind, EntityKind::Address | EntityKind::Coordinates)
+            && entity.evidence.iter().any(|evidence| {
+                !evidence.is_operator_seed()
+                    && !evidence.is_inferred
+                    && !crate::entity::ENRICHMENT_ONLY_SOURCES
+                        .contains(&evidence.provenance.source.as_str())
+            }) =>
         {
+            // A named place is actionable only when a source actually
+            // observed it; an operator seed or an inferred guess is not.
             ScanKind::Place
         }
         None => return Vec::new(),
@@ -988,6 +996,28 @@ mod tests {
         let pivots = expansions(&address, &policy);
         assert_eq!(pivots.len(), 1);
         assert_eq!(pivots[0].kind, ScanKind::Place);
+        let mut unverified = crate::entity::Entity::new(
+            EntityKind::Address,
+            "Sydney, Australia",
+            0.99,
+            "scan",
+        );
+        unverified.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan("operator_input", "scan"),
+            "the user typed this",
+        ));
+        assert!(expansions(&unverified, &policy).is_empty());
+        let mut inferred = crate::entity::Entity::new(
+            EntityKind::Address,
+            "Perth, Australia",
+            0.99,
+            "scan",
+        );
+        inferred.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan("public_register", "scan"),
+            "a guess, not an observation",
+        ).inferred());
+        assert!(expansions(&inferred, &policy).is_empty());
     }
 
     /// A large domain's flood of subdomains takes at most half of a generation, so the address,
