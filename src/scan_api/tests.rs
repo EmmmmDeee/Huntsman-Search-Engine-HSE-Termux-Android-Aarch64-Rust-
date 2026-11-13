@@ -743,6 +743,58 @@ fn comparison_keeps_identical_findings_distinct_from_changed_execution_coverage(
 }
 
 #[test]
+fn comparison_surfaces_partial_dns_coverage_in_saved_scans() {
+    let (api, dir) = api("compare-partial-dns");
+    let earlier = finished(&api);
+    let later = finished(&api);
+    let store = api.service().store();
+    let mut base = store.results(&earlier).unwrap().unwrap();
+    let mut other = store.results(&later).unwrap().unwrap();
+    base.outcomes = vec![SourceExecutionOutcome::success("dns", 1, 2)];
+    other.outcomes = vec![
+        SourceExecutionOutcome::success("dns", 2, 1)
+            .with_detail("unanswered: A example.com timeout"),
+    ];
+    other
+        .elements
+        .retain(|element| element.kind != "IP_ADDRESS");
+    store.save_results(&base).unwrap();
+    store.save_results(&other).unwrap();
+
+    let compare = |first: &str, second: &str| {
+        let response = api.handle(
+            "GET",
+            "/api/scans/compare",
+            &format!("ids={first},{second}"),
+        );
+        assert_eq!(response.status, 200, "{}", response.text());
+        body(&response)
+    };
+    let value = compare(&earlier, &later);
+    assert_eq!(value["source_execution"]["earlier"]["partial_dns"], 0);
+    assert_eq!(value["source_execution"]["later"]["partial_dns"], 1);
+    assert_eq!(value["source_execution"]["later"]["accepted"], 1);
+    assert_eq!(value["source_execution"]["changed_modules"], json!(["dns"]));
+    assert_eq!(value["source_execution_changed"], true);
+    assert!(
+        value["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["type"] == "IP_ADDRESS")
+    );
+    assert_eq!(
+        compare(&later, &earlier)["source_execution"]["earlier"]["partial_dns"],
+        1
+    );
+    assert_eq!(
+        store.results(&later).unwrap().unwrap().outcomes,
+        other.outcomes
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_comparison_takes_two_saved_scans_and_a_table_format() {
     let (api, dir) = api("compare-refused");
     let earlier = finished(&api);
@@ -1019,6 +1071,7 @@ fn source_coverage_distinguishes_confirmed_negatives_from_missing_keys_and_failu
             "not_configured": 1,
             "refused_before_sending": 1,
             "unresolved": 1,
+            "partial_dns": 0,
             "all_recorded_sources_accepted": false,
         })
     );

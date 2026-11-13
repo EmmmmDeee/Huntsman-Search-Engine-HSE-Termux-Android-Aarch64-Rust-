@@ -210,7 +210,7 @@
 <div class="panel"><div class="panel-heading">Data Types</div><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Earlier</th><th>Later</th><th>Added</th><th>Removed</th><th>Kept</th></tr></thead><tbody id="cmptypes"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="cmpcorr-n"></span></div><div class="table-wrap"><table><thead><tr><th>Change</th><th>Risk</th><th>Correlation</th></tr></thead><tbody id="cmpcorr"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Added <span class="badge" id="cmpadd-n"></span></div><p class="help pad">Found by the later scan and not by the earlier one.</p><div id="cmpadd"></div></div>
-<div class="panel"><div class="panel-heading">Removed <span class="badge" id="cmprem-n"></span></div><p class="help pad">Found by the earlier scan and no longer by the later one.</p><div id="cmprem"></div></div>
+<div class="panel"><div class="panel-heading">Removed <span class="badge" id="cmprem-n"></span></div><p class="help pad">Recorded by the earlier scan only.</p><div id="cmprem"></div></div>
 </section>
 <section id="view-analyze" hidden>
 <h1>Multi-hop analysis</h1>
@@ -888,7 +888,8 @@ const sourceOutcomeState=o=>o.outcome_count_conflict?
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
   !s.total?'No recorded source executions; coverage is unknown.':
   s.accepted+' of '+s.total+' recorded executions accepted ('+s.success+' with results, '+s.valid_zero+' confirmed zero); '+
-  s.not_configured+' not configured; '+(s.refused_before_sending||0)+' refused before sending; '+s.unresolved+' unresolved. Scan completion does not establish exhaustive source coverage.';
+  s.not_configured+' not configured; '+(s.refused_before_sending||0)+' refused before sending; '+s.unresolved+' unresolved.'+
+  (s.partial_dns?' Partial DNS executions: '+s.partial_dns+'.':'')+' Scan completion does not establish exhaustive source coverage.';
 const peopleCoverage=p=>!p?'':' People: '+p.accepted_sources+'/'+p.selected_sources+' accepted, '+
   p.not_configured_sources+' unconfigured, '+p.unresolved_sources+' unresolved, '+p.not_observed_sources+' missing; '+
   (p.frontier_exhausted===true?'frontier exhausted':'frontier exhaustion unverified')+'; selected catalogue '+
@@ -1245,7 +1246,7 @@ async function openCompare(ids){
     $('cmpcoverage').textContent=ex?
       'Earlier: '+coverage(ex.earlier)+' Later: '+coverage(ex.later)+
       ((ex.changed_modules||[]).length?' Changed provider outcomes: '+ex.changed_modules.join(', ')+'.':'')+
-      ((ex.later.not_configured||ex.later.refused_before_sending||ex.later.unresolved)?' Missing later findings may reflect unqueried, refused or unresolved sources, not disappearance.':''):
+      ((ex.later.not_configured||ex.later.refused_before_sending||ex.later.unresolved||ex.later.partial_dns)?' Missing later findings may reflect incomplete source coverage.':''):
       'Execution coverage comparison unavailable; compare recorded source outcomes manually.';
     fill('cmptypes',c.types,t=>[t.description||t.type,t.base,t.other,t.added,t.removed,t.kept]);
     const cs=c.correlations.added.map(x=>['Added',x]).concat(c.correlations.removed.map(x=>['Removed',x]));

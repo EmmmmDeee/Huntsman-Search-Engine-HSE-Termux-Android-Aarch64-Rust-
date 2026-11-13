@@ -57,6 +57,7 @@ pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE
 
 /// The DNS leg's module name, on its outcome row and its evidence.
 const DNS_SOURCE: &str = "dns";
+const UNANSWERED_DNS_QUERIES: &str = "unanswered: ";
 const CRTSH_SOURCE: &str = "crtsh";
 /// The queried domain, as the keyed legs hold it.
 const DOMAIN_CONFIDENCE: f64 = 0.90;
@@ -536,8 +537,21 @@ fn dns_outcome(records: &DomainDns, now_unix: u64) -> SourceExecutionOutcome {
     if unanswered.is_empty() {
         outcome
     } else {
-        outcome.with_detail(format!("unanswered: {}", unanswered.join(", ")))
+        outcome.with_detail(format!("{UNANSWERED_DNS_QUERIES}{}", unanswered.join(", ")))
     }
+}
+
+/// Read the partial-query marker on DNS successes, including outcomes already saved on disk.
+/// Returned records still count as accepted evidence of what the resolver answered.
+pub(crate) fn has_unanswered_dns_queries(outcome: &SourceExecutionOutcome) -> bool {
+    outcome.module == DNS_SOURCE
+        && outcome.kind == SourceOutcomeKind::Success
+        && outcome.is_accepted()
+        && outcome
+            .detail
+            .as_deref()
+            .and_then(|detail| detail.strip_prefix(UNANSWERED_DNS_QUERIES))
+            .is_some_and(|queries| !queries.trim().is_empty())
 }
 
 /// The entities the domain's DNS records name, the domain first; none when no record came back.
