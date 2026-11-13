@@ -363,12 +363,19 @@ impl ServeConfig {
             return Err(Error::Invalid("APK listener must bind to loopback".into()));
         }
         match token {
-            Some(value) if value.len() >= 32 && value.len() <= 256
-                && value.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+            Some(value)
+                if value.len() >= 32
+                    && value.len() <= 256
+                    && value.bytes().all(|b| b.is_ascii_alphanumeric()) =>
             {
-                Ok(Self { bind, bearer_token: Some(value) })
+                Ok(Self {
+                    bind,
+                    bearer_token: Some(value),
+                })
             }
-            _ => Err(Error::missing_credential("APK loopback token is absent or invalid")),
+            _ => Err(Error::missing_credential(
+                "APK loopback token is absent or invalid",
+            )),
         }
     }
 

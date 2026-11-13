@@ -130,10 +130,12 @@ fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
     let mut not_configured = 0_usize;
     let mut refused_before_sending = 0_usize;
     let mut unresolved = 0_usize;
+    let mut partial_dns = 0_usize;
     for outcome in outcomes {
         let kind = outcome.kind;
         if kind == SourceOutcomeKind::Success && outcome.is_accepted() {
             success += 1;
+            partial_dns += usize::from(crate::domain_cli::has_unanswered_dns_queries(outcome));
         } else if kind == SourceOutcomeKind::ValidZero && outcome.is_accepted() {
             valid_zero += 1;
         } else if kind.is_accepted() {
@@ -158,6 +160,7 @@ fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
         "not_configured": not_configured,
         "refused_before_sending": refused_before_sending,
         "unresolved": unresolved,
+        "partial_dns": partial_dns,
         "all_recorded_sources_accepted": !outcomes.is_empty()
             && not_configured == 0
             && refused_before_sending == 0

@@ -98,7 +98,11 @@ fn make_report(
         observed_at_unix: now,
         stale_after_unix: now.saturating_add(interval).saturating_add(60),
         expected_refresh_interval_seconds: interval,
-        mode: if probes.is_some() { "opt_in_probe" } else { "offline_presence" },
+        mode: if probes.is_some() {
+            "opt_in_probe"
+        } else {
+            "offline_presence"
+        },
         configured_provider_count: providers.iter().filter(|p| p.configured).count(),
         valid_probe_response_count: providers
             .iter()
@@ -157,11 +161,15 @@ fn refresh(opts: &Options) -> Result<Report, String> {
         None
     };
     let report = make_report(
-        statuses, probed, &resolved.keys, clock::unix_now(),
-        opts.interval, resolved.warning.is_some(),
+        statuses,
+        probed,
+        &resolved.keys,
+        clock::unix_now(),
+        opts.interval,
+        resolved.warning.is_some(),
     );
-    let bytes = serde_json::to_vec_pretty(&report)
-        .map_err(|_| "cannot serialize credential status")?;
+    let bytes =
+        serde_json::to_vec_pretty(&report).map_err(|_| "cannot serialize credential status")?;
     let parent = opts.path.parent().ok_or("report path needs a parent")?;
     private_parent(parent)?;
     fsio::write_atomic_private_locked(&opts.path, &bytes, MAX_REPORT_BYTES)
@@ -176,7 +184,9 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
     let mut probe = false;
     let mut items = args.into_iter();
     while let Some(arg) = items.next() {
-        let arg = arg.into_string().map_err(|_| "arguments must be valid UTF-8")?;
+        let arg = arg
+            .into_string()
+            .map_err(|_| "arguments must be valid UTF-8")?;
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
             "--watch" if !watch => watch = true,
@@ -184,8 +194,10 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
             "--interval-seconds" => {
                 let value = items.next().ok_or("missing interval")?;
                 interval = value
-                    .into_string().map_err(|_| "invalid interval")?
-                    .parse::<u64>().map_err(|_| "invalid interval")?;
+                    .into_string()
+                    .map_err(|_| "invalid interval")?
+                    .parse::<u64>()
+                    .map_err(|_| "invalid interval")?;
                 if !(60..=86_400).contains(&interval) {
                     return Err("interval must be between 60 and 86400 seconds".into());
                 }
@@ -211,21 +223,30 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
             home.join(".huntsman").join("api-key-health.json")
         }
     };
-    Ok(Some(Options { path, interval, watch, probe }))
+    Ok(Some(Options {
+        path,
+        interval,
+        watch,
+        probe,
+    }))
 }
 
 fn run() -> Result<(), String> {
     let Some(opts) = parse(env::args_os().skip(1))? else {
-        println!("huntsman-key-health [--watch] [--probe] [--interval-seconds 1800] [--output /absolute/path.json]");
+        println!(
+            "huntsman-key-health [--watch] [--probe] [--interval-seconds 1800] [--output /absolute/path.json]"
+        );
         return Ok(());
     };
     loop {
         match refresh(&opts) {
             Ok(report) => println!(
                 "credential_health_updated={} configured={} valid_probe_responses={} auth_verified={} scan_use_verified={}",
-                report.observed_at_unix, report.configured_provider_count,
+                report.observed_at_unix,
+                report.configured_provider_count,
                 report.valid_probe_response_count,
-                report.authentication_verified_count, report.source_execution_verified_count
+                report.authentication_verified_count,
+                report.source_execution_verified_count
             ),
             Err(err) if !opts.watch => return Err(err),
             Err(err) => eprintln!("credential_health_refresh_error={err}"),
@@ -256,7 +277,12 @@ mod tests {
         let slot = provider_credentials::PROVIDERS[0].slots[0];
         let keys = Keys::parse(&format!("{slot}={key_value}")).expect("valid fixture");
         let report = make_report(
-            provider_credentials::status(&keys), None, &keys, 111, 1800, false
+            provider_credentials::status(&keys),
+            None,
+            &keys,
+            111,
+            1800,
+            false,
         );
         let json = serde_json::to_string(&report).expect("json");
         assert!(!json.contains(key_value));

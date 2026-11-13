@@ -3,8 +3,7 @@ use huntsman_recon::web_server::ServeConfig;
 
 #[test]
 fn ordinary_termux_loopback_still_ignores_a_token() {
-    let cfg = ServeConfig::parse("127.0.0.1:8080", Some("z".repeat(64)))
-        .expect("legacy loopback");
+    let cfg = ServeConfig::parse("127.0.0.1:8080", Some("z".repeat(64))).expect("legacy loopback");
     assert!(!cfg.needs_token());
 }
 
@@ -22,16 +21,19 @@ fn apk_loopback_requires_long_random_shaped_token() {
 
 #[test]
 fn apk_loopback_rejects_token_control_characters() {
-    assert!(ServeConfig::parse_apk_loopback(
-        "127.0.0.1:8080", Some(format!("{}\n", "x".repeat(64)))
-    ).is_err());
+    assert!(
+        ServeConfig::parse_apk_loopback("127.0.0.1:8080", Some(format!("{}\n", "x".repeat(64))))
+            .is_err()
+    );
 }
 
 #[test]
 fn apk_manifest_wires_only_declared_android_adapters() {
     let manifest = include_str!("../android-app/app/src/main/AndroidManifest.xml");
-    let launcher = include_str!("../android-app/app/src/main/java/com/huntsman/recon/MainActivity.java");
-    let job = include_str!("../android-app/app/src/main/java/com/huntsman/recon/HealthJobService.java");
+    let launcher =
+        include_str!("../android-app/app/src/main/java/com/huntsman/recon/MainActivity.java");
+    let job =
+        include_str!("../android-app/app/src/main/java/com/huntsman/recon/HealthJobService.java");
     let build = include_str!("../android-app/build-apk.sh");
     let packaging = include_str!("../android-app/app/build.gradle");
     assert!(manifest.contains("android.permission.INTERNET"));
