@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
+use crate::domain_cli::has_unanswered_dns_queries;
 use crate::scan_export::{self, Export};
 use crate::scan_store::{ScanCorrelation, ScanRecord, ScanResults};
 use crate::sf_elements::DataElement;
@@ -148,18 +149,20 @@ pub fn compare<'a>(base: &'a ScanResults, other: &'a ScanResults) -> Comparison<
     }
 }
 
-/// Provider modules whose recorded outcome multisets differ across saved scans.
-/// Counts are preserved per module and outcome kind, including repeated recursive lookups.
+/// Provider modules whose recorded outcome multisets differ across saved scans, including partial
+/// DNS successes. Counts are preserved per module and outcome, including repeated lookups.
 /// This detects a credential/provider swap even when aggregate coverage counts are equal.
 #[must_use]
 pub fn changed_source_modules(base: &ScanResults, other: &ScanResults) -> Vec<String> {
-    fn by_module(outcomes: &[SourceExecutionOutcome]) -> BTreeMap<String, BTreeMap<String, usize>> {
-        let mut entries: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    fn by_module(
+        outcomes: &[SourceExecutionOutcome],
+    ) -> BTreeMap<&str, BTreeMap<(&str, bool), usize>> {
+        let mut entries: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
         for outcome in outcomes {
             *entries
-                .entry(outcome.module.clone())
+                .entry(outcome.module.as_str())
                 .or_default()
-                .entry(format!("{:?}", outcome.kind))
+                .entry((outcome.kind.as_str(), has_unanswered_dns_queries(outcome)))
                 .or_default() += 1;
         }
         entries
@@ -171,7 +174,7 @@ pub fn changed_source_modules(base: &ScanResults, other: &ScanResults) -> Vec<St
         .keys()
         .chain(later.keys())
         .filter(|module| earlier.get(*module) != later.get(*module))
-        .cloned()
+        .map(|module| (*module).to_owned())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
