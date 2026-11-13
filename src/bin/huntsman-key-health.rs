@@ -63,7 +63,7 @@ struct Report {
 
 fn make_report(
     statuses: Vec<ProviderStatus>,
-    probes: Option<Vec<ProviderProbeStatus>>,
+    probes: Option<&[ProviderProbeStatus]>,
     keys: &Keys,
     now: u64,
     interval: u64,
@@ -73,7 +73,6 @@ fn make_report(
         .into_iter()
         .map(|provider| {
             let probe_response = probes
-                .as_ref()
                 .and_then(|list| list.iter().find(|p| p.provider.name == provider.name))
                 .map_or("not_checked", |entry| entry.probe.as_str());
             ProviderRow {
@@ -162,7 +161,7 @@ fn refresh(opts: &Options) -> Result<Report, String> {
     };
     let report = make_report(
         statuses,
-        probed,
+        probed.as_deref(),
         &resolved.keys,
         clock::unix_now(),
         opts.interval,
@@ -213,15 +212,14 @@ fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>, St
             _ => return Err("unrecognised or duplicate option".into()),
         }
     }
-    let path = match output {
-        Some(path) => path,
-        None => {
-            let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is unset")?);
-            if !home.is_absolute() {
-                return Err("HOME must be absolute".into());
-            }
-            home.join(".huntsman").join("api-key-health.json")
+    let path = if let Some(path) = output {
+        path
+    } else {
+        let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is unset")?);
+        if !home.is_absolute() {
+            return Err("HOME must be absolute".into());
         }
+        home.join(".huntsman").join("api-key-health.json")
     };
     Ok(Some(Options {
         path,
