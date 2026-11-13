@@ -87,6 +87,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         }
         "coarsen" => COARSEN_HELP,
         "case-check" => CASE_HELP,
+        "dossier" => super::dossier::HELP,
         "blueprint" => super::blueprint::BLUEPRINT_HELP,
         "id" => {
             "id TOKEN...\nClassify and validate an Australian ABN, ACN, or BSB, a UAE Emirates ID number (784-YYYY-NNNNNNN-C, Luhn-checked; year_field is the four digits after 784, for most holders the year of birth) or a UAE IBAN (AE and 21 digits, mod 97-10 checked; the three-digit institution identifier is shown, the account is never printed on its own and no bank name is guessed). Offline. A valid check digit shows a number is well formed, not that it was issued or who holds it. The rest of the line is the token, so spaced digits need no quotes."

@@ -9,8 +9,12 @@ use super::page::{DOSSIER_POLICY, OTHER_POLICY, PAGE_POLICY};
 pub(super) const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server was started with HSE_AUTH_TOKEN set; enter that value in the token field under About\"}\n";
 
 pub(super) fn json_error(status: u16, message: &str) -> String {
+    json_error_head(status, message, false)
+}
+
+pub(super) fn json_error_head(status: u16, message: &str, head: bool) -> String {
     let body = serde_json::json!({ "error": message }).to_string();
-    json_line(status, &body, false)
+    json_line(status, &body, head)
 }
 
 /// A `200 OK` answer carrying an already-rendered JSON `body`. It owns the one JSON success
