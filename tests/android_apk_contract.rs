@@ -42,7 +42,11 @@ fn apk_manifest_wires_only_declared_android_adapters() {
     assert!(manifest.contains(".HealthJobService"));
     assert!(manifest.contains(".MainActivity"));
     assert!(launcher.contains("HealthJobService.schedule(this)"));
-    assert!(launcher.contains("/api/health"));
+    assert!(launcher.contains("\"127.0.0.1:0\""));
+    assert!(launcher.contains("port = boundPort(server)"));
+    assert!(launcher.contains("/api/command"));
+    assert!(launcher.contains("setRequestProperty(\"Authorization\", \"Bearer \" + sessionToken)"));
+    assert!(launcher.contains("window.huntsmanAndroidSession"));
     assert!(launcher.contains("HSE_APK_LOOPBACK_AUTH"));
     assert!(launcher.contains("new SecureRandom()"));
     assert!(job.contains("setPersisted(true)"));

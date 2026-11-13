@@ -9,13 +9,16 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.ServerSocket;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Minimal Android platform adapter. Investigative decisions, HTTP server,
@@ -60,10 +63,6 @@ public final class MainActivity extends Activity {
         if (!scans.isDirectory() && !scans.mkdirs()) {
             throw new IllegalStateException("no private scan directory");
         }
-        try (ServerSocket socket = new ServerSocket(0, 0,
-                InetAddress.getByName("127.0.0.1"))) {
-            port = socket.getLocalPort();
-        }
         byte[] raw = new byte[32];
         new SecureRandom().nextBytes(raw);
         char[] hex = "0123456789abcdef".toCharArray();
@@ -82,14 +81,14 @@ public final class MainActivity extends Activity {
         }
         ProcessBuilder serve = new ProcessBuilder(
                 serverBinary.getAbsolutePath(), "serve",
-                "--bind", "127.0.0.1:" + port,
+                "--bind", "127.0.0.1:0",
                 "--history", scans.getAbsolutePath());
         serve.environment().put("HOME", home.getAbsolutePath());
         serve.environment().put("HSE_AUTH_TOKEN", sessionToken);
         serve.environment().put("HSE_APK_LOOPBACK_AUTH", "1");
         serve.redirectErrorStream(true);
         server = serve.start();
-        drain(server);
+        port = boundPort(server);
 
         ProcessBuilder health = new ProcessBuilder(
                 monitorBinary.getAbsolutePath(), "--watch",
@@ -107,21 +106,15 @@ public final class MainActivity extends Activity {
             HttpURLConnection connection = null;
             try {
                 connection = (HttpURLConnection) new URL(
-                        "http://127.0.0.1:" + port + "/api/health").openConnection();
+                        "http://127.0.0.1:" + port + "/api/command").openConnection();
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestMethod("HEAD");
+                connection.setRequestProperty("Authorization", "Bearer " + sessionToken);
                 connection.setConnectTimeout(250);
                 connection.setReadTimeout(250);
                 if (connection.getResponseCode() == 200) {
-                    byte[] body = new byte[1024];
-                    int n;
-                    try (InputStream input = connection.getInputStream()) {
-                        n = input.read(body);
-                    }
-                    if (n > 0 && new String(body, 0, n,
-                            java.nio.charset.StandardCharsets.UTF_8)
-                            .replaceAll("\\s+", "").contains("\"auth\":\"token\"")) {
-                        ready = true;
-                        break;
-                    }
+                    ready = true;
+                    break;
                 }
             } catch (Exception ignored) {
                 // A start-up race is expected; never publish raw provider output.
@@ -131,6 +124,31 @@ public final class MainActivity extends Activity {
             Thread.sleep(250);
         }
         if (!ready) throw new IllegalStateException("native server did not become ready");
+    }
+
+    private static int boundPort(Process process) throws Exception {
+        CompletableFuture<Integer> port = new CompletableFuture<>();
+        String prefix = "serving=http://127.0.0.1:";
+        new Thread(() -> {
+            try (BufferedReader output = new BufferedReader(new InputStreamReader(
+                    process.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = output.readLine()) != null) {
+                    if (!port.isDone() && line.startsWith(prefix) && line.endsWith("/")) {
+                        String digits = line.substring(prefix.length(), line.length() - 1);
+                        if (digits.matches("[0-9]{1,5}")) {
+                            int value = Integer.parseInt(digits);
+                            if (value > 0 && value <= 65535) port.complete(value);
+                        }
+                    }
+                }
+            } catch (java.io.IOException ignored) {
+                // Nothing from the subprocess is copied to Android logs.
+            } finally {
+                port.completeExceptionally(new IllegalStateException("native server did not announce its port"));
+            }
+        }, "huntsman-server-output").start();
+        return port.get(25, TimeUnit.SECONDS);
     }
 
     private static void drain(Process process) {
@@ -155,13 +173,25 @@ public final class MainActivity extends Activity {
         settings.setAllowUniversalAccessFromFileURLs(false);
         settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         web.setWebViewClient(new WebViewClient() {
+            private boolean localPage(Uri link) {
+                return "http".equals(link.getScheme())
+                        && "127.0.0.1".equals(link.getHost()) && link.getPort() == port;
+            }
+
+            @Override public void onPageFinished(WebView view, String url) {
+                String current = view.getUrl();
+                if (current == null || !localPage(Uri.parse(url)) || !localPage(Uri.parse(current))) return;
+                // The launch token is generated as hex and stays out of navigation history.
+                view.evaluateJavascript("if (location.origin === 'http://127.0.0.1:" + port
+                        + "' && window.huntsmanAndroidSession) window.huntsmanAndroidSession('"
+                        + sessionToken + "')", null);
+            }
+
             @Override public boolean shouldOverrideUrlLoading(
                     WebView view, WebResourceRequest request) {
                 Uri link = request.getUrl();
-                if ("http".equals(link.getScheme())
-                        && "127.0.0.1".equals(link.getHost())
-                        && link.getPort() == port) return false;
-                if ("https".equals(link.getScheme())) {
+                if (localPage(link)) return false;
+                if (request.isForMainFrame() && "https".equals(link.getScheme())) {
                     try { startActivity(new Intent(Intent.ACTION_VIEW, link)); }
                     catch (Exception ignored) { }
                 }
@@ -169,8 +199,7 @@ public final class MainActivity extends Activity {
             }
         });
         setContentView(web);
-        // The token stays in the URL fragment (not the HTTP request line).
-        web.loadUrl("http://127.0.0.1:" + port + "/#token=" + sessionToken);
+        web.loadUrl("http://127.0.0.1:" + port + "/");
     }
 
     @Override public void onBackPressed() {
