@@ -112,3 +112,23 @@ machine-readable JSON for each exact observation. Unsafe Unicode controls
 (including bidi overrides) are escaped without changing the decoded JSON
 values, preventing a provider-supplied value from misleading terminal display.
 No new network calls, data migrations, credentials or dependencies are needed.
+
+## Local forensic dossier
+
+Run `huntsman-recon dossier verify BUNDLE_DIR` on the extracted correlation
+directory containing `SHA256SUMS.txt`, `register.json`, `index.html`, the CSV
+tables, and original media. The report counts the checked files and records
+and gives the original register SHA-256. Checksums establish consistency with
+the supplied bundle manifest.
+
+Run `huntsman-recon dossier install BUNDLE_DIR` to verify the bundle and
+install its exact register bytes without replacing a different register.
+Both the CLI and server use `HUNTSMAN_DOSSIER_PATH`, or
+`~/.huntsman/dossier/register.json` when the variable is unset. Use private
+Termux storage. `huntsman-recon dossier check` prints the installed register
+digest and record count.
+
+Start Huntsman on loopback and open `http://127.0.0.1:8080/evidence`.
+The Web UI links to it from About. `GET /api/evidence` serves the original
+validated JSON bytes with `Cache-Control: no-store`. `HEAD` returns the same
+headers without a body. The original bundle remains on disk.

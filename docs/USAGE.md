@@ -110,6 +110,9 @@ never falls back to the built-in roots.
 Review [`docs/INSTALL.md`](INSTALL.md) and the command reference below
 before using credentials or network access.
 
+For offline verification and installation of a local forensic dossier, run
+`huntsman-recon dossier --help`. See the [local dossier workflow](EVIDENCE_REGISTER.md#local-forensic-dossier).
+
 ## Repository map
 
 | Path | Contents |

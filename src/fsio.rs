@@ -328,7 +328,7 @@ pub(crate) fn read_to_bound(path: &Path, file: File, max: u64) -> Result<Vec<u8>
 /// # Errors
 /// `Error::Store` on a symlink, a body over `max` bytes, or IO failure.
 pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
-    write_atomic_mode(path, body, max, false)
+    write_atomic_mode(path, body, max, false, false)
 }
 
 /// Atomically and durably write a private file, creating it mode 600 on Unix before any bytes
@@ -339,7 +339,12 @@ pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
 /// As [`write_atomic`], and on Unix when the filesystem leaves the new file readable by others
 /// (see `private_mode_verdict`); on shared storage that case warns and writes.
 pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
-    write_atomic_mode(path, body, max, true)
+    write_atomic_mode(path, body, max, true, false)
+}
+
+/// Install a private file atomically, preserving a pre-existing file.
+pub(crate) fn install_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
+    write_atomic_mode(path, body, max, true, true)
 }
 
 /// [`write_atomic_private`] of `value` as pretty JSON, serialised within `max` bytes: a value
@@ -367,7 +372,13 @@ pub(crate) fn write_json_private<T: serde::Serialize + ?Sized>(
     write_atomic_private(path, &body, max)
 }
 
-fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Result<(), Error> {
+fn write_atomic_mode(
+    path: &Path,
+    body: &[u8],
+    max: u64,
+    private: bool,
+    create_only: bool,
+) -> Result<(), Error> {
     if body.len() as u64 > max {
         return Err(Error::Store(format!(
             "{}: exceeds {max} bytes",
@@ -392,12 +403,17 @@ fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Resul
         }
         file.write_all(body).map_err(|e| store_err(&tmp, &e))?;
         file.sync_all().map_err(|e| store_err(&tmp, &e))?;
-        fs::rename(&tmp, path).map_err(|e| store_err(path, &e))
+        if create_only {
+            fs::hard_link(&tmp, path).map_err(|e| store_err(path, &e))
+        } else {
+            fs::rename(&tmp, path).map_err(|e| store_err(path, &e))
+        }
     })();
     drop(file);
-    if result.is_err() {
+    if create_only || result.is_err() {
         let _ = fs::remove_file(&tmp);
-    } else {
+    }
+    if result.is_ok() {
         sync_directory(&parent);
     }
     result

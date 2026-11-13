@@ -1555,8 +1555,7 @@ fn route(
         }
         TRACK_PATH => sensor_response(parsed, routes.track.as_ref(), "radar track", Method::Post),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
-        "/evidence" => dossier_page_response(parsed, config),
-        "/api/evidence" => dossier_json_response(parsed, config),
+        "/evidence" | "/api/evidence" => return dossier_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes),
         OSINT_CASE_PATH => osint_offline_response(parsed, OfflineOsintMode::Case),
@@ -1572,57 +1571,55 @@ fn route(
     text.into_bytes()
 }
 
-/** Render the complete case dossier on loopback only; never expose local case material on a public bind. */
-fn dossier_page_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
-    let head = parsed.method == Method::Head;
-    if !config.bind.ip().is_loopback() {
-        return json_error(403, "local evidence is available only on a loopback bind");
-    }
-    if !parsed.query.is_empty() {
-        return json_error(400, "evidence page takes no query parameters");
-    }
-    match crate::dossier_view::load().and_then(|document| crate::dossier_view::render(&document)) {
-        Ok(html) => response(200, "text/html; charset=utf-8; hse=dossier", &html, head),
-        Err(message) => {
-            let code = if message.contains("exceeds") {
-                413
-            } else if message.contains("cannot open") {
-                404
-            } else {
-                422
-            };
-            response(
-                code,
-                "text/plain; charset=utf-8",
-                &format!("{message}\n"),
-                head,
-            )
-        }
-    }
-}
+/// Both evidence formats use the same guards and the same validated source snapshot.
+fn dossier_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> Vec<u8> {
+    use crate::dossier_view::DossierError;
 
-/// Return the complete source register, preserving all fields and records.
-fn dossier_json_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
+    let head = parsed.method == Method::Head;
+    let error = |status, message: &str| json_error_head(status, message, head).into_bytes();
     if !config.bind.ip().is_loopback() {
-        return json_error(403, "local evidence is available only on a loopback bind");
+        return error(403, "local evidence is available only on a loopback bind");
+    }
+    if !same_site(parsed.sec_fetch_site) {
+        return error(403, "cross-site evidence request refused");
     }
     if !parsed.query.is_empty() {
-        return json_error(400, "evidence API takes no query parameters");
+        return error(400, "evidence routes take no query parameters");
     }
     match crate::dossier_view::load() {
-        Ok(document) => match serde_json::to_string(&document) {
-            Ok(json) => json_ok(&json, parsed.method == Method::Head),
-            Err(_) => json_error(500, "dossier serialization failed"),
-        },
-        Err(message) => {
-            let code = if message.contains("exceeds") {
-                413
-            } else if message.contains("cannot open") {
-                404
-            } else {
-                422
+        Ok(document) if parsed.path == "/api/evidence" => response_bytes(
+            200,
+            "application/json; charset=utf-8",
+            document.raw(),
+            head,
+            "",
+        ),
+        Ok(document) => response(
+            200,
+            "text/html; charset=utf-8; hse=dossier",
+            &document.html(),
+            head,
+        )
+        .into_bytes(),
+        Err(failure) => {
+            let code = match &failure {
+                DossierError::NoPath | DossierError::Missing => 404,
+                DossierError::TooLarge => 413,
+                DossierError::Read(_) | DossierError::Invalid(_) => 422,
+                DossierError::Install(_) => 500,
             };
-            json_error(code, &message)
+            let message = failure.to_string();
+            if parsed.path == "/api/evidence" {
+                error(code, &message)
+            } else {
+                response(
+                    code,
+                    "text/plain; charset=utf-8",
+                    &format!("{message}\n"),
+                    head,
+                )
+                .into_bytes()
+            }
         }
     }
 }
@@ -1637,11 +1634,11 @@ use analysis::{
     OfflineOsintMode, analyze_response, inspect_response, investigate_response,
     osint_offline_response, rhinser_native_response,
 };
-use guard::{authorized, host_allowed, page_refusal, takes_post};
+use guard::{authorized, host_allowed, page_refusal, same_site, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use page::{FAVICON_SVG, PAGE, PAGE_ID};
 pub(crate) use page::{hash_source, inline_block};
-use response::{UNAUTHORIZED, json_error, json_ok, response, response_bytes};
+use response::{UNAUTHORIZED, json_error, json_error_head, json_ok, response, response_bytes};
 use settings::keys_response;
 
 /// Why `addr` could not be bound, and what to do about it. Port 8080 is also the default of other
