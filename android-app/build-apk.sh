@@ -15,10 +15,14 @@ rustup target list --installed | grep -Fxq "$target" || {
   exit 1
 }
 ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
-if [[ -n "$ndk" && -z "${CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER:-}" ]]; then
+if [[ -n "$ndk" ]]; then
   host=linux-x86_64
   [[ "$(uname -s)" == Darwin ]] && host=darwin-x86_64
-  export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk/toolchains/llvm/prebuilt/$host/bin/aarch64-linux-android26-clang"
+  ndk_tools="$ndk/toolchains/llvm/prebuilt/$host/bin"
+  export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER:-$ndk_tools/aarch64-linux-android26-clang}"
+  # Rust's linker setting does not select the compiler for native dependencies.
+  export CC_aarch64_linux_android="${CC_aarch64_linux_android:-$ndk_tools/aarch64-linux-android26-clang}"
+  export AR_aarch64_linux_android="${AR_aarch64_linux_android:-$ndk_tools/llvm-ar}"
 fi
 : "${CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER:?Set Android NDK linker}"
 cd "$root"
