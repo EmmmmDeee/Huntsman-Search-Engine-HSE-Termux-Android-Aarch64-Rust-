@@ -210,7 +210,7 @@
 <div class="panel"><div class="panel-heading">Data Types</div><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Earlier</th><th>Later</th><th>Added</th><th>Removed</th><th>Kept</th></tr></thead><tbody id="cmptypes"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="cmpcorr-n"></span></div><div class="table-wrap"><table><thead><tr><th>Change</th><th>Risk</th><th>Correlation</th></tr></thead><tbody id="cmpcorr"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Added <span class="badge" id="cmpadd-n"></span></div><p class="help pad">Found by the later scan and not by the earlier one.</p><div id="cmpadd"></div></div>
-<div class="panel"><div class="panel-heading">Removed <span class="badge" id="cmprem-n"></span></div><p class="help pad">Found by the earlier scan and no longer by the later one.</p><div id="cmprem"></div></div>
+<div class="panel"><div class="panel-heading">Removed <span class="badge" id="cmprem-n"></span></div><p class="help pad">Recorded by the earlier scan only.</p><div id="cmprem"></div></div>
 </section>
 <section id="view-analyze" hidden>
 <h1>Multi-hop analysis</h1>
@@ -339,7 +339,7 @@
 </div>
 <div class="panel" id="tokenpanel" hidden><div class="panel-heading">Token</div><div class="panel-body">
 <input id="token" type="password" autocomplete="off" placeholder="HSE_AUTH_TOKEN" aria-label="token">
-<p class="help">This server listens on a public address, so it needs the HSE_AUTH_TOKEN it was started with. On the phone it listens on loopback and needs none.</p>
+<p class="help">The Android app signs in automatically. If you started a token-protected server yourself, enter its HSE_AUTH_TOKEN here.</p>
 </div></div>
 <div class="panel"><div class="panel-heading">Details<button class="btn btn-ghost" id="refresh" type="button">Refresh</button></div>
 <details><summary>Health</summary><pre id="health">…</pre></details>
@@ -377,7 +377,7 @@ const reason=({text,body})=>(body&&body.error)||text.trim();
 const unreachable=e=>{health();return 'Huntsman did not answer at '+location.host+' ('+e.message+'). On the phone, start it in Termux with: huntsman start'};
 function askToken(){
   needsToken=true;$('tokenpanel').hidden=false;$('authnote').hidden=false;
-  $('authnote').textContent=token?'The server refused this token. Enter the exact HSE_AUTH_TOKEN under About.':'This server is on a public address and needs its HSE_AUTH_TOKEN. Enter it under About.';
+  $('authnote').textContent=token?'The server refused this token. Reopen the Android app or enter the HSE_AUTH_TOKEN for a server you started yourself.':'Reopen the Android app to sign in automatically, or enter the HSE_AUTH_TOKEN for a server you started yourself.';
 }
 const refused=res=>{if(res.r.status===401){askToken();return true}return false};
 const LH={'X-Huntsman-Lookup':'1'};
@@ -438,7 +438,7 @@ function route(){
   else if(v==='compare')openCompare(parts.slice(1,3));
   else if(v==='analyze')loadRhinserCatalog();
   else if(v==='settings')loadSettings();
-  else if(v==='about'&&!detailed)details();
+  else if(v==='about'&&!detailed)started.then(()=>{if(view==='about'&&!detailed)details()});
 }
 addEventListener('hashchange',route);
 function pill(text,tone){$('state').textContent=text;$('state').className='pill '+tone;$('sstate').textContent=text;$('sstate').className='val '+tone}
@@ -469,12 +469,13 @@ async function health(){
   if(open)$('authnote').hidden=true;
 }
 async function details(){
+  if(needsToken&&!token)return;
   detailed=true;
   await Promise.all([['modules','/api/modules'],['command','/api/command']].map(async([id,path])=>{
     try{
       const res=await call(path);$(id).textContent=res.text;
       if(id==='modules'&&res.body)$('smodules').textContent=res.body.count;
-      if(refused(res))pill('token','warn');
+      if(refused(res)){detailed=false;pill('token','warn')}
     }catch(e){$(id).textContent=String(e);detailed=false}
   }));
 }
@@ -888,7 +889,8 @@ const sourceOutcomeState=o=>o.outcome_count_conflict?
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
   !s.total?'No recorded source executions; coverage is unknown.':
   s.accepted+' of '+s.total+' recorded executions accepted ('+s.success+' with results, '+s.valid_zero+' confirmed zero); '+
-  s.not_configured+' not configured; '+(s.refused_before_sending||0)+' refused before sending; '+s.unresolved+' unresolved. Scan completion does not establish exhaustive source coverage.';
+  s.not_configured+' not configured; '+(s.refused_before_sending||0)+' refused before sending; '+s.unresolved+' unresolved.'+
+  (s.partial_dns?' Partial DNS executions: '+s.partial_dns+'.':'')+' Scan completion does not establish exhaustive source coverage.';
 const peopleCoverage=p=>!p?'':' People: '+p.accepted_sources+'/'+p.selected_sources+' accepted, '+
   p.not_configured_sources+' unconfigured, '+p.unresolved_sources+' unresolved, '+p.not_observed_sources+' missing; '+
   (p.frontier_exhausted===true?'frontier exhausted':'frontier exhaustion unverified')+'; selected catalogue '+
@@ -1245,7 +1247,7 @@ async function openCompare(ids){
     $('cmpcoverage').textContent=ex?
       'Earlier: '+coverage(ex.earlier)+' Later: '+coverage(ex.later)+
       ((ex.changed_modules||[]).length?' Changed provider outcomes: '+ex.changed_modules.join(', ')+'.':'')+
-      ((ex.later.not_configured||ex.later.refused_before_sending||ex.later.unresolved)?' Missing later findings may reflect unqueried, refused or unresolved sources, not disappearance.':''):
+      ((ex.later.not_configured||ex.later.refused_before_sending||ex.later.unresolved||ex.later.partial_dns)?' Missing later findings may reflect incomplete source coverage.':''):
       'Execution coverage comparison unavailable; compare recorded source outcomes manually.';
     fill('cmptypes',c.types,t=>[t.description||t.type,t.base,t.other,t.added,t.removed,t.kept]);
     const cs=c.correlations.added.map(x=>['Added',x]).concat(c.correlations.removed.map(x=>['Removed',x]));
@@ -1687,7 +1689,7 @@ $('investigate').onsubmit=async ev=>{
   const raw=sess.get('hse-analysis');
   if(raw)try{const s=JSON.parse(raw);$('seeds').value=s.seeds;showAnalysis(s)}catch(_){sess.set('hse-analysis','');$('aresult').hidden=true}
 }
-$('refresh').onclick=()=>{health();details()};
+$('refresh').onclick=async()=>{await health();await details()};
 $('blueprint').onclick=()=>fetchFile('/api/blueprint?format=docx','OSINT_APK_BLUEPRINT.docx').then(()=>{$('berror').hidden=true},e=>fail('berror',e.message));
 let stream=null,nudgeTimer=0;
 function nudge(){clearTimeout(nudgeTimer);nudgeTimer=setTimeout(()=>{if(document.hidden)return;if(view==='scans')loadScans();else if(view==='scan')loadScan(false)},250)}
@@ -1698,6 +1700,14 @@ function liveStream(){
   stream.onerror=()=>{};// the browser reconnects on its own after the bounded stream closes
 }
 const started=health();route();liveStream();
+window.huntsmanAndroidSession=async value=>{
+  if(!/^[0-9a-f]{64}$/.test(value)||value===token)return;
+  await started;
+  if(value===token)return;
+  token=value;$('token').value=token;store.set('hse-token',token);
+  await health();
+  detailed=false;route();
+};
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
 </script>
 </html>

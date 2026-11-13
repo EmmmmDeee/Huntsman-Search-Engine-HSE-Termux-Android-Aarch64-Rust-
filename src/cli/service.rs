@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use super::fail;
 use huntsman_recon::clock;
 use huntsman_recon::diagnostics::TermuxState;
-use huntsman_recon::environment::SERVE_TOKEN_ENV;
+use huntsman_recon::environment::{APK_LOOPBACK_AUTH_ENV, SERVE_TOKEN_ENV};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::runtime::analyze_offline_with_history;
@@ -436,7 +436,13 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
 
     let token = env::var(SERVE_TOKEN_ENV).ok();
     let token_supplied = token.is_some();
-    let config = match ServeConfig::parse(&bind, token) {
+    // APK mode is strictly opt-in and leaves Termux's existing loopback contract unchanged.
+    let parsed_config = if env::var(APK_LOOPBACK_AUTH_ENV).ok().as_deref() == Some("1") {
+        ServeConfig::parse_apk_loopback(&bind, token)
+    } else {
+        ServeConfig::parse(&bind, token)
+    };
+    let config = match parsed_config {
         Ok(config) => config,
         Err(Error::MissingCredential(message)) => return fail(EX_NOINPUT, &message),
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),

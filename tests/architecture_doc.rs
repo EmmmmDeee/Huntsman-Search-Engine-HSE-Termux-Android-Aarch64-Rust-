@@ -209,9 +209,15 @@ fn module_map(markdown: &str) -> ModuleMap {
                 entry
                     .strip_prefix('`')
                     .and_then(|n| n.strip_suffix('`'))
-                    .filter(|n| is_ident(n))
+                    .filter(|n| {
+                        if label == BINARY_ROW {
+                            n.split('-').all(is_ident)
+                        } else {
+                            is_ident(n)
+                        }
+                    })
                     .unwrap_or_else(|| {
-                        panic!("map row `{label}`: {entry:?} is not a backticked module name")
+                        panic!("map row `{label}`: {entry:?} is not a valid backticked name")
                     })
                     .to_owned()
             })

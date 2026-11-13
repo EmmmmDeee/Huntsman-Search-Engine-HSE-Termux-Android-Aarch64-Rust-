@@ -125,6 +125,8 @@ pub const WIGLE_USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
 // The bearer token that protects the `serve` listener. The binary's adapter reads it. It is named
 // here with the other credentials, so every credential name is declared in this file.
 pub const SERVE_TOKEN_ENV: &str = "HSE_AUTH_TOKEN";
+/// Enables authenticated localhost only for the self-contained Android APK launcher.
+pub const APK_LOOPBACK_AUTH_ENV: &str = "HSE_APK_LOOPBACK_AUTH";
 
 /// Every variable `huntsman-recon` reads by name: the runtime settings and every credential slot
 /// declared above. `doctor` and `credential-status` check a keys file against it so a slot whose
@@ -200,6 +202,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     WIGLE_TOKEN_ENV,
     WIGLE_USER_ENV,
     SERVE_TOKEN_ENV,
+    APK_LOOPBACK_AUTH_ENV,
 ];
 
 /// Whether `name` is a variable `huntsman-recon` reads: one of [`KNOWN_VARIABLES`], or a

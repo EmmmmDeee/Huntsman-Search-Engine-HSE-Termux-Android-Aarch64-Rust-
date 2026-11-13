@@ -1,0 +1,1 @@
+- Surface DNS executions with unanswered queries in saved-scan comparisons, including previously saved outcomes. Preserve the recorded findings and describe removals as differences between saved observations.

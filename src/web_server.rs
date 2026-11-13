@@ -350,6 +350,35 @@ impl ServeConfig {
         }
     }
 
+    /// Explicitly require a token on an Android app's private loopback listener.
+    /// Ordinary Termux callers keep the longstanding token-free loopback default.
+    /// The Android launcher supplies a random per-launch token via a process
+    /// environment variable, never through a command-line argument.
+    ///
+    /// # Errors
+    /// Rejects missing tokens or non-loopback bind targets.
+    pub fn parse_apk_loopback(bind: &str, token: Option<String>) -> Result<Self, Error> {
+        let bind = normalize_bind(bind)?;
+        if !bind.ip().is_loopback() {
+            return Err(Error::Invalid("APK listener must bind to loopback".into()));
+        }
+        match token {
+            Some(value)
+                if value.len() >= 32
+                    && value.len() <= 256
+                    && value.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+            {
+                Ok(Self {
+                    bind,
+                    bearer_token: Some(value),
+                })
+            }
+            _ => Err(Error::missing_credential(
+                "APK loopback token is absent or invalid",
+            )),
+        }
+    }
+
     /// Whether every endpoint but the page and health needs the bearer token: only on a public
     /// bind.
     #[must_use]

@@ -1,0 +1,28 @@
+plugins {
+    id 'com.android.application' version '9.0.1'
+}
+android {
+    namespace 'com.huntsman.recon'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.huntsman.recon'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.2.0-android-alpha'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    // These are executable Rust PIE binaries with .so package names.
+    // Extract them and never rewrite the signed, inspected ELF payloads.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols.add("**/libhuntsman.so")
+            keepDebugSymbols.add("**/libhuntsman_key_health.so")
+        }
+    }
+}
