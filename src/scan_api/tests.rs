@@ -2000,3 +2000,59 @@ fn compendium_api_round_trips_saved_scan_and_log_without_mutation() {
     assert_eq!(api.handle("POST", &path, "").status, 405);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn compendium_preserves_orphaned_row_and_absent_results() {
+    let (api, dir) = api("compendium-orphan");
+    let id = finished(&api);
+    let store = api.service().store();
+    let mut row = store.get(&id).unwrap();
+    row.status = ScanStatus::Running;
+    row.owner = Some(u32::MAX);
+    store.update(&row).unwrap();
+    let scan_dir = dir.join(&id);
+    std::fs::remove_file(scan_dir.join("results.json")).unwrap();
+    let original_log = std::fs::read(scan_dir.join("log.jsonl")).unwrap();
+
+    let path = format!("/api/scans/{id}/compendium");
+    let report = api.handle("GET", &path, "");
+    assert_eq!(report.status, 200, "{}", report.text());
+    assert!(report.text().contains("Saved results are unavailable."));
+    assert!(report.text().contains("\"scan_results\":null"));
+    assert_eq!(store.get(&id).unwrap(), row);
+    assert_eq!(
+        std::fs::read(scan_dir.join("log.jsonl")).unwrap(),
+        original_log
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn compendium_rejects_invalid_and_over_budget_logs() {
+    let (api, dir) = api("compendium-log-error");
+    let id = finished(&api);
+    let download = format!("/api/scans/{id}/compendium");
+    let overflow = dir.join(&id).join("log-overflow.jsonl");
+
+    for content in [&b"[invalid json]\n"[..], &b"\xff\n"[..]] {
+        std::fs::write(&overflow, content).unwrap();
+        let refused = api.handle("GET", &download, "");
+        assert_eq!(refused.status, 500);
+        assert!(refused.filename.is_none());
+        assert_eq!(std::fs::read(&overflow).unwrap(), content);
+        assert_eq!(
+            api.handle("GET", &format!("/api/scans/{id}/log"), "")
+                .status,
+            200
+        );
+    }
+
+    std::fs::File::create(&overflow)
+        .unwrap()
+        .set_len(intelligence_compendium::MAX_COMPENDIUM_BYTES as u64)
+        .unwrap();
+    let refused = api.handle("GET", &download, "");
+    assert_eq!(refused.status, 413);
+    assert!(refused.filename.is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}

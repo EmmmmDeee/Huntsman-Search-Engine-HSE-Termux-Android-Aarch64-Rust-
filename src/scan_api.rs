@@ -13,6 +13,7 @@
 //! | `startscan` | `POST /api/scans?target=T[&name=N][&kind=K][&usecase=U][&modules=a,b][&types=A,B][&depth=D]` |
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
+//! | (saved scan compendium) | `GET /api/scans/ID/compendium` |
 //! | (shared analysis over saved entities) | `GET /api/scans/ID/analyze` |
 //! | (source-attributed entity assessment) | `GET /api/scans/ID/reality?uid=ENTITY_UID` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
@@ -1118,34 +1119,48 @@ impl ScanApi {
         ok(200, &json!({ "nodes": nodes, "edges": edges }))
     }
 
-    /// Full-fidelity, no-network compendium for a saved scan. The existing
-    /// authenticated scan API guards also protect this unredacted evidence.
     fn compendium(&self, id: &str) -> ApiResponse {
+        match self.service.record_as_saved(id) {
+            Ok(record) => Self::render_compendium(self.service.store(), &record),
+            Err(failure) => service_error(&failure),
+        }
+    }
+
+    /// Export a compendium directly from an existing store without scan recovery.
+    #[must_use]
+    pub fn saved_compendium(store: &crate::scan_store::ScanStore, id: &str) -> ApiResponse {
+        match store.get(id) {
+            Ok(record) => Self::render_compendium(store, &record),
+            Err(failure) => service_error(&failure.into()),
+        }
+    }
+
+    fn render_compendium(store: &crate::scan_store::ScanStore, record: &ScanRecord) -> ApiResponse {
+        use crate::scan_store::StoreError;
+
+        let input_error = |failure: StoreError| match failure {
+            StoreError::Invalid(message) => error(413, &message),
+            failure => service_error(&failure.into()),
+        };
         let limit = intelligence_compendium::MAX_COMPENDIUM_BYTES as u64;
-        let record = match self.record(id) {
-            Ok(record) => record,
-            Err(response) => return response,
-        };
-        let (results, _) = match self.service.store().results_with_byte_budget(id, limit) {
+        let (results, _) = match store.results_with_byte_budget(&record.id, limit) {
             Ok(found) => found,
-            Err(crate::scan_store::StoreError::Invalid(message)) => {
-                return error(413, &message);
-            }
-            Err(failure) => return service_error(&failure.into()),
+            Err(failure) => return input_error(failure),
         };
-        let results = results.unwrap_or_else(|| empty_results(&record));
-        let log = match self.service.store().log(id) {
+        let log = match store.log_for_export(&record.id, limit) {
             Ok(log) => log,
-            Err(failure) => return service_error(&failure.into()),
+            Err(failure) => return input_error(failure),
         };
-        match intelligence_compendium::render(&record, &results, &log) {
+        match intelligence_compendium::render(record, results.as_ref(), &log) {
             Ok(body) => ApiResponse::export(scan_export::Export {
                 body,
                 content_type: "text/plain; charset=utf-8",
                 filename: format!("{}-Huntsman-compendium.txt", record.id),
             }),
-            Err(message) if message.contains("exceeds") => error(413, &message),
-            Err(message) => error(400, &message),
+            Err(failure @ intelligence_compendium::RenderError::TooLarge) => {
+                error(413, &failure.to_string())
+            }
+            Err(failure) => error(500, &failure.to_string()),
         }
     }
 

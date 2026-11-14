@@ -902,12 +902,23 @@ impl ScanService {
         let mut record = self.store.get(id)?;
         self.store
             .reconcile(&mut record, clock::unix_now_millis())?;
-        // The detail API must not report a successful scan when its log evidence
-        // failed to persist. A list view can still enumerate the other scans.
+        self.check_log_persisted(id)?;
+        Ok(record)
+    }
+
+    /// Read the saved row without reconciling an orphaned process.
+    pub(crate) fn record_as_saved(&self, id: &str) -> Result<ScanRecord, ServiceError> {
+        let record = self.store.get(id)?;
+        self.check_log_persisted(id)?;
+        Ok(record)
+    }
+
+    fn check_log_persisted(&self, id: &str) -> Result<(), ServiceError> {
+        // A successful status write cannot clear a failed evidence write.
         if let Some(error) = self.log_failure(id) {
             return Err(ServiceError::Store(error));
         }
-        Ok(record)
+        Ok(())
     }
 
     /// Every saved row, each reconciled as [`Self::record`] does.

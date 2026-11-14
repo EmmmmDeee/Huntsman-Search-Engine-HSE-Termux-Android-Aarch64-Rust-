@@ -412,6 +412,22 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
     if let Some(code) = without_api(command, rest, &parsed) {
         return code;
     }
+    if command == "compendium" {
+        let [id] = rest else {
+            return fail(EX_USAGE, "scans compendium takes one scan id");
+        };
+        let dir = match scan_dir(&parsed) {
+            Ok(dir) => dir,
+            Err(code) => return code,
+        };
+        return match ScanStore::open_existing(&dir) {
+            Ok(store) => deliver(
+                &ScanApi::saved_compendium(&store, id),
+                parsed.value("output"),
+            ),
+            Err(error) => fail(EX_IOERR, &format!("scans: {error}")),
+        };
+    }
     let api = match open(&parsed) {
         Ok(api) => api,
         Err(code) => return code,
@@ -420,14 +436,9 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
         ("run", _) => run(&api, &parsed, rest),
         ("export", _) => export(&api, &parsed, rest),
         ("evidence", [id]) => evidence(&api, &parsed, id),
-        ("compendium", [id]) => deliver(
-            &api.handle("GET", &format!("/api/scans/{id}/compendium"), ""),
-            parsed.value("output"),
-        ),
         ("matrix", [id]) => matrix(&api, &parsed, id),
         ("matrix", _) => fail(EX_USAGE, "scans matrix takes one scan id"),
         ("evidence", _) => fail(EX_USAGE, "scans evidence takes one scan id"),
-        ("compendium", _) => fail(EX_USAGE, "scans compendium takes one scan id"),
         ("list", []) => {
             let response = api.handle("GET", "/api/scans", "");
             if parsed.on("--json") || response.status >= 400 {

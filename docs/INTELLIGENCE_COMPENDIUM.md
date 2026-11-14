@@ -15,7 +15,8 @@ the existing scan store, API security boundary, CLI and Web UI.
 - Web UI: open a saved scan → Export → Intelligence Compendium TXT
 
 The API returns text/plain; charset=utf-8 with a deterministic filename.
-A missing or unreadable scan fails; POST is not supported.
+A missing or unreadable scan fails. A missing results file is represented
+by `null` in the evidence payload. POST returns HTTP 405.
 
 ### Content
 
@@ -56,7 +57,8 @@ exceptions REJECTED / CONFLICTED / STALE.
 
 The finished TXT document is bounded to 8 MiB, with a fail-closed error
 rather than truncation. Input results are admitted through the existing
-bounded scan-store reader; the log is read from the existing saved log.
+bounded scan-store reader. The primary and overflow logs share an 8 MiB
+input budget. A log with malformed JSON or invalid UTF-8 fails the export.
 The snapshot is non-atomic: avoid active scans for forensic exports.
 If the saved data is too large, use unchanged individual raw endpoints
 or the existing source evidence export.
@@ -75,8 +77,3 @@ files according to the applicable lawful purpose and storage policy.
   POST returns 405 without changing evidence.
 - Web UI: existing Download mechanism obtains the new route.
 - Preserve legacy Spiderfoot CSV/TSV/XLSX/JSON/GEXF/HTML export formats.
-
-**Verification caveat:** The code is implemented on a separate draft PR;
-it must pass actual Rust compilation, repository tests and physical
-Termux/Web UI acceptance before merging. If GitHub Actions fails before
-steps start, that is not a passing or failing application test.

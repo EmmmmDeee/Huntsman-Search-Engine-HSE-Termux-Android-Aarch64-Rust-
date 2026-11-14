@@ -41,21 +41,30 @@ pub const SECTIONS: [&str; 20] = [
 
 #[derive(Serialize)]
 struct Original<'a> {
-    scan_record: &'a ScanRecord,
-    scan_results: &'a ScanResults,
-    scan_log: &'a [LogEntry],
+    #[serde(rename = "scan_record")]
+    record: &'a ScanRecord,
+    #[serde(rename = "scan_results")]
+    results: Option<&'a ScanResults>,
+    #[serde(rename = "scan_log")]
+    log: &'a [LogEntry],
 }
 
-/// Append a complete chunk or return an error: do not truncate source data.
-fn append(out: &mut String, chunk: &str) -> Result<(), String> {
-    let next = out
-        .len()
-        .checked_add(chunk.len())
-        .ok_or("compendium byte count overflow")?;
-    if next > MAX_COMPENDIUM_BYTES {
-        return Err(format!(
-            "compendium exceeds {MAX_COMPENDIUM_BYTES} bytes; refusing partial evidence export"
-        ));
+/// Failure to build a complete compendium.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RenderError {
+    #[error("compendium scan id does not match stored results")]
+    MismatchedScan,
+    #[error("compendium exceeds {MAX_COMPENDIUM_BYTES} bytes")]
+    TooLarge,
+    #[error("cannot serialize full compendium evidence: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("compendium JSON is not valid UTF-8: {0}")]
+    Encoding(#[from] std::str::Utf8Error),
+}
+
+fn append(out: &mut String, chunk: &str) -> Result<(), RenderError> {
+    if chunk.len() > MAX_COMPENDIUM_BYTES - out.len() {
+        return Err(RenderError::TooLarge);
     }
     out.push_str(chunk);
     Ok(())
@@ -76,36 +85,39 @@ fn quoted(value: &str) -> String {
 ///
 /// # Errors
 /// On serialization failure or if the full document cannot fit in the limit.
-pub fn render(
+#[allow(clippy::too_many_lines)]
+pub(crate) fn render(
     record: &ScanRecord,
-    results: &ScanResults,
+    results: Option<&ScanResults>,
     log: &[LogEntry],
-) -> Result<Vec<u8>, String> {
-    if results.scan_id != record.id {
-        return Err("compendium scan id does not match stored results".into());
+) -> Result<Vec<u8>, RenderError> {
+    if results.is_some_and(|saved| saved.scan_id != record.id) {
+        return Err(RenderError::MismatchedScan);
     }
 
     let original = Original {
-        scan_record: record,
-        scan_results: results,
-        scan_log: log,
+        record,
+        results,
+        log,
     };
-    let raw = serde_json::to_vec(&original)
-        .map_err(|error| format!("cannot serialize full compendium evidence: {error}"))?;
-    if raw.len() > MAX_COMPENDIUM_BYTES {
-        return Err(format!(
-            "compendium raw evidence exceeds {MAX_COMPENDIUM_BYTES} bytes; no record omitted"
-        ));
-    }
+    let raw = crate::json::to_bounded_json(&original, MAX_COMPENDIUM_BYTES, false)?
+        .map_err(|_| RenderError::TooLarge)?;
     let raw_sha256 = hex32(&sha256(&raw));
-    let raw = String::from_utf8(raw).map_err(|_| "JSON serializer emitted invalid UTF-8")?;
+    let raw = std::str::from_utf8(&raw)?;
 
-    let accepted = results.outcomes.iter().filter(|source| source.is_accepted()).count();
-    let unanswered = results.outcomes.len() - accepted;
-    let flagged = results.elements.iter().filter(|element| element.fp).count();
-    let evidence_count: usize = results.entities.iter().map(|entity| entity.evidence.len()).sum();
+    let entities = results.map_or(&[][..], |saved| saved.entities.as_slice());
+    let outcomes = results.map_or(&[][..], |saved| saved.outcomes.as_slice());
+    let elements = results.map_or(&[][..], |saved| saved.elements.as_slice());
+    let correlations = results.map_or(&[][..], |saved| saved.correlations.as_slice());
+    let accepted = outcomes
+        .iter()
+        .filter(|source| source.is_accepted())
+        .count();
+    let unanswered = outcomes.len() - accepted;
+    let flagged = elements.iter().filter(|element| element.fp).count();
+    let evidence_count: usize = entities.iter().map(|entity| entity.evidence.len()).sum();
     let mut kinds = BTreeMap::<&str, usize>::new();
-    for entity in &results.entities {
+    for entity in entities {
         *kinds.entry(entity.kind.as_str()).or_default() += 1;
     }
     let mut out = String::new();
@@ -123,38 +135,56 @@ pub fn render(
         append(&mut out, &format!("{:02} — {title}\n", index + 1))?;
         match index {
             0 => {
-                append(&mut out, &format!(
-                    "Recorded entities: {}; elements: {}; source outcomes: {} (accepted {}, not accepted {}); correlations: {}; log entries: {}.\nFalse-positive-marked elements: {} (preserved in raw evidence).\nNo claim of source independence, subject identification or complete coverage is implied.\n",
-                    results.entities.len(),
-                    results.elements.len(),
-                    results.outcomes.len(),
-                    accepted,
-                    unanswered,
-                    results.correlations.len(),
-                    log.len(),
-                    flagged
-                ))?;
+                if results.is_none() {
+                    append(&mut out, "Saved results are unavailable.\n")?;
+                }
+                append(
+                    &mut out,
+                    &format!(
+                        "Recorded entities: {}; elements: {}; source outcomes: {} (accepted {}, not accepted {}); correlations: {}; log entries: {}.\nFalse-positive-marked elements: {} (preserved in raw evidence).\nNo claim of source independence, subject identification or complete coverage is implied.\n",
+                        entities.len(),
+                        elements.len(),
+                        outcomes.len(),
+                        accepted,
+                        unanswered,
+                        correlations.len(),
+                        log.len(),
+                        flagged
+                    ),
+                )?;
             }
-            1 => append(&mut out, &format!(
-                "Scan ID: {}\nSubject/target as entered: {}\nLookup kind: {}\nTarget event type: {}\nStatus: {}\nSubject attribution: NOT INDEPENDENTLY VERIFIED.\n",
-                quoted(&record.id),
-                quoted(&record.target),
-                quoted(&record.kind),
-                quoted(&record.target_type),
-                record.status.as_str()
-            ))?,
+            1 => append(
+                &mut out,
+                &format!(
+                    "Scan ID: {}\nSubject/target as entered: {}\nLookup kind: {}\nTarget event type: {}\nStatus: {}\nSubject attribution: NOT INDEPENDENTLY VERIFIED.\n",
+                    quoted(&record.id),
+                    quoted(&record.target),
+                    quoted(&record.kind),
+                    quoted(&record.target_type),
+                    record.status.as_str()
+                ),
+            )?,
             2 => {
-                append(&mut out, &format!(
-                    "Recorded entities by source-assigned type ({} total):\n",
-                    results.entities.len()
-                ))?;
+                append(
+                    &mut out,
+                    &format!(
+                        "Recorded entities by source-assigned type ({} total):\n",
+                        entities.len()
+                    ),
+                )?;
                 if kinds.is_empty() {
-                    append(&mut out, "NONE RECORDED; this does not establish absence.\n")?;
+                    append(
+                        &mut out,
+                        "NONE RECORDED; this does not establish absence.\n",
+                    )?;
                 }
                 for (kind, count) in &kinds {
                     append(&mut out, &format!("- {}: {count}\n", quoted(kind)))?;
                 }
-                append(&mut out, "Individual values, aliases, attributes and source evidence are preserved under section 18.\n")?;
+                append(
+                    &mut out,
+                    "Individual values, aliases, attributes and source evidence are preserved under section 18.\n",
+                )?;
             }
             3..=11 => append(
                 &mut out,
@@ -164,26 +194,42 @@ pub fn render(
                  dedicated category assessment is NOT a negative finding.\n",
             )?,
             12 => {
-                append(&mut out, &format!(
-                    "Recorded correlation records: {}. Correlations are investigative leads, not independently verified identities.\n",
-                    results.correlations.len()
-                ))?;
-                for correlation in &results.correlations {
-                    append(&mut out, &format!(
-                        "- id={} rule={} element_refs={}\n",
-                        quoted(&correlation.id),
-                        quoted(&correlation.rule),
-                        correlation.elements.len()
-                    ))?;
+                append(
+                    &mut out,
+                    &format!(
+                        "Recorded correlation records: {}. Correlations are investigative leads, not independently verified identities.\n",
+                        correlations.len()
+                    ),
+                )?;
+                for correlation in correlations {
+                    append(
+                        &mut out,
+                        &format!(
+                            "- id={} rule={} element_refs={}\n",
+                            quoted(&correlation.id),
+                            quoted(&correlation.rule),
+                            correlation.elements.len()
+                        ),
+                    )?;
                 }
-                append(&mut out, "Full rules, descriptions and element references are in section 18.\n")?;
+                append(
+                    &mut out,
+                    "Full rules, descriptions and element references are in section 18.\n",
+                )?;
             }
-            13 => append(&mut out, &format!(
-                "Scan created at Unix milliseconds: {}.\nStarted: {}.\nEnded: {}.\nSource-specific event chronology has NOT been independently reconstructed; source timestamps remain in original records.\n",
-                record.created,
-                record.started.map_or_else(|| "NOT RECORDED".into(), |t| t.to_string()),
-                record.ended.map_or_else(|| "NOT RECORDED".into(), |t| t.to_string())
-            ))?,
+            13 => append(
+                &mut out,
+                &format!(
+                    "Scan created at Unix milliseconds: {}.\nStarted: {}.\nEnded: {}.\nSource-specific event chronology has NOT been independently reconstructed; source timestamps remain in original records.\n",
+                    record.created,
+                    record
+                        .started
+                        .map_or_else(|| "NOT RECORDED".into(), |t| t.to_string()),
+                    record
+                        .ended
+                        .map_or_else(|| "NOT RECORDED".into(), |t| t.to_string())
+                ),
+            )?,
             14 => append(
                 &mut out,
                 "CONTRADICTION ANALYSIS: NOT PERFORMED BY THIS EXPORT.\n\
@@ -191,40 +237,59 @@ pub fn render(
                  All original competing statements and false-positive flags are retained.\n",
             )?,
             15 => {
-                append(&mut out, &format!(
-                    "Recorded source executions: {}; accepted: {}; otherwise: {}.\n",
-                    results.outcomes.len(), accepted, unanswered
-                ))?;
-                for source in &results.outcomes {
-                    append(&mut out, &format!(
-                        "- module={} outcome={} accepted={} found={}\n",
-                        quoted(&source.module),
-                        source.kind.as_str(),
-                        source.is_accepted(),
-                        source.found.map_or_else(|| "UNKNOWN".into(), |n| n.to_string())
-                    ))?;
+                append(
+                    &mut out,
+                    &format!(
+                        "Recorded source executions: {}; accepted: {}; otherwise: {}.\n",
+                        outcomes.len(),
+                        accepted,
+                        unanswered
+                    ),
+                )?;
+                for source in outcomes {
+                    append(
+                        &mut out,
+                        &format!(
+                            "- module={} outcome={} accepted={} found={}\n",
+                            quoted(&source.module),
+                            source.kind.as_str(),
+                            source.is_accepted(),
+                            source
+                                .found
+                                .map_or_else(|| "UNKNOWN".into(), |n| n.to_string())
+                        ),
+                    )?;
                 }
-                append(&mut out, "Provider response status is not proof of source independence or factual accuracy.\n")?;
+                append(
+                    &mut out,
+                    "Provider response status is not proof of source independence or factual accuracy.\n",
+                )?;
             }
-            16 => append(&mut out, &format!(
-                "Stored entity evidence references: {evidence_count}.\n\
+            16 => append(
+                &mut out,
+                &format!(
+                    "Stored entity evidence references: {evidence_count}.\n\
                  SHA-256 of the exact UTF-8 JSON payload in section 18: {raw_sha256}.\n\
                  Integrity hash describes this export's serialized stored records, not\n\
                  independently established cryptographic chain of custody to upstream sources.\n"
-            ))?,
+                ),
+            )?,
             17 => {
                 append(&mut out, "BEGIN_FULL_SAVED_EVIDENCE_JSON\n")?;
-                append(&mut out, &raw)?;
+                append(&mut out, raw)?;
                 append(&mut out, "\nEND_FULL_SAVED_EVIDENCE_JSON\n")?;
             }
-            18 => append(&mut out, &format!(
-                "Unaccepted/unanswered source executions: {unanswered}; false-positive-marked data elements: {flagged}.\n\
+            18 => append(
+                &mut out,
+                &format!(
+                    "Unaccepted/unanswered source executions: {unanswered}; false-positive-marked data elements: {flagged}.\n\
                  VERIFIED REAL-WORLD FINDINGS: NOT AUTOMATICALLY ESTABLISHED.\n\
                  EVIDENCE STATES: SEED / CANDIDATE / OBSERVED / CORROBORATED / VERIFIED;\n\
                  EXCEPTIONS: REJECTED / CONFLICTED / STALE. These are evaluation categories,\n\
                  not classifications assigned by this renderer.\n\
                  Missing or failed sources must not be presented as clear results.\n"
-            ))?,
+                ),
+            )?,
             19 => append(
                 &mut out,
                 "FINAL ASSESSMENT: This compendium is an evidence-indexed saved-scan\n\
@@ -243,7 +308,7 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan_store::{RiskCounts, ScanOptions, ScanStatus, FORMAT_VERSION};
+    use crate::scan_store::{FORMAT_VERSION, RiskCounts, ScanOptions, ScanStatus};
 
     fn fixture() -> (ScanRecord, ScanResults, Vec<LogEntry>) {
         let record = ScanRecord {
@@ -289,20 +354,28 @@ mod tests {
     #[test]
     fn twenty_sections_and_original_records_survive_round_trip() {
         let (record, results, log) = fixture();
-        let rendered = render(&record, &results, &log).unwrap();
-        assert_eq!(rendered, render(&record, &results, &log).unwrap());
+        let rendered = render(&record, Some(&results), &log).unwrap();
+        assert_eq!(rendered, render(&record, Some(&results), &log).unwrap());
         let text = String::from_utf8(rendered).unwrap();
         for (index, title) in SECTIONS.iter().enumerate() {
             assert!(text.contains(&format!("{:02} — {title}\n", index + 1)));
         }
         let json = text
             .split_once("BEGIN_FULL_SAVED_EVIDENCE_JSON\n")
-            .unwrap().1
+            .unwrap()
+            .1
             .split_once("\nEND_FULL_SAVED_EVIDENCE_JSON")
-            .unwrap().0;
+            .unwrap()
+            .0;
         let decoded: serde_json::Value = serde_json::from_str(json).unwrap();
-        assert_eq!(decoded["scan_record"], serde_json::to_value(&record).unwrap());
-        assert_eq!(decoded["scan_results"], serde_json::to_value(&results).unwrap());
+        assert_eq!(
+            decoded["scan_record"],
+            serde_json::to_value(&record).unwrap()
+        );
+        assert_eq!(
+            decoded["scan_results"],
+            serde_json::to_value(&results).unwrap()
+        );
         assert_eq!(decoded["scan_log"], serde_json::to_value(&log).unwrap());
         let sha = hex32(&sha256(json.as_bytes()));
         assert!(text.contains(&sha));
@@ -314,22 +387,22 @@ mod tests {
     fn oversize_refused_without_partial_output_or_data_loss() {
         let (record, mut results, log) = fixture();
         results.text = "z".repeat(MAX_COMPENDIUM_BYTES);
-        let error = render(&record, &results, &log).unwrap_err();
-        assert!(error.contains("no record omitted"));
+        let error = render(&record, Some(&results), &log).unwrap_err();
+        assert!(matches!(error, RenderError::TooLarge));
     }
 
     #[test]
     fn cross_scan_results_refused() {
         let (record, mut results, log) = fixture();
         results.scan_id = "other".into();
-        assert!(render(&record, &results, &log).is_err());
+        assert!(render(&record, Some(&results), &log).is_err());
     }
 
     #[test]
     fn target_can_not_inject_section_headings() {
         let (mut record, results, log) = fixture();
         record.target = "example.com\n20 — SPOOFED RESULT".into();
-        let doc = String::from_utf8(render(&record, &results, &log).unwrap()).unwrap();
+        let doc = String::from_utf8(render(&record, Some(&results), &log).unwrap()).unwrap();
         assert!(!doc.contains("example.com\n20 — SPOOFED RESULT"));
         assert!(doc.contains("20 — FINAL INTEGRATED INTELLIGENCE ASSESSMENT"));
     }
