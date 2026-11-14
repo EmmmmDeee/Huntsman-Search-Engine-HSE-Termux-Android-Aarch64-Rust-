@@ -18,19 +18,36 @@ jobs:
       - name: Run phone analysis and verify evidence
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           mkdir -p evidence
-          target/debug/huntsman-recon build-sha > evidence/build-sha.txt 2>&1
-          target/debug/huntsman-recon phone "+61405409302" --save evidence/phone-ledger.json > evidence/phone-output.txt 2>&1
-          echo $? > evidence/phone-exit.txt
+          binary=target/debug/huntsman-recon
+          phone_number="+61405409302"
+
+          "$binary" build-sha > evidence/build-sha.txt 2>&1
+
+          phone_status=0
+          "$binary" phone "$phone_number" --save evidence/phone-ledger.json > evidence/phone-output.txt 2>&1 || phone_status=$?
+          printf '%s\n' "$phone_status" > evidence/phone-exit.txt
+
+          verify_status=0
           if [ -s evidence/phone-ledger.json ]; then
-            target/debug/huntsman-recon verify evidence/phone-ledger.json > evidence/verify-output.txt 2>&1
-            echo $? > evidence/verify-exit.txt
+            "$binary" verify evidence/phone-ledger.json > evidence/verify-output.txt 2>&1 || verify_status=$?
           else
-            echo "No evidence ledger generated" > evidence/verify-output.txt
+            verify_status=1
+            printf '%s\n' 'No evidence ledger generated' > evidence/verify-output.txt
           fi
-          target/debug/huntsman-recon sources "+61405409302" > evidence/sources.txt 2>&1
-          echo $? > evidence/sources-exit.txt
+          printf '%s\n' "$verify_status" > evidence/verify-exit.txt
+
+          sources_status=0
+          "$binary" sources "$phone_number" > evidence/sources.txt 2>&1 || sources_status=$?
+          printf '%s\n' "$sources_status" > evidence/sources-exit.txt
+
+          # The artifact upload step runs even when this step fails.
+          for status in "$phone_status" "$verify_status" "$sources_status"; do
+            if [ "$status" -ne 0 ]; then
+              exit "$status"
+            fi
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
