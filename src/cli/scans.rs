@@ -370,8 +370,11 @@ fn types_listing() -> ExitCode {
 }
 
 /// The subcommands that read no saved scan through the API: the correlation rules, the data
-/// types and the alert history. `None` for every other subcommand.
+/// types, the alert history and the direct compendium export. `None` for other subcommands.
 fn without_api(command: &str, rest: &[&str], parsed: &Parsed) -> Option<ExitCode> {
+    if command == "compendium" {
+        return Some(compendium(parsed, rest));
+    }
     let listing: fn(&Parsed) -> ExitCode = match command {
         "rules" => rules_listing,
         "alerts" => alerts_listing,
@@ -383,6 +386,23 @@ fn without_api(command: &str, rest: &[&str], parsed: &Parsed) -> Option<ExitCode
     } else {
         fail(EX_USAGE, &format!("scans {command} takes no argument"))
     })
+}
+
+fn compendium(parsed: &Parsed, rest: &[&str]) -> ExitCode {
+    let [id] = rest else {
+        return fail(EX_USAGE, "scans compendium takes one scan id");
+    };
+    let dir = match scan_dir(parsed) {
+        Ok(dir) => dir,
+        Err(code) => return code,
+    };
+    match ScanStore::open_existing(&dir) {
+        Ok(store) => deliver(
+            &ScanApi::saved_compendium(&store, id),
+            parsed.value("output"),
+        ),
+        Err(error) => fail(EX_IOERR, &format!("scans: {error}")),
+    }
 }
 
 pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
@@ -411,22 +431,6 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
     }
     if let Some(code) = without_api(command, rest, &parsed) {
         return code;
-    }
-    if command == "compendium" {
-        let [id] = rest else {
-            return fail(EX_USAGE, "scans compendium takes one scan id");
-        };
-        let dir = match scan_dir(&parsed) {
-            Ok(dir) => dir,
-            Err(code) => return code,
-        };
-        return match ScanStore::open_existing(&dir) {
-            Ok(store) => deliver(
-                &ScanApi::saved_compendium(&store, id),
-                parsed.value("output"),
-            ),
-            Err(error) => fail(EX_IOERR, &format!("scans: {error}")),
-        };
     }
     let api = match open(&parsed) {
         Ok(api) => api,
