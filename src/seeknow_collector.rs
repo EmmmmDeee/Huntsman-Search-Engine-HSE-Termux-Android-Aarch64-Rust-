@@ -181,8 +181,8 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
 /// The module an imported bulk export's rows are recorded under: `SeekNow`'s data, read offline.
 pub const EXPORT_MODULE: &str = "seeknow_export";
 
-/// What one bulk export yields: its entities (merged by identity across blocks), one outcome per
-/// result block, and the pivots its kept rows offer.
+/// What one bulk export yields: its entities (merged by identity across blocks), its per-target
+/// outcomes, and the pivots its kept rows offer.
 #[derive(Debug, Clone, Default)]
 pub struct ExportImport {
     pub entities: Vec<Entity>,
@@ -224,19 +224,37 @@ pub fn collect_from_export(
     now_unix: u64,
 ) -> ExportImport {
     let mut import = ExportImport::default();
-    for block in &export.results {
+    let provenance = format!(
+        "bulk export {} sha256 {}",
+        export.id.as_deref().unwrap_or("(no id)"),
+        export.sha256
+    );
+    for (index, block) in export.results.iter().enumerate() {
         // Preserve every row of every block, before any attribution decision, so the full
         // uploaded dataset survives import whether or not a row names its target.
         import.records.extend(block.rows.iter().cloned());
+        let mut notes = Vec::new();
+        if let Some(error) = block.provider_error {
+            notes.push(format!(
+                "SeekNow {error} in result block {} for target {:?}",
+                index + 1,
+                block.target
+            ));
+        }
+        notes.push(provenance.clone());
         let Some(kind) = selector_kind(block.query_type) else {
-            import.outcomes.push(SourceExecutionOutcome::inconclusive(
+            notes.push(format!(
+                "target {:?}: a {} search names no single identifier kind, so no row can be attributed",
+                block.target,
+                block.query_type.api_value().unwrap_or("auto")
+            ));
+            import.outcomes.push(SourceExecutionOutcome::observed(
                 EXPORT_MODULE,
                 now_unix,
-                format!(
-                    "target {:?}: a {} search names no single identifier kind, so no row can be attributed",
-                    block.target,
-                    block.query_type.api_value().unwrap_or("auto")
-                ),
+                SourceOutcomeKind::Inconclusive,
+                None,
+                block.provider_error.map(|_| block.rows.len()),
+                notes.join("; "),
             ));
             continue;
         };
@@ -252,22 +270,6 @@ pub fn collect_from_export(
         // parser cannot justify a clean negative result.
         let incomplete_empty = block.rows.is_empty()
             && (block.reported_total.is_some_and(|total| total > 0) || block.rows_not_read > 0);
-        let mut outcome = if incomplete_empty {
-            SourceExecutionOutcome::inconclusive(
-                EXPORT_MODULE,
-                now_unix,
-                "export has no readable rows despite reported or unread records",
-            )
-        } else if block.rows.is_empty() {
-            SourceExecutionOutcome::valid_zero(EXPORT_MODULE, now_unix)
-        } else {
-            SourceExecutionOutcome::success(EXPORT_MODULE, now_unix, block.rows.len())
-        };
-        let mut notes = vec![format!(
-            "bulk export {} sha256 {}",
-            export.id.as_deref().unwrap_or("(no id)"),
-            export.sha256
-        )];
         if let Some(total) = block.reported_total {
             if total > block.rows.len() as u64 {
                 notes.push(format!(
@@ -282,7 +284,24 @@ pub fn collect_from_export(
         if incomplete_empty {
             notes.push("no readable rows: cannot establish a valid zero".to_owned());
         }
-        outcome.detail = Some(notes.join("; "));
+        let found = block.rows.len();
+        let detail = notes.join("; ");
+        let outcome = if block.provider_error.is_some() {
+            SourceExecutionOutcome::observed(
+                EXPORT_MODULE,
+                now_unix,
+                SourceOutcomeKind::Inconclusive,
+                None,
+                Some(found),
+                detail,
+            )
+        } else if incomplete_empty {
+            SourceExecutionOutcome::inconclusive(EXPORT_MODULE, now_unix, detail)
+        } else if found == 0 {
+            SourceExecutionOutcome::valid_zero(EXPORT_MODULE, now_unix).with_detail(detail)
+        } else {
+            SourceExecutionOutcome::success(EXPORT_MODULE, now_unix, found).with_detail(detail)
+        };
         let result = crate::seeknow::SeekNowSearchResult {
             rows: block.rows.clone(),
             meta: crate::seeknow::SeekNowResponseMeta {
@@ -301,9 +320,46 @@ pub fn collect_from_export(
             .extend(batch.receipts.into_iter().map(|receipt| receipt.outcome));
         import.pivots.extend(batch.pivots);
     }
+    append_missing_export_targets(export, &mut import.outcomes, &provenance, now_unix);
     crate::entity::merge_by_uid(&mut import.entities);
     import.pivots.truncate(limits.max_pivots);
     import
+}
+
+fn append_missing_export_targets(
+    export: &crate::seeknow::BulkExport,
+    outcomes: &mut Vec<SourceExecutionOutcome>,
+    provenance: &str,
+    now_unix: u64,
+) {
+    match &export.requested_targets {
+        Ok(Some(targets)) => {
+            let mut returned = HashMap::new();
+            for block in &export.results {
+                *returned.entry(block.target.as_str()).or_insert(0_usize) += 1;
+            }
+            for (index, target) in targets.iter().enumerate() {
+                match returned.get_mut(target.as_str()) {
+                    Some(count) if *count > 0 => *count -= 1,
+                    _ => outcomes.push(SourceExecutionOutcome::inconclusive(
+                        EXPORT_MODULE,
+                        now_unix,
+                        format!(
+                            "no result block for submitted target #{} {:?}; {provenance}",
+                            index + 1,
+                            target
+                        ),
+                    )),
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(detail) => outcomes.push(SourceExecutionOutcome::inconclusive(
+            EXPORT_MODULE,
+            now_unix,
+            format!("cannot verify submitted target coverage: {detail}; {provenance}"),
+        )),
+    }
 }
 
 /// Map a leg error to a collector error, keeping a request the guarded path refused before sending
@@ -495,7 +551,11 @@ fn append_result(
         ),
     });
 
-    if result.outcome.kind != SourceOutcomeKind::Success {
+    // An offline export may include usable rows alongside a provider lookup error.
+    let partial_export = result.outcome.module == EXPORT_MODULE
+        && result.outcome.kind == SourceOutcomeKind::Inconclusive
+        && result.outcome.found.is_some_and(|found| found > 0);
+    if result.outcome.kind != SourceOutcomeKind::Success && !partial_export {
         return;
     }
     let mut positions = batch

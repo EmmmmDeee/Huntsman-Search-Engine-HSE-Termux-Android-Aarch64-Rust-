@@ -1033,3 +1033,108 @@ fn incomplete_empty_bulk_blocks_cannot_claim_valid_zero() {
         assert!(detail.contains("cannot establish a valid zero"), "{detail}");
     }
 }
+
+#[test]
+fn bulk_lookup_errors_preserve_rows_and_attribution_without_claiming_success() {
+    use huntsman_recon::seeknow::{is_bulk_export, parse_bulk_export};
+    use huntsman_recon::seeknow_collector::collect_from_export;
+
+    let input = r#"{"results":[
+        {"target":"sample_handle","type":"username","total":2,"error":"network error","rows":[
+            {"_source":"Dataset A","username":"sample_handle","email":"owner@example.test"},
+            {"_source":"Dataset B","username":"other_handle","email":"other@example.test"}]},
+        {"target":"empty_error","type":"username","error":"network error","rows":[]},
+        {"target":"missing_rows","type":"username","error":{"token":"private-value"}},
+        {"target":"unknown_kind","type":"auto","error":"network error","rows":[{"username":"unknown_kind"}]},
+        {"target":"clean_empty","type":"username","total":0,"error":null,"rows":[]}
+    ]}"#;
+    assert!(is_bulk_export(input.as_bytes()));
+    let export = parse_bulk_export(input.as_bytes()).expect("valid export");
+    let import = collect_from_export(&export, &CollectionLimits::default(), 1);
+
+    let outcomes: Vec<_> = import.outcomes.iter().map(|o| (o.kind, o.found)).collect();
+    assert_eq!(
+        outcomes,
+        [
+            (SourceOutcomeKind::Inconclusive, Some(2)),
+            (SourceOutcomeKind::Inconclusive, Some(0)),
+            (SourceOutcomeKind::Inconclusive, Some(0)),
+            (SourceOutcomeKind::Inconclusive, Some(1)),
+            (SourceOutcomeKind::ValidZero, Some(0)),
+        ]
+    );
+    for index in [0, 1, 3] {
+        let detail = import.outcomes[index]
+            .detail
+            .as_deref()
+            .expect("error detail");
+        assert!(detail.contains("network error") && detail.contains(&export.sha256));
+    }
+    let detail = import.outcomes[2].detail.as_deref().expect("error detail");
+    assert!(detail.contains("lookup error reported by provider"));
+    assert!(!detail.contains("private-value"));
+    assert_eq!(import.records.len(), 3);
+    assert!(
+        import
+            .entities
+            .iter()
+            .any(|e| e.value == "owner@example.test")
+    );
+    assert!(
+        !import
+            .entities
+            .iter()
+            .any(|e| e.value == "other@example.test")
+    );
+    assert!(
+        import
+            .pivots
+            .iter()
+            .any(|p| p.value == "owner@example.test")
+    );
+}
+
+#[test]
+fn bulk_targets_are_reconciled_by_occurrence_and_legacy_exports_still_import() {
+    use huntsman_recon::seeknow::{is_bulk_export, parse_bulk_export};
+    use huntsman_recon::seeknow_collector::collect_from_export;
+
+    let input = r#"{"targets":["first_handle","second_handle","first_handle","third_handle"],"results":[
+        {"target":"second_handle","type":"username","rows":[]},
+        {"target":"first_handle","type":"username","rows":[]}
+    ]}"#;
+    let limits = CollectionLimits::default();
+    let import = |input: &str| {
+        let export = parse_bulk_export(input.as_bytes()).expect("valid export");
+        collect_from_export(&export, &limits, 1)
+    };
+    let report = import(input);
+    assert_eq!(report.outcomes.len(), 4);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ValidZero);
+    for (outcome, missing) in report.outcomes[2..].iter().zip(["#3", "#4"]) {
+        assert_eq!(outcome.kind, SourceOutcomeKind::Inconclusive);
+        assert!(
+            outcome
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains(missing)
+        );
+    }
+
+    let all_missing = r#"{"targets":["first_handle"],"results":[]}"#;
+    assert!(is_bulk_export(all_missing.as_bytes()));
+    assert!(!is_bulk_export(br#"{"results":[]}"#));
+    assert_eq!(
+        import(all_missing).outcomes[0].kind,
+        SourceOutcomeKind::Inconclusive
+    );
+    let legacy = r#"{"results":[{"target":"first_handle","type":"username","rows":[]}]}"#;
+    assert_eq!(import(legacy).outcomes.len(), 1);
+    let invalid =
+        r#"{"targets":[null],"results":[{"target":"first_handle","type":"username","rows":[]}]}"#;
+    let report = import(invalid);
+    assert_eq!(report.outcomes.len(), 2);
+    assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::Inconclusive);
+}

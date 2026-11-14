@@ -619,6 +619,46 @@ mod tests {
         assert_eq!(invalid.status, 422);
     }
 
+    #[test]
+    fn seeknow_inspect_keeps_partial_evidence_and_reports_missing_targets() {
+        let export = br#"{"targets":["sample_handle","missing_handle"],"results":[
+            {"target":"sample_handle","type":"username","error":"network error","rows":[
+                {"_source":"Dataset A","username":"sample_handle","email":"owner@example.test"}
+            ]}
+        ]}"#;
+        let report = web_inspect("seeknow.json", export).expect("valid partial export");
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.value == "owner@example.test")
+        );
+        assert_eq!(report.outcomes.len(), 2);
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|o| o.kind == SourceOutcomeKind::Inconclusive)
+        );
+        assert!(report.text.contains("network error"));
+        assert!(
+            report
+                .text
+                .contains("no result block for submitted target #2")
+        );
+
+        for export in [
+            br#"{"targets":["missing_handle"],"results":[]}"#.as_slice(),
+            br#"{"results":[{"target":"sample_handle","type":"username","error":"network error"}]}"#,
+        ] {
+            let report = web_inspect("seeknow.json", export).expect("valid incomplete export");
+            assert_eq!(report.outcomes.len(), 1);
+            assert_eq!(report.outcomes[0].module, "seeknow_export");
+            assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+            assert!(report.entities.is_empty());
+        }
+    }
+
     /// A file `exif` cannot decode keeps `docmeta`'s findings, and the `exif` outcome says why.
     #[test]
     fn an_inspected_pdf_keeps_its_document_metadata_when_exif_cannot_read_it() {

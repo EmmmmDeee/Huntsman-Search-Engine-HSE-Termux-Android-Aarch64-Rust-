@@ -196,6 +196,8 @@ pub struct BulkExport {
     pub created_at: Option<String>,
     /// SHA-256 of the exact bytes read, so every row traces to the file it came from.
     pub sha256: String,
+    /// The submitted targets in order, when the export provides a readable list.
+    pub requested_targets: Result<Option<Vec<String>>, &'static str>,
     pub results: Vec<BulkResult>,
 }
 
@@ -206,6 +208,8 @@ pub struct BulkResult {
     pub query_type: SeekNowQueryType,
     /// The provider's `total`: how many rows it found, which may exceed the rows exported.
     pub reported_total: Option<u64>,
+    /// A diagnostic suitable for reports, including when the provider supplied usable rows.
+    pub provider_error: Option<&'static str>,
     pub rows: Vec<SeekNowRow>,
     /// Row objects in the block that were not read: over the bound or not objects.
     pub rows_not_read: usize,
@@ -229,8 +233,8 @@ pub fn query_type_named(name: &str) -> Option<SeekNowQueryType> {
     })
 }
 
-/// Whether `bytes` look like a `SeekNow` bulk export: a JSON object whose `results` is an array of
-/// objects that each carry a `target` and a `rows` array. **Pure.**
+/// Whether `bytes` look like a `SeekNow` bulk export. A reported error can have no rows, and an
+/// export with a submitted target list can have no result blocks. **Pure.**
 #[must_use]
 pub fn is_bulk_export(bytes: &[u8]) -> bool {
     serde_json::from_slice::<Value>(bytes).is_ok_and(|value| {
@@ -238,13 +242,63 @@ pub fn is_bulk_export(bytes: &[u8]) -> bool {
             .get("results")
             .and_then(Value::as_array)
             .is_some_and(|results| {
-                !results.is_empty()
-                    && results.iter().all(|result| {
-                        result.get("target").is_some_and(Value::is_string)
-                            && result.get("rows").is_some_and(Value::is_array)
+                if results.is_empty() {
+                    value.get("targets").is_some_and(|targets| {
+                        !targets.is_null() && targets.as_array().is_none_or(|list| !list.is_empty())
                     })
+                } else {
+                    results.iter().all(|result| {
+                        result.get("target").is_some_and(Value::is_string)
+                            && bulk_rows(result, bulk_provider_error(result).is_some()).is_some()
+                    })
+                }
             })
     })
+}
+
+fn bulk_requested_targets(value: &Value) -> Result<Option<Vec<String>>, &'static str> {
+    let Some(targets) = value.get("targets").filter(|targets| !targets.is_null()) else {
+        return Ok(None);
+    };
+    let targets = targets
+        .as_array()
+        .ok_or("submitted targets are not an array")?;
+    if targets.len() > MAX_EXPORT_RESULTS {
+        return Err("submitted target count exceeds the import limit");
+    }
+    targets
+        .iter()
+        .map(|target| {
+            target
+                .as_str()
+                .map(str::trim)
+                .filter(|target| !target.is_empty() && target.chars().count() <= MAX_FIELD_CHARS)
+                .map(str::to_owned)
+                .ok_or("submitted target list contains an unreadable entry")
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn bulk_provider_error(result: &Value) -> Option<&'static str> {
+    // Provider diagnostics may include credentials or other request data. The export digest
+    // identifies the original file while reports expose a recognised message or a safe fallback.
+    match result.get("error")? {
+        Value::Null | Value::Bool(false) => None,
+        Value::String(error) if error.trim().is_empty() => None,
+        Value::String(error) if error.trim().eq_ignore_ascii_case("network error") => {
+            Some("network error")
+        }
+        _ => Some("lookup error reported by provider"),
+    }
+}
+
+fn bulk_rows(result: &Value, has_provider_error: bool) -> Option<&[Value]> {
+    match result.get("rows") {
+        Some(Value::Array(rows)) => Some(rows),
+        None if has_provider_error => Some(&[]),
+        _ => None,
+    }
 }
 
 /// Read a `SeekNow` bulk export with the same row normalization as a live search: credential
@@ -277,11 +331,8 @@ pub fn parse_bulk_export(bytes: &[u8]) -> Result<BulkExport, String> {
         let query_type = query_type_named(&type_name).ok_or_else(|| {
             format!("result block {index} names an unknown query type {type_name:?}")
         })?;
-        // A missing or malformed rows array is schema drift, not a clean
-        // zero-result export. Keep actual empty arrays distinguishable.
-        let rows = result
-            .get("rows")
-            .and_then(Value::as_array)
+        let provider_error = bulk_provider_error(result);
+        let rows = bulk_rows(result, provider_error.is_some())
             .ok_or_else(|| format!("result block {index} has no rows array"))?;
         let all = rows.len();
         let read: Vec<SeekNowRow> = rows
@@ -293,6 +344,7 @@ pub fn parse_bulk_export(bytes: &[u8]) -> Result<BulkExport, String> {
             target,
             query_type,
             reported_total: result.get("total").and_then(value_as_u64),
+            provider_error,
             rows_not_read: all - read.len(),
             rows: read,
         });
@@ -301,6 +353,7 @@ pub fn parse_bulk_export(bytes: &[u8]) -> Result<BulkExport, String> {
         id: text(&value, "id"),
         created_at: text(&value, "createdAt"),
         sha256: hex32(&sha256(bytes)),
+        requested_targets: bulk_requested_targets(&value),
         results: blocks,
     })
 }
