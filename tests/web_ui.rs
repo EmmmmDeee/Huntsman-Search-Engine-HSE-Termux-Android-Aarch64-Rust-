@@ -861,6 +861,15 @@ fn every_export_the_page_offers_is_one_the_api_writes() {
             "{attribute}: {formats:?}"
         );
         for format in &formats {
+            if attribute == "data-format" && *format == "compendium" {
+                let export = api.handle("GET", &format!("{root}/compendium"), "");
+                assert_eq!(export.status, 200, "{}", export.text());
+                assert_eq!(
+                    export.filename,
+                    Some(format!("{id}-Huntsman-compendium.txt"))
+                );
+                continue;
+            }
             let export = api.handle("GET", &path, &format!("{query}format={format}"));
             assert_eq!(export.status, 200, "{path} {format}: {}", export.text());
             assert!(
