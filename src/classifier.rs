@@ -221,12 +221,17 @@ fn parse_api_key(value: &str) -> Option<String> {
             }
         }
     }
-    for prefix in ["xoxb-", "xoxp-", "xoxo-", "xoxa-", "xoxr-"] {
-        if trimmed.starts_with(prefix)
-            && (40..=80).contains(&trimmed.len())
-            && trimmed
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    if let [
+        b'x',
+        b'o',
+        b'x',
+        b'a' | b'b' | b'o' | b'p' | b'r',
+        b'-',
+        body @ ..,
+    ] = trimmed.as_bytes()
+    {
+        if (35..=75).contains(&body.len())
+            && body.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-')
         {
             return Some(trimmed.to_owned());
         }

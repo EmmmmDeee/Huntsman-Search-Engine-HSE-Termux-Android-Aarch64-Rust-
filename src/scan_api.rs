@@ -13,6 +13,7 @@
 //! | `startscan` | `POST /api/scans?target=T[&name=N][&kind=K][&usecase=U][&modules=a,b][&types=A,B][&depth=D]` |
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
+//! | (saved scan compendium) | `GET /api/scans/ID/compendium` |
 //! | (shared analysis over saved entities) | `GET /api/scans/ID/analyze` |
 //! | (source-attributed entity assessment) | `GET /api/scans/ID/reality?uid=ENTITY_UID` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
@@ -67,6 +68,7 @@ use crate::api_leg::Api;
 use crate::correlator::rule_catalog;
 use crate::entity_reality;
 use crate::evidence_register;
+use crate::intelligence_compendium;
 use crate::module::reachable_modules;
 use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::scan_alert::{self, Policy};
@@ -373,6 +375,7 @@ impl ScanApi {
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "analyze"], false) => self.analyze(id),
             (["scans", id, "evidence"], false) => self.evidence(id, &param),
+            (["scans", id, "compendium"], false) => self.compendium(id),
             (["scans", id, "matrix"], false) => self.matrix(id, &param),
             (["scans", id, "reality"], false) => self.reality(id, param.get("uid")),
             (["scans", _, "reality"], true) => error(405, "entity reality is read-only"),
@@ -1116,6 +1119,51 @@ impl ScanApi {
         ok(200, &json!({ "nodes": nodes, "edges": edges }))
     }
 
+    fn compendium(&self, id: &str) -> ApiResponse {
+        match self.service.record_as_saved(id) {
+            Ok(record) => Self::render_compendium(self.service.store(), &record),
+            Err(failure) => service_error(&failure),
+        }
+    }
+
+    /// Export a compendium directly from an existing store without scan recovery.
+    #[must_use]
+    pub fn saved_compendium(store: &crate::scan_store::ScanStore, id: &str) -> ApiResponse {
+        match store.get(id) {
+            Ok(record) => Self::render_compendium(store, &record),
+            Err(failure) => service_error(&failure.into()),
+        }
+    }
+
+    fn render_compendium(store: &crate::scan_store::ScanStore, record: &ScanRecord) -> ApiResponse {
+        use crate::scan_store::StoreError;
+
+        let input_error = |failure: StoreError| match failure {
+            StoreError::Invalid(message) => error(413, &message),
+            failure => service_error(&failure.into()),
+        };
+        let limit = intelligence_compendium::MAX_COMPENDIUM_BYTES as u64;
+        let (results, _) = match store.results_with_byte_budget(&record.id, limit) {
+            Ok(found) => found,
+            Err(failure) => return input_error(failure),
+        };
+        let log = match store.log_for_export(&record.id, limit) {
+            Ok(log) => log,
+            Err(failure) => return input_error(failure),
+        };
+        match intelligence_compendium::render(record, results.as_ref(), &log) {
+            Ok(body) => ApiResponse::export(scan_export::Export {
+                body,
+                content_type: "text/plain; charset=utf-8",
+                filename: format!("{}-Huntsman-compendium.txt", record.id),
+            }),
+            Err(failure @ intelligence_compendium::RenderError::TooLarge) => {
+                error(413, &failure.to_string())
+            }
+            Err(failure) => error(500, &failure.to_string()),
+        }
+    }
+
     fn export(&self, id: &str, param: &Params) -> ApiResponse {
         let limit = u64::try_from(PipelineLimits::default().max_export_bytes).unwrap_or(u64::MAX);
         self.export_with_budget(id, param, limit)
@@ -1433,6 +1481,7 @@ fn route_exists(segments: &[&str], write: bool) -> bool {
                     "summary"
                         | "analyze"
                         | "evidence"
+                        | "compendium"
                         | "matrix"
                         | "elements"
                         | "correlations"

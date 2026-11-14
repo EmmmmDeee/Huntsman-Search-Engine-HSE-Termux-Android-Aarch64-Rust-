@@ -38,7 +38,7 @@ pub const MAX_ROW_BYTES: u64 = 256 * 1024;
 /// The largest `results.json`: a lookup's entities are well under a megabyte, and the cap keeps a
 /// runaway or hostile file from exhausting a phone's memory.
 pub const MAX_RESULTS_BYTES: u64 = 64 * 1024 * 1024;
-/// The largest `log.jsonl`; entries past it are dropped after one entry saying so.
+/// The largest `log.jsonl`. Later entries are written to the overflow log.
 pub const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
 /// The most scans one store lists.
 pub const MAX_SCANS: usize = 4096;
@@ -393,6 +393,20 @@ impl ScanStore {
         Ok(Self {
             dir: dir.to_path_buf(),
         })
+    }
+
+    /// Open an existing store for a read without creating it or modifying its permissions.
+    pub fn open_existing(dir: &Path) -> Result<Self, StoreError> {
+        match fs::symlink_metadata(dir) {
+            Ok(metadata) if metadata.is_dir() => Ok(Self {
+                dir: dir.to_path_buf(),
+            }),
+            Ok(_) => Err(StoreError::Io(format!(
+                "{}: not a regular scan store directory",
+                dir.display()
+            ))),
+            Err(error) => Err(io_error(dir, &error)),
+        }
     }
 
     #[must_use]
@@ -777,26 +791,7 @@ impl ScanStore {
     /// [`StoreError::NotFound`] when there is no such scan; [`StoreError::Io`] when the log
     /// cannot be read.
     pub fn log(&self, id: &str) -> Result<Vec<LogEntry>, StoreError> {
-        let dir = self.scan_dir(id)?;
-        self.require_row(id)?;
-        let path = dir.join(LOG_FILE);
-        let mut bytes = if optional_file_missing(&path, fs::symlink_metadata(&path))? {
-            Vec::new()
-        } else {
-            crate::fsio::read_bounded(&path, MAX_LOG_BYTES).map_err(|e| fsio_error(&e))?
-        };
-        let overflow_path = dir.join(LOG_OVERFLOW_FILE);
-        if !optional_file_missing(&overflow_path, fs::symlink_metadata(&overflow_path))? {
-            // Keep the existing Vec-returning API bounded. Never return a silently
-            // truncated history: larger archives remain on disk and produce an error.
-            let remaining = MAX_RESULTS_BYTES.saturating_sub(bytes.len() as u64);
-            let extra =
-                crate::fsio::read_bounded(&overflow_path, remaining).map_err(|e| fsio_error(&e))?;
-            if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-                bytes.push(b'\n');
-            }
-            bytes.extend_from_slice(&extra);
-        }
+        let bytes = self.read_log(id, MAX_RESULTS_BYTES, false)?;
         Ok(String::from_utf8_lossy(&bytes)
             .lines()
             .enumerate()
@@ -810,6 +805,59 @@ impl ScanStore {
                 })
             })
             .collect())
+    }
+
+    /// Read the complete saved log for an evidence export under its input budget.
+    /// A malformed entry cannot be substituted in a complete export.
+    pub(crate) fn log_for_export(
+        &self,
+        id: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<LogEntry>, StoreError> {
+        let bytes = self.read_log(id, max_bytes, true)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|error| StoreError::Io(format!("scan {id}: log is not UTF-8: {error}")))?;
+        text.lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim().is_empty())
+            .map(|(number, line)| {
+                serde_json::from_str(line).map_err(|error| {
+                    StoreError::Io(format!(
+                        "scan {id}: log line {} does not parse: {error}",
+                        number + 1
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    fn read_log(&self, id: &str, max_bytes: u64, export: bool) -> Result<Vec<u8>, StoreError> {
+        let dir = self.scan_dir(id)?;
+        self.require_row(id)?;
+        let read = |name: &str, limit: u64| -> Result<Vec<u8>, StoreError> {
+            let path = dir.join(name);
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(io_error(&path, &error)),
+            };
+            if export && metadata.is_file() && metadata.len() > limit {
+                return Err(StoreError::Invalid(format!(
+                    "compendium log input budget exceeded ({max_bytes} bytes)"
+                )));
+            }
+            crate::fsio::read_bounded(&path, limit).map_err(|error| fsio_error(&error))
+        };
+        let mut bytes = read(LOG_FILE, max_bytes.min(MAX_LOG_BYTES))?;
+        let remaining = max_bytes.saturating_sub(bytes.len() as u64);
+        let extra = read(LOG_OVERFLOW_FILE, remaining)?;
+        if !extra.is_empty() {
+            if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+                bytes.push(b'\n');
+            }
+            bytes.extend_from_slice(&extra);
+        }
+        Ok(bytes)
     }
 
     /// Delete a scan and everything it saved.

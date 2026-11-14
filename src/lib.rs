@@ -141,6 +141,7 @@ pub mod indicator_legs;
 pub mod indicator_sources;
 pub mod infrastructure;
 pub mod intelligence;
+pub mod intelligence_compendium;
 pub mod internetdb;
 pub mod ip_cli;
 pub mod ipinfo;
