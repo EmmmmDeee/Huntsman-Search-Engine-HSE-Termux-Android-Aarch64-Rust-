@@ -593,7 +593,14 @@ fn identity_descriptors(
     if attr("disposable").is_some_and(positive) {
         out.push(("EMAILADDR_DISPOSABLE", host.to_owned()));
     }
-    if attr("tor").is_some_and(positive) {
+    // IPQS's `tor` can name a former or suspected exit. Its `active_tor` field
+    // reports current exit status. Other sources use `tor` for their exit evidence.
+    let tor_exit = if evidence.provenance.source == crate::ipqs::SOURCE {
+        entity.kind == EntityKind::IpAddress && attr("active_tor") == Some("true")
+    } else {
+        attr("tor").is_some_and(positive)
+    };
+    if tor_exit {
         out.push(("TOR_EXIT_NODE", host.to_owned()));
     }
     for key in ["profile_url", "blog_url"] {
