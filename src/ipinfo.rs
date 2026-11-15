@@ -88,7 +88,7 @@ pub fn lookup(
 /// [`LegError::Decode`] for a body that is not the documented shape or names another address.
 pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
     let body: Body = api_leg::decode(body)?;
-    if !body.ip.eq_ignore_ascii_case(ip) {
+    if !crate::canonical::same_ip(&body.ip, ip) {
         return Err(LegError::Decode("answer names another address".into()));
     }
     if body.bogon {

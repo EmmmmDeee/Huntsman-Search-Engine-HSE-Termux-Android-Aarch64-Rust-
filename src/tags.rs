@@ -33,6 +33,8 @@ pub const MULTI_DEVICE: &str = "multi-device";
 pub const MALICIOUS: &str = "malicious";
 /// A Tor exit relay's address.
 pub const TOR_EXIT: &str = "tor-exit";
+/// A provider suspects Tor use, with no active exit observation.
+pub const TOR_SUSPECTED: &str = "tor-suspected";
 pub const VULNERABLE: &str = "vulnerable";
 pub const SOCIAL_PROFILE: &str = "social-profile";
 pub const CANDIDATE: &str = "candidate";

@@ -8,7 +8,8 @@
 //! spent credits as a plan refusal, never as a zero.
 //!
 //! An address gives the fraud score, proxy/VPN/Tor/abuse flags (and whether the VPN or Tor exit
-//! is active now), ISP, AS, hostname, city, region, postcode, time zone and position; the
+//! is active now), optional account-tier risk and network context, ISP, AS, hostname, city,
+//! region, postcode, time zone and position; the
 //! position is also a coordinates pivot. An email
 //! gives validity, deliverability, disposable/honeypot/leaked flags, first-seen and domain age,
 //! and any names or numbers IPQS associates with it. A number gives validity, line type, carrier,
@@ -44,18 +45,30 @@ pub const INTEL: Source = Source {
     ],
     lookup,
 };
-/// IPQS's own threshold for a high-risk indicator.
+/// Existing threshold for non-IP indicators.
 pub const HIGH_RISK_SCORE: u8 = 85;
+/// IPQS's documented high-risk threshold for IP lookups.
+const HIGH_RISK_IP_SCORE: f64 = 90.0;
 /// Most associated names or numbers kept.
 const MAX_ASSOCIATED: usize = 10;
 
 #[derive(Deserialize)]
-struct Envelope {
+struct Envelope<Score> {
     success: bool,
     #[serde(default)]
     message: Option<String>,
-    #[serde(default)]
-    fraud_score: Option<u8>,
+    fraud_score: Option<Score>,
+}
+
+impl<Score> Envelope<Score> {
+    fn score(self, in_range: impl FnOnce(&Score) -> bool) -> Result<Score, LegError> {
+        if !self.success {
+            return Err(refusal(self.message.as_deref()));
+        }
+        self.fraud_score
+            .filter(in_range)
+            .ok_or_else(|| LegError::Decode("success without a fraud score of 0 to 100".into()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -75,10 +88,8 @@ struct IpBody {
     latitude: Option<f64>,
     #[serde(default)]
     longitude: Option<f64>,
-    #[serde(default)]
-    active_vpn: bool,
-    #[serde(default)]
-    active_tor: bool,
+    active_vpn: Option<bool>,
+    active_tor: Option<bool>,
     #[serde(rename = "ISP", default)]
     isp: Option<String>,
     #[serde(rename = "ASN", default)]
@@ -91,20 +102,21 @@ struct IpBody {
     connection_type: Option<String>,
     #[serde(default)]
     abuse_velocity: Option<String>,
-    #[serde(default)]
-    proxy: bool,
-    #[serde(default)]
-    vpn: bool,
-    #[serde(default)]
-    tor: bool,
-    #[serde(default)]
-    recent_abuse: bool,
-    #[serde(default)]
-    bot_status: bool,
+    proxy: Option<bool>,
+    vpn: Option<bool>,
+    tor: Option<bool>,
+    recent_abuse: Option<bool>,
+    bot_status: Option<bool>,
     #[serde(default)]
     is_crawler: bool,
     #[serde(default)]
     mobile: bool,
+    frequent_abuser: Option<bool>,
+    high_risk_attacks: Option<bool>,
+    shared_connection: Option<bool>,
+    dynamic_connection: Option<bool>,
+    security_scanner: Option<bool>,
+    trusted_network: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -238,7 +250,7 @@ fn flags(pairs: &[(bool, &'static str)]) -> Vec<&'static str> {
         .collect()
 }
 
-fn summary(what: &str, score: u8, flags: &[&str]) -> String {
+fn summary(what: &str, score: impl std::fmt::Display, flags: &[&str]) -> String {
     if flags.is_empty() {
         format!("IPQualityScore {what}: fraud score {score}")
     } else {
@@ -254,38 +266,42 @@ fn summary(what: &str, score: u8, flags: &[&str]) -> String {
 /// # Errors
 /// The refusal `success: false` means, or [`LegError::Decode`] for another shape.
 pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Finding, LegError> {
-    let envelope: Envelope = api_leg::decode(body)?;
-    if !envelope.success {
-        return Err(refusal(envelope.message.as_deref()));
+    if matches!(indicator, Indicator::Ip(_)) {
+        let score =
+            api_leg::decode::<Envelope<f64>>(body)?.score(|score| (0.0..=100.0).contains(score))?;
+        return Ok(ip(&api_leg::decode(body)?, score).attr("fraud_score", score.to_string()));
     }
-    let score = envelope
-        .fraud_score
-        .filter(|s| *s <= 100)
-        .ok_or_else(|| LegError::Decode("success without a fraud score of 0 to 100".into()))?;
+    let score = api_leg::decode::<Envelope<u8>>(body)?.score(|score| *score <= 100)?;
     let finding = match indicator {
-        Indicator::Ip(_) => ip(&api_leg::decode(body)?, score),
         Indicator::Email(_) => email(&api_leg::decode(body)?, score),
         Indicator::Phone(_) => phone(&api_leg::decode(body)?, score),
-        Indicator::Domain(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => {
-            return Err(LegError::Decode("no domain lookup".into()));
-        }
+        _ => return Err(LegError::Decode("no domain lookup".into())),
     };
     Ok(finding
         .attr("fraud_score", score.to_string())
         .tag_if(score >= HIGH_RISK_SCORE, tags::MALICIOUS))
 }
 
-fn ip(body: &IpBody, score: u8) -> Finding {
+fn ip(body: &IpBody, score: f64) -> Finding {
+    let active_tor = body.active_tor == Some(true);
+    let reported_abuse = [
+        body.recent_abuse,
+        body.bot_status,
+        body.frequent_abuser,
+        body.high_risk_attacks,
+    ]
+    .contains(&Some(true));
+    let high_risk = score >= HIGH_RISK_IP_SCORE;
     let set = flags(&[
-        (body.proxy, "proxy"),
-        (body.vpn, "vpn"),
-        (body.tor, "tor"),
-        (body.recent_abuse, "recent_abuse"),
-        (body.bot_status, "bot"),
+        (body.proxy == Some(true), "proxy"),
+        (body.vpn == Some(true), "vpn"),
+        (body.tor == Some(true), "tor"),
+        (body.recent_abuse == Some(true), "recent_abuse"),
+        (body.bot_status == Some(true), "bot"),
         (body.is_crawler, "crawler"),
         (body.mobile, "mobile"),
-        (body.active_vpn, "active_vpn"),
-        (body.active_tor, "active_tor"),
+        (body.active_vpn == Some(true), "active_vpn"),
+        (active_tor, "active_tor"),
     ]);
     let mut finding = Finding::new(summary("IP", score, &set))
         .list_attr("flags", &set)
@@ -298,9 +314,36 @@ fn ip(body: &IpBody, score: u8) -> Finding {
         .opt_attr("region", known(body.region.as_deref()))
         .opt_attr("postal_code", known(body.zip_code.as_deref()))
         .opt_attr("timezone", known(body.timezone.as_deref()))
-        .tag_if(body.vpn, "vpn")
-        .tag_if(body.proxy, "proxy")
-        .tag_if(body.tor, tags::TOR_EXIT);
+        .tag_if(body.vpn == Some(true), "vpn")
+        .tag_if(body.proxy == Some(true), "proxy")
+        .tag_if(body.tor == Some(true) && !active_tor, tags::TOR_SUSPECTED)
+        .tag_if(active_tor, tags::TOR_EXIT)
+        .tag_if(high_risk, "ipqs-high-risk")
+        .tag_if(reported_abuse, "ipqs-abuse-reported");
+    if high_risk && reported_abuse {
+        // Attach the derived classification to this provider's evidence, so a
+        // merged entity does not attribute it to its other sources.
+        finding = finding.attr("malicious", "true").tag(tags::MALICIOUS);
+    }
+    for (field, value) in [
+        ("proxy", body.proxy),
+        ("vpn", body.vpn),
+        ("tor", body.tor),
+        ("active_vpn", body.active_vpn),
+        ("active_tor", body.active_tor),
+        ("recent_abuse", body.recent_abuse),
+        ("bot_status", body.bot_status),
+        ("frequent_abuser", body.frequent_abuser),
+        ("high_risk_attacks", body.high_risk_attacks),
+        ("shared_connection", body.shared_connection),
+        ("dynamic_connection", body.dynamic_connection),
+        ("security_scanner", body.security_scanner),
+        ("trusted_network", body.trusted_network),
+    ] {
+        if let Some(value) = value {
+            finding = finding.attr(field, if value { "true" } else { "false" });
+        }
+    }
     let position = body
         .latitude
         .zip(body.longitude)
@@ -430,7 +473,7 @@ mod tests {
             f.summary,
             "IPQualityScore IP: fraud score 88, proxy, vpn, recent_abuse, active_vpn"
         );
-        assert_eq!(f.tags, ["vpn", "proxy", tags::MALICIOUS]);
+        assert_eq!(f.tags, ["vpn", "proxy", "ipqs-abuse-reported"]);
         assert!(f.attrs.contains(&("asn", "AS64500".into())));
         assert!(f.pivots.iter().any(|p| p.value == "vpn-exit-7.example.net"));
     }
@@ -499,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn an_address_ipqs_cannot_place_has_no_network_or_place_and_a_tor_exit_is_tagged() {
+    fn tor_suspicion_without_active_status_is_kept_without_an_exit_tag() {
         let body = r#"{"success":true,"fraud_score":75,"country_code":"N/A","region":"N/A","city":"N/A","ISP":"N/A","organization":"N/A","timezone":"N/A","host":"N/A","tor":true}"#;
         let f = decode(body.as_bytes(), Indicator::Ip("185.220.101.1"))
             .unwrap_or_else(|e| panic!("{e}"));
@@ -509,7 +552,7 @@ mod tests {
             f.attrs
         );
         assert!(f.pivots.is_empty(), "N/A is no host name: {:?}", f.pivots);
-        assert_eq!(f.tags, [tags::TOR_EXIT]);
+        assert_eq!(f.tags, [tags::TOR_SUSPECTED]);
     }
 
     #[test]
