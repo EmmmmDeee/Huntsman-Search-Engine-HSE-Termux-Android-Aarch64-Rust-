@@ -256,6 +256,7 @@ pub mod scan_service;
 pub mod scan_store;
 pub mod scan_uncertainty;
 pub mod search;
+pub mod search_api;
 pub mod sec_edgar;
 pub mod security_toolkit;
 pub mod security_web;

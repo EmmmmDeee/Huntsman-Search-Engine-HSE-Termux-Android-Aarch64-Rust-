@@ -200,11 +200,10 @@ fn service_error(failure: &ServiceError) -> ApiResponse {
 /// then the keyed legs the `ip`, `domain` and `phone` lookups run beside them, plus the sources
 /// that read their key elsewhere.
 fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
-    let legs: [&Api; 11] = [
+    let legs: [&Api; 10] = [
         &crate::abn_lookup::API,
         &crate::abuseipdb::API,
         &crate::certspotter::API,
-        &crate::exa::API,
         &crate::greynoise::API,
         &crate::numverify::API,
         &crate::qld_traffic_cameras::API,
@@ -217,6 +216,8 @@ fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
         .iter()
         .map(|source| source.api)
         .chain(legs)
+        .copied()
+        .chain(crate::search_api::SearchApi::ALL.map(crate::search_api::SearchApi::api))
         .filter_map(|api| api.key.map(|key| (api.source, vec![key.slot])))
         .collect();
     slots.extend([
@@ -240,6 +241,8 @@ fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
             ],
         ),
     ]);
+    slots.sort_unstable();
+    slots.dedup();
     slots
 }
 

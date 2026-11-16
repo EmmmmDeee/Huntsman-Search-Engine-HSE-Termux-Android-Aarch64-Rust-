@@ -44,10 +44,25 @@
 <form id="uresearch" class="row">
 <label class="fl" for="uresearch-q">Universal Research</label>
 <input id="uresearch-q" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false">
+<label class="fl" for="uresearch-provider">Search provider</label>
+<select id="uresearch-provider">
+<option value="">Automatic research</option>
+<option value="crossref">Crossref (keyless)</option>
+<option value="openalex-public">OpenAlex public (keyless)</option>
+<option value="openalex">OpenAlex (key)</option>
+<option value="trove">Trove (key)</option>
+<option value="brave">Brave (key)</option>
+<option value="tavily">Tavily (key)</option>
+<option value="exa">Exa (key)</option>
+<option value="serpapi-google">Google via SerpApi (key)</option>
+<option value="serpapi-bing">Bing via SerpApi (key)</option>
+<option value="serpapi-yahoo">Yahoo via SerpApi (key)</option>
+<option value="serpapi-yandex">Yandex via SerpApi (key)</option>
+</select>
 <button class="btn btn-primary" id="uresearch-go" type="submit">Research</button>
 </form>
 <div class="toolbar"><button class="btn" id="uresearch-mission" type="button" disabled>Start bounded autonomous mission</button></div>
-<p class="help">Missions may use sources.</p>
+<p class="help">A selected provider receives your query. Keyed searches may use credits.</p>
 <p class="help" id="uresearch-status" role="status"></p>
 <div id="uresearch-hits" class="help"></div>
 </div></div>
@@ -721,7 +736,7 @@ $('nattackapply').onclick=()=>{
 function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))if(!i.disabled)i.checked=on}
 $('nall').onclick=()=>setAll(true);$('nnone').onclick=()=>setAll(false);
 let missionSeed=null,researchVersion=0;
-$('uresearch-q').oninput=()=>{
+$('uresearch-q').oninput=$('uresearch-provider').onchange=()=>{
   researchVersion++;missionSeed=null;$('uresearch-mission').disabled=true;
   $('uresearch-go').disabled=false;$('uresearch-hits').replaceChildren();
   $('uresearch-status').textContent='';
@@ -744,7 +759,10 @@ $('uresearch').onsubmit=async ev=>{
   const b=$('uresearch-go');b.disabled=true;
   $('uresearch-status').textContent='Searching…';$('uresearch-hits').replaceChildren();
   try{
-    const result=await api('/api/research?'+new URLSearchParams({q}));
+    const provider=$('uresearch-provider').value;
+    const result=provider
+      ? await api('/api/research/search',{method:'POST',body:JSON.stringify({provider,query:q})})
+      : await api('/api/research?'+new URLSearchParams({q}));
     if(version!==researchVersion)return;
     if(result.route==='scan'){
       $('uresearch-status').textContent='Recognised '+result.kind+'; select Run Scan Now to collect.';
@@ -761,7 +779,9 @@ $('uresearch').onsubmit=async ev=>{
         items.append(li);
       }
       $('uresearch-hits').replaceChildren(items);
-      $('uresearch-status').textContent=hits.length+' discovery leads · '+(report.stop_reason||'')+'. Unverified leads.';
+      $('uresearch-status').textContent=result.route==='provider_search'
+        ? hits.length+' discovery leads · '+report.provider+' · '+(report.outcome==='valid_zero'?'No results':'Completed')
+        : hits.length+' discovery leads · '+(report.stop_reason||'')+'. Unverified leads.';
     }
   }catch(e){if(version===researchVersion)$('uresearch-status').textContent='Error: '+e.message}
   finally{if(version===researchVersion)b.disabled=false}

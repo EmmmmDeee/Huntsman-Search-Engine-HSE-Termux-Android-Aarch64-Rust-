@@ -28,13 +28,12 @@ still sends no request to either keyed provider.
 
 ## Credential slots without executable lookup integrations
 
-`credential-status` labels the existing Brave Search, OpenRouter,
-Google Gemini and Censys Legacy catalogued credential slots as
+`credential-status` labels the existing OpenRouter, Google Gemini and Censys Legacy catalogued credential slots as
 `integration=credential_only`: they can be stored, but that does **not**
 mean that an appropriate lookup leg has been implemented or invoked.
 
 The known reserved slots for Criminal IP, DomainsDB, FullContact, HLR, IntelX,
-Niamonx, Onyphe, OpenCNAM, OSINTCAT and Trove are surfaced as
+Niamonx, Onyphe, OpenCNAM and OSINTCAT are surfaced as
 `unwired_slot=...` **only when a value has been configured**. These are not
 automatically called and do not represent working integrations. Their full
 provider response contracts, permissions and safe data handling must be
@@ -78,14 +77,15 @@ performed by the operator.
 5. All public key status output contains names and states, never values.
 6. Rootless Android AArch64, pure Rust and default request budgets are unchanged.
 
-## Optional Exa web-search key
+## Optional search APIs
 
-`HUNTSMAN_EXA_KEY` is now used **only** by `huntsman-recon query --exa QUERY...`.
-This is an explicit, chargeable Exa `/search` request, never part of default or
-adaptive queries, scanning or continuous collection. It requests the Exa Lite
-search type (currently US$4 per 1,000 requests, compared with US$7 per 1,000
-for Auto); prices and free credits can change and are controlled by Exa. The API uses `x-api-key`,
-fixed HTTPS origin, no redirects, and at most five URL results per call. Hits
-are **lead_only**, not corroboration; no remote document content is downloaded.
-A free starter account may include monthly search credits subject to Exa's
-current pricing and limits; the operator manages those credits.
+Use `query --api PROVIDER QUERY...` to explicitly send one query to Exa,
+Brave, Tavily, Trove, OpenAlex, Crossref or one SerpApi engine (Google, Bing, Yahoo, Yandex).
+`openalex-public` and `crossref` work without credentials.
+`query --exa QUERY...` remains available for existing users. The command
+uses a fixed HTTPS origin, never follows redirects, and returns up to five
+deduplicated URL leads. A provider refusal is distinct from a valid empty
+result. Ordinary, adaptive, and continuous scans make no keyed search calls.
+
+The [API source catalogue](FREEMIUM_API_CATALOGUE.md) lists signup links,
+published allowances, evidence uses and practical integration priorities.

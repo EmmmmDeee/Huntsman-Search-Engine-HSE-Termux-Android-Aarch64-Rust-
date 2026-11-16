@@ -14,12 +14,13 @@ use crate::scan_api::ScanApi;
 use crate::scan_route::{self, ScanKind};
 use crate::scan_service::{ScanRequest, ScanService};
 use crate::scan_store::{LogLevel, ScanStatus};
+use crate::search_api::SearchApi;
 use crate::value_syntax::form_decode;
 
 use super::{
     LOOKUP_STACK_BYTES, LookupQuery, LookupReport, Lookups, MAX_LOOKUPS, MAX_RADAR_REQUESTS,
-    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, RADAR_WAIT, SCANS_STACK_BYTES,
-    Sensor, Slot, json_error, json_ok, page_refusal, response, response_bytes,
+    MAX_SELECTOR_BYTES, Method, ParsedRequest, PeopleDiscover, ProviderSearch, RADAR_WAIT,
+    SCANS_STACK_BYTES, Sensor, Slot, json_error, json_ok, page_refusal, response, response_bytes,
 };
 
 /// Read a sensor (Android's OS-cached Wi-Fi scan, or the cells it reports) or record one track
@@ -278,30 +279,89 @@ pub(super) fn research_response(
                 return json_error(503, "research capacity in use; retry shortly");
             };
             let handler = Arc::clone(&research.handler);
-            let (sender, receiver) = sync_channel(1);
-            let worker = thread::Builder::new()
-                .name("serve-research".into())
-                .stack_size(LOOKUP_STACK_BYTES)
-                .spawn(move || {
-                    let outcome = catch_unwind(AssertUnwindSafe(|| handler(&query)));
-                    drop(slot);
-                    let _ = sender.send(outcome);
-                });
-            if worker.is_err() {
-                return json_error(503, "could not start a research worker");
-            }
-            match receiver.recv_timeout(super::LOOKUP_WAIT) {
-                Ok(Ok(Ok(report))) => json_ok(&report.to_string(), false),
-                Ok(Ok(Err(error))) => json_error(error.status, &error.message),
-                Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
-                    json_error(500, "research failed unexpectedly")
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    json_error(504, "research timed out; no completed report was saved")
-                }
-            }
+            run_research_worker(slot, move || handler(&query))
         }
     }
+}
+
+fn run_research_worker(
+    slot: Slot,
+    run: impl FnOnce() -> Result<serde_json::Value, super::LookupError> + Send + 'static,
+) -> String {
+    let (sender, receiver) = sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("serve-research".into())
+        .stack_size(LOOKUP_STACK_BYTES)
+        .spawn(move || {
+            let outcome = catch_unwind(AssertUnwindSafe(run));
+            drop(slot);
+            let _ = sender.send(outcome);
+        });
+    if worker.is_err() {
+        return json_error(503, "could not start a research worker");
+    }
+    match receiver.recv_timeout(super::LOOKUP_WAIT) {
+        Ok(Ok(Ok(report))) => json_ok(&report.to_string(), false),
+        Ok(Ok(Err(error))) => json_error(error.status, &error.message),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            json_error(500, "research failed unexpectedly")
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            json_error(504, "research timed out; no completed report was saved")
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderQuery<'a> {
+    provider: &'a str,
+    query: String,
+}
+
+/// Explicit search uses a POST body so the query is absent from local URL logs.
+pub(super) fn search_api_response(
+    parsed: &ParsedRequest<'_>,
+    search: Option<&ProviderSearch>,
+) -> String {
+    if parsed.method != Method::Post {
+        return json_error(405, "provider search needs POST");
+    }
+    if let Some(refusal) = page_refusal(parsed, "provider search", true) {
+        return refusal;
+    }
+    if !parsed.query.is_empty() || parsed.transfer_encoding {
+        return json_error(
+            400,
+            "provider search accepts only a length-framed JSON body",
+        );
+    }
+    let Some(length) = parsed.content_length else {
+        return json_error(400, "provider search needs a JSON body");
+    };
+    if length > 4096 {
+        return json_error(413, "provider search JSON exceeds 4096 bytes");
+    }
+    let Some(body) = parsed.body.filter(|body| body.len() == length) else {
+        return json_error(400, "provider search body length does not match");
+    };
+    let Ok(params) = serde_json::from_str::<ProviderQuery<'_>>(body) else {
+        return json_error(400, "provider search needs provider and query text");
+    };
+    let Some(api) = SearchApi::named(params.provider) else {
+        return json_error(400, "unknown search provider");
+    };
+    if let Err(error) = api.check_query(&params.query) {
+        return json_error(400, &error.to_string());
+    }
+    let Some(search) = search else {
+        return json_error(404, "provider search is not enabled on this server");
+    };
+    let Some(slot) = Slot::take_of(&search.live, 1) else {
+        return json_error(503, "provider search already in progress");
+    };
+    let handler = Arc::clone(&search.handler);
+    run_research_worker(slot, move || handler(api, &params.query))
 }
 
 /// `POST /api/people/discover`: the `people-discover` search for a JSON body

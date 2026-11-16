@@ -10,7 +10,6 @@ use huntsman_recon::docmeta;
 use huntsman_recon::embedded_metadata;
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
-use huntsman_recon::exa;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
@@ -18,6 +17,7 @@ use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_report::{entity_row, evidence_rows};
 use huntsman_recon::phone_intl;
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
+use huntsman_recon::search_api::SearchApi;
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::textnorm::escape_controls;
@@ -123,50 +123,70 @@ fn parse_query_flags(args: &[String]) -> Option<(bool, EngineSet, &[String])> {
         .then_some((adaptive, engines, terms))
 }
 
+fn api_query(api: SearchApi, terms: &[String]) -> ExitCode {
+    if terms.is_empty() || terms.iter().any(|term| term.starts_with("--")) {
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon query --api PROVIDER QUERY...",
+        );
+    }
+    let name = api.name();
+    let query = terms.join(" ");
+    let home = std::env::var_os("HOME");
+    let keys = if api.requires_key() {
+        match Keys::resolve(None, home.as_deref()) {
+            Ok(resolved) => resolved.keys,
+            Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+        }
+    } else {
+        Keys::default()
+    };
+    let transport = UreqTransport::new(&huntsman_recon::search_api::transport_config());
+    match api.search(&transport, &keys, &query, clock::unix_now()) {
+        Ok(urls) => {
+            let outcome = if urls.is_empty() {
+                "valid_zero"
+            } else {
+                "success"
+            };
+            println!("engine={name}\toutcome={outcome}\tfound={}", urls.len());
+            for url in &urls {
+                println!("{name}\t{}\tlead_only", escape_controls(url));
+            }
+            println!("hits={}", urls.len());
+            if urls.is_empty() {
+                ExitCode::from(EX_UNAVAILABLE)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "engine={name}\toutcome={}\tfound=none",
+                error.outcome_kind().as_str()
+            );
+            fail(EX_UNAVAILABLE, &error.to_string())
+        }
+    }
+}
+
 pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon query QUERY...");
     }
-    // Exa consumes provider credits: never enable it for ordinary or adaptive
-    // queries. The explicit flag is the sole network trigger for this source.
-    if args.first().is_some_and(|arg| arg == "--exa") {
-        let terms = &args[1..];
-        if terms.is_empty() || terms.iter().any(|term| term.starts_with("--")) {
-            return fail(EX_USAGE, "usage: huntsman-recon query --exa QUERY...");
-        }
-        let query = terms.join(" ");
-        let home = std::env::var_os("HOME");
-        let keys = match Keys::resolve(None, home.as_deref()) {
-            Ok(resolved) => resolved.keys,
-            Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
-        };
-        let transport = UreqTransport::new(&TransportConfig::default());
-        return match exa::search(&transport, &keys, &query, clock::unix_now()) {
-            Ok(urls) => {
-                let outcome = if urls.is_empty() {
-                    "valid_zero"
-                } else {
-                    "success"
-                };
-                println!("engine=exa\toutcome={outcome}\tfound={}", urls.len());
-                for url in &urls {
-                    println!("exa\t{}\tlead_only", escape_controls(url));
-                }
-                println!("hits={}", urls.len());
-                if urls.is_empty() {
-                    ExitCode::from(EX_UNAVAILABLE)
-                } else {
-                    ExitCode::SUCCESS
-                }
-            }
-            Err(error) => {
-                eprintln!(
-                    "engine=exa\toutcome={}\tfound=none",
-                    error.outcome_kind().as_str()
+    match args.first().map(String::as_str) {
+        Some("--exa") => return api_query(SearchApi::Exa, &args[1..]),
+        Some("--api") => {
+            let Some(api) = args.get(1).and_then(|name| SearchApi::named(name)) else {
+                let names = SearchApi::ALL.map(SearchApi::name).join("|");
+                return fail(
+                    EX_USAGE,
+                    &format!("usage: huntsman-recon query --api {names} QUERY..."),
                 );
-                fail(EX_UNAVAILABLE, &error.to_string())
-            }
-        };
+            };
+            return api_query(api, &args[2..]);
+        }
+        _ => {}
     }
     let Some((adaptive, engines, terms)) = parse_query_flags(args) else {
         return fail(
