@@ -170,3 +170,50 @@ fn a_linked_image_is_refused_without_following_it() {
     assert!(text(&out.stderr).contains("unreadable"));
     fs::remove_dir_all(home).expect("clean scratch");
 }
+
+#[test]
+fn local_comparison_records_the_original_hashes_and_source_notes() {
+    let home = scratch("comparison");
+    let photo = image::GrayImage::from_fn(80, 80, |x, y| {
+        image::Luma([u8::try_from((x * 23 + y * 17) % 256).unwrap()])
+    });
+    photo.save(home.join("reference.png")).unwrap();
+    fs::copy(home.join("reference.png"), home.join("candidate.png")).unwrap();
+    let page = "https://example.test/article";
+    let asset = "https://example.test/photo.png?size=full";
+    let args = [
+        "reverse-image",
+        "compare",
+        "reference.png",
+        "candidate.png",
+        "--json",
+        "--source-page",
+        page,
+        "--asset-url",
+        asset,
+    ];
+    let output = run(&home, &args);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let hash = huntsman_recon::sha256::hex32(&huntsman_recon::sha256::sha256(
+        &fs::read(home.join("reference.png")).unwrap(),
+    ));
+    assert_eq!(json["comparison"]["verdict"], "identical_file");
+    assert_eq!(json["comparison"]["reference"]["sha256"], hash);
+    assert_eq!(json["comparison"]["candidate"]["sha256"], hash);
+    let evidence = &json["observation"]["evidence"][0];
+    assert_eq!(evidence["attributes"]["operator_source_page"], page);
+    assert_eq!(evidence["attributes"]["operator_asset_url"], asset);
+    assert!(evidence.get("verification").is_none());
+    assert!(huntsman_recon::entity::is_non_corroborating_source(
+        "image_compare"
+    ));
+
+    let mut malformed = args;
+    malformed[6] = "https://user:secret@example.test";
+    assert_eq!(
+        run(&home, &malformed).status.code(),
+        Some(i32::from(EX_USAGE))
+    );
+    fs::remove_dir_all(home).unwrap();
+}

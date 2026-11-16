@@ -115,6 +115,8 @@ const KEYS_PATH: &str = "/api/settings/keys";
 /// A local file's raw bytes in, its EXIF and embedded document metadata out: the `exif` and
 /// `docmeta` commands for a file picked in the browser.
 const INSPECT_PATH: &str = "/api/inspect";
+const IMAGE_COMPARE_PATH: &str = "/api/inspect/image-compare";
+const MAX_IMAGE_COMPARE_BYTES: usize = 4 + 2 * crate::image_compare::MAX_FILE_BYTES;
 /// The OSINT app blueprint: JSON, or the Word document with `format=docx`.
 const BLUEPRINT_PATH: &str = "/api/blueprint";
 /// Offline, unverified Rhinser source directory exposed to authenticated local clients.
@@ -1083,8 +1085,12 @@ fn read_request_with(
 fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(usize, Slot)> {
     let inspect = routes.inspect.as_ref()?;
     let parsed = parse_request(head)?;
+    let limit = match parsed.path {
+        INSPECT_PATH => MAX_INSPECT_BYTES,
+        IMAGE_COMPARE_PATH => MAX_IMAGE_COMPARE_BYTES,
+        _ => return None,
+    };
     let admitted = parsed.method == Method::Post
-        && parsed.path == INSPECT_PATH
         && !parsed.transfer_encoding
         && page_refusal(&parsed, "inspection", true).is_none()
         && authorized(&parsed, config)
@@ -1094,7 +1100,7 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
     }
     let length = parsed
         .content_length
-        .filter(|length| (1..=MAX_INSPECT_BYTES).contains(length))?;
+        .filter(|length| (1..=limit).contains(length))?;
     Some((length, Slot::take_of(&inspect.live, MAX_INSPECTIONS)?))
 }
 
@@ -1456,6 +1462,7 @@ fn protected_path(path: &str) -> bool {
             | TRACK_PATH
             | KEYS_PATH
             | INSPECT_PATH
+            | IMAGE_COMPARE_PATH
             | BLUEPRINT_PATH
             | RHINSER_CATALOG_PATH
             | RHINSER_NATIVE_PATH
@@ -1559,6 +1566,7 @@ fn route(
         "/api/evidence" => dossier_json_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes),
+        IMAGE_COMPARE_PATH => analysis::image_compare_response(parsed, upload, routes),
         OSINT_CASE_PATH => osint_offline_response(parsed, OfflineOsintMode::Case),
         OSINT_RISK_PATH => osint_offline_response(parsed, OfflineOsintMode::Risk),
         RHINSER_OVERLAPS_PATH => {

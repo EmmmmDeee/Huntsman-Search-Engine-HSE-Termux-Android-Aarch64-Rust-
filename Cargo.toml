@@ -19,6 +19,10 @@ description = "RCVF ledger with identity, GEOINT, STIX, and Navigator gates and 
 
 # Each runtime dependency states its purpose here; tests/manifest_policy.rs refuses one that does not.
 [dependencies]
+# Bounded JPEG, PNG and WebP decoding for offline image comparison. Pin to the Rust 1.87 MSRV.
+image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png", "webp"] }
+# FAST corners and BRIEF descriptors for offline crop and screenshot alignment.
+imageproc = { version = "0.25.1", default-features = false }
 # Derive serialisation for the ledger, session, STIX and Navigator records.
 serde = { version = "1.0", features = ["derive"] }
 # JSON for records, API responses and the embedded web API.

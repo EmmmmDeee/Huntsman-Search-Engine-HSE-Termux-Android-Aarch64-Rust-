@@ -10,6 +10,7 @@ use huntsman_recon::clock;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::UreqTransport;
+use huntsman_recon::image_compare;
 use huntsman_recon::lookup_report;
 use huntsman_recon::reverse_image::{self, ImageReport, MAX_REVERSE_IMAGE_BYTES, Search};
 use huntsman_recon::textnorm::escape_controls;
@@ -67,6 +68,9 @@ fn options(args: &[String]) -> Result<Options<'_>, &'static str> {
 }
 
 pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
+    if args.len() > 1 && args[0] == "compare" && !args[1].starts_with('-') {
+        return compare_cmd(&args[1..]);
+    }
     let options = match options(args) {
         Ok(options) => options,
         Err(reason) => return usage_error(reason, USAGE),
@@ -106,6 +110,77 @@ pub(super) fn reverse_image_cmd(args: &[String]) -> ExitCode {
         print_text(&report);
     }
     status(&report)
+}
+
+const COMPARE_USAGE: &str = "usage: huntsman-recon reverse-image compare REFERENCE CANDIDATE [--source-page URL] [--asset-url URL] [--json]";
+
+fn compare_cmd(args: &[String]) -> ExitCode {
+    let [reference, candidate, options @ ..] = args else {
+        return usage_error("choose a reference and candidate image", COMPARE_USAGE);
+    };
+    if reference.starts_with('-') || candidate.starts_with('-') {
+        return usage_error("choose a reference and candidate image", COMPARE_USAGE);
+    }
+    let (json, source_page, asset_url) = match compare_options(options) {
+        Ok(options) => options,
+        Err(error) => return usage_error(error, COMPARE_USAGE),
+    };
+    let load = |path: &str| read_bounded(Path::new(path), image_compare::MAX_FILE_BYTES as u64);
+    let (Ok(first), Ok(second)) = (load(reference), load(candidate)) else {
+        return fail(
+            EX_NOINPUT,
+            "image comparison needs two readable regular files up to 20 MiB each",
+        );
+    };
+    let comparison = match image_compare::compare(&first, &second) {
+        Ok(comparison) => comparison,
+        Err(message) => return fail(EX_DATAERR, &message),
+    };
+    let name = |path: &str| escape_controls(path.rsplit(['/', '\\']).next().unwrap_or(path));
+    let now = clock::unix_now();
+    if json {
+        let output = serde_json::json!({
+            "comparison": comparison,
+            "observation": comparison.observation(&name(reference), &name(candidate),
+                source_page.as_deref(), asset_url.as_deref(), now),
+            "outcome": comparison.outcome(now),
+        });
+        match terminal_json_pretty(&output) {
+            Ok(text) => println!("{text}"),
+            Err(_) => return fail(EX_UNAVAILABLE, "could not render the comparison"),
+        }
+    } else {
+        println!("{}", comparison.text());
+        if let Some(url) = source_page {
+            println!("Operator source page: {}", escape_controls(&url));
+        }
+        if let Some(url) = asset_url {
+            println!("Operator asset URL: {}", escape_controls(&url));
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn compare_options(
+    args: &[String],
+) -> Result<(bool, Option<String>, Option<String>), &'static str> {
+    let mut json = false;
+    let (mut source, mut asset) = (None, None);
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        let slot = match word.as_str() {
+            "--json" if !json => {
+                json = true;
+                continue;
+            }
+            "--source-page" if source.is_none() => &mut source,
+            "--asset-url" if asset.is_none() => &mut asset,
+            _ => return Err("unknown or repeated comparison option"),
+        };
+        let url = words.next().ok_or("missing source URL")?;
+        *slot = Some(image_compare::source_url(url)?.ok_or("missing source URL")?);
+    }
+    Ok((json, source, asset))
 }
 
 /// The report as text: the file first, then what its embedded metadata says, then whether a
