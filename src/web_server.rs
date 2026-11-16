@@ -137,6 +137,7 @@ const INVESTIGATE_PATH: &str = "/api/investigate";
 /// Explicit, source-scoped keyless people discovery. Body carries the name so
 /// neither browser history nor routine URL logs expose the search subject.
 const PEOPLE_DISCOVER_PATH: &str = "/api/people/discover";
+const SEARCH_API_PATH: &str = "/api/research/search";
 /// Explicitly initiated autonomous recursive investigation, stored as an ordinary saved scan.
 const RESEARCH_MISSION_PATH: &str = "/api/research/mission";
 /// The largest file `/api/inspect` reads: the bound the `exif` and `docmeta` commands read from
@@ -205,6 +206,13 @@ pub struct LookupError {
 pub type ResearchHandler =
     Arc<dyn Fn(&str) -> Result<serde_json::Value, LookupError> + Send + Sync>;
 
+/// Run one explicitly selected search API using the same library adapter as the CLI.
+pub type SearchApiHandler = Arc<
+    dyn Fn(crate::search_api::SearchApi, &str) -> Result<serde_json::Value, LookupError>
+        + Send
+        + Sync,
+>;
+
 /// The live CLI's source-scoped people-index discovery, without a second collector.
 pub type PeopleDiscoverHandler = Arc<
     dyn Fn(&str, crate::people_discovery::Region) -> Result<serde_json::Value, LookupError>
@@ -219,6 +227,12 @@ pub type LookupHandler =
 #[derive(Clone)]
 struct Research {
     handler: ResearchHandler,
+    live: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct ProviderSearch {
+    handler: SearchApiHandler,
     live: Arc<AtomicUsize>,
 }
 
@@ -298,6 +312,7 @@ type Radar = Sensor<WifiScan>;
 struct Routes {
     lookups: Option<Lookups>,
     research: Option<Research>,
+    search_api: Option<ProviderSearch>,
     people_discover: Option<PeopleDiscover>,
     radar: Option<Radar>,
     cells: Option<Sensor<CellScan>>,
@@ -406,6 +421,16 @@ impl Server {
     #[must_use]
     pub fn with_research(mut self, handler: ResearchHandler) -> Self {
         self.routes.research = Some(Research {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
+        self
+    }
+
+    /// Serve an explicitly selected, bounded search API request from the console.
+    #[must_use]
+    pub fn with_search_api(mut self, handler: SearchApiHandler) -> Self {
+        self.routes.search_api = Some(ProviderSearch {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
@@ -1446,6 +1471,7 @@ fn protected_path(path: &str) -> bool {
             | "/api/command"
             | "/api/lookup"
             | "/api/research"
+            | SEARCH_API_PATH
             | PEOPLE_DISCOVER_PATH
             | RESEARCH_MISSION_PATH
             | "/api/analyze"
@@ -1543,6 +1569,7 @@ fn route(
         },
         "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
         "/api/research" => lookup::research_response(parsed, routes.research.as_ref()),
+        SEARCH_API_PATH => lookup::search_api_response(parsed, routes.search_api.as_ref()),
         PEOPLE_DISCOVER_PATH => {
             lookup::people_discover_response(parsed, routes.people_discover.as_ref())
         }

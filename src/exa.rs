@@ -4,86 +4,36 @@
 //! background fetch calls this source. Only an operator's explicit `query --exa`
 //! action may request it with `HUNTSMAN_EXA_KEY` privately configured.
 
-use std::collections::BTreeSet;
-
-use serde_json::{Value, json};
-
-use crate::api_leg::{self, Api, KeyPlace, KeyUse, LegError};
-use crate::canonical::canonical_url;
+use crate::api_leg::{Api, LegError};
 use crate::http::Transport;
 use crate::keys::Keys;
+use crate::search_api::SearchApi;
 
-pub const SOURCE: &str = "exa";
-pub const URL: &str = "https://api.exa.ai/search";
-/// Keep the low-cost Exa Lite request within the first base-priced result batch.
-pub const MAX_RESULTS: usize = 5;
-pub const EXA_MAX_QUERY_BYTES: usize = 512;
+pub use crate::search_api::{MAX_RESULTS, SEARCH_API_MAX_QUERY_BYTES as EXA_MAX_QUERY_BYTES};
 
-pub const API: Api = Api {
-    source: SOURCE,
-    provider: "exa.ai",
-    origin: "https://api.exa.ai:443",
-    key: Some(KeyUse {
-        slot: crate::environment::EXA_KEY_ENV,
-        place: KeyPlace::Header("x-api-key"),
-        required: true,
-    }),
-};
+pub const SOURCE: &str = crate::search_api::EXA_SOURCE;
+pub const URL: &str = crate::search_api::EXA_URL;
+pub const API: Api = crate::search_api::EXA_API;
 
-/// Return public HTTP(S) search URLs only. Search hits are unverified leads.
+/// Return up to five public HTTP(S) discovery URLs.
 ///
 /// # Errors
-/// Returns a typed missing-key, transport, provider or invalid-response error.
-/// Malformed responses are never treated as a completed search with zero hits.
+/// See [`SearchApi::search`].
 pub fn search<T: Transport + ?Sized>(
     transport: &T,
     keys: &Keys,
     query: &str,
     now_unix: u64,
 ) -> Result<Vec<String>, LegError> {
-    if !crate::textnorm::is_bounded_text(query, EXA_MAX_QUERY_BYTES) {
-        return Err(LegError::Decode(
-            "search query must contain 1-512 bytes without control characters".into(),
-        ));
-    }
-    let body = json!({
-        "query": query.trim(),
-        "type": "lite",
-        "numResults": MAX_RESULTS
-    });
-    let bytes =
-        api_leg::post_json(transport, &API, keys, URL, &body, now_unix)?.body_or_unexpected()?;
-    decode(&bytes)
+    SearchApi::Exa.search(transport, keys, query, now_unix)
 }
 
-/// Validate the documented Exa search response and canonicalize the returned URLs.
+/// Validate an Exa search result and canonicalize its URLs.
 ///
 /// # Errors
-/// Missing results or invalid URLs are schema drift, not verified zero.
+/// Returns a schema error for malformed results.
 pub fn decode(body: &[u8]) -> Result<Vec<String>, LegError> {
-    let payload: Value = api_leg::decode(body)?;
-    let results = payload
-        .get("results")
-        .and_then(Value::as_array)
-        .ok_or_else(|| LegError::Decode("Exa results array missing".into()))?;
-    if results.len() > MAX_RESULTS {
-        return Err(LegError::Decode(
-            "Exa returned more results than requested".into(),
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    let mut hits = Vec::with_capacity(results.len());
-    for row in results {
-        let url = row
-            .get("url")
-            .and_then(Value::as_str)
-            .and_then(canonical_url)
-            .ok_or_else(|| LegError::Decode("Exa result URL missing or invalid".into()))?;
-        if seen.insert(url.clone()) {
-            hits.push(url);
-        }
-    }
-    Ok(hits)
+    SearchApi::Exa.decode(body, None, None)
 }
 
 #[cfg(test)]

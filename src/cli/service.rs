@@ -273,6 +273,45 @@ fn web_research(query: &str) -> Result<serde_json::Value, LookupError> {
     }))
 }
 
+fn web_search_api(
+    api: huntsman_recon::search_api::SearchApi,
+    query: &str,
+) -> Result<serde_json::Value, LookupError> {
+    let keys = if api.requires_key() {
+        super::credentials::lookup_keys()
+    } else {
+        huntsman_recon::keys::Keys::default()
+    };
+    let transport =
+        huntsman_recon::http::UreqTransport::new(&huntsman_recon::search_api::transport_config());
+    let urls = api
+        .search(&transport, &keys, query, clock::unix_now())
+        .map_err(|error| {
+            use huntsman_recon::api_leg::LegError;
+            LookupError {
+                status: match error {
+                    LegError::MissingKey(_) => 409,
+                    LegError::RateLimited { .. } => 429,
+                    _ => 502,
+                },
+                message: format!("{}: {error}", error.outcome_kind().as_str()),
+            }
+        })?;
+    let outcome = if urls.is_empty() {
+        "valid_zero"
+    } else {
+        "success"
+    };
+    let hits: Vec<_> = urls
+        .into_iter()
+        .map(|url| serde_json::json!({"url": url, "evidence_status": "lead_only"}))
+        .collect();
+    Ok(serde_json::json!({
+        "route": "provider_search",
+        "report": {"hits": hits, "provider": api.name(), "outcome": outcome},
+    }))
+}
+
 /// Mobile radar reads exactly the same Termux Wi-Fi cache as the CLI.
 fn web_radar() -> Result<huntsman_recon::wifi_radar::WifiScan, LookupError> {
     super::radar::capture_wifi().map_err(|message| LookupError {
@@ -456,6 +495,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
             let server = server
                 .with_lookup(std::sync::Arc::new(web_lookup))
                 .with_research(std::sync::Arc::new(web_research))
+                .with_search_api(std::sync::Arc::new(web_search_api))
                 .with_people_discover(std::sync::Arc::new(web_people_discover))
                 .with_radar(std::sync::Arc::new(web_radar))
                 .with_radar_cells(std::sync::Arc::new(web_cells))

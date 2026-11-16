@@ -65,7 +65,7 @@ spends more than one provider's quota.
 | Provider | Runtime slot(s) | Integration state |
 | --- | --- | --- |
 | WiGLE | `HUNTSMAN_WIGLE_USER`, `HUNTSMAN_WIGLE_TOKEN` | used by `network` (CLI, `scan -k network`, web UI) when both are set in `~/.huntsman.env` or the environment: the API Name and API Token from https://wigle.net/account (not the encoded value); one daily WiGLE query per search (a BSSID or LAT,LON searches WiFi and Bluetooth, so two); `credential-status --probe` checks the pair without spending a query |
-| Brave Search | `HUNTSMAN_BRAVE_KEY` | owned credential material located; validate/reissue before production use if historical exposure applies |
+| Brave Search | `HUNTSMAN_BRAVE_KEY` | explicit `query --api brave`; US$5 in monthly credits, approximately 1,000 Web Search requests; card verification, optional zero prepay |
 | Shodan | `HUNTSMAN_SHODAN_KEY` | used by `ip` (host, no query credits) and `domain` (DNS, one query credit) whenever set; private stored credential located; validity unverified |
 | Whoxy | `HUNTSMAN_WHOXY_KEY` | used by `domain` (live WHOIS, one credit each) and `email` (reverse WHOIS, one reverse credit a page) whenever set; an empty balance is reported as a plan refusal; private stored credential located; validity unverified |
 | QLDTraffic | `HUNTSMAN_QLDTRAFFIC_KEY` | used by `traffic-cameras` (CLI) for the one request it makes to the QLDTraffic webcam feed, sent only as the `apikey` query parameter; without it the command sends nothing and exits 66. The API specification (v1.10, §2.1.1.1) prints a shared public developer key limited to 100 requests a minute across everyone using it; TMR also issues keys to developers. No key is built into the binary; see [QLD_TRAFFIC_CAMERAS.md](QLD_TRAFFIC_CAMERAS.md) |
@@ -75,7 +75,11 @@ spends more than one provider's quota.
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
 | DeHashed | `HUNTSMAN_DEHASHED_KEY` | used by `exposure` and `email` (CLI, `scan`, web UI), and by explicit `dehashed search --purpose ...`. Every path, `credential-status` and the web UI's key settings included, reads the private `~/.huntsman.env` slot, then the process environment, then the legacy private `~/.config/dehashed/api_key` file; a file others can read is named with its fix and not used. Keys are sent only to DeHashed's fixed API origin. One search costs one credit; `credential-status --probe` checks the key on `/v2/search-password`, which DeHashed documents as needing no credit. See [DEHASHED.md](DEHASHED.md) |
 | stolen.tax | `HUNTSMAN_STOLEN_TAX_KEY` | used by `exposure` and the `email` and `username` lookups (CLI, `scan`, web UI) when set |
-| Exa | `HUNTSMAN_EXA_KEY` | account confirmed; current credential not recovered |
+| Exa | `HUNTSMAN_EXA_KEY` | explicit `query --api exa` or `query --exa`; advertised US$10 in monthly credits |
+| Tavily Search | `HUNTSMAN_TAVILY_KEY` | explicit `query --api tavily`; 1,000 monthly credits and one credit per basic query |
+| SerpApi | `HUNTSMAN_SERPAPI_KEY` | explicit `query --api serpapi-google\|serpapi-bing\|serpapi-yahoo\|serpapi-yandex`; 250 monthly searches shared across engines |
+| Trove | `HUNTSMAN_TROVE_KEY` | explicit `query --api trove`; brief Australian newspaper metadata, free key by application |
+| OpenAlex | `HUNTSMAN_OPENALEX_KEY` | explicit `query --api openalex`; free personal key and US$1/day usage budget |
 | OpenRouter | `HUNTSMAN_OPENROUTER_KEY` | account confirmed; current credential not recovered |
 | Google Gemini | `HUNTSMAN_GEMINI_KEY` | provider key existence confirmed; current value requires provider account |
 | GitHub | `HUNTSMAN_GITHUB_TOKEN` | token lifecycle confirmed; current credential requires provider account |
@@ -157,6 +161,10 @@ HUNTSMAN_OATHNET_KEY=
 HUNTSMAN_DEHASHED_KEY=
 HUNTSMAN_STOLEN_TAX_KEY=
 HUNTSMAN_EXA_KEY=
+HUNTSMAN_TAVILY_KEY=
+HUNTSMAN_SERPAPI_KEY=
+HUNTSMAN_TROVE_KEY=
+HUNTSMAN_OPENALEX_KEY=
 HUNTSMAN_OPENROUTER_KEY=
 HUNTSMAN_GEMINI_KEY=
 HUNTSMAN_GITHUB_TOKEN=

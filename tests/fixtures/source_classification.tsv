@@ -44,6 +44,7 @@ blocklistde	other	other
 bluesky_user	other	social
 botvrij	other	other
 brave	other	search
+brave_api	search	search
 breach_consensus	other	other
 cell_radar	other	rf
 censys	other	other
@@ -64,6 +65,7 @@ crates_io	code	code
 criminal_ip	infra	infra
 cross_scan_corroboration	other	other
 cross_scan_history	other	other
+crossref	search	search
 crtsh	other	infra
 cybercrimetracker	other	other
 dehashed	breach	breach
@@ -151,6 +153,7 @@ oathnet	breach	breach
 oathnet_pro	breach	breach
 official_x_recent_search	search	search
 onyphe	infra	infra
+openalex	search	search
 opencellid	other	rf
 opendns	infra	infra
 openpgp_keys	email_intel	email_intel
@@ -187,6 +190,7 @@ sec_edgar	other	identity_registry
 securitytrails	infra	infra
 see_know	breach	breach
 seeknow	breach	breach
+serpapi	search	search
 sf_compat	other	other
 shodan	infra	infra
 site_search	search	search
@@ -205,10 +209,12 @@ stolen_tax	breach	breach
 stopforumspam	infra	infra
 submd	other	other
 surbl	other	other
+tavily	search	search
 threatfox	infra	infra
 tiktok_public_contact	other	social
 tip_line	infra	infra
 torexits	other	other
+trove_api	search	search
 uceprotect	other	other
 unknown_source	other	other
 unverified_network_survey_bluetooth_csv_file	other	other

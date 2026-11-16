@@ -545,6 +545,7 @@ fn a_loopback_server_needs_no_token_even_when_one_is_supplied() {
             let routes = Routes {
                 lookups: Some(lookups.clone()),
                 research: None,
+                search_api: None,
                 people_discover: None,
                 radar: None,
                 cells: None,
@@ -1598,6 +1599,7 @@ fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> Stri
     let routes = Routes {
         lookups: lookups.cloned(),
         research: None,
+        search_api: None,
         people_discover: None,
         radar: None,
         cells: None,
@@ -1776,6 +1778,7 @@ fn saved_lookup_routes(
             ..echo_lookups()
         }),
         research: None,
+        search_api: None,
         people_discover: None,
         radar: None,
         cells: None,
@@ -2078,6 +2081,7 @@ fn analyses(
     Routes {
         lookups: None,
         research: None,
+        search_api: None,
         people_discover: None,
         radar: None,
         cells: None,
@@ -3578,6 +3582,7 @@ fn every_page_route_refuses_other_sites_through_one_guard() {
     let routes = Routes {
         lookups: Some(echo_lookups()),
         research: None,
+        search_api: None,
         people_discover: None,
         radar: Some(unused_sensor()),
         cells: Some(unused_sensor()),
@@ -3951,6 +3956,61 @@ fn the_blueprint_downloads_as_a_word_document() {
     let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(value["count"], crate::osint_blueprint::ENTRIES.len());
     assert!(ask("?format=pdf").0.starts_with("HTTP/1.1 400"));
+}
+
+#[test]
+fn explicit_provider_search_requires_a_valid_same_site_post_and_fixed_provider() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&calls);
+    let routes = Routes {
+        search_api: Some(ProviderSearch {
+            handler: Arc::new(move |api, query| {
+                assert_eq!(api, crate::search_api::SearchApi::Crossref);
+                assert_eq!(query, "public research");
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({"route":"provider_search","outcome":"valid_zero"}))
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
+        }),
+        ..Routes::default()
+    };
+    let config = ServeConfig::parse(DEFAULT_BIND, None).unwrap();
+    let post = |body: &str, headers: &str| {
+        let req = format!(
+            "POST /api/research/search HTTP/1.1\r\nHost: localhost\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        text(respond(&req, &config, &routes))
+    };
+    let body = r#"{"provider":"crossref","query":"public research"}"#;
+    let lookup_header = "X-Huntsman-Lookup: 1\r\n";
+    assert!(post(body, "").starts_with("HTTP/1.1 403"));
+    assert!(
+        post(
+            body,
+            "Sec-Fetch-Site: cross-site\r\nX-Huntsman-Lookup: 1\r\n"
+        )
+        .starts_with("HTTP/1.1 403")
+    );
+    for invalid in [
+        r#"{"provider":"https://example.org","query":"public research"}"#,
+        r#"{"provider":"crossref","query":"bad\nquery"}"#,
+        r#"{"provider":"crossref","query":"public research","api_key":"ignore"}"#,
+        r#"{"provider":"crossref","provider":"exa","query":"public research"}"#,
+    ] {
+        assert!(post(invalid, lookup_header).starts_with("HTTP/1.1 400"));
+    }
+    assert!(post(&"a".repeat(4097), lookup_header).starts_with("HTTP/1.1 413"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let good = post(body, lookup_header);
+    assert!(good.starts_with("HTTP/1.1 200"), "{good}");
+    assert!(good.contains("valid_zero"), "{good}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    for api in crate::search_api::SearchApi::ALL {
+        assert!(INDEX_HTML.contains(&format!("value=\"{}\"", api.name())));
+    }
 }
 
 /// The mobile universal research API cannot dispatch unrecognised text as a person; it

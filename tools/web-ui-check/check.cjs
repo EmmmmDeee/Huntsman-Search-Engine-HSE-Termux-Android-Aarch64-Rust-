@@ -39,7 +39,8 @@ const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isM
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter; four more the
 // Radar tab's cell intelligence (PCI, site, timing advance, neighbours, anomaly indicators).
 // Six more KiB cover the read-only Rhinser source directory.
-const PAGE_BUDGET = 144 * 1024;
+// Two more KiB cover explicit research-provider selection and its guarded POST.
+const PAGE_BUDGET = 146 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -261,6 +262,28 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         state.term === 'fresh term' && state.hits.includes('fresh.example') &&
         !state.hits.includes('example.org') && state.status.includes('Unverified') &&
         state.missionDisabled && state.target !== 'example.org', state);
+      let selectedRequest;
+      await page.route('**/api/research/search', async route => {
+        const request = route.request();
+        selectedRequest = {
+          method: request.method(),
+          queryInUrl: new URL(request.url()).search,
+          lookup: request.headers()['x-huntsman-lookup'],
+          body: request.postDataJSON(),
+        };
+        await route.fulfill({ json: {
+          route: 'provider_search',
+          report: { provider: 'crossref', outcome: 'success', hits: [{ url: 'https://doi.org/10.1234/work', evidence_status: 'lead_only' }] },
+        } });
+      });
+      await page.selectOption('#uresearch-provider', 'crossref');
+      await page.click('#uresearch-go');
+      await page.waitForFunction(() => document.getElementById('uresearch-hits').textContent.includes('10.1234/work'));
+      check('selected public provider uses one guarded POST and renders a source lead',
+        selectedRequest?.method === 'POST' && selectedRequest.queryInUrl === '' &&
+        selectedRequest.lookup === '1' && selectedRequest.body.provider === 'crossref' &&
+        selectedRequest.body.query === 'fresh term' && await page.isDisabled('#uresearch-mission'),
+        selectedRequest);
       await ctx.close();
     }
 

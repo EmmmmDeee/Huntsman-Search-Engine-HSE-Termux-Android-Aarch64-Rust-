@@ -1,0 +1,1 @@
+Add explicit Brave, Tavily, Trove, OpenAlex, Crossref and SerpApi Google, Bing, Yahoo and Yandex search routes. Share the guarded request and lead-decoding path with Exa and retain its legacy CLI flag.

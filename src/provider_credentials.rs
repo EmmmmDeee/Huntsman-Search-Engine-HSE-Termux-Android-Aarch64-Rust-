@@ -224,7 +224,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         name: "Brave Search",
         get_key_url: "https://api-dashboard.search.brave.com/app/keys",
-        free_tier: "free tier; prepaid credit since 2026-09",
+        free_tier: "US$5/month in credits (about 1,000 Search calls); card required, zero prepay available",
         slots: &[crate::environment::BRAVE_KEY_ENV],
     },
     Provider {
@@ -278,8 +278,32 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         name: "Exa",
         get_key_url: "https://dashboard.exa.ai/api-keys",
-        free_tier: "free tier with signup credits",
+        free_tier: "US$10/month in free API credits under current pricing",
         slots: &[crate::environment::EXA_KEY_ENV],
+    },
+    Provider {
+        name: "Tavily Search",
+        get_key_url: "https://app.tavily.com/",
+        free_tier: "1,000 credits/month; basic Search costs one credit; no card required",
+        slots: &[crate::environment::TAVILY_KEY_ENV],
+    },
+    Provider {
+        name: "SerpApi",
+        get_key_url: "https://serpapi.com/manage-api-key",
+        free_tier: "250 searches/month shared across supported engines",
+        slots: &[crate::environment::SERPAPI_KEY_ENV],
+    },
+    Provider {
+        name: "Trove",
+        get_key_url: "https://trove.nla.gov.au/about/create-something/using-api",
+        free_tier: "free key by application; access and reuse subject to National Library terms",
+        slots: &[crate::environment::TROVE_KEY_ENV],
+    },
+    Provider {
+        name: "OpenAlex",
+        get_key_url: "https://help.openalex.org/api/authentication/",
+        free_tier: "free personal key; US$1/day in usage budget, endpoint pricing applies",
+        slots: &[crate::environment::OPENALEX_KEY_ENV],
     },
     Provider {
         name: "OpenRouter",
@@ -439,12 +463,7 @@ pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
 )];
 
 /// Stored credential alone does not establish a runnable lookup integration.
-const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &[
-    "Brave Search",
-    "OpenRouter",
-    "Google Gemini",
-    "Censys Legacy",
-];
+const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &["OpenRouter", "Google Gemini", "Censys Legacy"];
 
 /// Declared key slots without a currently implemented lookup leg.
 const UNWIRED_SLOTS: &[&str] = &[
@@ -457,7 +476,6 @@ const UNWIRED_SLOTS: &[&str] = &[
     crate::environment::ONYPHE_KEY_ENV,
     crate::environment::OPENCNAM_KEY_ENV,
     crate::environment::OSINTCAT_KEY_ENV,
-    crate::environment::TROVE_KEY_ENV,
 ];
 
 /// The secret `keys` holds for `slot`: the one rule from a slot to its key, which
