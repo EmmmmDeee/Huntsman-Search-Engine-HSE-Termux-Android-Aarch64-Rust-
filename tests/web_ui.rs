@@ -41,8 +41,8 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// the cellular anomaly indicators, all of which `/api/radar/cells` already answered.
 /// Raised to 142 KiB for the Rhinser offline source directory in Multi-hop Analysis:
 /// 83 locally served catalogue references, on-page filtering, and explicit HTTPS link opening.
-/// Phone-browser runtime performance remains an independent acceptance gate.
-const PAGE_BUDGET: usize = 144 * 1024;
+/// Raised from 144 to 146 KiB for the provider selector and guarded search POST.
+const PAGE_BUDGET: usize = 146 * 1024;
 /// The server fills the page's empty `huntsman-page` meta tag with a page id of this many hex
 /// digits (`src/web_server/page.rs`), so the page as served, which is what a phone downloads and
 /// the browser check weighs, is this much longer than the file.

@@ -306,7 +306,8 @@ docmeta	adapter	document XMP packet and PDF /Info metadata and embedded GPS sour
 embedded_metadata	runtime	one reading of a file's embedded metadata (exif + docmeta and the identifiers they find) shared by the web inspect view, investigate --file and reverse-image
 metadata_identifiers	runtime	the one place a metadata value becomes an entity, called by the exif and docmeta readers: identifiers in the fields people write, names in the fields that name someone, links and addresses only from fields a program writes, bounded per file
 docx	exporter	dependency-free Word document writer on xlsx's stored ZIP behind blueprint --docx and GET /api/blueprint?format=docx
-exa	adapter	Exa explicit query --exa source: fixed HTTPS origin, privately keyed, five lead-only web results
+exa	adapter	Compatibility entry point for the explicit Exa search API
+search_api	adapter	Bounded public and keyed searches shared by the CLI and Web UI
 federated_osint	adapter	indexed X recent-search clients reached through osint x and osint x-api; the bearer token is operator-owned and origin-bound
 osint_matrix	runtime	canonical compiled source-file ownership matrix reached through osint matrix CLI and protected GET /api/osint/matrix; read-only and not evidence of live provider availability
 osint_casework	leaf	source-linked casework model reached through osint case; receipts, chronology and conflicts without identity attribution

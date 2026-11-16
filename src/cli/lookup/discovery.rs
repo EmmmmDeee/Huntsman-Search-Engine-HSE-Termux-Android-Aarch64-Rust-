@@ -10,6 +10,7 @@ use huntsman_recon::docmeta;
 use huntsman_recon::embedded_metadata;
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
+use huntsman_recon::exa;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
@@ -142,7 +143,13 @@ fn api_query(api: SearchApi, terms: &[String]) -> ExitCode {
         Keys::default()
     };
     let transport = UreqTransport::new(&huntsman_recon::search_api::transport_config());
-    match api.search(&transport, &keys, &query, clock::unix_now()) {
+    let now = clock::unix_now();
+    let results = if api == SearchApi::Exa {
+        exa::search(&transport, &keys, &query, now)
+    } else {
+        api.search(&transport, &keys, &query, now)
+    };
+    match results {
         Ok(urls) => {
             let outcome = if urls.is_empty() {
                 "valid_zero"
