@@ -15,6 +15,19 @@ use crate::http::{
 use crate::keys::Keys;
 use crate::value_syntax::percent_decode_strict;
 
+pub(crate) const EXA_URL: &str = "https://api.exa.ai/search";
+pub(crate) const EXA_SOURCE: &str = "exa";
+pub(crate) const EXA_API: Api = Api {
+    source: EXA_SOURCE,
+    provider: "exa.ai",
+    origin: "https://api.exa.ai:443",
+    key: Some(KeyUse {
+        slot: crate::environment::EXA_KEY_ENV,
+        place: KeyPlace::Header("x-api-key"),
+        required: true,
+    }),
+};
+
 pub const MAX_RESULTS: usize = 5;
 pub const MAX_QUERY_BYTES: usize = 512;
 
@@ -91,7 +104,7 @@ impl SearchApi {
 
     pub(crate) const fn api(self) -> Api {
         let (source, provider, origin, slot, place) = match self {
-            Self::Exa => return crate::exa::API,
+            Self::Exa => return EXA_API,
             Self::OpenAlexPublic => {
                 return Api {
                     key: None,
@@ -194,7 +207,7 @@ impl SearchApi {
                 transport,
                 &api,
                 keys,
-                crate::exa::URL,
+                EXA_URL,
                 &json!({"query": query, "type": "lite", "numResults": MAX_RESULTS}),
                 now_unix,
             ),

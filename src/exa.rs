@@ -4,26 +4,16 @@
 //! background fetch calls this source. Only an operator's explicit `query --exa`
 //! action may request it with `HUNTSMAN_EXA_KEY` privately configured.
 
-use crate::api_leg::{Api, KeyPlace, KeyUse, LegError};
+use crate::api_leg::{Api, LegError};
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::search_api::SearchApi;
 
 pub use crate::search_api::{MAX_QUERY_BYTES as EXA_MAX_QUERY_BYTES, MAX_RESULTS};
 
-pub const SOURCE: &str = "exa";
-pub const URL: &str = "https://api.exa.ai/search";
-
-pub const API: Api = Api {
-    source: SOURCE,
-    provider: "exa.ai",
-    origin: "https://api.exa.ai:443",
-    key: Some(KeyUse {
-        slot: crate::environment::EXA_KEY_ENV,
-        place: KeyPlace::Header("x-api-key"),
-        required: true,
-    }),
-};
+pub const SOURCE: &str = crate::search_api::EXA_SOURCE;
+pub const URL: &str = crate::search_api::EXA_URL;
+pub const API: Api = crate::search_api::EXA_API;
 
 /// Return up to five public HTTP(S) discovery URLs.
 ///
