@@ -137,6 +137,7 @@ pub mod hunter;
 pub mod icij_offshore;
 pub mod identity;
 pub mod identity_resolution;
+pub mod image_compare;
 pub mod indicator_legs;
 pub mod indicator_sources;
 pub mod infrastructure;

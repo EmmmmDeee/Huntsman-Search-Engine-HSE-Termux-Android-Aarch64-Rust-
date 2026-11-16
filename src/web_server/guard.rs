@@ -4,9 +4,9 @@
 
 use super::response::json_error;
 use super::{
-    INSPECT_PATH, INVESTIGATE_PATH, KEYS_PATH, OSINT_CASE_PATH, OSINT_RISK_PATH,
-    PEOPLE_DISCOVER_PATH, ParsedRequest, RESEARCH_MISSION_PATH, RHINSER_NATIVE_PATH,
-    RHINSER_OVERLAPS_PATH, ServeConfig, TRACK_PATH,
+    IMAGE_COMPARE_PATH, INSPECT_PATH, INVESTIGATE_PATH, KEYS_PATH, OSINT_CASE_PATH,
+    OSINT_RISK_PATH, PEOPLE_DISCOVER_PATH, ParsedRequest, RESEARCH_MISSION_PATH,
+    RHINSER_NATIVE_PATH, RHINSER_OVERLAPS_PATH, ServeConfig, TRACK_PATH,
 };
 use crate::scan_api::ScanApi;
 
@@ -16,6 +16,7 @@ pub(super) fn takes_post(path: &str) -> bool {
     ScanApi::handles(path)
         || path == KEYS_PATH
         || path == INSPECT_PATH
+        || path == IMAGE_COMPARE_PATH
         || path == TRACK_PATH
         || path == INVESTIGATE_PATH
         || path == PEOPLE_DISCOVER_PATH

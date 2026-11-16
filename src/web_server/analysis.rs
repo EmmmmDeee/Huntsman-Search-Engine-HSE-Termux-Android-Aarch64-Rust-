@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::entity::EntityKind;
+use crate::image_compare;
 use crate::scan_api::ScanApi;
 use crate::scan_service::{INSPECT_KIND, LookupOutput, ScanService, stamp_scan_id};
 use crate::source_outcome::SourceExecutionOutcome;
@@ -14,9 +15,9 @@ use crate::value_syntax::form_decode;
 
 use super::{
     ANALYZE_STACK_BYTES, AnalyzeHandler, INSPECT_STACK_BYTES, InvestigateHandler, LookupReport,
-    MAX_ANALYZE_SEEDS, MAX_FORM_BYTES, MAX_INSPECT_BYTES, MAX_INSPECT_NAME_BYTES,
-    MAX_SELECTOR_BYTES, Method, ParsedRequest, Routes, ServeConfig, Upload, json_error, json_ok,
-    page_refusal,
+    MAX_ANALYZE_SEEDS, MAX_FORM_BYTES, MAX_IMAGE_COMPARE_BYTES, MAX_INSPECT_BYTES,
+    MAX_INSPECT_NAME_BYTES, MAX_SELECTOR_BYTES, Method, ParsedRequest, Routes, ServeConfig, Upload,
+    json_error, json_ok, page_refusal,
 };
 
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
@@ -285,7 +286,7 @@ pub(super) fn inspect_response(
             .spawn_scoped(scope, || {
                 catch_unwind(AssertUnwindSafe(|| {
                     handler(&label, body).map(|report| match service {
-                        Some(service) => keep_inspection(service, &label, report),
+                        Some(service) => keep_inspection(service, &label, INSPECT_KIND, report),
                         None => report,
                     })
                 }))
@@ -303,11 +304,129 @@ pub(super) fn inspect_response(
     }
 }
 
+/// A browser-selected reference and candidate, both read in the existing bounded inspection slot.
+/// The body begins with the reference's four-byte little-endian length, followed by both files.
+pub(super) fn image_compare_response(
+    parsed: &ParsedRequest<'_>,
+    upload: Option<&Upload>,
+    routes: &Routes,
+) -> String {
+    if routes.inspect.is_none() {
+        return json_error(404, "image comparison is unavailable on this server");
+    }
+    if parsed.method != Method::Post {
+        return json_error(405, "image comparison requires POST");
+    }
+    if let Some(refusal) = page_refusal(parsed, "inspection", true) {
+        return refusal;
+    }
+    let Some(length) = parsed.content_length.filter(|&length| length >= 6) else {
+        return json_error(400, "image comparison requires both image files");
+    };
+    if length > MAX_IMAGE_COMPARE_BYTES {
+        return json_error(
+            413,
+            "image comparison accepts two files of up to 20 MiB each",
+        );
+    }
+    let Some(upload) = upload else {
+        return json_error(503, "an inspection is already running; retry shortly");
+    };
+    if upload.body.len() != length {
+        return json_error(400, "the upload ended before the length it announced");
+    }
+    let (prefix, images) = upload.body.split_at(4);
+    let length = u32::from_le_bytes([prefix[0], prefix[1], prefix[2], prefix[3]]) as usize;
+    let maximum = image_compare::MAX_FILE_BYTES;
+    if length == 0 || length >= images.len() {
+        return json_error(
+            400,
+            "the reference image length does not identify two files",
+        );
+    }
+    let (first, second) = images.split_at(length);
+    if first.len() > maximum || second.len() > maximum {
+        return json_error(413, "each image must be at most 20 MiB");
+    }
+    let notes = match comparison_notes(parsed.query) {
+        Ok(notes) => notes,
+        Err(message) => return json_error(400, message),
+    };
+    let service = routes.scans.as_deref().map(ScanApi::service);
+    let outcome = thread::scope(|scope| {
+        thread::Builder::new()
+            .name("serve-image-comparison".into())
+            .stack_size(INSPECT_STACK_BYTES)
+            .spawn_scoped(scope, || {
+                let comparison = image_compare::compare(first, second)?;
+                let now = crate::clock::unix_now();
+                let mut report = LookupReport {
+                    route: "image_compare",
+                    text: comparison.text(),
+                    entities: vec![comparison.observation(
+                        &notes.reference,
+                        &notes.candidate,
+                        notes.source_page.as_deref(),
+                        notes.asset_url.as_deref(),
+                        now,
+                    )],
+                    outcomes: vec![comparison.outcome(now)],
+                    scan: None,
+                    status: None,
+                };
+                if let Some(service) = service {
+                    let label = format!("Image comparison: {}", notes.reference);
+                    report = keep_inspection(service, &label, image_compare::SOURCE, report);
+                }
+                Ok::<_, String>(serde_json::json!({ "comparison": comparison, "report": report }))
+            })
+            .map(thread::ScopedJoinHandle::join)
+    });
+    match outcome {
+        Ok(Ok(Ok(value))) => json_ok(&value.to_string(), false),
+        Ok(Ok(Err(message))) => json_error(422, &message),
+        Ok(Err(_)) => json_error(500, "image comparison failed unexpectedly"),
+        Err(_) => json_error(503, "could not start an image comparison worker"),
+    }
+}
+
+struct ComparisonNotes {
+    reference: String,
+    candidate: String,
+    source_page: Option<String>,
+    asset_url: Option<String>,
+}
+
+fn comparison_notes(raw: &str) -> Result<ComparisonNotes, &'static str> {
+    let mut notes = ComparisonNotes {
+        reference: "Reference image".into(),
+        candidate: "Candidate image".into(),
+        source_page: None,
+        asset_url: None,
+    };
+    for field in raw.split('&').filter_map(|pair| pair.split_once('=')) {
+        let value = form_decode(field.1).ok_or("comparison notes must be valid UTF-8")?;
+        match field.0 {
+            "reference" => notes.reference = file_label(&value),
+            "candidate" => notes.candidate = file_label(&value),
+            "source_page" => notes.source_page = image_compare::source_url(&value)?,
+            "asset_url" => notes.asset_url = image_compare::source_url(&value)?,
+            _ => return Err("unknown image comparison field"),
+        }
+    }
+    Ok(notes)
+}
+
 /// The inspection kept as a `FINISHED` scan of the file, named in the report's `scan` and
 /// `status`, with every entity stamped with that scan's id so its provenance names a scan
 /// `/api/scans/ID` reads again. When the store refuses, the report is answered whole all the same,
 /// with a `scans` outcome saying why it was not kept: a full store never costs the file's findings.
-fn keep_inspection(service: &ScanService, label: &str, mut report: LookupReport) -> LookupReport {
+fn keep_inspection(
+    service: &ScanService,
+    label: &str,
+    kind: &str,
+    mut report: LookupReport,
+) -> LookupReport {
     let found = LookupOutput {
         text: report.text.clone(),
         entities: report.entities.clone(),
@@ -316,7 +435,7 @@ fn keep_inspection(service: &ScanService, label: &str, mut report: LookupReport)
     match service.keep(
         label,
         crate::sf_types::base_type(&EntityKind::Document),
-        INSPECT_KIND,
+        kind,
         found,
     ) {
         Ok(record) => {
@@ -344,6 +463,10 @@ pub(super) fn inspect_label(raw: &str) -> Result<String, &'static str> {
             name = form_decode(value).ok_or("name is not valid percent-encoded UTF-8")?;
         }
     }
+    Ok(file_label(&name))
+}
+
+fn file_label(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
     let mut label = String::new();
     for c in base.chars().filter(|c| !c.is_control()) {
@@ -353,11 +476,11 @@ pub(super) fn inspect_label(raw: &str) -> Result<String, &'static str> {
         label.push(c);
     }
     let label = label.trim();
-    Ok(if label.is_empty() {
+    if label.is_empty() {
         "upload".to_owned()
     } else {
         label.to_owned()
-    })
+    }
 }
 
 /// The seeds in a query's `seeds` value, one per line: each is trimmed and blank lines are

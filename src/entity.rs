@@ -703,7 +703,13 @@ pub fn is_enrichment_source(source: &str) -> bool {
 /// Readers of the operator's own input: the metadata and container parsers that `inspect` runs
 /// over a file the operator supplied. Each describes those bytes and observes no one, so two of
 /// them agreeing is one file read twice, never two sources corroborating an entity.
-pub const LOCAL_INPUT_SOURCES: &[&str] = &["apk_intel", "apk_set", "docmeta", "exif"];
+pub const LOCAL_INPUT_SOURCES: &[&str] = &[
+    "apk_intel",
+    "apk_set",
+    "docmeta",
+    "exif",
+    crate::image_compare::SOURCE,
+];
 
 #[must_use]
 pub fn is_local_input_source(source: &str) -> bool {

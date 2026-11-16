@@ -114,6 +114,25 @@
 </div>
 </section>
 <section id="view-inspect" hidden>
+<div class="panel">
+<div class="panel-heading">Compare image evidence</div>
+<p class="help">Check a candidate from a source against your reference. JPEG, PNG or WebP, up to 20 MiB each. Source URLs are optional notes.</p>
+<form id="icompare">
+<div class="toolbar">
+<label class="grow">Reference image <input id="icreference" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+<label class="grow">Candidate image <input id="iccandidate" type="file" accept="image/jpeg,image/png,image/webp" required></label>
+</div>
+<div class="toolbar">
+<input class="grow" id="icsource" type="url" aria-label="Candidate source page URL" placeholder="Candidate source page URL" maxlength="1024">
+<input class="grow" id="icasset" type="url" aria-label="Candidate image URL" placeholder="Candidate image URL" maxlength="1024">
+<button class="btn btn-primary" id="icrun" type="submit">Compare images</button>
+</div>
+</form>
+<p id="icstatus" class="note" role="status"></p>
+<pre id="icresult" hidden></pre>
+<div class="toolbar" id="icactions" hidden></div>
+<textarea id="icjson" aria-label="Image comparison evidence JSON" rows="6" readonly hidden></textarea>
+</div>
 <h1>File metadata</h1>
 <p class="help">EXIF, GPS, XMP edit history, PDF /Info, PNG text and offline APK/APKS/XAPK/APKM container inventory and authenticated v2 and SDK-scoped v3/v3.1 split-signer observations: what a file embeds, read locally without a key. Embedded fields are claims, not verified ownership.</p>
 <form class="toolbar" id="inspect"><input type="file" id="ifile" class="grow" aria-label="File to inspect"><button class="btn btn-primary" id="irun" type="submit">Inspect</button></form>
@@ -578,6 +597,67 @@ $('rtrack').onclick=async()=>{
     fail('rerror',e.message)
   }
   finally{b.disabled=false}
+};
+const imageCompareForm=$('icompare');
+function exportImageComparison(result,ev){
+  if(typeof androidHost==='undefined'||!androidHost){
+    download(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}),'huntsman-image-comparison.json');
+    return;
+  }
+  const status=$('icstatus');
+  if(!ev.isTrusted||!result.report.scan||typeof saveEvidenceOnAndroid!=='function'){
+    status.textContent='Use Show evidence JSON to copy the result.';return;
+  }
+  try{saveEvidenceOnAndroid({kind:'image_comparison',scan:result.report.scan},status)}
+  catch(e){status.textContent=e.message+' Use Show evidence JSON to copy the result.'}
+}
+function clearImageComparison(){
+  $('icstatus').textContent='';
+  $('icresult').hidden=true;
+  $('icresult').textContent='';
+  $('icactions').replaceChildren();
+  $('icactions').hidden=true;
+  $('icjson').hidden=true;
+  $('icjson').value='';
+}
+imageCompareForm.oninput=clearImageComparison;
+imageCompareForm.onsubmit=async ev=>{
+  ev.preventDefault();
+  clearImageComparison();
+  const reference=$('icreference').files[0],candidate=$('iccandidate').files[0];
+  const status=$('icstatus'),limit=20*1024*1024;
+  if(!reference||!candidate||[reference,candidate].some(file=>file.size<1||file.size>limit)){
+    status.textContent='Choose two files between 1 byte and 20 MiB each.';return;
+  }
+  const query=new URLSearchParams({
+    reference:reference.name,candidate:candidate.name,
+    source_page:$('icsource').value.trim(),asset_url:$('icasset').value.trim()
+  });
+  const length=new DataView(new ArrayBuffer(4));
+  length.setUint32(0,reference.size,true);
+  const body=new Blob([length.buffer,reference,candidate],{type:'application/octet-stream'});
+  for(const input of imageCompareForm.elements)input.disabled=true;
+  status.textContent='Comparing images…';
+  try{
+    const result=await api('/api/inspect/image-compare?'+query,{method:'POST',body});
+    const report=result.report,output=$('icresult'),actions=$('icactions');
+    output.textContent=report.text;output.hidden=false;
+    if(report.scan){
+      status.textContent='Saved under Scans.';
+      const link=el('a','link','Open saved comparison');
+      link.href='#/scan/'+enc(report.scan)+'/browse';actions.append(link);
+    }else{
+      const failed=report.outcomes.find(outcome=>outcome.module==='scans');
+      status.textContent=failed?(failed.detail||'The result could not be saved.'):'The server has no scan storage.';
+    }
+    const exportButton=button('Export evidence JSON',ev=>exportImageComparison(result,ev));
+    actions.append(exportButton,button('Show evidence JSON',()=>{
+      const output=$('icjson');output.value=JSON.stringify(result,null,2);
+      output.hidden=false;output.focus();output.select();
+    }));
+    actions.hidden=false;
+  }catch(e){status.textContent=e.message}
+  finally{for(const input of imageCompareForm.elements)input.disabled=false}
 };
 let inspectLast=null;
 const inspectFailed=why=>{$('istatus').textContent=inspectLast?'Failed; the tables show the PREVIOUS file.':'No file inspected.';fail('ierror',why)};

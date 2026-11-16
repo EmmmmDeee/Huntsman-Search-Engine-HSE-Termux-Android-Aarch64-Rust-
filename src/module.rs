@@ -759,6 +759,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         attack_techniques: &["T1589.003", "T1591.001", "T1592.002"],
         description: "author, creator tool, edit history, timestamps, document IDs, values a PDF edit superseded and embedded GPS read from a local file's XMP packets and PDF /Info dictionary, keyless and offline",
     },
+    ReachableModule {
+        name: crate::image_compare::SOURCE,
+        command: "reverse-image compare REFERENCE CANDIDATE [--json]",
+        access: "keyless",
+        network: false,
+        category: ModuleCategory::Search,
+        attack_techniques: &[],
+        description: "Compare locally supplied photos and retain source notes, both hashes, and the result as image evidence",
+    },
     // The reverse-image providers: each receives the operator's whole image, so each runs only
     // when the operator names it, never from a scan or a lookup.
     ReachableModule {

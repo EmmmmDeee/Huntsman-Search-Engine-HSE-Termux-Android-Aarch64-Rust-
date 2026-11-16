@@ -56,7 +56,7 @@ Commands:
   geocode               Geocode a place, address or lat,lon point (keyless, OpenStreetMap Nominatim)
   traffic-cameras       Read-only QLDTraffic public webcam metadata (one-shot, not live imagery)
   exif                  Extract EXIF metadata and GPS coordinates from a local image (keyless, offline)
-  reverse-image         SHA-256 of a local image, offline; --live --provider NAME uploads it to that one provider
+  reverse-image         Compare two files offline, or inspect/search one image
   docmeta               Extract XMP-packet and PDF /Info metadata, with embedded GPS, from a local file (keyless, offline)
   apk                   Inventory or compare two APK ZIP archives offline (keyless, no root)
   source-intel          Project APK DEX URLs into offline evidence-scoped source leads

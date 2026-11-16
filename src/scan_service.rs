@@ -179,6 +179,11 @@ pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> 
             kind
         }
         Some(word) => {
+            if word.eq_ignore_ascii_case(crate::image_compare::SOURCE) {
+                return Err(ServiceError::BadRequest(
+                    "comparison reports are saved without image bytes; select both files again in Inspect".into(),
+                ));
+            }
             if word.eq_ignore_ascii_case(INSPECT_KIND) {
                 return Err(ServiceError::BadRequest(
                     "an inspected file is kept as a scan but its bytes are not; inspect the file again to read it anew".into(),
