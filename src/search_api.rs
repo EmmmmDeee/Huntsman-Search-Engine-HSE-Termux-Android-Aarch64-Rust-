@@ -29,7 +29,7 @@ pub(crate) const EXA_API: Api = Api {
 };
 
 pub const MAX_RESULTS: usize = 5;
-pub const MAX_QUERY_BYTES: usize = 512;
+pub const SEARCH_API_MAX_QUERY_BYTES: usize = 512;
 
 /// Bound the explicit provider response below the shared client's general-purpose body limit.
 #[must_use]
@@ -178,11 +178,11 @@ impl SearchApi {
     /// # Errors
     /// Returns a refusal for blank, oversized or control-bearing queries.
     pub fn check_query(self, query: &str) -> Result<&str, LegError> {
-        if !crate::textnorm::is_bounded_text(query, MAX_QUERY_BYTES)
+        if !crate::textnorm::is_bounded_text(query, SEARCH_API_MAX_QUERY_BYTES)
             || (self == Self::SerpYandex && query.trim().chars().count() > 400)
         {
             return Err(LegError::Refused(format!(
-                "search query must contain 1–{MAX_QUERY_BYTES} bytes without controls (Yandex: at most 400 characters)"
+                "search query must contain 1–{SEARCH_API_MAX_QUERY_BYTES} bytes without controls (Yandex: at most 400 characters)"
             )));
         }
         Ok(query.trim())

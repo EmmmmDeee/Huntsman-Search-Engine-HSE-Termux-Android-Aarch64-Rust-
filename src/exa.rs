@@ -9,7 +9,7 @@ use crate::http::Transport;
 use crate::keys::Keys;
 use crate::search_api::SearchApi;
 
-pub use crate::search_api::{MAX_QUERY_BYTES as EXA_MAX_QUERY_BYTES, MAX_RESULTS};
+pub use crate::search_api::{MAX_RESULTS, SEARCH_API_MAX_QUERY_BYTES as EXA_MAX_QUERY_BYTES};
 
 pub const SOURCE: &str = crate::search_api::EXA_SOURCE;
 pub const URL: &str = crate::search_api::EXA_URL;
