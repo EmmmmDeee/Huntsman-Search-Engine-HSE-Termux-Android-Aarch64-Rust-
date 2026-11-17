@@ -18,10 +18,8 @@
 //!   [`crate::breach_record::expose`], bounded by its [`MAX_FIELDS`](crate::breach_record::MAX_FIELDS),
 //!   [`MAX_VALUES_PER_FIELD`](crate::breach_record::MAX_VALUES_PER_FIELD) and
 //!   [`MAX_VALUE_BYTES`](crate::breach_record::MAX_VALUE_BYTES).
-//! - **Credentials.** A password, a hash or a salt is the value an attacker needs for account
-//!   takeover, so it is reduced to its field name and the fact that it was exposed while
-//!   decoding, and an [`Entry`] can never hold or show it. That covers `password`,
-//!   `hashed_password`, `hash_type` and anything else the credential rule names. Exposure is
+//! - **Credentials.** Fields the shared credential rule recognises, including passwords, hashes,
+//!   salts, API keys, tokens and session cookies, keep their labels without their values. Exposure is
 //!   judged strictly for `password` and `hashed_password`: a blank, empty or `false` value
 //!   exposes nothing (see `holds`).
 //! - **No entries is an error.** A body without an `entries` array is a decode error, never an
@@ -295,6 +293,39 @@ pub(crate) mod tests {
         assert!(!parsed.entries[0].has_hashed_password());
         assert!(parsed.entries[1].email.is_empty());
         assert!(parsed.entries[1].has_hashed_password());
+    }
+
+    #[test]
+    fn authentication_secrets_are_omitted_from_decoded_values() {
+        let entry: Entry = serde_json::from_str(
+            r#"{
+                "api_key": ["synthetic-key"],
+                "access_token": ["synthetic-token"],
+                "session_cookie": ["synthetic-cookie"],
+                "userPassPortAccessToken": ["synthetic-passport-token"],
+                "profile": [{"company": "Example", "clientSecret": "synthetic-secret"}],
+                "token_sale": ["public"],
+                "session_count": [2]
+            }"#,
+        )
+        .unwrap();
+
+        for field in [
+            "api_key",
+            "access_token",
+            "session_cookie",
+            "userpassportaccesstoken",
+            "profile",
+        ] {
+            assert!(
+                entry.fields.contains(field),
+                "missing exposure field {field}"
+            );
+            assert!(!entry.values.contains_key(field), "retained {field}");
+        }
+        assert!(entry.values["token_sale"].contains("public"));
+        assert!(entry.values["session_count"].contains("2"));
+        assert!(!entry.password_exposed());
     }
 
     /// One record in `DeHashed`'s documented v2 shape, with every field it documents and the three

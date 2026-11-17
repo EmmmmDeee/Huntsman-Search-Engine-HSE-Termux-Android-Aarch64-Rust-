@@ -2,11 +2,10 @@
 //!
 //! A record is a JSON object whose keys name fields. Each field the record holds a value in is an
 //! exposed field, kept by name. The value is kept too, so a report shows what the record said,
-//! with one exception: a cleartext credential. A key that holds one of the
-//! [`CREDENTIAL_MARKERS`] (a [`NOT_A_CREDENTIAL`] aside) is reduced to its name and the fact that
-//! it was exposed, and so is a list or object holding such a key at any depth: a password, a hash
-//! or a salt is the value an attacker needs for account takeover, so no report, entity or saved
-//! ledger ever carries one. Whether a password was exposed is read more narrowly, from a key's
+//! except when the field names a credential. Passwords, hashes, salts and fields named by the
+//! shared authentication-secret classifier are reduced to the fact that they were exposed.
+//! Lists or objects holding such a key at any depth are also withheld. Whether a password was
+//! exposed is read more narrowly, from a key's
 //! words ([`PASSWORD_WORDS`]). Field names, values per field and value lengths are bounded, so
 //! one record cannot flood a report. **Pure.**
 
@@ -78,7 +77,7 @@ pub const PASSWORD_METADATA: [&str; 21] = [
 
 /// Adds what one record exposes to one breach database's account of it: each named field that
 /// holds a value goes into `fields`, and the value of each non-credential one into `values`,
-/// within [`MAX_FIELDS`], [`MAX_VALUES_PER_FIELD`] and [`MAX_VALUE_BYTES`]. A cleartext credential
+/// within [`MAX_FIELDS`], [`MAX_VALUES_PER_FIELD`] and [`MAX_VALUE_BYTES`]. A credential value
 /// (a field [`is_credential`] names) is never kept, nor is a list or object that
 /// [`holds_credential`], and either one sets `password_exposed` when a key inside it that
 /// [`names_a_password`] holds a value. `named` is the record's keys and values, less the record's
@@ -102,12 +101,8 @@ pub(crate) fn expose<'a>(
             continue;
         };
         if fields.len() < MAX_FIELDS || fields.contains(&field) {
-            // The report is unredacted for the record's own data, but a third party's cleartext
-            // credential (password, hash or salt) is never emitted: that is the value an attacker
-            // needs for account takeover. The fact that such a field was exposed, its type and the
-            // breach it came from are kept (the field name and `password_exposed`); only the secret
-            // value is held back, and so is a list or object with a credential inside it. Every
-            // other field's value is surfaced as the record held it.
+            // Preserve the field label for reporting, but withhold the value when the field or
+            // any key inside its value names a credential.
             if !credential && !holds_credential(value, is_credential, |_| true) {
                 if let Some(text) = record_value(value) {
                     let seen = values.entry(field.clone()).or_default();
@@ -164,10 +159,14 @@ pub(crate) fn record_value(value: &Value) -> Option<String> {
     (!text.is_empty() && text.len() <= MAX_VALUE_BYTES).then_some(text)
 }
 
-/// `key` names a password or something derived from one: it holds one of the
-/// [`CREDENTIAL_MARKERS`], in any case, other than a `pass` that begins [`NOT_A_CREDENTIAL`].
-/// **Pure.**
+/// `key` names a credential under the shared authentication-secret classifier or the
+/// breach-specific password, hash and salt rules. **Pure.**
 pub(crate) fn is_credential(key: &str) -> bool {
+    has_password_marker(key) || crate::redact::non_password_secret_field_name(key)
+}
+
+/// The breach-specific markers that also gate the narrower password-exposure flag.
+fn has_password_marker(key: &str) -> bool {
     let written = key.to_ascii_lowercase();
     let joined: String = written
         .chars()
@@ -209,7 +208,7 @@ pub(crate) fn names_a_password(key: &str) -> bool {
                                 || names(beside))
                     })))
     };
-    is_credential(key)
+    has_password_marker(key)
         && !words
             .iter()
             .any(|word| PASSWORD_METADATA.contains(&word.as_str()))
