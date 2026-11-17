@@ -145,6 +145,34 @@ fn disjoint_root_labels_do_not_satisfy_two_route_policy_without_independence_evi
 }
 
 #[test]
+fn multi_root_record_preserves_two_ancestors_but_cannot_verify_a_two_route_claim() {
+    let (ledger, claim_id, ids) = ledger_with_support(&[("combined", "legacy-origin")]);
+    let mut graph = EvidenceAncestryGraph::default();
+    graph.insert(node("root-a", "registry-a", &[])).unwrap();
+    graph.insert(node("root-b", "registry-b", &[])).unwrap();
+    graph
+        .insert(node("combined", "summary", &["root-a", "root-b"]))
+        .unwrap();
+    graph
+        .insert_independence_evidence(independence("root-a", "root-b"))
+        .unwrap();
+    let bindings = BTreeMap::from([(ids[0].clone(), EvidenceNodeId::from("combined"))]);
+
+    let assessment = ledger
+        .assess_claim_with_ancestry(&claim_id, &policy(2), &graph, &bindings)
+        .unwrap();
+
+    assert_eq!(assessment.distinct_resolved_roots, 2);
+    assert_eq!(assessment.proven_roots, 1);
+    assert_eq!(assessment.epistemic, ClaimState::Supported);
+    assert!(
+        assessment
+            .blockers
+            .contains(&VerificationBlocker::InsufficientIndependentSupport)
+    );
+}
+
+#[test]
 fn same_family_distinct_roots_remain_distinct_for_audit() {
     let (ledger, claim_id, ids) = ledger_with_support(&[("a", "legacy-a"), ("b", "legacy-b")]);
     let mut graph = EvidenceAncestryGraph::default();
