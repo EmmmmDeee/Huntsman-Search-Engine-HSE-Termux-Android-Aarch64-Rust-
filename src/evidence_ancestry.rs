@@ -507,6 +507,8 @@ impl EvidenceAncestryGraph {
     /// Count a conservative lower bound of mutually proven-independent proof
     /// routes. The deterministic search is bounded by `max_search_states`; every
     /// caller in the engine passes [`DEFAULT_INDEPENDENCE_SEARCH_STATES`].
+    /// A route with multiple roots can support the claim once. Its ancestors do
+    /// not become separate routes unless supplied through single-root evidence.
     /// Exhaustion marks the result incomplete and never adds an unproven route.
     ///
     /// # Errors
@@ -524,17 +526,22 @@ impl EvidenceAncestryGraph {
             });
         }
 
+        let mut has_route = false;
         let mut root_set = BTreeSet::new();
         for id in ids {
-            root_set.extend(self.root_ids(id)?);
+            let roots = self.root_ids(id)?;
+            has_route |= !roots.is_empty();
+            if roots.len() == 1 {
+                root_set.extend(roots);
+            }
         }
-        if root_set.is_empty() {
+        if !has_route {
             return Ok(IndependenceRouteCount {
                 proven: 0,
                 incomplete: false,
             });
         }
-        if required == 1 || root_set.len() == 1 {
+        if required == 1 || root_set.len() < 2 {
             return Ok(IndependenceRouteCount {
                 proven: 1,
                 incomplete: false,

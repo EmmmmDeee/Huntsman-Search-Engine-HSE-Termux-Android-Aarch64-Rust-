@@ -291,6 +291,7 @@ mod tests {
         add("registry", "company registry", &[]);
         add("first-party", "profile page", &[]);
         add("court", "court record", &[]);
+        add("synthesis", "combined report", &["registry", "first-party"]);
         g.insert_independence_evidence(IndependenceEvidence {
             left_root: "registry".into(),
             right_root: "first-party".into(),
@@ -338,6 +339,22 @@ mod tests {
             decision(ResolutionState::Match, &["registry", "first-party"], &[])
                 .allows_automatic_merge(&graph(), AutoMergePolicy::default())
         );
+    }
+
+    #[test]
+    fn multi_root_synthesis_cannot_satisfy_the_two_route_merge_gate() {
+        let graph = graph();
+        for support in [&["synthesis"][..], &["synthesis", "registry"][..]] {
+            let decision = decision(ResolutionState::Match, support, &[]);
+            assert_eq!(
+                decision.hold_reasons(&graph, AutoMergePolicy::default()),
+                [HoldReason::InsufficientIndependentFamilies {
+                    found: 1,
+                    required: 2,
+                }]
+            );
+            assert!(!decision.allows_automatic_merge(&graph, AutoMergePolicy::default()));
+        }
     }
 
     #[test]

@@ -1,0 +1,1 @@
+- Keep combined evidence as one proof route when its ancestors lack separate supporting records, so ancestry alone cannot verify a two-route claim or permit an automatic identity merge. Preserve every ancestor for audit.
