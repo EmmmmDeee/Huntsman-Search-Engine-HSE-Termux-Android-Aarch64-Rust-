@@ -841,6 +841,19 @@ impl ScanStore {
     /// # Errors
     /// [`StoreError::Io`] when the store cannot be listed or a row cannot be saved.
     pub fn recover(&self, now_ms: u64) -> Result<usize, StoreError> {
+        self.recover_with(now_ms, |_, error| Err(error))
+    }
+
+    /// Recover abandoned scans, letting the caller report and isolate a per-scan failure.
+    /// Returns the number of scans whose status and recovery log were both saved.
+    ///
+    /// # Errors
+    /// Returns an error if the store cannot be listed or if `on_failure` returns an error.
+    pub fn recover_with(
+        &self,
+        now_ms: u64,
+        mut on_failure: impl FnMut(&str, StoreError) -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
         let mut recovered = 0;
         for mut record in self.list()? {
             if !record.status.is_active()
@@ -852,15 +865,17 @@ impl ScanStore {
                 continue;
             }
             let was = record.status;
-            self.abort(
+            match self.abort(
                 &mut record,
                 now_ms,
                 &format!(
                     "the server stopped while this scan was {}; marked ABORTED",
                     was.as_str()
                 ),
-            )?;
-            recovered += 1;
+            ) {
+                Ok(()) => recovered += 1,
+                Err(error) => on_failure(&record.id, error)?,
+            }
         }
         Ok(recovered)
     }
@@ -1041,7 +1056,7 @@ fn log_is_full(path: &Path) -> bool {
     })
 }
 
-fn unreadable(id: &str, error: &StoreError) -> ScanRecord {
+pub(crate) fn unreadable(id: &str, error: &StoreError) -> ScanRecord {
     ScanRecord {
         format_version: FORMAT_VERSION,
         id: id.to_owned(),

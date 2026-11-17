@@ -121,8 +121,16 @@ fn open_api_with(
     lookup: ScanLookup,
 ) -> Result<ScanApi, String> {
     let store = ScanStore::open(dir).map_err(|error| error.to_string())?;
-    // One another live process is still running is left as it is.
-    store.recover(now_ms()).map_err(|error| error.to_string())?;
+    // A failure confined to one scan must leave the others available.
+    store
+        .recover_with(now_ms(), |id, error| {
+            eprintln!(
+                "scans: recovery incomplete for {id}: {}",
+                one_line(&error.to_string())
+            );
+            Ok(())
+        })
+        .map_err(|error| error.to_string())?;
     let (rules, errors) = match rules_dir {
         Some(rules_dir) => sf_correlate::with_dir(rules_dir),
         None => (sf_correlate::shipped().to_vec(), Vec::new()),
