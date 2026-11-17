@@ -66,10 +66,11 @@ A record is read as the JSON object it is (`Entry::from_record`):
   OathNet follows.
 - **Bounds.** At most 64 field names and 64 values per field; a value over 1,024 bytes is dropped
   whole, never cut.
-- **Credentials.** A password, hash or salt, and any field the credential rule names (`hash_type`
-  included, since the rule fails closed), is kept by name and as the fact that it was exposed.
-  Its value is read only while decoding and never reaches a record, a report, an entity, evidence,
-  `Debug` output or a saved file.
+- **Credentials.** The decoder withholds values for fields that name passwords, hashes, salts,
+  API keys, tokens, cookies and other authentication secrets. It keeps the field name and
+  withholds a whole list or object if a nested key names a credential. The `password_exposed`
+  flag continues to use the narrower password-specific rule. Saved results created before this
+  change can still contain the original values when reopened or exported.
 
 Where it shows:
 

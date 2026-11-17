@@ -43,6 +43,15 @@ pub fn coarsen_latlon(raw: &str) -> Option<String> {
 /// payloads must still enforce their provider-specific protections.
 #[must_use]
 pub fn sensitive_field_name(name: &str) -> bool {
+    classify_secret_field_name(name, true)
+}
+
+/// Classifies authentication secrets for callers with their own password-field rules.
+pub(crate) fn non_password_secret_field_name(name: &str) -> bool {
+    classify_secret_field_name(name, false)
+}
+
+fn classify_secret_field_name(name: &str, include_passwords: bool) -> bool {
     let chars: Vec<char> = name.chars().collect();
     let mut words = Vec::<String>::new();
     let mut word = String::new();
@@ -80,14 +89,7 @@ pub fn sensitive_field_name(name: &str) -> bool {
     if words.iter().any(|word| {
         matches!(
             word.as_str(),
-            "password"
-                | "passwords"
-                | "passwd"
-                | "pwd"
-                | "pass"
-                | "passphrase"
-                | "passcode"
-                | "token"
+            "token"
                 | "tokens"
                 | "secret"
                 | "secrets"
@@ -102,14 +104,16 @@ pub fn sensitive_field_name(name: &str) -> bool {
                 | "apikey"
                 | "privatekey"
                 | "accesskey"
+                | "session"
                 | "sessionid"
                 | "recoverycode"
                 | "recoverycodes"
-        )
+        ) || (include_passwords
+            && matches!(
+                word.as_str(),
+                "password" | "passwords" | "passwd" | "pwd" | "pass" | "passphrase" | "passcode"
+            ))
     }) {
-        return true;
-    }
-    if words.iter().any(|word| word == "session") {
         return true;
     }
     // A credential label can have a non-secret suffix: `apiKeyValue`,
@@ -130,10 +134,10 @@ pub fn sensitive_field_name(name: &str) -> bool {
     ) || ["apikey", "accesskey", "privatekey", "recoverycode"]
         .into_iter()
         .any(|prefix| compact.starts_with(prefix))
-        || compact.starts_with("password")
-        || compact.ends_with("password")
-        || compact.starts_with("passwd")
-        || compact.ends_with("passwd")
+        || (include_passwords
+            && ["password", "passwd"]
+                .into_iter()
+                .any(|label| compact.starts_with(label) || compact.ends_with(label)))
         || ["token", "secret", "cookie", "credential"]
             .into_iter()
             .any(|suffix| compact.ends_with(suffix))

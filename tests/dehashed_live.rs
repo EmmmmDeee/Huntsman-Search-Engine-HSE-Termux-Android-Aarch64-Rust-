@@ -24,6 +24,7 @@ use huntsman_recon::dehashed::{DehashedClient, Field, Purpose, SearchRequest, Se
 use huntsman_recon::egress::EgressPolicy;
 use huntsman_recon::http::{Request, Transport, UreqTransport};
 use huntsman_recon::keys::Secret;
+use huntsman_recon::redact::sensitive_field_name;
 use huntsman_recon::{Entity, EntityKind};
 use serde_json::Value;
 
@@ -132,10 +133,17 @@ fn a_domain_search_loses_no_record_keeps_every_value_and_no_credential() {
     let mut checked = 0;
     for entry in raw_entries {
         for (field, value) in entry.as_object().expect("entry object") {
-            if matches!(
-                field.as_str(),
-                "password" | "hashed_password" | "id" | "raw_record" | "database_name"
-            ) {
+            if sensitive_field_name(field)
+                || matches!(
+                    field.as_str(),
+                    "password"
+                        | "hashed_password"
+                        | "hash_type"
+                        | "id"
+                        | "raw_record"
+                        | "database_name"
+                )
+            {
                 continue;
             }
             let values: Vec<&Value> = match value {
