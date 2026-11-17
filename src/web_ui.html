@@ -785,7 +785,7 @@ $('newscan').onsubmit=async ev=>{
 };
 const TABS=['summary','correlations','browse','graph','analysis','settings','log'];
 let sid='',scan=null,tab='summary',btype='',cache={},bmode='full',blist=[],polls=0;const fpsel=new Set();
-const base=()=>'/api/scans/'+enc(sid);
+const base=(id=sid)=>'/api/scans/'+enc(id);
 function get(key,path){if(!(key in cache))cache[key]=api(path).catch(e=>{delete cache[key];throw e});return cache[key]}
 const elements=type=>get('el:'+type,base()+'/elements'+(type?'?type='+enc(type):''));
 function openScan([id,t,type]){
@@ -849,13 +849,13 @@ $('rawdownload').onclick=async()=>{
   try{
     if(!scan)throw Error('No scan has been loaded.');
     const snapshot=scan;
-    const scanId=sid;
-    // The active scan and its view cache can change while an export is in progress.
-    const scanPath=base();
-    const allElements=await api(scanPath+'/elements');
-    const allCorrelations=await api(scanPath+'/correlations');
-    const allGraph=await api(scanPath+'/graph');
-    const allLog=await api(scanPath+'/log');
+    const scanId=snapshot.id;
+    const scanPath=base(scanId);
+    const read=section=>api(scanPath+'/'+section);
+    const allElements=await read('elements');
+    const allCorrelations=await read('correlations');
+    const allGraph=await read('graph');
+    const allLog=await read('log');
     const fence=String.fromCharCode(96).repeat(3);
     const parts=[fence+'text\n',
       '[HUNTSMAN_SAVED_SCAN_RAW_DUMP_V1]\n',
