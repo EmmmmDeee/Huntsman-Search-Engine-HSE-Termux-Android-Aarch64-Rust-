@@ -877,6 +877,27 @@ fn every_export_the_page_offers_is_one_the_api_writes() {
 }
 
 #[test]
+fn full_txt_export_reads_evidence_for_its_metadata_scan() {
+    let script = inline("script");
+    let (_, handler) = script
+        .split_once("$('rawdownload').onclick=async()=>{")
+        .expect("full TXT export handler");
+    let (handler, _) = handler.split_once("\n};").expect("handler end");
+    let (capture, reads) = handler.split_once("await ").expect("evidence reads");
+
+    assert!(script.contains("const base=(id=sid)=>'/api/scans/'+enc(id);"));
+    assert!(capture.contains("const snapshot=scan;"));
+    assert!(capture.contains("const scanId=snapshot.id;"));
+    assert!(capture.contains("const scanPath=base(scanId);"));
+    assert!(capture.contains("const read=section=>api(scanPath+'/'+section);"));
+    for section in ["elements", "correlations", "graph", "log"] {
+        assert!(reads.contains(&format!("read('{section}')")), "{section}");
+    }
+    assert!(reads.contains("append('SCAN_METADATA',snapshot);"));
+    assert!(reads.contains("'SCAN_ID: '+scanId"));
+}
+
+#[test]
 fn scans_live_on_the_server_and_only_the_analysis_is_kept_for_the_tab() {
     let script = inline("script");
     assert!(script.contains("const store=keep(()=>localStorage),sess=keep(()=>sessionStorage);"));

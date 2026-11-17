@@ -479,7 +479,7 @@ impl ScanApi {
     }
 
     fn list(&self) -> ApiResponse {
-        match self.service.records() {
+        match self.service.records_for_listing() {
             Ok(records) => ok(200, &json!(records)),
             Err(failure) => service_error(&failure),
         }

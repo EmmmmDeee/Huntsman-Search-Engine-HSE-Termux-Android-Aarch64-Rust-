@@ -41,7 +41,7 @@ use crate::scan_route::{
 };
 use crate::scan_store::{
     FORMAT_VERSION, LogEntry, LogLevel, Risk, RiskCounts, ScanCorrelation, ScanOptions, ScanRecord,
-    ScanResults, ScanStatus, ScanStore, StoreError, new_id,
+    ScanResults, ScanStatus, ScanStore, StoreError, new_id, unreadable,
 };
 use crate::serve_events::{Event, EventHub};
 use crate::sf_compat::target_type;
@@ -915,10 +915,27 @@ impl ScanService {
     /// # Errors
     /// A store failure as [`ServiceError::Store`].
     pub fn records(&self) -> Result<Vec<ScanRecord>, ServiceError> {
+        self.records_with(|_, error| Err(error))
+    }
+
+    /// Keep healthy rows visible when reconciliation fails for an individual scan.
+    pub(crate) fn records_for_listing(&self) -> Result<Vec<ScanRecord>, ServiceError> {
+        self.records_with(|record, error| {
+            *record = unreadable(&record.id, &error);
+            Ok(())
+        })
+    }
+
+    fn records_with(
+        &self,
+        mut on_failure: impl FnMut(&mut ScanRecord, StoreError) -> Result<(), StoreError>,
+    ) -> Result<Vec<ScanRecord>, ServiceError> {
         let now = clock::unix_now_millis();
         let mut records = self.store.list()?;
         for record in &mut records {
-            self.store.reconcile(record, now)?;
+            if let Err(error) = self.store.reconcile(record, now) {
+                on_failure(record, error)?;
+            }
         }
         Ok(records)
     }
