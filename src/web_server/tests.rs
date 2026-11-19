@@ -1989,6 +1989,35 @@ fn every_response_refuses_framing_and_outside_loads() {
 }
 
 #[test]
+fn both_page_routes_borrow_the_same_get_response_and_head_prefix() {
+    let config = test_config(loopback_bind(), None);
+    let routes = Routes::default();
+    let request = |method, path| {
+        respond_with(
+            &format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n"),
+            None,
+            &config,
+            &routes,
+        )
+    };
+    let get = request("GET", "/");
+    let alias = request("GET", "/index.html");
+    let head = request("HEAD", "/index.html");
+    assert!(matches!(get, Cow::Borrowed(_)));
+    assert!(matches!(alias, Cow::Borrowed(_)));
+    assert!(matches!(head, Cow::Borrowed(_)));
+    assert_eq!(get, alias);
+    assert_eq!(get.as_ptr(), alias.as_ptr());
+    assert_eq!(get.as_ptr(), head.as_ptr());
+    let answer = std::str::from_utf8(&get).unwrap();
+    let (headers, body) = answer.split_once("\r\n\r\n").unwrap();
+    assert_eq!(head.as_ref(), format!("{headers}\r\n\r\n").as_bytes());
+    assert!(headers.contains(&format!("Content-Length: {}", body.len())));
+    let id = format!(r#"<meta name="huntsman-page" content="{}">"#, *PAGE_ID);
+    assert_eq!(body, INDEX_HTML.replacen(page::PAGE_ID_SLOT, &id, 1));
+}
+
+#[test]
 fn the_page_policy_allows_exactly_the_page_inline_script_and_style() {
     let response = response_for_request(
         "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n",
@@ -3522,7 +3551,7 @@ fn one_inspection_at_a_time_and_its_place_comes_back() {
     let (length, place) = inspect_admits(&head, &config, &routes).expect("the first is admitted");
     assert_eq!(length, 10);
     assert!(inspect_admits(&head, &config, &routes).is_none());
-    let busy = text(respond_with(&head, None, &config, &routes));
+    let busy = text(respond_with(&head, None, &config, &routes).into_owned());
     assert!(busy.starts_with("HTTP/1.1 503"), "{busy}");
     drop(place);
     assert!(inspect_admits(&head, &config, &routes).is_some());
@@ -3531,7 +3560,7 @@ fn one_inspection_at_a_time_and_its_place_comes_back() {
         body: vec![1, 2, 3],
         place: inspect_admits(&head, &config, &routes).unwrap().1,
     };
-    let ended = text(respond_with(&head, Some(&short), &config, &routes));
+    let ended = text(respond_with(&head, Some(&short), &config, &routes).into_owned());
     assert!(ended.starts_with("HTTP/1.1 400"), "{ended}");
 }
 

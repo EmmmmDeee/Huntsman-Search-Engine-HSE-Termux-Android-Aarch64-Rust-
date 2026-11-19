@@ -4,6 +4,7 @@
 
 use std::sync::LazyLock;
 
+use super::response::response_head;
 use crate::base64;
 use crate::sha256::sha256;
 
@@ -49,8 +50,8 @@ pub(crate) fn hash_source(content: &str) -> String {
 /// the HSE console's look (app bar, bottom tabs on a phone, panels), over this server's routes.
 pub(super) const INDEX_HTML: &str = include_str!("../web_ui.html");
 
-/// The empty page id [`PAGE`] fills in, in the page's head and outside its script and style, so
-/// filling it leaves the hashes [`PAGE_POLICY`] lists unchanged.
+/// The empty page id in the page's head and outside its script and style. Filling it leaves
+/// the hashes [`PAGE_POLICY`] lists unchanged.
 pub(super) const PAGE_ID_SLOT: &str = r#"<meta name="huntsman-page" content="">"#;
 
 /// The first 16 hex digits of the SHA-256 of the page this build embeds. Every page an upgrade
@@ -58,15 +59,31 @@ pub(super) const PAGE_ID_SLOT: &str = r#"<meta name="huntsman-page" content="">"
 pub(super) static PAGE_ID: LazyLock<String> =
     LazyLock::new(|| crate::sha256::hex32(&sha256(INDEX_HTML.as_bytes()))[..16].to_owned());
 
-/// The page as served: [`INDEX_HTML`] carrying its [`PAGE_ID`], which the page compares with
-/// the one every health answer names.
-pub(super) static PAGE: LazyLock<String> = LazyLock::new(|| {
-    INDEX_HTML.replacen(
-        PAGE_ID_SLOT,
-        &format!(r#"<meta name="huntsman-page" content="{}">"#, *PAGE_ID),
-        1,
-    )
-});
+/// Both page routes share one immutable response. A HEAD borrows its prefix, so concurrent
+/// page loads never allocate or copy their own HTML response.
+pub(super) fn console_response(head: bool) -> &'static [u8] {
+    static RESPONSE: LazyLock<(String, usize)> = LazyLock::new(|| {
+        let (before, id, after) = match INDEX_HTML.split_once(PAGE_ID_SLOT) {
+            Some((before, after)) => (
+                before,
+                format!(r#"<meta name="huntsman-page" content="{}">"#, *PAGE_ID),
+                after,
+            ),
+            None => (INDEX_HTML, String::new(), ""),
+        };
+        let body_len = before.len() + id.len() + after.len();
+        let mut response = response_head(200, "text/html; charset=utf-8", body_len, "");
+        let head_len = response.len();
+        response.reserve_exact(body_len);
+        response.push_str(before);
+        response.push_str(&id);
+        response.push_str(after);
+        (response, head_len)
+    });
+    let (response, head_len) = &*RESPONSE;
+    let end = if head { *head_len } else { response.len() };
+    &response.as_bytes()[..end]
+}
 
 /// The console's locator mark, as the tab icon. It is a file of its own because the page policy
 /// loads images only from this server.
