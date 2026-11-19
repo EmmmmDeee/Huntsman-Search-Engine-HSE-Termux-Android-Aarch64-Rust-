@@ -264,6 +264,61 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await ctx.close();
     }
 
+    // A transient health response must not clear a saved token or report a working server.
+    {
+      const ctx = await browser.newContext(PHONE);
+      await ctx.addInitScript(() => localStorage.setItem('hse-token', 'fixture-token'));
+      for (const [status, json] of [
+        [503, { status: 'ok', name: 'huntsman-recon', version: '0.2.0', auth: 'none' }],
+        [200, { status: 'ok', name: 'another-service', version: '0.2.0', auth: 'none' }],
+      ]) {
+        const page = await ctx.newPage();
+        await page.route('**/api/health', route => route.fulfill({ status, json }));
+        await page.goto(base + '/#/newscan', { waitUntil: 'domcontentloaded' });
+        await page.waitForFunction(() => document.getElementById('state').textContent !== 'connecting');
+        check('invalid health reports offline', (await page.textContent('#state')) === 'offline', status);
+        check('invalid health retains the saved token', await page.evaluate(() => localStorage.getItem('hse-token')) === 'fixture-token', status);
+        await page.close();
+      }
+      await ctx.close();
+    }
+
+    // Analyze pressed during an authenticated cold start must wait for health before sending.
+    {
+      const ctx = await browser.newContext(PHONE);
+      const page = await ctx.newPage();
+      let releaseHealth;
+      const holdHealth = new Promise(resolve => { releaseHealth = resolve; });
+      await page.addInitScript(() => {
+        localStorage.setItem('hse-token', 'fixture-token');
+        const fetch = window.fetch;
+        window.analysisRequests = [];
+        window.fetch = (url, options) => {
+          if (url.startsWith('/api/analyze?')) window.analysisRequests.push(options.headers.Authorization || null);
+          return fetch(url, options);
+        };
+      });
+      await page.route('**/api/health', async route => {
+        await holdHealth;
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...(await response.json()), auth: 'token' } });
+      });
+      try {
+        await page.goto(base + '/#/analyze', { waitUntil: 'domcontentloaded' });
+        await page.fill('#seeds', 'example.org');
+        await page.click('#arun');
+        const early = await page.evaluate(() => window.analysisRequests);
+        check('Analyze waits for health before sending', early.length === 0, early);
+      } finally {
+        releaseHealth();
+      }
+      await page.waitForFunction(() => !document.getElementById('arun').disabled);
+      const sent = await page.evaluate(() => window.analysisRequests);
+      check('Analyze sends one authenticated request and shows its result',
+        sent.length === 1 && sent[0] === 'Bearer fixture-token' && await page.isVisible('#aresult'), sent);
+      await ctx.close();
+    }
+
     // A tab open across an upgrade: once health names another page than the one the tab loaded,
     // the page asks to be reloaded, and Reload brings the page the server now serves.
     {

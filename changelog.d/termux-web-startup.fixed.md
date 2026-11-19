@@ -1,0 +1,1 @@
+The Web UI validates Huntsman health responses and waits for startup authentication before sending Analyze requests. Termux runtime acceptance tests the listener announced by its own process and verifies a restart on the same address.

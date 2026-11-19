@@ -179,13 +179,6 @@ else
   fail 'offline check or ledger verification failed'
 fi
 
-choose_port() {
-  if [ -n "$SERVER_PORT" ]; then
-    return
-  fi
-  SERVER_PORT=$((49152 + (($$ + $(date +%s)) % 16384)))
-}
-
 stop_server() {
   [ -n "$SERVER_PID" ] || return 0
   if kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -203,19 +196,27 @@ stop_server() {
   SERVER_PID=""
 }
 
-wait_for_health() {
-  local health_url="$1"
-  local deadline
+# Only probe an address the spawned process announced after binding it.
+wait_for_listener() {
+  local requested_port="$1"
+  local deadline line port="" health_body
+  local ready_pattern='^serving=http://127[.]0[.]0[.]1:([1-9][0-9]{0,4})/$'
   deadline=$(( $(date +%s) + SERVER_TIMEOUT_SECS ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-      tail -n 80 "$SERVER_LOG" >>"$REPORT" 2>/dev/null || true
-      return 1
+  while [ "$(date +%s)" -lt "$deadline" ] && kill -0 "$SERVER_PID" 2>/dev/null; do
+    if [ -z "$port" ]; then
+      while IFS= read -r line; do
+        if [[ "$line" =~ $ready_pattern ]]; then
+          port="${BASH_REMATCH[1]}"
+          break
+        fi
+      done < "$SERVER_LOG"
     fi
-    health_body=""
-    if health_body="$(curl --fail --silent --show-error --max-time 2 "$health_url")" \
-      && grep -q '"status"[[:space:]]*:[[:space:]]*"ok"' <<<"$health_body"; then
-      kill -0 "$SERVER_PID" 2>/dev/null || return 1
+    if [ -n "$port" ] && [ "$port" -le 65535 ] \
+      && { [ "$requested_port" -eq 0 ] || [ "$requested_port" -eq "$port" ]; } \
+      && health_body="$(curl --fail --silent --max-time 2 "http://127.0.0.1:$port/api/health")" \
+      && jq -e '.status == "ok" and .name == "huntsman-recon" and .auth == "none"' <<<"$health_body" >/dev/null 2>&1 \
+      && kill -0 "$SERVER_PID" 2>/dev/null; then
+      SERVER_PORT="$port"
       return 0
     fi
     sleep 1
@@ -377,8 +378,8 @@ verify_idle_connections() {
 }
 
 start_and_verify_server() {
-  local bind="$1"
-  local base="http://$bind"
+  local requested_port="$1"
+  local bind base
   : > "$SERVER_LOG"
 
   # The lookup it runs is kept as a saved scan; that scan goes in the disposable directory, not
@@ -386,12 +387,15 @@ start_and_verify_server() {
   (
     unset HSE_AUTH_TOKEN
     export HUNTSMAN_HOME="$WORK_DIR/home"
-    exec "$HSE_BIN" serve --bind "$bind"
+    exec "$HSE_BIN" serve --bind "127.0.0.1:$requested_port"
   ) >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
 
-  wait_for_health "$base/api/health" ||
-    fail "serve did not become healthy at $base/api/health"
+  wait_for_listener "$requested_port" ||
+    fail "spawned server did not announce a healthy loopback listener for 127.0.0.1:$requested_port"
+  bind="127.0.0.1:$SERVER_PORT"
+  base="http://$bind"
+  note "isolated_bind=$bind"
   pass "health API responds from spawned process: $base/api/health"
 
   verify_api "$base" || fail 'module/command APIs did not pass functional checks'
@@ -408,14 +412,10 @@ start_and_verify_server() {
   pass 'spawned server stops under harness control'
 }
 
-choose_port
-BIND="127.0.0.1:$SERVER_PORT"
-note "isolated_bind=$BIND"
-
-start_and_verify_server "$BIND"
+start_and_verify_server "${SERVER_PORT:-0}"
 pass 'server lifecycle pass=1'
 
-start_and_verify_server "$BIND"
+start_and_verify_server "$SERVER_PORT"
 pass 'server lifecycle pass=2 (restart)'
 
 if [ "$HOST_RUN" = 1 ]; then

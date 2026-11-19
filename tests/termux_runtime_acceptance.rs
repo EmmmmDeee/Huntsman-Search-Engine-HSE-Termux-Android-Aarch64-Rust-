@@ -1,5 +1,4 @@
 use std::fs;
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -95,16 +94,6 @@ fn harness_tools_present() -> bool {
         "CI must have every command the acceptance harness uses"
     );
     present
-}
-
-/// A free loopback port below 32768. Linux and Android hand out ephemeral ports from 32768 up,
-/// so no test that binds port 0 can take this one between this check and the harness's two binds.
-fn free_port_below_the_ephemeral_range() -> u16 {
-    let start = 20_000 + u16::try_from(std::process::id() % 10_000).unwrap();
-    (start..32_000)
-        .chain(20_000..start)
-        .find(|port| TcpListener::bind(("127.0.0.1", *port)).is_ok())
-        .expect("a free loopback port below 32768")
 }
 
 /// Runs the harness with `extra` environment, `HOME` in a scratch directory and no inherited
@@ -206,11 +195,7 @@ fn the_harness_passes_against_the_built_binary_in_host_mode() {
     if !harness_tools_present() {
         return;
     }
-    let port = free_port_below_the_ephemeral_range().to_string();
-    let (out, report) = run_harness(
-        "host",
-        &[("HSE_ACCEPTANCE_HOST", "1"), ("HSE_ACCEPTANCE_PORT", &port)],
-    );
+    let (out, report) = run_harness("host", &[("HSE_ACCEPTANCE_HOST", "1")]);
     assert!(
         out.status.success(),
         "{report}\n{}",
@@ -230,6 +215,17 @@ fn the_harness_passes_against_the_built_binary_in_host_mode() {
     ] {
         assert!(report.contains(line), "missing {line:?} in:\n{report}");
     }
+    let binds: Vec<_> = report
+        .lines()
+        .filter_map(|line| line.strip_prefix("INFO  isolated_bind="))
+        .collect();
+    let [first, second] = binds.as_slice() else {
+        panic!("expected one announced address per launch:\n{report}");
+    };
+    let first: std::net::SocketAddrV4 = first.parse().expect("IPv4 listener address");
+    let second: std::net::SocketAddrV4 = second.parse().expect("IPv4 restart address");
+    assert!(first.ip().is_loopback() && first.port() != 0);
+    assert_eq!(first, second, "the harness must verify a same-port restart");
     for device_only in [
         "TERMUX_RUNTIME_ACCEPTANCE",
         "runtime architecture is ARM64",
