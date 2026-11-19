@@ -10,7 +10,7 @@ ARG HUNTSMAN_BUILD_SHA=unknown
 ARG HUNTSMAN_SOURCE_SHA
 ENV HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}
 
-COPY Cargo.toml Cargo.lock capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
+COPY Cargo.toml Cargo.lock build.rs capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
 COPY src ./src
 # The root manifest declares xtask as a workspace member, so cargo reads its manifest and
 # source while loading the workspace. This build does not compile xtask.

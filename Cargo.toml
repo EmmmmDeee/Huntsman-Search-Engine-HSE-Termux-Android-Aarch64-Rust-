@@ -36,6 +36,13 @@ miniz_oxide = "0.9"
 # The ZIP CRC-32 each inflated APK member is checked against; already built in through ureq.
 crc32fast = "1.5"
 
+[build-dependencies]
+# Generate the provenance marker and the immutable gzip Web UI once, using the
+# same locked crates already available to the runtime.
+ring = "0.17"
+miniz_oxide = "0.9"
+crc32fast = "1.5"
+
 # Every release build uses this profile: the phone's `cargo install` (install.sh), CI's Android
 # cross-build, the portable container (Dockerfile) and the trusted xtask builds in the issue-fix
 # workflow. Thin LTO lets rustc inline across crates (serde_json, rustls) for

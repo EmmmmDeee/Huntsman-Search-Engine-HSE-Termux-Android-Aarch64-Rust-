@@ -50,3 +50,18 @@ fn every_workspace_member_is_in_the_image_build_context() {
         );
     }
 }
+
+#[test]
+fn the_container_can_run_the_web_asset_build_script() {
+    let dockerfile = fs::read_to_string("Dockerfile").expect("Dockerfile");
+    let ignore = fs::read_to_string(".dockerignore").expect(".dockerignore");
+    assert!(
+        dockerfile.lines().any(|line| line.starts_with("COPY ")
+            && line.split_whitespace().any(|word| word == "build.rs")),
+        "the Dockerfile must copy the root build script"
+    );
+    assert!(
+        ignore.lines().any(|line| line == "!build.rs"),
+        ".dockerignore must allow build.rs into the build context"
+    );
+}
