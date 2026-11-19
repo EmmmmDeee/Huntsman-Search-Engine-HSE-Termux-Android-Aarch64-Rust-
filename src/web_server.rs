@@ -19,6 +19,7 @@
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -1277,7 +1278,7 @@ fn test_config(bind: SocketAddr, bearer_token: Option<&str>) -> ServeConfig {
 /// The bytes to write for one request that uploaded no file.
 #[cfg(test)]
 fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
-    respond_with(request, None, config, routes)
+    respond_with(request, None, config, routes).into_owned()
 }
 
 /// The bytes to write for one request and the file it uploaded, if any: text for every answer but
@@ -1288,7 +1289,7 @@ fn respond_with(
     upload: Option<&Upload>,
     config: &ServeConfig,
     routes: &Routes,
-) -> Vec<u8> {
+) -> Cow<'static, [u8]> {
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -1296,18 +1297,23 @@ fn respond_with(
             "request too large\n",
             false,
         )
-        .into_bytes();
+        .into_bytes()
+        .into();
     }
 
     if request == "REQUEST_TIMEOUT" {
-        return response(408, "text/plain; charset=utf-8", "request timeout\n", false).into_bytes();
+        return response(408, "text/plain; charset=utf-8", "request timeout\n", false)
+            .into_bytes()
+            .into();
     }
 
     let Some(parsed) = parse_request(request) else {
-        return response(400, "text/plain; charset=utf-8", "bad request\n", false).into_bytes();
+        return response(400, "text/plain; charset=utf-8", "bad request\n", false)
+            .into_bytes()
+            .into();
     };
     let mut bytes = route(&parsed, upload, config, routes);
-    if parsed.method == Method::Head {
+    if let (Method::Head, Cow::Owned(bytes)) = (parsed.method, &mut bytes) {
         if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
             bytes.truncate(end + 4);
         }
@@ -1473,7 +1479,7 @@ fn route(
     upload: Option<&Upload>,
     config: &ServeConfig,
     routes: &Routes,
-) -> Vec<u8> {
+) -> Cow<'static, [u8]> {
     if !host_allowed(parsed, config) {
         return response(
             403,
@@ -1481,7 +1487,8 @@ fn route(
             "host not allowed\n",
             parsed.method == Method::Head,
         )
-        .into_bytes();
+        .into_bytes()
+        .into();
     }
 
     if parsed.transfer_encoding {
@@ -1491,7 +1498,8 @@ fn route(
             "send a request body with a Content-Length, not a Transfer-Encoding\n",
             false,
         )
-        .into_bytes();
+        .into_bytes()
+        .into();
     }
 
     if parsed.method == Method::Other || parsed.method == Method::Post && !takes_post(parsed.path) {
@@ -1501,22 +1509,27 @@ fn route(
             "method not allowed\n",
             false,
         )
-        .into_bytes();
+        .into_bytes()
+        .into();
     }
 
     let head = parsed.method == Method::Head;
     if protected_path(parsed.path) && !authorized(parsed, config) {
-        return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head).into_bytes();
+        return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head)
+            .into_bytes()
+            .into();
     }
 
     if ScanApi::handles(parsed.path) {
-        return scans_response(parsed, routes.scans.as_ref());
+        return scans_response(parsed, routes.scans.as_ref()).into();
     }
     if parsed.path == BLUEPRINT_PATH {
-        return blueprint_response(parsed.query, head);
+        return blueprint_response(parsed.query, head).into();
+    }
+    if matches!(parsed.path, "/" | "/index.html") {
+        return console_response(head).into();
     }
     let text = match parsed.path {
-        "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
         "/api/health" => health_response(config, head),
         "/api/modules" => {
             let body = serde_json::to_string_pretty(&serde_json::json!({
@@ -1569,7 +1582,7 @@ fn route(
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
     };
-    text.into_bytes()
+    text.into_bytes().into()
 }
 
 /** Render the complete case dossier on loopback only; never expose local case material on a public bind. */
@@ -1639,7 +1652,7 @@ use analysis::{
 };
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
-use page::{FAVICON_SVG, PAGE, PAGE_ID};
+use page::{FAVICON_SVG, PAGE_ID, console_response};
 pub(crate) use page::{hash_source, inline_block};
 use response::{UNAUTHORIZED, json_error, json_ok, response, response_bytes};
 use settings::keys_response;
