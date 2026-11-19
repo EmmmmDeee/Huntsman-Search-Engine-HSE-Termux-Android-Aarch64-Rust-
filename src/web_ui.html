@@ -374,10 +374,10 @@ $('token').onchange=()=>health();
 function headers(extra){const h=Object.assign({},extra);if(needsToken&&token)h.Authorization='Bearer '+token;return h}
 async function call(path,extra,opts){const r=await fetch(path,Object.assign({headers:headers(extra),cache:'no-store'},opts));const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
 const reason=({text,body})=>(body&&body.error)||text.trim();
-const unreachable=e=>{health();return 'Huntsman did not answer at '+location.host+' ('+e.message+'). On the phone, start it in Termux with: huntsman start'};
+const unreachable=e=>{health();return 'Huntsman at '+location.host+' did not answer ('+e.message+'). In Termux, run huntsman start'};
 function askToken(){
   needsToken=true;$('tokenpanel').hidden=false;$('authnote').hidden=false;
-  $('authnote').textContent=token?'The server refused this token. Enter the exact HSE_AUTH_TOKEN under About.':'This server is on a public address and needs its HSE_AUTH_TOKEN. Enter it under About.';
+  $('authnote').textContent=(token?'Token rejected. ':'Authentication required. ')+'Enter HSE_AUTH_TOKEN under About.';
 }
 const refused=res=>{if(res.r.status===401){askToken();return true}return false};
 const LH={'X-Huntsman-Lookup':'1'};
@@ -450,15 +450,21 @@ async function health(){
   let open=true;
   try{
     const res=await call('/api/health'),b=res.body;$('health').textContent=res.text;
-    if(b){
-      if(PAGE_ID&&b.page&&b.page!==PAGE_ID)$('upgraded').hidden=false;
-      $('ver').textContent='v'+b.version;$('sversion').textContent=b.version;
-      $('sauth').textContent=b.auth==='token'?'token':'none';
-      if(b.auth==='token'){
-        needsToken=true;$('tokenpanel').hidden=false;
-        if(!token){askToken();open=false}else if(refused(await call('/api/command',{},{method:'HEAD'})))open=false;
+    if(!res.r.ok||b?.status!=='ok'||b.name!=='huntsman-recon'||typeof b.version!=='string'||!b.version||!['none','token'].includes(b.auth))
+      throw new Failure('Invalid health response (HTTP '+res.r.status+')');
+    if(PAGE_ID&&b.page&&b.page!==PAGE_ID)$('upgraded').hidden=false;
+    $('ver').textContent='v'+b.version;$('sversion').textContent=b.version;
+    $('sauth').textContent=b.auth;
+    needsToken=b.auth==='token';$('tokenpanel').hidden=!needsToken;
+    if(needsToken){
+      if(!token){askToken();open=false}
+      else{
+        const probe=await call('/api/command',{},{method:'HEAD'});
+        if(refused(probe))open=false;
+        else if(!probe.r.ok)throw new Failure('Token check failed (HTTP '+probe.r.status+')');
       }
-      else{needsToken=false;token='';store.set('hse-token','');$('tokenpanel').hidden=true}
+    }else{
+      token='';store.set('hse-token','');
     }
   }catch(e){
     $('health').textContent=String(e);pill('offline','bad');
@@ -470,6 +476,7 @@ async function health(){
 }
 async function details(){
   detailed=true;
+  await started;
   await Promise.all([['modules','/api/modules'],['command','/api/command']].map(async([id,path])=>{
     try{
       const res=await call(path);$(id).textContent=res.text;
@@ -1332,6 +1339,7 @@ async function exportFile(format){
   await fetchFile(base()+'/export?'+p,'huntsman-'+sid+(type?'-'+type:'')+'.'+format);
 }
 async function fetchFile(path,name){
+  await started;
   let r;
   try{r=await fetch(path,{headers:headers(LH),cache:'no-store'})}catch(e){throw new Failure(unreachable(e))}
   if(!r.ok){const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}refused({r});throw new Failure('HTTP '+r.status+' · '+reason({text,body}))}
@@ -1501,11 +1509,11 @@ $('analyze').onsubmit=async ev=>{
   $('arun').disabled=true;$('aerror').hidden=true;$('aresult').hidden=true;alast=null;sess.set('hse-analysis','');
   $('arun').textContent='Analyzing…';
   try{
-    const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
-    if(!res.r.ok||!body){refused(res);fail('aerror','HTTP '+res.r.status+' · '+reason(res));return}
+    const body=await api('/api/analyze?'+new URLSearchParams({seeds}));
+    if(!body)throw new Failure('Invalid analysis response');
     const saved={seeds,at:Date.now(),body};
     showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
-  }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
+  }catch(e){fail('aerror',e.message)}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
 };
 let rhinserCatalog=null,rhinserPending=null;
 function renderRhinserCatalog(){
@@ -1695,7 +1703,6 @@ function liveStream(){
   if(stream||!window.EventSource)return;
   try{stream=new EventSource('/api/events')}catch(_){return}
   stream.onmessage=nudge;stream.addEventListener('resync',nudge);
-  stream.onerror=()=>{};// the browser reconnects on its own after the bounded stream closes
 }
 const started=health();route();liveStream();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
