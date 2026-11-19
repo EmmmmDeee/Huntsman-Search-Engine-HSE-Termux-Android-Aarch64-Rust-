@@ -1200,6 +1200,39 @@ mod tests {
     }
 
     #[test]
+    fn rendering_probe_metadata_never_reconstructs_a_credential() {
+        for (key, plan) in [
+            ("fixture-provider-key", "fixture-\tprovider-key"),
+            ("fixture provider key", "fixture\tprovider key"),
+            ("fixture-provider-key", "Fixture \u{202e}Plan"),
+        ] {
+            let keys = Keys::parse(&format!("HUNTSMAN_SHODAN_KEY={key}\n")).expect("keys");
+            let transport = FakeTransport {
+                response: Response {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: serde_json::to_vec(&serde_json::json!({
+                        "plan": plan,
+                        "query_credits": 7,
+                    }))
+                    .expect("fixture"),
+                    truncated: false,
+                },
+                seen: RefCell::new(Vec::new()),
+            };
+
+            let rendered = render_probed(&keys, &transport);
+            assert!(
+                !rendered.contains(key),
+                "a synthetic credential reached the report"
+            );
+            assert!(rendered.contains("provider=Shodan\tstate=configured\tprobe=valid"));
+            assert!(rendered.contains("probe.query_credits=7"));
+            assert!(!rendered.contains("probe.plan="));
+        }
+    }
+
+    #[test]
     fn a_plain_401_renders_the_hibp_key_rejected() {
         // Without a challenge page a 401 is a rejected key, which `doctor --probe` fails on.
         let keys = Keys::parse("HUNTSMAN_HIBP_KEY=fake-hibp-key-never-render\n").expect("keys");

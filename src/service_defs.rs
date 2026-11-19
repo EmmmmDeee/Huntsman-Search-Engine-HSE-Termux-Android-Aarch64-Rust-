@@ -390,13 +390,13 @@ pub fn probe_service<T: Transport + ?Sized>(
         )
     })?;
     let verdict = classify_probe_response(service, &response);
-    // Only release allowlisted metadata from an authenticated response. A malicious
-    // upstream could echo the submitted key in a free-form plan/subscription field;
-    // never let such a value cross the diagnostic boundary.
+    // Only release allowlisted metadata that is already safe to display as one
+    // line. Reject the whole value if formatting could change it or it echoes the key.
     let evidence = if verdict == ProbeVerdict::Valid {
+        let key = secret.expose();
         extract_probe_evidence(service.name, &response)
             .into_iter()
-            .filter(|(_, value)| !value.contains(secret.expose()))
+            .filter(|(_, value)| !value.contains(key) && crate::textnorm::one_line(value) == *value)
             .collect()
     } else {
         Vec::new()
