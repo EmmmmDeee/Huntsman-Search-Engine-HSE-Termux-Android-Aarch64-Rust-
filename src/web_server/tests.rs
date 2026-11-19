@@ -890,7 +890,7 @@ fn the_page_and_health_name_one_page_id_and_the_policy_still_matches() {
     assert!(
         PAGE_ID.len() == 16 && PAGE_ID.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "{}",
-        *PAGE_ID
+        PAGE_ID
     );
     assert!(INDEX_HTML.contains(PAGE_ID_SLOT), "the page keeps the slot");
     let page = response_for_request("GET / HTTP/1.1\r\n\r\n", None, loopback_bind());
@@ -898,7 +898,7 @@ fn the_page_and_health_name_one_page_id_and_the_policy_still_matches() {
     assert!(
         body.contains(&format!(
             r#"<meta name="huntsman-page" content="{}">"#,
-            *PAGE_ID
+            PAGE_ID
         )),
         "the served page carries its id"
     );
@@ -914,7 +914,7 @@ fn the_page_and_health_name_one_page_id_and_the_policy_still_matches() {
     let health = health.split("\r\n\r\n").nth(1).unwrap_or_default();
     let health: serde_json::Value = serde_json::from_str(health.trim_end())
         .unwrap_or_else(|e| panic!("health is not JSON: {e}"));
-    assert_eq!(health["page"], PAGE_ID.as_str());
+    assert_eq!(health["page"], PAGE_ID);
 }
 
 /// Every `200 OK` JSON answer shares one content type and ends in exactly one newline,
@@ -4197,4 +4197,78 @@ fn rhinser_native_web_import_is_bounded_guarded_and_unverified() {
         body,
     );
     assert!(cross_site.starts_with("HTTP/1.1 403"), "{cross_site}");
+}
+
+#[test]
+fn the_public_console_negotiates_gzip_without_changing_the_page() {
+    let config = test_config(loopback_bind(), None);
+    let request = |method: &str, path: &str, fields: &str| {
+        respond(
+            &format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n{fields}\r\n"),
+            &config,
+            &Routes::default(),
+        )
+    };
+    let plain = text(request("GET", "/", ""));
+    let compressed = request("GET", "/index.html", "Accept-Encoding: br, gzip\r\n");
+    let end = compressed
+        .windows(4)
+        .position(|line| line == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let head = std::str::from_utf8(&compressed[..end]).unwrap();
+    let body = &compressed[end..];
+    assert_eq!(header(head, "Content-Encoding"), Some("gzip"));
+    assert_eq!(header(head, "Vary"), Some("Accept-Encoding"));
+    assert_eq!(header(&plain, "Vary"), Some("Accept-Encoding"));
+    assert_eq!(header(head, "Cache-Control"), Some("no-store"));
+    assert_eq!(
+        header(head, "Content-Security-Policy"),
+        header(&plain, "Content-Security-Policy")
+    );
+    assert_eq!(
+        header(head, "Content-Length")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap(),
+        body.len()
+    );
+    assert_eq!(
+        request("HEAD", "/index.html", "Accept-Encoding: br, gzip\r\n"),
+        compressed[..end]
+    );
+    let decoded = miniz_oxide::inflate::decompress_to_vec(&body[10..body.len() - 8]).unwrap();
+    assert_eq!(decoded, plain.split_once("\r\n\r\n").unwrap().1.as_bytes());
+    assert!(body.len() * 2 < decoded.len());
+    assert_eq!(
+        u32::from_le_bytes(body[body.len() - 8..body.len() - 4].try_into().unwrap()),
+        crc32fast::hash(&decoded),
+    );
+
+    for fields in [
+        "Accept-Encoding: br\r\n",
+        "Accept-Encoding: gzip;q=0, *;q=1\r\n",
+        "Accept-Encoding: gzip;q=0.2, identity;q=0.8\r\n",
+        "Accept-Encoding: gzip;q=1.001\r\n",
+        "Accept-Encoding: gzip\r\nAccept-Encoding: gzip;q=0\r\n",
+    ] {
+        assert_eq!(text(request("GET", "/", fields)), plain);
+    }
+    for fields in [
+        "Accept-Encoding: GZIP;Q=0.001\r\n",
+        "Accept-Encoding: *;q=1\r\n",
+        "Accept-Encoding: identity;q=0.25\r\nAccept-Encoding: gzip;q=0.8\r\n",
+    ] {
+        assert_eq!(request("GET", "/", fields), compressed);
+    }
+
+    let no_encoding = text(request(
+        "GET",
+        "/",
+        "Accept-Encoding: identity;q=0, gzip;q=0\r\n",
+    ));
+    assert!(no_encoding.starts_with("HTTP/1.1 406 Not Acceptable\r\n"));
+    let health = text(request("GET", "/api/health", "Accept-Encoding: gzip\r\n"));
+    assert_eq!(header(&health, "Content-Encoding"), None);
+    assert_eq!(header(&health, "Vary"), None);
 }

@@ -33,7 +33,7 @@ fn job(wf: &str, name: &str) -> String {
 }
 
 #[test]
-fn root_installer_changes_trigger_release_dry_run_on_pull_requests() {
+fn root_build_and_installer_changes_trigger_release_dry_run_on_pull_requests() {
     let wf = release();
     let paths = wf
         .split_once("  pull_request:\n    paths:\n")
@@ -43,6 +43,7 @@ fn root_installer_changes_trigger_release_dry_run_on_pull_requests() {
         .expect("pull_request paths must precede permissions")
         .0;
     for required in [
+        "      - \"build.rs\"",
         "      - \"install.sh\"",
         "      - \"tests/root_installer.rs\"",
     ] {

@@ -91,6 +91,7 @@ pub(super) fn response_head(
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        406 => "Not Acceptable",
         408 => "Request Timeout",
         409 => "Conflict",
         413 => "Payload Too Large",

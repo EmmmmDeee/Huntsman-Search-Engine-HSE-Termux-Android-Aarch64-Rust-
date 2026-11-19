@@ -1145,6 +1145,7 @@ struct ParsedRequest<'a> {
     host: Option<&'a str>,
     authorization: Option<&'a str>,
     lookup_header: bool,
+    page_encodings: PageEncodings,
     sec_fetch_site: Option<&'a str>,
     /// A request body was announced: a non-zero `Content-Length` or any `Transfer-Encoding`.
     has_body: bool,
@@ -1173,6 +1174,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let mut host = None;
     let mut authorization = None;
     let mut lookup_header = false;
+    let mut page_encodings = PageEncodings::default();
     let mut sec_fetch_site = None;
     let mut has_body = false;
     let mut transfer_encoding = false;
@@ -1200,6 +1202,10 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             authorization = Some(value.trim());
         } else if name.trim().eq_ignore_ascii_case(LOOKUP_HEADER) {
             lookup_header = value.trim() == "1";
+        } else if matches!(path, "/" | "/index.html")
+            && name.eq_ignore_ascii_case("accept-encoding")
+        {
+            page_encodings.add(value);
         } else if name.eq_ignore_ascii_case("sec-fetch-site") {
             sec_fetch_site = Some(value.trim());
         } else if name.eq_ignore_ascii_case("content-length") {
@@ -1229,6 +1235,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         host,
         authorization,
         lookup_header,
+        page_encodings,
         sec_fetch_site,
         has_body,
         transfer_encoding,
@@ -1427,7 +1434,7 @@ fn health_response(config: &ServeConfig, head: bool) -> String {
         name: "huntsman-recon",
         version: env!("CARGO_PKG_VERSION"),
         build_sha: crate::diagnostics::embedded_build_sha(),
-        page: &PAGE_ID,
+        page: PAGE_ID,
         auth: if config.bearer_token.is_some() {
             "token"
         } else {
@@ -1515,8 +1522,10 @@ fn route(
     if parsed.path == BLUEPRINT_PATH {
         return blueprint_response(parsed.query, head);
     }
+    if matches!(parsed.path, "/" | "/index.html") {
+        return page_response(parsed.page_encodings, head);
+    }
     let text = match parsed.path {
-        "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
         "/api/health" => health_response(config, head),
         "/api/modules" => {
             let body = serde_json::to_string_pretty(&serde_json::json!({
@@ -1639,7 +1648,7 @@ use analysis::{
 };
 use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
-use page::{FAVICON_SVG, PAGE, PAGE_ID};
+use page::{FAVICON_SVG, PAGE_ID, PageEncodings, page_response};
 pub(crate) use page::{hash_source, inline_block};
 use response::{UNAUTHORIZED, json_error, json_ok, response, response_bytes};
 use settings::keys_response;

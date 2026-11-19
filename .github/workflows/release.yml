@@ -73,6 +73,7 @@ on:
       - ".github/actions/setup-ndk-aarch64/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "build.rs"
       - "capabilities.json"
       - "benchmarks.json"
       - "Dockerfile"
