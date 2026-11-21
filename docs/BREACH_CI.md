@@ -4,16 +4,16 @@ This is a **local, offline planner and evidence-metadata ranker**. It does not m
 
 ## Commands
 
-\`\`\`sh
+```sh
 huntsman-recon breach-ci plan email alice@example.org --purpose own-account
 huntsman-recon breach-ci plan username John.Doe --purpose authorized-engagement
 huntsman-recon breach-ci plan domain example.org --purpose authorized-engagement
 huntsman-recon breach-ci rank findings.json
-\`\`\`
+```
 
-The first three commands generate bounded exact provider-check proposals sorted by **investigative priority**. They return \`confidence_index: null\`, \`state: not_queried\`. This is deliberate: a source not queried cannot establish a finding or CI score. The planner uses the existing DeHashed selector validation, avoids wildcards and multi-field sweeps, and uses \`username_variants::variants\` for at most 12 deterministic username variants. Each variant must still pass DeHashed's exact-selector rules. Email local parts are **not** mutated. A domain is **not** expanded to guessed personal accounts.
+The first three commands generate bounded exact provider-check proposals sorted by **investigative priority**. They return `confidence_index: null`, `state: not_queried`. This is deliberate: a source not queried cannot establish a finding or CI score. The planner uses the existing DeHashed selector validation, avoids wildcards and multi-field sweeps, and uses `username_variants::variants` for at most 12 deterministic username variants. Each variant must still pass DeHashed's exact-selector rules. Email local parts are **not** mutated. A domain is **not** expanded to guessed personal accounts.
 
-For actual authorised searches, use the existing \`huntsman-recon exposure ADDRESS\` or \`huntsman-recon dehashed search --email|--username|--domain VALUE --purpose PURPOSE\` paths, honouring credentials, credits, egress controls and provider terms. The exposure command already folds configured breach providers into one query chain; do not run duplicated paid provider queries merely because a plan lists several sources.
+For actual authorised searches, use the existing `huntsman-recon exposure ADDRESS` or `huntsman-recon dehashed search --email|--username|--domain VALUE --purpose PURPOSE` paths, honouring credentials, credits, egress controls and provider terms. The exposure command already folds configured breach providers into one query chain; do not run duplicated paid provider queries merely because a plan lists several sources.
 
 ## Conditional OSINT synergy
 
@@ -23,7 +23,7 @@ The planner's source order is a conditional **search priority**, not an empirica
 
 ## Ranked evidence: JSON input
 
-\`\`\`json
+```json
 [
   {
     "id": "case-a",
@@ -44,7 +44,7 @@ The planner's source order is a conditional **search priority**, not an empirica
     "contradicted": true
   }
 ]
-\`\`\`
+```
 
 Only **opaque case IDs** and **opaque original-dataset lineage IDs** are accepted, never emails, names, passwords, password hashes, phone numbers, addresses or raw breached records. Source ancestry must be manually reviewed before inclusion; a source label is not proof of independence. Input is a regular file of at most 256 KiB; at most 128 findings with up to eight original-lineage ID entries per finding. The command rejects duplicate case IDs and unknown JSON fields.
 
@@ -58,15 +58,15 @@ The **CI** is an intentionally uncalibrated ordinal evidence-quality heuristic, 
 - Fuzzy/ambiguous matching caps CI at 55.
 - Secondary-only observations cap CI at 70.
 
-The maximum achievable score is 94, but **no score automatically upgrades the evidence state**. Source-root independence, authenticity, recency and identity cannot be proved from this metadata alone. All ranked results explicitly report \`operator_asserted_not_independently_verified\`. CI ordering is descending; ties are broken by opaque ID to guarantee reproducibility.
+The maximum achievable score is 94, but **no score automatically upgrades the evidence state**. Source-root independence, authenticity, recency and identity cannot be proved from this metadata alone. All ranked results explicitly report `operator_asserted_not_independently_verified`. CI ordering is descending; ties are broken by opaque ID to guarantee reproducibility.
 
 ## Verification and limitations
 
-\`\`\`sh
+```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked breach_ci
 cargo test --workspace --locked
-\`\`\`
+```
 
 This feature currently supports offline planning and ranking only, not live multi-provider fuzzy search, API-key discovery, or automatic proof of source independence. The HSE CI runner must execute and pass against the exact feature commit before merge; native Android AArch64 testing is also required.
