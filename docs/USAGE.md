@@ -175,6 +175,7 @@ cargo run -- credential-status --probe     # opt-in live checks for configured p
 cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a URL for options
 cargo run -- hibp help                   # HIBP subcommands; offline
 cargo run -- dehashed help               # DeHashed subcommands; offline (search needs a key and --purpose); docs/DEHASHED.md has the contract
+cargo run -- breach-ci plan domain example.org --purpose security-research  # offline, bounded, no API queries; see docs/BREACH_CI.md
 cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people-discover --help     # offline help; a search sends the full name to Bing, Brave, Mojeek and Open Library
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
