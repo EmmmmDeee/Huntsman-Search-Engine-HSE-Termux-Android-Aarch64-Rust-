@@ -407,6 +407,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "FBI wanted notices that name every word of the person's name",
     },
     ReachableModule {
+        name: "crossref_works",
+        command: "public-osint papers QUERY | public-osint dossier QUERY",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1593"],
+        description: "Crossref DOI publication metadata discovery; results are not author identity proof",
+    },
+    ReachableModule {
         name: "email_parse",
         command: "email ADDR",
         access: "offline",
