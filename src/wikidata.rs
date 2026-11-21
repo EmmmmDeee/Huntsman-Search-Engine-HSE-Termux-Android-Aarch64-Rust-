@@ -11,6 +11,8 @@
 //! references) is retained within explicit per-statement and per-item bounds; omissions are
 //! counted. Deprecated or qualified statements remain evidence, but cannot seed live pivots.
 //!
+//! Family and life-event claims are recorded as candidate attributes with their source statement
+//! envelopes intact; relatives and places are never automatic identity pivots.
 //! A curated set of statements also becomes its own pivot entity, so a Wikidata lookup seeds the
 //! rest of the engine: the official website (`P856`) is a [`EntityKind::Domain`], a coordinate
 //! location (`P625`) is a [`EntityKind::Coordinates`] the geocoder can reverse, and external
@@ -110,6 +112,59 @@ const PROPERTIES: &[Property] = &[
     Property {
         pid: "P159",
         attr: "headquarters",
+        pivot: Pivot::None,
+    },
+    // Wikidata family and life-event statements are source-attributed candidates.
+    // QIDs stay attributes on the subject: they are never automatic identity
+    // pivots or independent corroboration of a real-world relationship.
+    Property {
+        pid: "P22",
+        attr: "father",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P25",
+        attr: "mother",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P26",
+        attr: "spouse",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P40",
+        attr: "child",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P3373",
+        attr: "sibling",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P1038",
+        attr: "relative",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P53",
+        attr: "family",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P19",
+        attr: "place_of_birth",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P20",
+        attr: "place_of_death",
+        pivot: Pivot::None,
+    },
+    Property {
+        pid: "P119",
+        attr: "place_of_burial",
         pivot: Pivot::None,
     },
     Property {
@@ -1183,6 +1238,81 @@ mod tests {
         entity(&report, &EntityKind::Username, "janeexample");
         entity(&report, &EntityKind::Url, "https://viaf.org/viaf/999999/");
         assert!(report.outcome.kind.is_accepted());
+    }
+
+    #[test]
+    fn genealogy_claims_are_candidates_not_automatic_people_or_places() {
+        let item = r#"{
+          "type":"item","id":"Q42","labels":{"en":"Example Historian"},
+          "statements":{
+            "P31":[{"value":{"type":"value","content":"Q5"}}],
+            "P22":[{"value":{"type":"value","content":"Q1"}}],
+            "P25":[{"value":{"type":"value","content":"Q2"}}],
+            "P26":[
+              {"rank":"normal","value":{"type":"value","content":"Q3"}},
+              {"rank":"deprecated","value":{"type":"value","content":"Q997"}},
+              {"rank":"normal","value":{"type":"value","content":"Q998"},
+               "qualifiers":{"P580":[{"value":{"type":"value",
+                "content":{"time":"+1870-01-01T00:00:00Z"}}}]},
+               "references":[{"parts":{"P854":[{"value":{"type":"value",
+                "content":"https://example.org/historical-record"}}]}}]}
+            ],
+            "P40":[{"value":{"type":"value","content":"Q4"}}],
+            "P3373":[{"value":{"type":"value","content":"Q5"}}],
+            "P1038":[{"value":{"type":"value","content":"Q6"}}],
+            "P53":[{"value":{"type":"value","content":"Q7"}}],
+            "P19":[{"value":{"type":"value","content":"Q8"}}],
+            "P20":[{"value":{"type":"value","content":"Q9"}}],
+            "P119":[{"value":{"type":"value","content":"Q10"}}]
+          }
+        }"#;
+        let report = report_of(item, "Q42");
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(
+            report.entities.len(),
+            1,
+            "family QIDs must not become automatically corroborated people or places"
+        );
+        let person = entity(&report, &EntityKind::Person, "Example Historian");
+        let evidence = &person.evidence[0];
+        for (attribute, value) in [
+            ("father", "Q1"),
+            ("mother", "Q2"),
+            ("spouse", "Q3"),
+            ("child", "Q4"),
+            ("sibling", "Q5"),
+            ("relative", "Q6"),
+            ("family", "Q7"),
+            ("place_of_birth", "Q8"),
+            ("place_of_death", "Q9"),
+            ("place_of_burial", "Q10"),
+        ] {
+            assert_eq!(
+                evidence.attributes.get(attribute).map(String::as_str),
+                Some(value),
+                "unexpected candidate for {attribute}"
+            );
+        }
+        assert_eq!(
+            evidence.attr_values("spouse").collect::<Vec<_>>(),
+            ["Q3"],
+            "deprecated and temporally qualified relationships cannot become unqualified attributes"
+        );
+        let raw_claims: Vec<_> = evidence.attr_values("claim").collect();
+        assert!(raw_claims.contains(&"P26=Q997"));
+        assert!(raw_claims.contains(&"P26=Q998"));
+        let envelopes: Vec<_> = evidence.attr_values("statement_json").collect();
+        assert!(envelopes.iter().any(|raw| {
+            raw.starts_with("P26=")
+                && raw.contains("deprecated")
+                && raw.contains("Q997")
+        }));
+        assert!(envelopes.iter().any(|raw| {
+            raw.starts_with("P26=")
+                && raw.contains("P580")
+                && raw.contains("references")
+                && raw.contains("Q998")
+        }));
     }
 
     #[test]
