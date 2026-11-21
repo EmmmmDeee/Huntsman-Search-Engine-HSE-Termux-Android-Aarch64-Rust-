@@ -26,9 +26,9 @@ All booleans and claimed original roots are operator-supplied metadata, not exte
 1. Reject invalid schema, unknown fields, missing nodes, self-links and uncited or unsafe URLs.
 2. Deduplicate identical observations, retaining every distinct complete source URL and original-root ID.
 3. Group explicit directed relations by endpoints and relation type. Never collapse different people based on name similarity.
-4. Keep contradicted relation groups in disputed_relations, but do not let them connect clusters.
-5. Compute connected components over remaining source-claimed links. Starting at the lowest stable node ID, breadth-first traverse every known link, recording the exact parent, relation and hop for each reached node. Traversal is undirected for exploration only: recorded relation direction remains unchanged.
-6. Rank components by their highest constituent Confidence Index (CI), descending, with stable ID tie-breaks. Include all node names, source URLs, evidence details, recursive paths and explicit uncertainties.
+4. Keep contradicted relation groups in disputed_relations and weak co-mentions or generic links in non_connecting_leads; neither category connects clusters.
+5. Compute connected components only over specific, non-disputed source-claimed association, directorship, membership, use or ownership links. Starting at the lowest stable node ID, breadth-first traverse every known link, recording the exact parent, relation and hop for each reached node. Traversal is undirected for exploration only: recorded relation direction remains unchanged.
+6. Rank relationships and components by uncalibrated Confidence Index (CI), descending, with stable ID tie-breaks. Include all node names, source URLs, evidence details, recursive paths and explicit uncertainties.
 
 The existing breach CI heuristic is an uncalibrated evidence-review priority, not a probability or verification verdict. No two-hop path is converted into a new direct relationship. An isolated name has no link CI. Different websites republishing one dataset are not independent corroboration.
 
