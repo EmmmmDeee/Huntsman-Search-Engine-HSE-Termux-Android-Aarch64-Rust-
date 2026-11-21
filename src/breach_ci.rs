@@ -9,15 +9,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::dehashed::{Field, Purpose, QueryError, Selector};
 use crate::username_variants;
+use crate::people_discovery;
 
 pub const USAGE: &str = concat!(
-    "breach-ci plan email|username|domain VALUE --purpose own-account|authorized-engagement|incident-response|security-research\n",
+    "breach-ci plan email|username|domain|name VALUE --purpose own-account|authorized-engagement|incident-response|security-research\n",
+    "breach-ci names FILE.txt --purpose own-account|authorized-engagement|incident-response\n",
     "breach-ci rank FILE.json\n",
     "Plan bounded exact provider checks plus conditional public OSINT pivots offline. ",
     "Rank analyst-supplied non-secret evidence metadata by heuristic Confidence Index (0-100). ",
     "No network activity, breach records, credential values or automatic identity attribution."
 );
 
+pub const MAX_FULL_NAMES: usize = 128;
 const MAX_FINDINGS: usize = 128;
 const MAX_ORIGINS: usize = 8;
 const MAX_OPAQUE_ID: usize = 64;
@@ -237,6 +240,106 @@ pub fn plan(field: Field, value: &str, purpose: Purpose) -> Result<Plan, QueryEr
     })
 }
 
+/// One deterministic, locally validated name-only candidate batch.
+/// A returned person-name match is a lead, never an identity or breach match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NameBatch {
+    pub name_count: usize,
+    pub duplicate_names: usize,
+    pub plans: Vec<Plan>,
+    pub evidence_status: &'static str,
+    pub provenance_policy: &'static str,
+}
+
+/// Validate one full personal name using the same rules as people-discover.
+/// No person identifier, account, email, or breach hit is inferred from it.
+///
+/// # Errors
+/// Refuses unsafe, incomplete or out-of-scope personal-name selectors.
+pub fn plan_full_name(name: &str, purpose: Purpose) -> Result<Plan, &'static str> {
+    if purpose == Purpose::SecurityResearch {
+        return Err("a full personal name requires own-account, authorised engagement or incident-response purpose");
+    }
+    people_discovery::checked_name(name)
+        .map_err(|_| "invalid full name: use two or more alphabetic name tokens, at most 120 bytes")?;
+    let display = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut checks = Vec::with_capacity(4);
+    for (priority, provider, basis, requirement) in [
+        (100, "people-discover", "full_name_public_index_lead", "keyless; sends full name to public search indexes only upon separate execution"),
+        (90, "people", "full_name_public_register_lead", "keyless; actual name match requires validation against original records"),
+        (75, "Open Library", "full_name_bibliography_lead", "keyless; author names are not unique identifiers"),
+        (60, "public archives", "full_name_historical_lead", "separate opt-in public research; archived records can be stale"),
+    ] {
+        push_check(&mut checks, priority, provider, "full_name", &display, basis, requirement);
+    }
+    Ok(Plan {
+        purpose: purpose.as_str(),
+        field: "full_name",
+        candidate_count: 1,
+        checks,
+        osint_pivots: vec![
+            OsintPivot {
+                priority: 100,
+                capability: "public full-name source records and jurisdiction/timeframe disambiguation",
+                prerequisite: "public source containing the complete submitted name",
+                evidentiary_limit: "a common name or indexed profile cannot establish the same individual",
+            },
+            OsintPivot {
+                priority: 90,
+                capability: "independent official records with explicit entity identifiers",
+                prerequisite: "original records with grounded jurisdiction and temporal context",
+                evidentiary_limit: "multiple records or mirrored indexes may describe different namesakes",
+            },
+            OsintPivot {
+                priority: 70,
+                capability: "existing exact-selector breach checks and corroborating public OSINT",
+                prerequisite: "an independently verified, authorised email, username or controlled domain",
+                evidentiary_limit: "never derive email addresses, handles, breach affiliation or identity solely from a full name",
+            },
+        ],
+        evidence_status: "not_queried",
+        ci_policy: "no CI for name-only leads; name similarity is not identity; exact breach selectors require independently justified authorisation",
+    })
+}
+
+/// Produce plans for every unique valid full name in a bounded local file.
+/// Blank lines and comments are ignored; duplicate canonical names collapse.
+/// No query is made and no evidence is promoted.
+///
+/// # Errors
+/// Fails closed on any invalid name or more than 128 distinct names.
+pub fn plan_full_names(input: &str, purpose: Purpose) -> Result<NameBatch, &'static str> {
+    let mut seen = BTreeSet::new();
+    let mut plans = Vec::new();
+    let mut duplicate_names = 0;
+    for line in input.lines() {
+        let name = line.trim();
+        if name.is_empty() || name.starts_with('#') {
+            continue;
+        }
+        let canonical = people_discovery::checked_name(line)
+            .map_err(|_| "name-list contains an invalid full personal name")?;
+        if !seen.insert(canonical) {
+            duplicate_names += 1;
+            continue;
+        }
+        if plans.len() == MAX_FULL_NAMES {
+            return Err("name-list exceeds 128 unique full names");
+        }
+        plans.push(plan_full_name(line, purpose)?);
+    }
+    if plans.is_empty() {
+        return Err("name-list contains no valid full names");
+    }
+    Ok(NameBatch {
+        name_count: plans.len(),
+        duplicate_names,
+        plans,
+        evidence_status: "not_queried",
+        provenance_policy: "operator-supplied names only; no namesake merge, data breach search or independent identity confirmation",
+    })
+}
+
 /// Operator-provided, non-secret metadata about one purported finding. Origin
 /// identifiers must name ORIGINAL dataset lineages, not mirrored websites or
 /// collector labels. This input assertion cannot authenticate those lineages.
@@ -346,6 +449,45 @@ pub fn rank(inputs: Vec<FindingInput>) -> Result<Ranking, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_name_plans_preserve_complete_names_without_breach_attribution() {
+        let plan = plan_full_name("Anne Marie O'Neill", Purpose::AuthorizedEngagement);
+        assert!(plan.is_ok(), "validity depends on shared name checker");
+        let plan = plan.unwrap();
+        assert_eq!(plan.field, "full_name");
+        assert_eq!(plan.candidate_count, 1);
+        assert_eq!(plan.checks[0].selector, "Anne Marie O'Neill");
+        assert!(plan.checks.iter().all(|check| check.state == "not_queried"));
+        assert!(plan.checks.iter().all(|check| check.confidence_index.is_none()));
+        assert!(!plan.checks.iter().any(|check| check.provider == "DeHashed"));
+    }
+
+    #[test]
+    fn name_batch_keeps_all_unique_full_names_and_counts_duplicates() {
+        let batch = plan_full_names(
+            "# reviewed scope\nJohn Albert Stephens\nJane Mary Smith\njohn albert stephens\n\n",
+            Purpose::AuthorizedEngagement,
+        )
+        .unwrap();
+        assert_eq!(batch.name_count, 2);
+        assert_eq!(batch.duplicate_names, 1);
+        assert_eq!(batch.plans[0].checks[0].selector, "John Albert Stephens");
+        assert_eq!(batch.plans[1].checks[0].selector, "Jane Mary Smith");
+    }
+
+    #[test]
+    fn name_batch_rejects_invalid_and_unsafe_name_inputs() {
+        assert!(plan_full_names("John Smith\nJane\n", Purpose::AuthorizedEngagement).is_err());
+        assert!(plan_full_names("John Smith\nJane\tSmith\n", Purpose::AuthorizedEngagement).is_err());
+        assert!(plan_full_names("John Smith\n", Purpose::SecurityResearch).is_err());
+        assert!(plan_full_names("# empty\n", Purpose::AuthorizedEngagement).is_err());
+        let huge = (0..=MAX_FULL_NAMES)
+            .map(|i| format!("Person{i} Example"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plan_full_names(&huge, Purpose::AuthorizedEngagement).is_err());
+    }
 
     #[test]
     fn fuzzy_username_edit_distance_is_bounded_and_case_insensitive() {
