@@ -30,6 +30,75 @@ fn with_file(input: &str, f: impl FnOnce(&std::path::Path) -> Output) -> Output 
 }
 
 #[test]
+fn full_name_plan_preserves_all_name_tokens_without_breach_requests() {
+    let output = run(&[
+        "breach-ci",
+        "plan",
+        "name",
+        "Jane Mary Smith",
+        "--purpose",
+        "authorized-engagement",
+    ]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["field"], "full_name");
+    assert_eq!(report["candidate_count"], 1);
+    assert_eq!(report["evidence_status"], "not_queried");
+    for check in report["checks"].as_array().unwrap() {
+        assert_eq!(check["selector"], "Jane Mary Smith");
+        assert_eq!(check["state"], "not_queried");
+        assert!(check["confidence_index"].is_null());
+        assert_ne!(check["provider"], "DeHashed");
+    }
+}
+
+#[test]
+fn all_full_names_batch_retains_names_and_deduplicates_casefolds() {
+    let input = "# authorised scope\nJohn Albert Stephens\nJane Mary Smith\njohn albert stephens\n";
+    let output = with_file(input, |path| {
+        run(&[
+            "breach-ci",
+            "names",
+            path.to_str().unwrap(),
+            "--purpose",
+            "authorized-engagement",
+        ])
+    });
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["name_count"], 2);
+    assert_eq!(report["duplicate_names"], 1);
+    assert_eq!(report["plans"][0]["checks"][0]["selector"], "John Albert Stephens");
+    assert_eq!(report["plans"][1]["checks"][0]["selector"], "Jane Mary Smith");
+}
+
+#[test]
+fn full_names_refuse_unvalidated_or_unscoped_identifiers() {
+    let invalid = with_file("Jane Mary Smith\nJohn\n", |path| {
+        run(&[
+            "breach-ci",
+            "names",
+            path.to_str().unwrap(),
+            "--purpose",
+            "authorized-engagement",
+        ])
+    });
+    assert_eq!(invalid.status.code(), Some(65));
+    assert!(invalid.stdout.is_empty());
+
+    let no_scope = run(&[
+        "breach-ci",
+        "plan",
+        "name",
+        "Jane Mary Smith",
+        "--purpose",
+        "security-research",
+    ]);
+    assert_eq!(no_scope.status.code(), Some(65));
+    assert!(no_scope.stdout.is_empty());
+}
+
+#[test]
 fn plan_is_offline_and_every_source_is_unqueried() {
     let output = run(&[
         "breach-ci",
