@@ -161,6 +161,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "seeknow" => SEEKNOW_HELP,
         "run-history" => huntsman_recon::run_history::cli::USAGE,
         "dehashed" => DEHASHED_USAGE,
+        "breach-ci" => huntsman_recon::breach_ci::USAGE,
         "keys" => {
             "keys FILE | keys set SLOT --stdin | keys remove SLOT\nCheck a private keys file without printing secret values, or atomically store/remove one slot in ~/.huntsman.env. New values must arrive through piped standard input, not argv or an interactive terminal."
         }

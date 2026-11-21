@@ -1,0 +1,3 @@
+- Added an offline, purpose-gated `breach-ci` planner for email, username and domain selectors, reusing DeHashed's exact-match validation and Huntsman's bounded deterministic username variants. It never sends provider requests, uses credentials or returns an unobserved finding as evidence.
+- Added CI-ranked processing of opaque, operator-asserted evidence metadata. Deduplicates claimed original-dataset roots; penalises contradiction; caps fuzzy scores; sorts deterministically. CI is not a probability or identity verification.
+- Included source-family prioritisation, conditional public OSINT pivots, regression tests and a documented, privacy-preserving JSON input contract.
