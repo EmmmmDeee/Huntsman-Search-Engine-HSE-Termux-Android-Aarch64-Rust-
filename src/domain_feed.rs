@@ -190,7 +190,9 @@ fn scan_rows<R: BufRead>(
     counts: &mut Counts,
 ) -> Result<(u64, [u8; 32]), String> {
     let mut digest = Sha256::new();
-    let mut row = Vec::with_capacity(256);
+    // Fixed-size stack storage: scanning never reallocates a row buffer.
+    let mut row = [0_u8; MAX_ROW_BYTES];
+    let mut row_len = 0_usize;
     let mut oversized = false;
     let mut bytes_read = 0_u64;
     // Archive detection must not depend on BufRead's chunk size. A reader
@@ -201,8 +203,8 @@ fn scan_rows<R: BufRead>(
     loop {
         let available = reader.fill_buf().map_err(|e| format!("feed read failed: {e}"))?;
         if available.is_empty() {
-            if !row.is_empty() || oversized {
-                consume_row(&row, oversized, counts);
+            if row_len != 0 || oversized {
+                consume_row(&row[..row_len], oversized, counts);
             }
             break;
         }
@@ -233,20 +235,22 @@ fn scan_rows<R: BufRead>(
             part
         };
         if !oversized {
-            if row.len().saturating_add(without_lf.len()) > MAX_ROW_BYTES {
-                row.clear();
+            if without_lf.len() > MAX_ROW_BYTES - row_len {
+                row_len = 0;
                 oversized = true;
             } else {
-                row.extend_from_slice(without_lf);
+                let next = row_len + without_lf.len();
+                row[row_len..next].copy_from_slice(without_lf);
+                row_len = next;
             }
         }
         reader.consume(take);
         if ending.is_some() {
-            if row.last() == Some(&b'\r') {
-                row.pop();
+            if row_len > 0 && row[row_len - 1] == b'\r' {
+                row_len -= 1;
             }
-            consume_row(&row, oversized, counts);
-            row.clear();
+            consume_row(&row[..row_len], oversized, counts);
+            row_len = 0;
             oversized = false;
         }
     }
@@ -464,6 +468,45 @@ mod tests {
         assert_eq!(r.invalid_rows, 1);
         assert_eq!(r.matches[0].listed, Some(true));
         assert_eq!(r.bytes_read, input.len() as u64);
+    }
+
+    #[test]
+    fn fixed_row_buffer_preserves_hash_and_membership_across_chunk_sizes() {
+        let input = b"example.com\r\nother.example\nexample.com";
+        let expected = inspect(input, &["example.com", "other.example"]);
+        assert_eq!(expected.lines_read, 3);
+        assert_eq!(expected.valid_rows, 3);
+        assert_eq!(expected.invalid_rows, 0);
+        assert_eq!(expected.matches[0].occurrences, 2);
+        for capacity in [1, 2, 3, 4, 7, 16, 64] {
+            let actual = scan(
+                BufReader::with_capacity(capacity, Cursor::new(input)),
+                Dataset::Full,
+                "2025-07-06",
+                &["example.com".into(), "other.example".into()],
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "buffer capacity {capacity}");
+        }
+    }
+
+    #[test]
+    fn fixed_row_buffer_discards_oversize_and_recovers_for_next_row() {
+        let mut input = vec![b'a'; MAX_ROW_BYTES + 1];
+        input.extend_from_slice(b"\nexample.org");
+        let report = scan(
+            BufReader::with_capacity(1, Cursor::new(&input)),
+            Dataset::Full,
+            "2025-07-06",
+            &["example.org".into(), "missing.example".into()],
+        )
+        .unwrap();
+        assert_eq!(report.lines_read, 2);
+        assert_eq!(report.invalid_rows, 1);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.matches[0].listed, Some(true));
+        assert_eq!(report.matches[1].listed, None);
+        assert_eq!(report.bytes_read, input.len() as u64);
     }
 
     #[test]
