@@ -51,6 +51,9 @@ pub struct Match {
     pub occurrences: u64,
     /// True means "listed in this file", NOT "currently registered".
     pub listed: bool,
+    /// `not_observed` applies only if every row was parsed. Invalid rows
+    /// leave a non-match unresolved, never evidence of absence.
+    pub status: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -65,6 +68,9 @@ pub struct Report {
     pub lines_read: u64,
     pub valid_rows: u64,
     pub invalid_rows: u64,
+    /// Only describes whether all supplied data rows were parsed, not the
+    /// completeness of the provider's wider dataset.
+    pub file_parse_complete: bool,
     pub matches: Vec<Match>,
     pub registration_status: &'static str,
     pub ownership: &'static str,
@@ -199,6 +205,10 @@ pub fn scan<R: BufRead>(
     let mut row = Vec::with_capacity(256);
     let mut oversized = false;
     let mut bytes_read = 0_u64;
+    // Archive detection must not depend on BufRead's chunk size. A reader
+    // offering one byte per fill_buf must still refuse compressed input.
+    let mut signature = [0_u8; 4];
+    let mut signature_len = 0_usize;
 
     loop {
         let available = reader.fill_buf().map_err(|e| format!("feed read failed: {e}"))?;
@@ -208,12 +218,23 @@ pub fn scan<R: BufRead>(
             }
             break;
         }
-        if bytes_read == 0 && available.starts_with(b"PK\x03\x04") {
-            return Err("ZIP archive supplied: use the provider's plain-text list".into());
-        }
         let ending = available.iter().position(|b| *b == b'\n');
         let take = ending.map_or(available.len(), |n| n + 1);
         let part = &available[..take];
+        if signature_len < signature.len() {
+            let n = (signature.len() - signature_len).min(part.len());
+            signature[signature_len..signature_len + n].copy_from_slice(&part[..n]);
+            signature_len += n;
+            if signature_len >= 2 && signature[..2] == [0x1f, 0x8b] {
+                return Err("gzip archive supplied: use a plain-text list".into());
+            }
+            if signature_len == 4
+                && signature[..2] == *b"PK"
+                && matches!((signature[2], signature[3]), (3, 4) | (5, 6) | (7, 8))
+            {
+                return Err("ZIP archive supplied: use a plain-text list".into());
+            }
+        }
         bytes_read = bytes_read
             .checked_add(take as u64)
             .ok_or("feed byte counter overflow")?;
@@ -241,6 +262,7 @@ pub fn scan<R: BufRead>(
             oversized = false;
         }
     }
+    let file_parse_complete = counts.invalid == 0;
     let matches = counts
         .targets
         .into_iter()
@@ -248,6 +270,13 @@ pub fn scan<R: BufRead>(
             domain,
             occurrences,
             listed: occurrences > 0,
+            status: if occurrences > 0 {
+                "present"
+            } else if file_parse_complete {
+                "not_observed_in_supplied_file"
+            } else {
+                "unresolved_due_to_invalid_rows"
+            },
         })
         .collect();
     Ok(Report {
@@ -261,12 +290,14 @@ pub fn scan<R: BufRead>(
         lines_read: counts.lines,
         valid_rows: counts.valid,
         invalid_rows: counts.invalid,
+        file_parse_complete,
         matches,
         registration_status: "unknown",
         ownership: "unknown",
         site_active: "unknown",
         interpretation: concat!(
             "Membership of this operator-supplied file only. ",
+            "Invalid rows make unmatched domains unresolved. ",
             "No claim of global coverage, live registration, availability, ",
             "ownership, or website activity."
         ),
