@@ -249,6 +249,79 @@ static SOURCES: &[SourceDescriptor] = &[
         reference_url: "https://trove.nla.gov.au/",
         evidence_role: EvidenceRole::LeadOnly,
     },
+    // Historical archives and court registers: index URLs are lead-only, not record observations.
+    // Search engines may omit most records; follow the official reference URLs to search manually.
+    // FamilySearch needs its own account/API authorization; no credentials are requested here.
+    SourceDescriptor {
+        id: "au_qld_bdm_history",
+        name: "Queensland historical BDM (indexed discovery)",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.bing.com/search?q=%22{value}%22+site%3Afamilyhistory.bdm.qld.gov.au",
+        reference_url: "https://www.familyhistory.bdm.qld.gov.au/",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "au_qld_archives",
+        name: "Queensland State Archives (indexed discovery)",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.bing.com/search?q=%22{value}%22+site%3Aqld.gov.au+ArchivesSearch",
+        reference_url: "https://www.qld.gov.au/recreation/arts/heritage/archives/ways-to-search/search-the-archivessearch-catalogue",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "au_slq_history",
+        name: "State Library of Queensland (indexed discovery)",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.bing.com/search?q=%22{value}%22+site%3Aslq.qld.gov.au",
+        reference_url: "https://www.slq.qld.gov.au/collections/family-history/family-history-eresources-and-indexes",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "au_naa_namesearch",
+        name: "National Archives of Australia (indexed NameSearch)",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.bing.com/search?q=%22{value}%22+site%3Anaa.gov.au",
+        reference_url: "https://www.naa.gov.au/help-your-research/getting-started/recordsearch-overview/namesearch",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "au_austlii",
+        name: "AustLII legal decisions (indexed discovery)",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://www.bing.com/search?q=%22{value}%22+site%3Aaustlii.edu.au",
+        reference_url: "https://www.austlii.edu.au/",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "uk_tna_discovery",
+        name: "UK National Archives Discovery catalogue",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Public,
+        url_template: "https://discovery.nationalarchives.gov.uk/advanced-search?_q={value}",
+        reference_url: "https://discovery.nationalarchives.gov.uk/",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
+    SourceDescriptor {
+        id: "global_familysearch_index",
+        name: "FamilySearch public indexed records (discovery)",
+        accepted_kinds: AU_HISTORY,
+        execution: ExecutionMode::SearchUrl,
+        access: SourceAccess::Account,
+        url_template: "https://www.bing.com/search?q=%22{value}%22+site%3Afamilysearch.org",
+        reference_url: "https://www.familysearch.org/",
+        evidence_role: EvidenceRole::LeadOnly,
+    },
     // The Dubai Financial Services Authority's public register pages for DIFC firms and the
     // individuals they authorise (dfsa.ae/public-register/firms/... and /individuals/...) are
     // indexed by search engines, while the register's own search refuses scripted requests, so
@@ -278,6 +351,11 @@ static SOURCES: &[SourceDescriptor] = &[
 
 #[must_use]
 pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
+    // Reject controls before trimming: even a leading newline must not be
+    // normalised into a public-search query or a planner/Web UI response.
+    if value.len() > 512 || value.chars().any(char::is_control) {
+        return Vec::new();
+    }
     let mut value = value.trim();
     if *kind == EntityKind::Username {
         // `@handle` is notation, not part of the account name the sources index.
