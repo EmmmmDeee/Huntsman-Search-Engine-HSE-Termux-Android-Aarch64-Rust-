@@ -122,6 +122,7 @@ pub struct RelationshipCluster {
 pub struct ClusterReport {
     pub clusters: Vec<RelationshipCluster>,
     pub disputed_relations: Vec<CitedRelation>,
+    pub non_connecting_leads: Vec<CitedRelation>,
     pub input_nodes: usize,
     pub unique_relationships: usize,
     pub duplicate_observations: usize,
@@ -315,10 +316,18 @@ pub fn analyze_json(bytes: &[u8]) -> Result<ClusterReport, &'static str> {
     let mut union_find = UnionFind::new(nodes.len());
     let mut admitted = Vec::new();
     let mut disputed = Vec::new();
+    let mut non_connecting = Vec::new();
     for ((from_id, to_id, relation), evidence) in grouped {
         let observation = cited_relation(from_id, to_id, relation, &evidence)?;
         if observation.state == "disputed_excluded_from_graph" {
             disputed.push(observation);
+        } else if matches!(
+            relation,
+            Relation::PublishedTogether | Relation::NamedIn | Relation::ReportedLink
+        ) {
+            let mut observation = observation;
+            observation.state = "co_mention_or_generic_lead_not_connected";
+            non_connecting.push(observation);
         } else {
             union_find.union(ids[observation.from_id.as_str()], ids[observation.to_id.as_str()]);
             admitted.push(observation);
@@ -396,6 +405,7 @@ pub fn analyze_json(bytes: &[u8]) -> Result<ClusterReport, &'static str> {
     Ok(ClusterReport {
         clusters,
         disputed_relations: disputed,
+        non_connecting_leads: non_connecting,
         input_nodes: nodes.len(),
         unique_relationships,
         duplicate_observations,
@@ -455,6 +465,24 @@ mod tests {
     }
 
     #[test]
+    fn co_mentions_are_visible_but_cannot_create_relationship_clusters() {
+        let mut weak = link("p1", "p2", "article-root", "https://example.org/news?id=7");
+        weak.relation = Relation::PublishedTogether;
+        let input = serde_json::json!({"nodes":[
+            {"id":"p1","kind":"person","label":"Jordan Avery Example"},
+            {"id":"p2","kind":"person","label":"Jane Mary Example"}
+        ],"links":[weak]});
+        let result = analyze_json(input.to_string().as_bytes()).unwrap();
+        assert_eq!(result.clusters.len(), 2);
+        assert_eq!(result.non_connecting_leads.len(), 1);
+        assert!(result.non_connecting_leads[0].state.contains("not_connected"));
+        assert_eq!(
+            result.non_connecting_leads[0].source_references[0].url,
+            "https://example.org/news?id=7"
+        );
+    }
+
+    #[test]
     fn namesakes_do_not_merge_and_uncited_nodes_remain_isolated() {
         let input = serde_json::json!({"nodes":[
             {"id":"a","kind":"person","label":"Jane Mary Example"},
@@ -476,7 +504,7 @@ mod tests {
         let result = analyze_json(input.to_string().as_bytes()).unwrap();
         assert_eq!(result.clusters.len(), 2);
         assert_eq!(result.disputed_relations.len(), 1);
-        assert_eq!(result.disputed_relations[0].confidence_index <= 39, true);
+        assert!(result.disputed_relations[0].confidence_index <= 39);
         assert_eq!(result.disputed_relations[0].source_references[0].url, "https://example.org/disputed?id=7");
     }
 
