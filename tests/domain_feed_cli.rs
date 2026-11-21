@@ -95,6 +95,53 @@ fn empty_and_non_domain_feeds_fail_without_negative_evidence() {
 }
 
 #[test]
+fn trusted_sha256_pin_accepts_exact_bytes_and_rejects_mismatch() {
+    const EXPECTED: &str =
+        "391196688aa55d3321deffa736f8d103b4813470952b748e9c2c9deb17fa60f5";
+    let input = b"example.com\n";
+    let matching = with_feed(input, |path| {
+        Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+            .args(["domain-feed", "match", "full"])
+            .arg(path)
+            .args(["--as-of", "2025-07-06", "--expect-sha256"])
+            .arg(EXPECTED.to_ascii_uppercase())
+            .arg("example.com")
+            .output()
+            .unwrap()
+    });
+    assert!(
+        matching.status.success(),
+        "{}",
+        String::from_utf8_lossy(&matching.stderr)
+    );
+    let result: Value = serde_json::from_slice(&matching.stdout).unwrap();
+    assert_eq!(result["file_sha256"], EXPECTED);
+    let mismatching = with_feed(input, |path| {
+        Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+            .args(["domain-feed", "match", "full"])
+            .arg(path)
+            .args(["--as-of", "2025-07-06", "--expect-sha256"])
+            .arg("0".repeat(64))
+            .arg("example.com")
+            .output()
+            .unwrap()
+    });
+    assert_eq!(mismatching.status.code(), Some(65));
+    assert!(mismatching.stdout.is_empty());
+    let invalid = with_feed(input, |path| {
+        Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+            .args(["domain-feed", "match", "full"])
+            .arg(path)
+            .args(["--as-of", "2025-07-06", "--expect-sha256", "not-a-sha"])
+            .arg("example.com")
+            .output()
+            .unwrap()
+    });
+    assert_eq!(invalid.status.code(), Some(64));
+    assert!(invalid.stdout.is_empty());
+}
+
+#[test]
 fn invalid_snapshot_date_refuses_before_printing_json() {
     let output = with_feed(b"example.com\n", |path| {
         Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
