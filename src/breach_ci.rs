@@ -74,6 +74,34 @@ fn push_check(
     });
 }
 
+/// ASCII case-insensitive Levenshtein distance, without heap allocation.
+/// Callers have already validated both username lengths (at most 64 bytes).
+fn username_distance(left: &str, right: &str) -> usize {
+    let a = left.as_bytes();
+    let b = right.as_bytes();
+    if a.len() > 64 || b.len() > 64 {
+        return 65;
+    }
+    let mut previous = [0_usize; 65];
+    let mut current = [0_usize; 65];
+    for (index, slot) in previous.iter_mut().take(b.len() + 1).enumerate() {
+        *slot = index;
+    }
+    for (i, &left_byte) in a.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, &right_byte) in b.iter().enumerate() {
+            let substitution = usize::from(
+                left_byte.to_ascii_lowercase() != right_byte.to_ascii_lowercase(),
+            );
+            current[j + 1] = (previous[j + 1] + 1)
+                .min(current[j] + 1)
+                .min(previous[j] + substitution);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
+}
+
 /// Produce a bounded query plan, reusing DeHashed's validated selectors and
 /// existing deterministic username variants. No provider calls are performed.
 ///
@@ -124,9 +152,16 @@ pub fn plan(field: Field, value: &str, purpose: Purpose) -> Result<Plan, QueryEr
                 if Selector::new(Field::Username, &candidate).is_ok()
                     && candidates.insert(candidate.clone())
                 {
+                    let penalty = match username_distance(value, &candidate) {
+                        0 => 0,
+                        1 => 6,
+                        2 => 12,
+                        3 => 18,
+                        _ => 24,
+                    };
                     push_check(
                         &mut checks,
-                        55,
+                        55 - penalty,
                         "DeHashed",
                         "username",
                         &candidate,
@@ -310,6 +345,15 @@ pub fn rank(inputs: Vec<FindingInput>) -> Result<Ranking, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fuzzy_username_edit_distance_is_bounded_and_case_insensitive() {
+        assert_eq!(username_distance("John.Doe", "john.doe"), 0);
+        assert_eq!(username_distance("John.Doe", "john_doe"), 1);
+        assert_eq!(username_distance("John.Doe", "johndoe"), 1);
+        assert_eq!(username_distance("abc", "xyz"), 3);
+        assert_eq!(username_distance(&"x".repeat(65), "x"), 65);
+    }
 
     #[test]
     fn username_variants_are_bounded_and_never_presented_as_hits() {
