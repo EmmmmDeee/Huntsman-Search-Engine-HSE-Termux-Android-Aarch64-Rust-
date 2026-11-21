@@ -1,0 +1,5 @@
+- Add the offline `breach-ci clusters FILE.json` command for bounded relationship cluster analysis using only explicitly cited, known source observations.
+- Preserve full public HTTPS URLs, original dataset lineage, complete full names and directional relation semantics. Reject secret-bearing URLs, duplicate nodes, orphan edges and unsafe inputs.
+- Traverse every admitted link recursively with deterministic breadth-first paths; never merge people on name similarity or infer a direct relationship from multiple hops.
+- Exclude contradicted relations and weak co-mentions from cluster connectivity while keeping both visible; rank source claims and clusters by uncalibrated CI.
+- Add synthetic JSON fixture, unit and CLI tests, and full methodology/limits in docs/RELATIONSHIP_CLUSTERS.md.
