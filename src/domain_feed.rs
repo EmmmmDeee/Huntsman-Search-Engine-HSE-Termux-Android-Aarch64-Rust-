@@ -105,14 +105,16 @@ fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
     } else {
         raw
     };
-    let raw = raw.trim();
-    if raw.is_empty() || raw.starts_with('#') {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
         return;
     }
+    // Validate original bytes before accepting a trimmed domain. Otherwise
+    // tabs and other control whitespace disappear and can forge a clean match.
     // Never interpret a URL, e-mail, or delimited detailed record as a domain.
-    if raw.len() > 253
-        || raw.starts_with('.')
-        || raw.ends_with("..")
+    if trimmed.len() > 253
+        || trimmed.starts_with('.')
+        || trimmed.ends_with("..")
         || raw.bytes().any(|b| {
             b.is_ascii_control() || matches!(b, b'/' | b'@' | b':' | b';' | b'?' | b'#')
         })
@@ -120,7 +122,7 @@ fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
         counts.invalid = counts.invalid.saturating_add(1);
         return;
     }
-    match canonical_domain(raw) {
+    match canonical_domain(trimmed) {
         Some(domain) => {
             counts.valid = counts.valid.saturating_add(1);
             if let Some(n) = counts.targets.get_mut(&domain) {
@@ -370,6 +372,29 @@ mod tests {
         assert_eq!(report.valid_rows, 1);
         assert_eq!(report.invalid_rows, 1);
         assert_eq!(report.matches[0].occurrences, 1);
+    }
+
+    #[test]
+    fn tab_contaminated_rows_cannot_forge_positive_membership() {
+        let report = inspect(
+            b"example.com\t\n\texample.net\nexample.org\r\n",
+            &["example.com", "example.net", "example.org"],
+        );
+        assert_eq!(report.lines_read, 3);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.invalid_rows, 2);
+        assert_eq!(report.matches[0].listed, None);
+        assert_eq!(report.matches[1].listed, None);
+        assert_eq!(report.matches[2].listed, Some(true));
+        assert!(!report.file_parse_complete);
+    }
+
+    #[test]
+    fn blank_and_comment_whitespace_remains_ignorable() {
+        let report = inspect(b"\t\n \t# note\nexample.org\n", &["example.org"]);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.invalid_rows, 0);
+        assert!(report.file_parse_complete);
     }
 
     #[test]
