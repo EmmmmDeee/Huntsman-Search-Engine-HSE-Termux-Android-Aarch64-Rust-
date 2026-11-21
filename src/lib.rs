@@ -36,6 +36,7 @@ pub mod base_rpc;
 pub mod benchmark;
 pub mod blockchain;
 pub mod bluesky_user;
+pub mod breach_ci;
 pub mod breach_hybrid;
 pub mod breach_record;
 pub mod canonical;
