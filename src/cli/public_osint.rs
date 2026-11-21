@@ -11,12 +11,13 @@ use huntsman_recon::public_osint::{self, Source};
 use huntsman_recon::source_outcome::SourceReach;
 use huntsman_recon::web_server::{LookupError, LookupQuery, LookupReport};
 
-pub const HELP: &str = "public-osint news|notices|web|dossier QUERY...\nKeyless GDELT news, FBI wanted notices, and Huntsman's existing web engines. Read-only. Results are leads, not verified accusations.";
+pub const HELP: &str = "public-osint news|notices|papers|web|dossier QUERY...\nKeyless GDELT news, FBI notices, Crossref publication metadata, and existing web engines. Read-only leads, not identity proof.";
 
 fn source_for(input: &str) -> Option<Source> {
     match input {
         "news" => Some(Source::News),
         "notices" => Some(Source::Notices),
+        "papers" => Some(Source::Papers),
         "web" => Some(Source::Web),
         "dossier" => Some(Source::All),
         _ => None,
