@@ -1,0 +1,4 @@
+- Add an opt-in, offline `domain-feed match` path for Domains-Monitor full/new/removed plain-text snapshots. It scans files with bounded memory, matches up to 1,024 names in one pass, hashes the original bytes and emits provenance-conscious JSON.
+- Registration status, ownership and website activity remain unknown: local-list membership is not authoritative proof, and the source claim is explicitly unauthenticated.
+- ZIP/binary input is rejected, symlinks are refused, and invalid dates and malformed records cannot silently create findings. No network access, token handling, new crates, or changes to existing scan output.
+- Includes offline unit/CLI regressions and `docs/DOMAINS_MONITOR.md`.
