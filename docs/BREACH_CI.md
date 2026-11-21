@@ -7,11 +7,13 @@ This is a **local, offline planner and evidence-metadata ranker**. It does not m
 ```sh
 huntsman-recon breach-ci plan email alice@example.org --purpose own-account
 huntsman-recon breach-ci plan username John.Doe --purpose authorized-engagement
+huntsman-recon breach-ci plan name "Jane Mary Smith" --purpose authorized-engagement
+huntsman-recon breach-ci names reviewed-names.txt --purpose authorized-engagement
 huntsman-recon breach-ci plan domain example.org --purpose authorized-engagement
 huntsman-recon breach-ci rank findings.json
 ```
 
-The first three commands generate bounded exact provider-check proposals sorted by **investigative priority**. Username variants are further prioritised using bounded, allocation-free, case-insensitive Levenshtein distance (up to 64 bytes); this rank is a search-order heuristic, not identity confidence. They return `confidence_index: null`, `state: not_queried`. This is deliberate: a source not queried cannot establish a finding or CI score. The planner uses the existing DeHashed selector validation, avoids wildcards and multi-field sweeps, and uses `username_variants::variants` for at most 12 deterministic username variants. Each variant must still pass DeHashed's exact-selector rules. Email local parts are **not** mutated. A domain is **not** expanded to guessed personal accounts.
+The planning commands generate bounded source-check proposals sorted by **investigative priority**. Full-name planning accepts one complete name or every unique name in a local UTF-8 file (up to 128 full names and 16 KiB); blank lines and comments are ignored, and case-insensitive duplicates collapse without merging actual people. Name plans use Huntsman's shared full-name validator, preserve given first/middle/last name tokens, and emit public name-discovery routes only. They **do not** submit names to breach providers, derive email addresses or handles, or assign breach findings to namesakes. A reviewed name still requires independently verified exact identifiers before any authorised breach API lookup. Username variants are further prioritised using bounded, allocation-free, case-insensitive Levenshtein distance (up to 64 bytes); this rank is a search-order heuristic, not identity confidence. They return `confidence_index: null`, `state: not_queried`. This is deliberate: a source not queried cannot establish a finding or CI score. The planner uses the existing DeHashed selector validation, avoids wildcards and multi-field sweeps, and uses `username_variants::variants` for at most 12 deterministic username variants. Each variant must still pass DeHashed's exact-selector rules. Email local parts are **not** mutated. A domain is **not** expanded to guessed personal accounts.
 
 For actual authorised searches, use the existing `huntsman-recon exposure ADDRESS` or `huntsman-recon dehashed search --email|--username|--domain VALUE --purpose PURPOSE` paths, honouring credentials, credits, egress controls and provider terms. The exposure command already folds configured breach providers into one query chain; do not run duplicated paid provider queries merely because a plan lists several sources.
 
@@ -69,4 +71,4 @@ cargo test --workspace --locked breach_ci
 cargo test --workspace --locked
 ```
 
-This feature currently supports offline planning and ranking only, not live multi-provider fuzzy search, API-key discovery, or automatic proof of source independence. The HSE CI runner must execute and pass against the exact feature commit before merge; native Android AArch64 testing is also required.
+This feature currently supports offline planning and ranking only, not live multi-provider fuzzy search, automatic person identity resolution, name-based credential search, API-key discovery, or automatic proof of source independence. The HSE CI runner must execute and pass against the exact feature commit before merge; native Android AArch64 testing is also required.
