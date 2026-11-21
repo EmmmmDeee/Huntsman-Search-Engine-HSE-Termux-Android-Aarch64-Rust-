@@ -272,6 +272,22 @@ fn route_selectors(kind: ScanKind, entity: &Entity, floor: f64) -> Vec<String> {
         .collect()
 }
 
+/// A self-declared mailbox remains a contact lead, not proof that the searched
+/// identity controls it. Only suppress keyed exposure when ALL evidence explicitly
+/// marks ownership unverified; seeds and independently evidenced mailboxes retain
+/// their existing exposure routes. **Pure.**
+fn ownership_unverified(entity: &Entity) -> bool {
+    entity.kind == EntityKind::Email
+        && !entity.evidence.is_empty()
+        && entity.evidence.iter().all(|evidence| {
+            evidence
+                .attributes
+                .get("mailbox_ownership")
+                .map(String::as_str)
+                == Some("not_verified")
+        })
+}
+
 /// The new targets an entity contributes to the next generation.
 fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     // A pivot that matched only by a name search — a Wikidata knowledge-base, ACNC
@@ -305,7 +321,7 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
         .into_iter()
         .map(|selector| Target { kind, selector })
         .collect();
-    if policy.expose_emails && entity.kind == EntityKind::Email {
+    if policy.expose_emails && entity.kind == EntityKind::Email && !ownership_unverified(entity) {
         targets.extend(
             route_selectors(ScanKind::Exposure, entity, floor)
                 .into_iter()
@@ -2345,6 +2361,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_bio_email_reached_by_handle_alone_is_not_sent_to_breach_lookups() {
+        let mut email = ent(EntityKind::Email, "alice.smith@example.com", 0.60);
+        email.add_evidence(
+            crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("tiktok_public_contact", "test"),
+                "self-published TikTok profile for @alice24",
+            )
+            .with_attr("mailbox_ownership", "not_verified")
+            .with_attr("relationship", "self_asserted_not_identity_verified")
+            .with_attr("source_field", "public_bio_signature")
+            .inferred(),
+        );
+        let targets = expansions(&email, &policy());
+        assert_eq!(
+            targets,
+            vec![Target {
+                kind: ScanKind::Email,
+                selector: "alice.smith@example.com".to_owned(),
+            }],
+            "an unverified self-declared contact must not trigger keyed exposure",
+        );
+    }
+
+    #[test]
+    fn an_email_with_other_evidence_still_reaches_exposure() {
+        let mut email = ent(EntityKind::Email, "alice.smith@example.com", 0.60);
+        email.add_evidence(
+            crate::entity::Evidence::new(
+                crate::entity::EvidenceProvenance::for_scan("tiktok_public_contact", "test"),
+                "self-published TikTok profile for @alice24",
+            )
+            .with_attr("mailbox_ownership", "not_verified")
+            .inferred(),
+        );
+        email.add_evidence(crate::entity::Evidence::new(
+            crate::entity::EvidenceProvenance::for_scan("independent_contact_source", "test"),
+            "independent evidence of the mailbox",
+        ));
+        assert_eq!(
+            expansions(&email, &policy()),
+            vec![
+                Target {
+                    kind: ScanKind::Email,
+                    selector: "alice.smith@example.com".to_owned(),
+                },
+                Target {
+                    kind: ScanKind::Exposure,
+                    selector: "alice.smith@example.com".to_owned(),
+                },
+            ],
+            "a mailbox with additional evidence must retain exposure lookup",
+        );
     }
 
     #[test]
