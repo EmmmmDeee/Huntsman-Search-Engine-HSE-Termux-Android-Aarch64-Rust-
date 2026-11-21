@@ -192,6 +192,7 @@ pub mod orthogonal_osint;
 pub mod osint_area_risk;
 pub mod osint_blueprint;
 pub mod osint_casework;
+pub mod brisbane_fusion;
 pub mod osint_matrix;
 pub mod osint_synergy;
 pub mod otx;
