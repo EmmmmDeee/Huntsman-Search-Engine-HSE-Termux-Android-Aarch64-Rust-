@@ -154,7 +154,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                 Err(_) => return fail(EX_NOINPUT, "relationship package unavailable"),
             };
             if !metadata.file_type().is_file()
-                || metadata.len() > known_relationship_clusters::MAX_CLUSTER_INPUT_BYTES as u64
+                || metadata.len() > u64::try_from(known_relationship_clusters::MAX_CLUSTER_INPUT_BYTES).unwrap_or(u64::MAX)
             {
                 return fail(EX_DATAERR, "cluster package must be a regular file up to 256 KiB");
             }
@@ -171,13 +171,13 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             }
             let mut bytes = Vec::new();
             if (&file)
-                .take(known_relationship_clusters::MAX_CLUSTER_INPUT_BYTES as u64 + 1)
+                .take(u64::try_from(known_relationship_clusters::MAX_CLUSTER_INPUT_BYTES).unwrap_or(u64::MAX).saturating_add(1))
                 .read_to_end(&mut bytes)
                 .is_err()
             {
                 return fail(EX_NOINPUT, "relationship package read failed");
             }
-            if bytes.len() as u64 != metadata.len()
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != metadata.len()
                 || !file.metadata().is_ok_and(|after| same_snapshot(&metadata, &after))
                 || !fs::symlink_metadata(path).is_ok_and(|after| same_snapshot(&metadata, &after))
             {
