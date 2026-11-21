@@ -58,6 +58,7 @@ correlator	runtime	correlation rules used by the runtime analysis spine
 coverage	runtime	provider coverage and incompleteness semantics
 credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
+crossref	adapter	Crossref scholarly metadata collector reached through public_osint papers/dossier and /api/lookup; DOI metadata is discovery, not author proof
 certspotter	adapter	Cert Spotter certificate leg reached through domain_cli from domain, scan -k domain and /api/lookup, keyless or with its key
 crtsh	adapter	Certificate Transparency source client
 crypto_cli	adapter	crypto lookup front-end reached from crypto, scan -k crypto and /api/lookup
@@ -312,5 +313,5 @@ osint_matrix	runtime	canonical compiled source-file ownership matrix reached thr
 osint_casework	leaf	source-linked casework model reached through osint case; receipts, chronology and conflicts without identity attribution
 osint_area_risk	leaf	bounded public-event pressure estimator reached through osint area-risk and area-compare; never a safety guarantee
 osint_blueprint	exporter	OSINT app blueprint registry reached through the blueprint command, GET /api/blueprint and the About view's .docx download
-public_osint	adapter	independent GDELT news, FBI notices and multi-engine public dossier front-end reached through public-osint and GET /api/lookup kinds news, notices, web and dossier
+public_osint	adapter	GDELT news, FBI notices, Crossref papers and public dossier front-end reached through public-osint and GET /api/lookup kinds news, notices, papers, web and dossier
 privacy_audit	leaf	Bounded offline public-evidence privacy classifier reached through the privacy-audit CLI; no network activity, keys, or account ownership inference
