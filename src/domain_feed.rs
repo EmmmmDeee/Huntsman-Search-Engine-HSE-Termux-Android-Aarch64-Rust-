@@ -18,7 +18,7 @@ pub const MAX_TARGETS: usize = 1024;
 const MAX_ROW_BYTES: usize = 512;
 
 pub const USAGE: &str = concat!(
-    "domain-feed match full|dailyupdate|dailyremove FILE --as-of YYYY-MM-DD DOMAIN [DOMAIN ...]\n",
+    "domain-feed match full|dailyupdate|dailyremove FILE --as-of YYYY-MM-DD [--expect-sha256 HEX] DOMAIN [DOMAIN ...]\n",
     "Read a locally supplied Domains-Monitor text list in one bounded-memory pass. ",
     "Prints JSON with SHA-256 evidence and matched domains. No HTTP calls. ",
     "No claim of domain ownership or registration availability."
