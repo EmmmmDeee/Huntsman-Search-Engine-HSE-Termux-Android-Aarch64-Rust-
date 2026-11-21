@@ -80,6 +80,11 @@ fn push_check(
 /// # Errors
 /// Rejects a selector that violates the exact-match provider contract.
 pub fn plan(field: Field, value: &str, purpose: Purpose) -> Result<Plan, QueryError> {
+    if purpose == Purpose::SecurityResearch && field != Field::Domain {
+        return Err(QueryError::Invalid(
+            "security-research cannot plan breach lookups for private-account selectors",
+        ));
+    }
     let exact = Selector::new(field, value)?;
     let mut checks = Vec::new();
     let mut candidates = BTreeSet::new();
@@ -264,7 +269,12 @@ pub fn rank(inputs: Vec<FindingInput>) -> Result<Ranking, &'static str> {
             12
         };
         ci += if finding.primary_record { 22 } else { 8 };
-        ci += ((origins.saturating_sub(1)).min(3) as u8) * 9;
+        ci += match origins.saturating_sub(1).min(3) {
+            0 => 0,
+            1 => 9,
+            2 => 18,
+            _ => 27,
+        };
         if finding.temporal_consistency {
             ci += 10;
         }
@@ -313,6 +323,13 @@ mod tests {
         assert!(plan.checks.iter().all(|step| step.state == "not_queried"));
         assert!(plan.checks.iter().any(|step| step.selector == "john_doe"));
         assert!(!plan.checks.iter().any(|step| step.selector.contains('*')));
+    }
+
+    #[test]
+    fn research_purpose_cannot_target_private_account_identifiers() {
+        assert!(plan(Field::Email, "alice@example.org", Purpose::SecurityResearch).is_err());
+        assert!(plan(Field::Username, "alice", Purpose::SecurityResearch).is_err());
+        assert!(plan(Field::Domain, "example.org", Purpose::SecurityResearch).is_ok());
     }
 
     #[test]
