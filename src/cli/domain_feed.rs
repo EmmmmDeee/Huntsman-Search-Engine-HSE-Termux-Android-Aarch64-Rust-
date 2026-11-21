@@ -10,7 +10,7 @@ use huntsman_recon::domain_feed::{Dataset, MAX_TARGETS, USAGE, scan};
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_USAGE};
 
 pub(super) fn run(args: &[String]) -> ExitCode {
-    if args == ["--help"] || args == ["-h"] {
+    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
