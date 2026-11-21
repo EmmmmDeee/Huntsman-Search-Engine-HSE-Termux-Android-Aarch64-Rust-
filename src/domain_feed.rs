@@ -272,6 +272,11 @@ pub fn scan<R: BufRead>(
         counts.targets.entry(domain).or_insert(0);
     }
     let (bytes_read, digest) = scan_rows(reader, &mut counts)?;
+    // An empty, comment-only or entirely malformed export cannot establish
+    // a negative lookup. Refuse it instead of reporting false for every target.
+    if counts.valid == 0 {
+        return Err("domain feed has no valid rows; cannot establish file membership".into());
+    }
     let file_parse_complete = counts.invalid == 0;
     let matches = counts
         .targets
@@ -460,11 +465,28 @@ mod tests {
     }
 
     #[test]
+    fn no_valid_rows_never_yield_negative_membership() {
+        for input in [
+            &b""[..],
+            &b"\n \r\n# supplier header\n"[..],
+            &b"not a valid domain\nhttps://example.com\n"[..],
+        ] {
+            let result = scan(
+                BufReader::with_capacity(1, Cursor::new(input)),
+                Dataset::Full,
+                "2025-07-06",
+                &["example.org".into()],
+            );
+            assert!(result.is_err(), "empty/invalid export accepted");
+        }
+    }
+
+    #[test]
     fn exact_hash_agrees_with_known_sha256() {
-        let r = inspect(b"abc\n", &["example.org"]);
+        let r = inspect(b"example.org\n", &["example.org"]);
         assert_eq!(
             r.file_sha256,
-            "edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb"
+            "04e512879df7acb18392404d982a1b179e94c20b53ee03b75538624863d89e96"
         );
     }
 }
