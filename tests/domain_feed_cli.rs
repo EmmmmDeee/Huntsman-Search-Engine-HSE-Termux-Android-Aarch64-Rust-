@@ -162,6 +162,7 @@ fn zip_input_never_becomes_a_false_zero_match() {
     });
     assert_eq!(output.status.code(), Some(65));
     assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ZIP archive"));
 }
 
 #[test]
