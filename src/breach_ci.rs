@@ -107,6 +107,7 @@ fn username_distance(left: &str, right: &str) -> usize {
 ///
 /// # Errors
 /// Rejects a selector that violates the exact-match provider contract.
+#[allow(clippy::too_many_lines)] // bounded source decision matrix stays explicit and auditable
 pub fn plan(field: Field, value: &str, purpose: Purpose) -> Result<Plan, QueryError> {
     if purpose == Purpose::SecurityResearch && field != Field::Domain {
         return Err(QueryError::Invalid(
