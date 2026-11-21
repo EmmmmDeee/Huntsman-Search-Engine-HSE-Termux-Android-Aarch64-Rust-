@@ -176,6 +176,8 @@ cargo run -- fetch https://example.com/  # guarded fetch; run `fetch` without a 
 cargo run -- hibp help                   # HIBP subcommands; offline
 cargo run -- dehashed help               # DeHashed subcommands; offline (search needs a key and --purpose); docs/DEHASHED.md has the contract
 cargo run -- breach-ci plan domain example.org --purpose security-research  # offline, bounded, no API queries; see docs/BREACH_CI.md
+
+`breach-ci plan name "Jane Mary Smith" --purpose authorized-engagement` plans public full-name discovery without sending queries, inferring accounts or claiming identity. `breach-ci names reviewed-names.txt --purpose authorized-engagement` handles up to 128 unique full names from one 16 KiB local UTF-8 file, preserves complete names and reports exact-check prerequisites. Neither command searches breach datasets. See [docs/BREACH_CI.md](BREACH_CI.md).
 cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people-discover --help     # offline help; a search sends the full name to Bing, Brave, Mojeek and Open Library
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
