@@ -76,7 +76,9 @@ fn malformed_rows_leave_absence_unresolved_in_cli_json() {
         report["matches"][1]["status"],
         "unresolved_due_to_invalid_rows"
     );
+    assert_eq!(report["matches"][1]["listed"], Value::Null);
     assert_eq!(report["matches"][0]["status"], "present");
+    assert_eq!(report["matches"][0]["listed"], Value::Bool(true));
 }
 
 #[test]
