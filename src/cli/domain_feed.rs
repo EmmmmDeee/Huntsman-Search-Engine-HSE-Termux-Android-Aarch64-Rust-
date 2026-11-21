@@ -47,7 +47,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     };
     // A changing input cannot be represented as one stable, dated snapshot.
     let current_size = fs::metadata(path).map(|m| m.len());
-    if report.bytes_read != metadata.len() || current_size != Ok(metadata.len()) {
+    if report.bytes_read != metadata.len() || current_size.ok() != Some(metadata.len()) {
         return fail(EX_IOERR, "feed changed while reading; no report emitted");
     }
     match terminal_json_pretty(&report) {
