@@ -49,8 +49,9 @@ pub struct Match {
     pub domain: String,
     /// Number of times the exact canonical name occurred in the supplied file.
     pub occurrences: u64,
-    /// True means "listed in this file", NOT "currently registered".
-    pub listed: bool,
+    /// Null for an unmatched name if unparsed rows make absence unknowable.
+    /// True/false otherwise concerns only this file, not live registration.
+    pub listed: Option<bool>,
     /// `not_observed` applies only if every row was parsed. Invalid rows
     /// leave a non-match unresolved, never evidence of absence.
     pub status: &'static str,
@@ -278,7 +279,13 @@ pub fn scan<R: BufRead>(
         .map(|(domain, occurrences)| Match {
             domain,
             occurrences,
-            listed: occurrences > 0,
+            listed: if occurrences > 0 {
+                Some(true)
+            } else if file_parse_complete {
+                Some(false)
+            } else {
+                None
+            },
             status: if occurrences > 0 {
                 "present"
             } else if file_parse_complete {
@@ -338,8 +345,8 @@ mod tests {
         assert_eq!(report.lines_read, 3);
         assert_eq!(report.valid_rows, 3);
         assert_eq!(report.matches[0].occurrences, 2);
-        assert!(report.matches[0].listed);
-        assert!(!report.matches[1].listed);
+        assert_eq!(report.matches[0].listed, Some(true));
+        assert_eq!(report.matches[1].listed, Some(false));
         assert_eq!(report.registration_status, "unknown");
         assert!(!report.source_authenticated);
     }
@@ -382,13 +389,16 @@ mod tests {
         assert!(!report.file_parse_complete);
         assert_eq!(report.invalid_rows, 1);
         assert_eq!(report.matches[0].status, "present");
+        assert_eq!(report.matches[0].listed, Some(true));
         assert_eq!(
             report.matches[1].status,
             "unresolved_due_to_invalid_rows"
         );
+        assert_eq!(report.matches[1].listed, None);
         let clean = inspect(b"example.com\n", &["missing.example"]);
         assert!(clean.file_parse_complete);
         assert_eq!(clean.matches[0].status, "not_observed_in_supplied_file");
+        assert_eq!(clean.matches[0].listed, Some(false));
     }
 
     #[test]
