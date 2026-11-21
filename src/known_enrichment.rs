@@ -2,10 +2,11 @@
 //! Does not make network requests, infer personal identifiers or change claims.
 
 use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::canonical_domain;
-use crate::scan_route::{canonical_selector, ScanKind};
+use crate::scan_route::{ScanKind, canonical_selector};
 use crate::tags;
 
 pub const MAX_REPORT_BYTES: u64 = 1024 * 1024;
@@ -106,9 +107,12 @@ fn source_observed(source: &str) -> bool {
         && !matches!(source.as_str(),
             "seed" | "operator_input" | "recall" | "cross_scan_history"
             | "breach_consensus" | "multipath_corroboration")
-        && !["dehashed", "oathnet", "stolen_tax", "stolen.tax", "hibp", "leakcheck"]
-            .iter()
-            .any(|marker| source.contains(marker))
+        && ![
+            "dehashed", "oathnet", "stolen_tax", "stolen.tax", "hibp", "leakcheck",
+            "hudsonrock", "xposedornot", "xposed_or_not", "seeknow", "stealer_log",
+        ]
+        .iter()
+        .any(|marker| source.contains(marker))
 }
 
 /// Return only the exact, source-observed public infrastructure selectors
@@ -122,7 +126,10 @@ pub fn enrich_json(bytes: &[u8]) -> Result<EnrichmentPlan, &'static str> {
     }
     let input: RecursiveReport = serde_json::from_slice(bytes)
         .map_err(|_| "recursive report schema is invalid")?;
-    if input.entities.len() > MAX_ENTITIES || input.accepted.len() > 64 || input.lineage.len() > 4096 {
+    if input.entities.len() > MAX_ENTITIES
+        || input.accepted.len() > 64
+        || input.lineage.len() > 4096
+    {
         return Err("recursive report exceeds bounded entity or lineage limits");
     }
     let mut visited = BTreeSet::new();
@@ -130,7 +137,10 @@ pub fn enrich_json(bytes: &[u8]) -> Result<EnrichmentPlan, &'static str> {
         visited.insert((seed.kind.to_ascii_lowercase(), seed.selector.to_ascii_lowercase()));
     }
     for edge in &input.lineage {
-        visited.insert((edge.from_kind.to_ascii_lowercase(), edge.from_selector.to_ascii_lowercase()));
+        visited.insert((
+            edge.from_kind.to_ascii_lowercase(),
+            edge.from_selector.to_ascii_lowercase(),
+        ));
     }
     let mut unique = BTreeSet::new();
     let mut plan = EnrichmentPlan {
@@ -146,7 +156,11 @@ pub fn enrich_json(bytes: &[u8]) -> Result<EnrichmentPlan, &'static str> {
         limitation: "Offline proposals require scope review before network execution; collector names do not prove independent origins; namesakes never expand; CI is undefined without reviewed metadata. Lineage may omit zero-hit dispatches.",
     };
     for entity in input.entities {
-        if entity.tags.iter().any(|tag| tag == tags::NAME_SEARCH_LEAD || tag == "wikidata-name-lead") {
+        if entity
+            .tags
+            .iter()
+            .any(|tag| tag == tags::NAME_SEARCH_LEAD || tag == "wikidata-name-lead")
+        {
             plan.excluded_name_leads += 1;
             continue;
         }
@@ -155,9 +169,12 @@ pub fn enrich_json(bytes: &[u8]) -> Result<EnrichmentPlan, &'static str> {
             continue;
         };
         plan.considered_public_identifiers += 1;
-        let observed_sources: BTreeSet<&str> = entity.evidence.iter()
+        let observed_sources: BTreeSet<&str> = entity
+            .evidence
+            .iter()
             .filter(|e| !e.is_inferred && source_observed(&e.provenance.source))
-            .map(|e| e.provenance.source.as_str()).collect();
+            .map(|e| e.provenance.source.as_str())
+            .collect();
         if observed_sources.is_empty() {
             plan.excluded_unobserved_or_inferred += 1;
             continue;
@@ -190,7 +207,9 @@ pub fn enrich_json(bytes: &[u8]) -> Result<EnrichmentPlan, &'static str> {
         });
     }
     plan.candidates.sort_by(|a, b| {
-        b.priority.cmp(&a.priority).then_with(|| a.kind.cmp(b.kind))
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.kind.cmp(b.kind))
             .then_with(|| a.selector.cmp(&b.selector))
     });
     Ok(plan)
