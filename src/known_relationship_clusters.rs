@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::breach_ci::{FindingInput, rank};
 use crate::canonical::canonical_domain;
+use crate::scan_route::{ScanKind, canonical_selector};
 use crate::people_discovery;
 use crate::union_find::UnionFind;
 
@@ -24,6 +25,9 @@ pub enum NodeKind {
     Person,
     Organisation,
     Domain,
+    IpAddress,
+    Asn,
+    Netblock,
     PublicAccount,
     Document,
 }
@@ -49,7 +53,7 @@ pub enum Relation {
     ReportedLink,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkObservation {
     pub from_id: String,
@@ -152,6 +156,10 @@ fn validate_node(node: &Node) -> bool {
                 })
         }
         NodeKind::Domain => canonical_domain(&node.label).is_some(),
+        NodeKind::IpAddress => canonical_selector(ScanKind::Ip, &node.label).is_some(),
+        NodeKind::Asn => canonical_selector(ScanKind::Asn, &node.label).is_some(),
+        NodeKind::Netblock => canonical_selector(ScanKind::Netblock, &node.label).is_some(),
+        NodeKind::PublicAccount => valid_public_source_url(&node.label),
         _ => true,
     }
 }
@@ -194,9 +202,12 @@ fn cited_relation(
     to_id: String,
     relation: Relation,
     refs: &[LinkObservation],
-) -> CitedRelation {
+) -> Result<CitedRelation, &'static str> {
     let contradictory = refs.iter().any(|observation| observation.contradicted);
     let unique_roots: BTreeSet<_> = refs.iter().map(|item| item.source_root.as_str()).collect();
+    if unique_roots.len() > 8 {
+        return Err("relationship has more than eight claimed original dataset roots");
+    }
     let input = FindingInput {
         id: "edge".to_owned(),
         exact_identifier: refs.iter().all(|item| item.exact_identifier),
@@ -208,8 +219,9 @@ fn cited_relation(
     };
     // Input limits and validation guarantee that this has one valid record.
     let score = rank(vec![input])
-        .map(|result| result.findings[0].confidence_index)
-        .unwrap_or(0);
+        .map_err(|_| "relationship cannot be scored from the supplied evidence metadata")?
+        .findings[0]
+        .confidence_index;
     let mut sources: Vec<_> = refs
         .iter()
         .map(|item| SourceReference {
@@ -226,7 +238,7 @@ fn cited_relation(
             .cmp(&b.url)
             .then_with(|| a.source_root.cmp(&b.source_root))
     });
-    CitedRelation {
+    Ok(CitedRelation {
         from_id,
         to_id,
         relation,
@@ -239,7 +251,7 @@ fn cited_relation(
         } else {
             "explicit_source_claim_not_identity_verification"
         },
-    }
+    })
 }
 
 /// Analyse exactly the supplied source-cited relationships, not inferred
@@ -304,7 +316,7 @@ pub fn analyze_json(bytes: &[u8]) -> Result<ClusterReport, &'static str> {
     let mut admitted = Vec::new();
     let mut disputed = Vec::new();
     for ((from_id, to_id, relation), evidence) in grouped {
-        let observation = cited_relation(from_id, to_id, relation, &evidence);
+        let observation = cited_relation(from_id, to_id, relation, &evidence)?;
         if observation.state == "disputed_excluded_from_graph" {
             disputed.push(observation);
         } else {
@@ -420,13 +432,13 @@ mod tests {
     fn joins_explicit_links_recursively_and_preserves_complete_urls() {
         let case = CaseInput {
             nodes: vec![
-                node("p2", "Jane Mary Example", NodeKind::Person),
-                node("company", "Example Organisation", NodeKind::Organisation),
-                node("p1", "Jordan Avery Example", NodeKind::Person),
+                node("c-person", "Jane Mary Example", NodeKind::Person),
+                node("b-company", "Example Organisation", NodeKind::Organisation),
+                node("a-person", "Jordan Avery Example", NodeKind::Person),
             ],
             links: vec![
-                link("p1", "company", "registry-a", "https://example.org/records/director?id=123&year=2024"),
-                link("company", "p2", "registry-b", "https://example.net/records/association/456"),
+                link("a-person", "b-company", "registry-a", "https://example.org/records/director?id=123&year=2024"),
+                link("b-company", "c-person", "registry-b", "https://example.net/records/association/456"),
             ],
         };
         let input = serde_json::json!({"nodes":case.nodes, "links":case.links});
@@ -437,7 +449,7 @@ mod tests {
         assert_eq!(result.clusters[0].traversal[2].hop, 2);
         assert_eq!(
             result.clusters[0].source_cited_relations[0].source_references[0].url,
-            "https://example.net/records/association/456"
+            "https://example.org/records/director?id=123&year=2024"
         );
         assert!(result.clusters[0].interpretation.contains("does not assert"));
     }
