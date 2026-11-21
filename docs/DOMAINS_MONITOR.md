@@ -36,9 +36,11 @@ never silently converted to a domain. `file_parse_complete` describes only
 whether all rows in the supplied file were parsed, **not** global coverage.
 Matched names have `status="present"`. Unmatched names have
 `status="not_observed_in_supplied_file"` only when every row was parsed;
-otherwise their status is `"unresolved_due_to_invalid_rows"`, because a bad
-row might contain the missing name. Neither status means **unregistered
-globally**. Lists are not
+otherwise their status is `"unresolved_due_to_invalid_rows"` and
+`listed=null`, because a bad row might contain the missing name. The `listed`
+field is `true` for observed membership, `false` only for clean local-file
+nonmatches, and `null` when the file cannot establish even a clean nonmatch.
+None of those statuses means **unregistered globally**. Lists are not
 complete proof of global registration, entity ownership, site activity,
 availability or maliciousness. `dailyupdate` and `dailyremove` label the
 provider's claimed snapshot events, not a direct registry observation.
