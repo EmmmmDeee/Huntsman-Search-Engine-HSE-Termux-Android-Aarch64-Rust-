@@ -45,8 +45,21 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     let Some(dataset) = Dataset::parse(&args[1]) else {
         return fail(EX_USAGE, USAGE);
     };
-    if args.len() - 5 > MAX_TARGETS {
-        return fail(EX_USAGE, "too many domain targets");
+    // A trusted external manifest can pin the original downloaded bytes.
+    // This optional checksum never authenticates the provider by itself.
+    let (expected_hash, targets) = if args.get(5).is_some_and(|arg| arg == "--expect-sha256") {
+        let Some(hash) = args.get(6) else {
+            return fail(EX_USAGE, "--expect-sha256 requires a 64-digit hexadecimal hash");
+        };
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return fail(EX_USAGE, "--expect-sha256 requires a 64-digit hexadecimal hash");
+        }
+        (Some(hash.as_str()), &args[7..])
+    } else {
+        (None, &args[5..])
+    };
+    if targets.is_empty() || targets.len() > MAX_TARGETS {
+        return fail(EX_USAGE, USAGE);
     }
     let path = Path::new(&args[2]);
     let metadata = match fs::symlink_metadata(path) {
@@ -72,7 +85,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         BufReader::with_capacity(64 * 1024, &file),
         dataset,
         &args[4],
-        &args[5..],
+        targets,
     ) {
         Ok(report) => report,
         Err(error) => return fail(EX_DATAERR, &error),
@@ -85,6 +98,9 @@ pub(super) fn run(args: &[String]) -> ExitCode {
         || !path_after.is_ok_and(|after| same_snapshot(&metadata, &after))
     {
         return fail(EX_IOERR, "feed changed while reading; no report emitted");
+    }
+    if expected_hash.is_some_and(|expected| !report.file_sha256.eq_ignore_ascii_case(expected)) {
+        return fail(EX_DATAERR, "feed SHA-256 differs from expected manifest; no report emitted");
     }
     match terminal_json_pretty(&report) {
         Ok(json) => {
