@@ -10,7 +10,7 @@ use std::io::BufRead;
 
 use serde::Serialize;
 
-use crate::canonical::canonical_domain;
+use crate::canonical::{canonical_domain, is_domain_label};
 use crate::sha256::Sha256;
 
 pub const SOURCE: &str = "domains-monitor.com";
@@ -87,6 +87,24 @@ struct Counts {
     targets: BTreeMap<String, u64>,
 }
 
+/// Canonicalise a syntactically valid feed domain without heap allocation.
+/// The shared DNS label validator keeps this equivalent to canonical_domain
+/// for permitted feed rows, while the output borrows the fixed scratch buffer.
+fn canonical_feed_row<'a>(raw: &str, scratch: &'a mut [u8; 253]) -> Option<&'a str> {
+    let domain = raw.strip_suffix('.').unwrap_or(raw);
+    if domain.is_empty() || domain.len() > scratch.len() {
+        return None;
+    }
+    let (_, tld) = domain.rsplit_once('.')?;
+    if tld.bytes().all(|b| b.is_ascii_digit()) || !domain.split('.').all(is_domain_label) {
+        return None;
+    }
+    for (dest, byte) in scratch.iter_mut().zip(domain.bytes()) {
+        *dest = byte.to_ascii_lowercase();
+    }
+    std::str::from_utf8(&scratch[..domain.len()]).ok()
+}
+
 fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
     let first_row = counts.lines == 0;
     counts.lines = counts.lines.saturating_add(1);
@@ -122,10 +140,11 @@ fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
         counts.invalid = counts.invalid.saturating_add(1);
         return;
     }
-    match canonical_domain(trimmed) {
+    let mut scratch = [0_u8; 253];
+    match canonical_feed_row(trimmed, &mut scratch) {
         Some(domain) => {
             counts.valid = counts.valid.saturating_add(1);
-            if let Some(n) = counts.targets.get_mut(&domain) {
+            if let Some(n) = counts.targets.get_mut(domain) {
                 *n = n.saturating_add(1);
             }
         }
@@ -376,6 +395,48 @@ mod tests {
         assert_eq!(report.valid_rows, 1);
         assert_eq!(report.invalid_rows, 1);
         assert_eq!(report.matches[0].occurrences, 1);
+    }
+
+    #[test]
+    fn feed_row_normalisation_matches_shared_domain_canonicalisation() {
+        let cases = [
+            "Example.COM",
+            "EXAMPLE.COM.",
+            "foo-bar.EXAMPLE",
+            "a.b.c",
+            "example.123",
+            "example..com",
+            "exa_mple.com",
+            "-bad.example",
+            "bad-.example",
+            "singlelabel",
+            "xn--bcher-kva.example",
+            "xn--bcher-kva.Example.",
+            "bücher.example",
+            "a.1",
+        ];
+        let mut scratch = [0_u8; 253];
+        for raw in cases {
+            let actual = canonical_feed_row(raw, &mut scratch).map(str::to_owned);
+            // The feed parser rejects leading dots and multiple trailing dots
+            // before calling this helper; these fixtures have neither.
+            assert_eq!(actual, canonical_domain(raw), "domain {raw}");
+        }
+    }
+
+    #[test]
+    fn feed_row_casefolding_matches_without_allocating_per_record() {
+        let report = inspect(
+            b"Example.COM\nEXAMPLE.COM.\nFoo-Bar.EXAMPLE\nexample.org\n",
+            &["example.com", "foo-bar.example", "example.org", "missing.example"],
+        );
+        assert_eq!(report.lines_read, 4);
+        assert_eq!(report.valid_rows, 4);
+        assert_eq!(report.invalid_rows, 0);
+        assert_eq!(report.matches[0].occurrences, 2);
+        assert_eq!(report.matches[1].occurrences, 1);
+        assert_eq!(report.matches[2].occurrences, 1);
+        assert_eq!(report.matches[3].listed, Some(false));
     }
 
     #[test]
