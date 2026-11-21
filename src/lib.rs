@@ -86,6 +86,7 @@ pub mod docmeta;
 pub mod doctor;
 pub mod docx;
 pub mod domain_cli;
+pub mod domain_feed;
 pub mod domain_lifecycle;
 pub mod domains;
 pub mod dossier_view;
