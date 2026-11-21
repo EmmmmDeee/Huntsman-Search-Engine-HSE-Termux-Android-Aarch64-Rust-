@@ -174,7 +174,10 @@ pub fn scan<R: BufRead>(
             }
             break;
         }
-        if bytes_read == 0 && available.starts_with(b"PK\\x03\\x04") {\n            return Err("ZIP archive supplied: use the provider's plain-text list".into());\n        }\n        let ending = available.iter().position(|b| *b == b'\n');
+        if bytes_read == 0 && available.starts_with(b"PK\x03\x04") {
+            return Err("ZIP archive supplied: use the provider's plain-text list".into());
+        }
+        let ending = available.iter().position(|b| *b == b'\n');
         let take = ending.map_or(available.len(), |n| n + 1);
         let part = &available[..take];
         bytes_read = bytes_read
