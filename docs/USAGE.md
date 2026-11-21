@@ -219,7 +219,8 @@ cargo run -- plan ada@example.com example.com  # offline spine: entities, relati
 cargo run -- osint plan example.com  # offline osint planning graph; nothing fetched
 cargo run -- privacy-audit docs/privacy-audit-example.json  # offline, source-backed public exposure assessment; synthetic input only
 cargo run -- security-tools catalog  # offline: the nine security-tool compatibility contracts and their parity gaps
-cargo run -- public-osint --help  # independent GDELT news, FBI notices and public dossier help; no lookup performed
+cargo run -- public-osint --help  # independent GDELT news, FBI notices, Crossref papers and public dossier help; no lookup performed
+cargo run -- public-osint papers "graph analytics"  # network: bounded, keyless Crossref DOI metadata leads, not authorship proof
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
 cargo run -- query --all "OpenAI research"    # network: all 13 keyless engines inside one 110-second budget
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline

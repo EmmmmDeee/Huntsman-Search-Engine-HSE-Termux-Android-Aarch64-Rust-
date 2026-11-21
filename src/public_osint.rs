@@ -25,6 +25,7 @@ const FBI_URL: &str = "https://api.fbi.gov/wanted/v1/list";
 pub enum Source {
     News,
     Notices,
+    Papers,
     Web,
     All,
 }
@@ -60,6 +61,7 @@ fn name(source: Source) -> &'static str {
     match source {
         Source::News => NEWS,
         Source::Notices => NOTICES,
+        Source::Papers => crate::crossref::SOURCE_ID,
         Source::Web | Source::All => "public_osint",
     }
 }
@@ -83,7 +85,7 @@ fn endpoint(source: Source, query: &str) -> String {
             let url = append_query_param(FBI_URL, "title", query);
             append_query_param(&url, "pageSize", "20")
         }
-        Source::Web | Source::All => unreachable!(),
+        Source::Papers | Source::Web | Source::All => unreachable!(),
     }
 }
 
@@ -179,7 +181,7 @@ fn push_sourced_entity(
                 &["official_notice", "status_unverified"],
             );
         }
-        Source::Web | Source::All => unreachable!(),
+        Source::Papers | Source::Web | Source::All => unreachable!(),
     }
 }
 
@@ -187,7 +189,7 @@ fn parse(source: Source, body: &Value, query: &str, scan_id: &str) -> Result<Par
     let key = match source {
         Source::News => "articles",
         Source::Notices => "items",
-        Source::Web | Source::All => return Err("unsupported parse mode"),
+        Source::Papers | Source::Web | Source::All => return Err("unsupported parse mode"),
     };
     let rows = body
         .get(key)
@@ -525,11 +527,16 @@ fn search_with_clock<T: Transport + ?Sized>(
     for provider in match source {
         Source::News => &[Source::News][..],
         Source::Notices => &[Source::Notices][..],
-        Source::Web => &[][..],
+        Source::Papers | Source::Web => &[][..],
         Source::All => &[Source::News, Source::Notices][..],
     } {
         let (mut found, outcome) = collect(transport, *provider, &query, scan_id, now, clock);
         entities.append(&mut found);
+        outcomes.push(outcome);
+    }
+    if matches!(source, Source::Papers | Source::All) {
+        let (mut papers, outcome) = crate::crossref::search(transport, &query, scan_id, now);
+        entities.append(&mut papers);
         outcomes.push(outcome);
     }
     if matches!(source, Source::Web | Source::All) {
@@ -545,6 +552,7 @@ fn search_with_clock<T: Transport + ?Sized>(
         limitations: vec![
             "News and search results are leads, not independently verified event reports.",
             "Official notices can be amended or withdrawn; consult the issuing agency.",
+            "Crossref bibliographic leads do not prove a searched person's authorship.",
             "Search-result agreement does not prove real-world identity or culpability.",
         ],
     })
@@ -745,6 +753,7 @@ mod tests {
                 r#"{"articles":[{"title":"Headline","url":"https://example.org/a"}]}"#,
             )),
             Ok(reply(503, "failure")),
+            Ok(reply(200, r#"{"status":"ok","message":{"total-results":0,"items":[]}}"#)),
             Ok(reply(403, "blocked")),
             Ok(reply(403, "blocked")),
             Ok(reply(403, "blocked")),
@@ -753,6 +762,8 @@ mod tests {
         assert!(!report.entities.is_empty());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
         assert!(!report.outcomes[1].kind.is_accepted());
+        assert_eq!(report.outcomes[2].module, crate::crossref::SOURCE_ID);
+        assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::ValidZero);
     }
 
     /// The FBI's full-text search answers a name with every notice sharing one of its words. Only

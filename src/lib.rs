@@ -67,6 +67,7 @@ pub mod coverage;
 pub mod crates_io;
 pub mod credential_origin;
 pub mod cross_scan;
+pub mod crossref;
 pub mod crtsh;
 pub mod crypto_cli;
 pub mod deadline;
