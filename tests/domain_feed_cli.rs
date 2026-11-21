@@ -4,7 +4,7 @@ use std::fs;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -38,12 +38,12 @@ fn command_reports_membership_hash_and_explicit_unknowns() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["source_claim"], "domains-monitor.com");
-    assert_eq!(result["source_authenticated"], false);
+    assert_eq!(result["source_authenticated"], Value::Bool(false));
     assert_eq!(result["dataset"], "full");
     assert_eq!(result["as_of"], "2025-07-06");
     assert_eq!(result["valid_rows"], 3);
     assert_eq!(result["matches"][0]["occurrences"], 2);
-    assert_eq!(result["matches"][1]["listed"], false);
+    assert_eq!(result["matches"][1]["listed"], Value::Bool(false));
     assert_eq!(result["registration_status"], "unknown");
     assert_eq!(result["ownership"], "unknown");
     assert_eq!(result["site_active"], "unknown");
@@ -73,7 +73,7 @@ fn zip_input_never_becomes_a_false_zero_match() {
 }
 
 #[test]
-fn missing_kind_and_extra_flags_are_rejected() {
+fn invalid_kind_is_rejected() {
     let output = with_feed(b"example.com\n", |path| {
         Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
             .args(["domain-feed", "match", "bogus"])
@@ -83,8 +83,6 @@ fn missing_kind_and_extra_flags_are_rejected() {
     });
     assert_eq!(output.status.code(), Some(64));
     assert!(output.stdout.is_empty());
-    let r = json!({"source_claim": "domains-monitor.com"});
-    assert_eq!(r["source_claim"], "domains-monitor.com");
 }
 
 #[cfg(unix)]
