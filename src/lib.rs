@@ -154,6 +154,7 @@ pub mod json;
 pub mod key_import;
 pub mod keybase;
 pub mod keys;
+pub mod known_enrichment;
 pub mod kickbox;
 pub mod leads;
 pub mod leakix;
