@@ -195,3 +195,61 @@ fn unknown_json_fields_are_rejected_without_echoing_values() {
     assert!(output.stdout.is_empty());
     assert!(!String::from_utf8_lossy(&output.stderr).contains("never-echo-me"));
 }
+
+#[test]
+fn known_only_enrichment_refuses_personal_and_inferred_pivots() {
+    let json = r#"{
+        "accepted":[{"kind":"people","selector":"Example Person"}],
+        "entities":[
+            {"kind":"Domain","value":"example.org",
+             "evidence":[{"provenance":{"source":"dns"},"is_inferred":false}]},
+            {"kind":"Email","value":"private@example.org",
+             "evidence":[{"provenance":{"source":"dehashed"}}]},
+            {"kind":"Domain","value":"guessed.org",
+             "evidence":[{"provenance":{"source":"dns"},"is_inferred":true}]},
+            {"kind":"Domain","value":"name.example.org",
+             "tags":["name-search-lead"],
+             "evidence":[{"provenance":{"source":"dns"}}]},
+            {"kind":"Domain","value":"leaked.example.org",
+             "evidence":[{"provenance":{"source":"dehashed"}}]}
+        ],
+        "lineage":[],
+        "truncated":false
+    }"#;
+    let output = with_file(json, |path| {
+        run(&["breach-ci", "enrich", path.to_str().unwrap()])
+    });
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let candidates = report["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["kind"], "domain");
+    assert_eq!(candidates[0]["selector"], "example.org");
+    assert_eq!(candidates[0]["confidence_index"], Value::Null);
+    assert_eq!(report["excluded_name_leads"], 1);
+    assert_eq!(report["excluded_nonpublic_identifiers"], 1);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private@example.org"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("leaked.example.org"));
+}
+
+#[test]
+fn known_only_enrichment_refuses_missing_schema_without_stdout() {
+    let output = with_file(r#"{"entities":[]}"#, |path| {
+        run(&["breach-ci", "enrich", path.to_str().unwrap()])
+    });
+    assert_eq!(output.status.code(), Some(65));
+    assert!(output.stdout.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn known_only_enrichment_rejects_symlink_input() {
+    let json = r#"{"accepted":[],"entities":[]}"#;
+    let output = with_file(json, |path| {
+        let link = path.with_extension("link");
+        std::os::unix::fs::symlink(path, &link).unwrap();
+        run(&["breach-ci", "enrich", link.to_str().unwrap()])
+    });
+    assert_eq!(output.status.code(), Some(65));
+    assert!(output.stdout.is_empty());
+}
