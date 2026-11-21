@@ -82,6 +82,19 @@ fn malformed_rows_leave_absence_unresolved_in_cli_json() {
 }
 
 #[test]
+fn empty_and_non_domain_feeds_fail_without_negative_evidence() {
+    for bytes in [
+        &b""[..],
+        &b"# header\n\n"[..],
+        &b"<html>Access denied</html>\n"[..],
+    ] {
+        let output = with_feed(bytes, |path| match_file(path, &["example.com"]));
+        assert_eq!(output.status.code(), Some(65));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
 fn invalid_snapshot_date_refuses_before_printing_json() {
     let output = with_feed(b"example.com\n", |path| {
         Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
