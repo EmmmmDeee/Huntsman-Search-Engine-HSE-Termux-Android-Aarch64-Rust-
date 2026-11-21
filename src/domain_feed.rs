@@ -1,0 +1,651 @@
+//! Constant-memory inspection of operator-supplied Domains-Monitor plain-text lists.
+//!
+//! A list is an observation, not an authoritative registration, ownership or
+//! website-status source. This adapter is deliberately offline: the provider's
+//! API embeds its token in URL paths, so a fetch must not bypass Huntsman's
+//! credential-safe HTTP boundary.
+
+use std::collections::BTreeMap;
+use std::io::BufRead;
+
+use serde::Serialize;
+
+use crate::canonical::{canonical_domain, is_domain_label};
+use crate::sha256::Sha256;
+
+pub const SOURCE: &str = "domains-monitor.com";
+pub const MAX_TARGETS: usize = 1024;
+const MAX_ROW_BYTES: usize = 512;
+
+pub const USAGE: &str = concat!(
+    "domain-feed match full|dailyupdate|dailyremove FILE --as-of YYYY-MM-DD [--expect-sha256 HEX] DOMAIN [DOMAIN ...]\n",
+    "Read a locally supplied Domains-Monitor text list in one bounded-memory pass. ",
+    "Prints JSON with SHA-256 evidence and matched domains. No HTTP calls. ",
+    "No claim of domain ownership or registration availability."
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Dataset {
+    Full,
+    DailyUpdate,
+    DailyRemove,
+}
+
+impl Dataset {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "full" => Some(Self::Full),
+            "dailyupdate" => Some(Self::DailyUpdate),
+            "dailyremove" => Some(Self::DailyRemove),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Match {
+    pub domain: String,
+    /// Number of times the exact canonical name occurred in the supplied file.
+    pub occurrences: u64,
+    /// Null for an unmatched name if unparsed rows make absence unknowable.
+    /// True/false otherwise concerns only this file, not live registration.
+    pub listed: Option<bool>,
+    /// `not_observed` applies only if every row was parsed. Invalid rows
+    /// leave a non-match unresolved, never evidence of absence.
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Report {
+    pub schema_version: u32,
+    pub source_claim: &'static str,
+    pub source_authenticated: bool,
+    pub dataset: Dataset,
+    pub as_of: String,
+    pub file_sha256: String,
+    pub bytes_read: u64,
+    pub lines_read: u64,
+    pub valid_rows: u64,
+    pub invalid_rows: u64,
+    /// Only describes whether all supplied data rows were parsed, not the
+    /// completeness of the provider's wider dataset.
+    pub file_parse_complete: bool,
+    pub matches: Vec<Match>,
+    pub registration_status: &'static str,
+    pub ownership: &'static str,
+    pub site_active: &'static str,
+    pub interpretation: &'static str,
+}
+
+#[derive(Default)]
+struct Counts {
+    lines: u64,
+    valid: u64,
+    invalid: u64,
+    targets: BTreeMap<String, u64>,
+}
+
+/// Canonicalise a syntactically valid feed domain without heap allocation.
+/// The shared DNS label validator keeps this equivalent to canonical_domain
+/// for permitted feed rows, while the output borrows the fixed scratch buffer.
+fn canonical_feed_row<'a>(raw: &str, scratch: &'a mut [u8; 253]) -> Option<&'a str> {
+    let domain = raw.strip_suffix('.').unwrap_or(raw);
+    if domain.is_empty() || domain.len() > scratch.len() {
+        return None;
+    }
+    let (_, tld) = domain.rsplit_once('.')?;
+    if tld.bytes().all(|b| b.is_ascii_digit()) || !domain.split('.').all(is_domain_label) {
+        return None;
+    }
+    for (dest, byte) in scratch.iter_mut().zip(domain.bytes()) {
+        *dest = byte.to_ascii_lowercase();
+    }
+    std::str::from_utf8(&scratch[..domain.len()]).ok()
+}
+
+fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
+    let first_row = counts.lines == 0;
+    counts.lines = counts.lines.saturating_add(1);
+    if oversized {
+        counts.invalid = counts.invalid.saturating_add(1);
+        return;
+    }
+    let Ok(raw) = std::str::from_utf8(row) else {
+        counts.invalid = counts.invalid.saturating_add(1);
+        return;
+    };
+    // A UTF-8 BOM belongs to the file envelope, never a domain label.
+    // Strip it only from the first row; its bytes remain in the SHA-256.
+    let raw = if first_row {
+        raw.strip_prefix('\u{feff}').unwrap_or(raw)
+    } else {
+        raw
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return;
+    }
+    // Validate original bytes before accepting a trimmed domain. Otherwise
+    // tabs and other control whitespace disappear and can forge a clean match.
+    // Never interpret a URL, e-mail, or delimited detailed record as a domain.
+    if trimmed.len() > 253
+        || trimmed.starts_with('.')
+        || trimmed.ends_with("..")
+        || raw.bytes().any(|b| {
+            b.is_ascii_control() || matches!(b, b'/' | b'@' | b':' | b';' | b'?' | b'#')
+        })
+    {
+        counts.invalid = counts.invalid.saturating_add(1);
+        return;
+    }
+    let mut scratch = [0_u8; 253];
+    match canonical_feed_row(trimmed, &mut scratch) {
+        Some(domain) => {
+            counts.valid = counts.valid.saturating_add(1);
+            if let Some(n) = counts.targets.get_mut(domain) {
+                *n = n.saturating_add(1);
+            }
+        }
+        None => counts.invalid = counts.invalid.saturating_add(1),
+    }
+}
+
+/// Validate the date that the operator attributes to a snapshot, without
+/// converting it into an invented collection timestamp.
+#[must_use]
+pub fn valid_date(date: &str) -> bool {
+    let b = date.as_bytes();
+    if b.len() != 10
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b.iter()
+            .enumerate()
+            .any(|(i, c)| i != 4 && i != 7 && !c.is_ascii_digit())
+    {
+        return false;
+    }
+    let Ok(year) = date[0..4].parse::<u32>() else {
+        return false;
+    };
+    let Ok(month) = date[5..7].parse::<usize>() else {
+        return false;
+    };
+    let Ok(day) = date[8..10].parse::<u32>() else {
+        return false;
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    year > 0 && (1..=12).contains(&month) && day >= 1 && day <= days[month - 1]
+}
+
+fn sha256_hex(digest: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(64);
+    for byte in digest {
+        result.push(char::from(HEX[usize::from(byte >> 4)]));
+        result.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    result
+}
+
+/// Collect exact byte provenance and bounded records in a single streaming pass.
+fn scan_rows<R: BufRead>(
+    mut reader: R,
+    counts: &mut Counts,
+) -> Result<(u64, [u8; 32]), String> {
+    let mut digest = Sha256::new();
+    // Fixed-size stack storage: scanning never reallocates a row buffer.
+    let mut row = [0_u8; MAX_ROW_BYTES];
+    let mut row_len = 0_usize;
+    let mut oversized = false;
+    let mut bytes_read = 0_u64;
+    // Archive detection must not depend on BufRead's chunk size. A reader
+    // offering one byte per fill_buf must still refuse compressed input.
+    let mut signature = [0_u8; 4];
+    let mut signature_len = 0_usize;
+
+    loop {
+        let available = reader.fill_buf().map_err(|e| format!("feed read failed: {e}"))?;
+        if available.is_empty() {
+            if row_len != 0 || oversized {
+                consume_row(&row[..row_len], oversized, counts);
+            }
+            break;
+        }
+        let ending = available.iter().position(|b| *b == b'\n');
+        let take = ending.map_or(available.len(), |n| n + 1);
+        let part = &available[..take];
+        if signature_len < signature.len() {
+            let n = (signature.len() - signature_len).min(part.len());
+            signature[signature_len..signature_len + n].copy_from_slice(&part[..n]);
+            signature_len += n;
+            if signature_len >= 2 && signature[..2] == [0x1f, 0x8b] {
+                return Err("gzip archive supplied: use a plain-text list".into());
+            }
+            if signature_len == 4
+                && signature.starts_with(b"PK")
+                && matches!((signature[2], signature[3]), (3, 4) | (5, 6) | (7, 8))
+            {
+                return Err("ZIP archive supplied: use a plain-text list".into());
+            }
+        }
+        bytes_read = bytes_read
+            .checked_add(take as u64)
+            .ok_or("feed byte counter overflow")?;
+        digest.update(part);
+        let without_lf = if ending.is_some() {
+            &part[..part.len() - 1]
+        } else {
+            part
+        };
+        if !oversized {
+            if without_lf.len() > MAX_ROW_BYTES - row_len {
+                row_len = 0;
+                oversized = true;
+            } else {
+                let next = row_len + without_lf.len();
+                row[row_len..next].copy_from_slice(without_lf);
+                row_len = next;
+            }
+        }
+        reader.consume(take);
+        if ending.is_some() {
+            if row_len > 0 && row[row_len - 1] == b'\r' {
+                row_len -= 1;
+            }
+            consume_row(&row[..row_len], oversized, counts);
+            row_len = 0;
+            oversized = false;
+        }
+    }
+    Ok((bytes_read, digest.finalize()))
+}
+
+/// Inspect the entire file, computing its raw SHA-256 while keeping no more
+/// than one bounded row plus at most 1024 query names in RAM.
+///
+/// A match establishes only membership in the supplied file. A miss establishes
+/// only absence from that file, not global absence. This intentionally does
+/// not accept ZIP files: use the provider's documented `text` variant.
+///
+/// # Errors
+/// An invalid query/date, input I/O failure or byte-counter overflow.
+pub fn scan<R: BufRead>(
+    reader: R,
+    dataset: Dataset,
+    as_of: &str,
+    targets: &[String],
+) -> Result<Report, String> {
+    if !valid_date(as_of) {
+        return Err("invalid --as-of date: use YYYY-MM-DD".into());
+    }
+    if targets.is_empty() || targets.len() > MAX_TARGETS {
+        return Err(format!("expected 1..={MAX_TARGETS} domain targets"));
+    }
+    let mut counts = Counts::default();
+    for name in targets {
+        let Some(domain) = canonical_domain(name) else {
+            return Err("invalid domain target".into());
+        };
+        counts.targets.entry(domain).or_insert(0);
+    }
+    let (bytes_read, digest) = scan_rows(reader, &mut counts)?;
+    // An empty, comment-only or entirely malformed export cannot establish
+    // a negative lookup. Refuse it instead of reporting false for every target.
+    if counts.valid == 0 {
+        return Err("domain feed has no valid rows; cannot establish file membership".into());
+    }
+    let file_parse_complete = counts.invalid == 0;
+    let matches = counts
+        .targets
+        .into_iter()
+        .map(|(domain, occurrences)| Match {
+            domain,
+            occurrences,
+            listed: if occurrences > 0 {
+                Some(true)
+            } else if file_parse_complete {
+                Some(false)
+            } else {
+                None
+            },
+            status: if occurrences > 0 {
+                "present"
+            } else if file_parse_complete {
+                "not_observed_in_supplied_file"
+            } else {
+                "unresolved_due_to_invalid_rows"
+            },
+        })
+        .collect();
+    Ok(Report {
+        schema_version: 1,
+        source_claim: SOURCE,
+        source_authenticated: false,
+        dataset,
+        as_of: as_of.to_owned(),
+        file_sha256: sha256_hex(digest),
+        bytes_read,
+        lines_read: counts.lines,
+        valid_rows: counts.valid,
+        invalid_rows: counts.invalid,
+        file_parse_complete,
+        matches,
+        registration_status: "unknown",
+        ownership: "unknown",
+        site_active: "unknown",
+        interpretation: concat!(
+            "Membership of this operator-supplied file only. ",
+            "Invalid rows make unmatched domains unresolved. ",
+            "No claim of global coverage, live registration, availability, ",
+            "ownership, or website activity."
+        ),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufReader, Cursor};
+
+    use super::*;
+
+    fn inspect(input: &[u8], names: &[&str]) -> Report {
+        scan(
+            BufReader::with_capacity(3, Cursor::new(input)),
+            Dataset::Full,
+            "2025-07-06",
+            &names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn exact_membership_is_deduplicated_and_not_live_registration() {
+        let report = inspect(
+            b"Example.COM\r\nfoo.example.com\nexample.com\n",
+            &["EXAMPLE.COM", "xample.com"],
+        );
+        assert_eq!(report.lines_read, 3);
+        assert_eq!(report.valid_rows, 3);
+        assert_eq!(report.matches[0].occurrences, 2);
+        assert_eq!(report.matches[0].listed, Some(true));
+        assert_eq!(report.matches[1].listed, Some(false));
+        assert_eq!(report.registration_status, "unknown");
+        assert!(!report.source_authenticated);
+    }
+
+    #[test]
+    fn leading_dot_is_not_silently_canonicalised_into_a_match() {
+        let report = inspect(b".example.com\nexample.com\n", &["example.com"]);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.invalid_rows, 1);
+        assert_eq!(report.matches[0].occurrences, 1);
+    }
+
+    #[test]
+    fn feed_row_normalisation_matches_shared_domain_canonicalisation() {
+        let cases = [
+            "Example.COM",
+            "EXAMPLE.COM.",
+            "foo-bar.EXAMPLE",
+            "a.b.c",
+            "example.123",
+            "example..com",
+            "exa_mple.com",
+            "-bad.example",
+            "bad-.example",
+            "singlelabel",
+            "xn--bcher-kva.example",
+            "xn--bcher-kva.Example.",
+            "bücher.example",
+            "a.1",
+        ];
+        let mut scratch = [0_u8; 253];
+        for raw in cases {
+            let actual = canonical_feed_row(raw, &mut scratch).map(str::to_owned);
+            // The feed parser rejects leading dots and multiple trailing dots
+            // before calling this helper; these fixtures have neither.
+            assert_eq!(actual, canonical_domain(raw), "domain {raw}");
+        }
+    }
+
+    #[test]
+    fn feed_row_casefolding_matches_without_allocating_per_record() {
+        let report = inspect(
+            b"Example.COM\nEXAMPLE.COM.\nFoo-Bar.EXAMPLE\nexample.org\n",
+            &["example.com", "foo-bar.example", "example.org", "missing.example"],
+        );
+        assert_eq!(report.lines_read, 4);
+        assert_eq!(report.valid_rows, 4);
+        assert_eq!(report.invalid_rows, 0);
+        assert_eq!(report.matches[0].occurrences, 2);
+        assert_eq!(report.matches[1].occurrences, 1);
+        assert_eq!(report.matches[2].occurrences, 1);
+        assert_eq!(report.matches[3].listed, Some(false));
+    }
+
+    #[test]
+    fn tab_contaminated_rows_cannot_forge_positive_membership() {
+        let report = inspect(
+            b"example.com\t\n\texample.net\nexample.org\r\n",
+            &["example.com", "example.net", "example.org"],
+        );
+        assert_eq!(report.lines_read, 3);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.invalid_rows, 2);
+        assert_eq!(report.matches[0].listed, None);
+        assert_eq!(report.matches[1].listed, None);
+        assert_eq!(report.matches[2].listed, Some(true));
+        assert!(!report.file_parse_complete);
+    }
+
+    #[test]
+    fn blank_and_comment_whitespace_remains_ignorable() {
+        let report = inspect(b"\t\n \t# note\nexample.org\n", &["example.org"]);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.invalid_rows, 0);
+        assert!(report.file_parse_complete);
+    }
+
+    #[test]
+    fn archive_detection_is_independent_of_small_read_buffers() {
+        for bytes in [
+            &b"PK\x03\x04payload"[..],
+            &b"PK\x05\x06empty"[..],
+            &b"PK\x07\x08descriptor"[..],
+            &b"\x1f\x8bcompressed"[..],
+        ] {
+            for capacity in [1, 2, 3, 4, 7] {
+                let reader = BufReader::with_capacity(capacity, Cursor::new(bytes));
+                let result = scan(
+                    reader,
+                    Dataset::Full,
+                    "2025-07-06",
+                    &["example.com".into()],
+                );
+                let error = result.expect_err("compressed signature must be rejected");
+                assert!(
+                    error.contains("archive"),
+                    "wrong failure for capacity {capacity}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_rows_make_unmatched_domains_unresolved_not_absent() {
+        let report = inspect(
+            b"example.com\nhttps://another.example\n",
+            &["example.com", "missing.example"],
+        );
+        assert!(!report.file_parse_complete);
+        assert_eq!(report.invalid_rows, 1);
+        assert_eq!(report.matches[0].status, "present");
+        assert_eq!(report.matches[0].listed, Some(true));
+        assert_eq!(
+            report.matches[1].status,
+            "unresolved_due_to_invalid_rows"
+        );
+        assert_eq!(report.matches[1].listed, None);
+        let clean = inspect(b"example.com\n", &["missing.example"]);
+        assert!(clean.file_parse_complete);
+        assert_eq!(clean.matches[0].status, "not_observed_in_supplied_file");
+        assert_eq!(clean.matches[0].listed, Some(false));
+    }
+
+    #[test]
+    fn hashes_full_bytes_and_rejects_unstructured_rows() {
+        let report = inspect(
+            b"example.com\nhttps://example.com\nnone;detail\n\xff\n",
+            &["example.com"],
+        );
+        assert_eq!(report.bytes_read, 46);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.invalid_rows, 3);
+        assert_eq!(report.file_sha256.len(), 64);
+    }
+
+    #[test]
+    fn oversized_row_is_skipped_across_chunk_boundaries() {
+        let mut input = vec![b'x'; 2048];
+        input.extend_from_slice(b"\nexample.org");
+        let r = inspect(&input, &["example.org"]);
+        assert_eq!(r.lines_read, 2);
+        assert_eq!(r.invalid_rows, 1);
+        assert_eq!(r.matches[0].listed, Some(true));
+        assert_eq!(r.bytes_read, input.len() as u64);
+    }
+
+    #[test]
+    fn fixed_row_buffer_preserves_hash_and_membership_across_chunk_sizes() {
+        let input = b"example.com\r\nother.example\nexample.com";
+        let expected = inspect(input, &["example.com", "other.example"]);
+        assert_eq!(expected.lines_read, 3);
+        assert_eq!(expected.valid_rows, 3);
+        assert_eq!(expected.invalid_rows, 0);
+        assert_eq!(expected.matches[0].occurrences, 2);
+        for capacity in [1, 2, 3, 4, 7, 16, 64] {
+            let actual = scan(
+                BufReader::with_capacity(capacity, Cursor::new(input)),
+                Dataset::Full,
+                "2025-07-06",
+                &["example.com".into(), "other.example".into()],
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "buffer capacity {capacity}");
+        }
+    }
+
+    #[test]
+    fn fixed_row_buffer_discards_oversize_and_recovers_for_next_row() {
+        let mut input = vec![b'a'; MAX_ROW_BYTES + 1];
+        input.extend_from_slice(b"\nexample.org");
+        let report = scan(
+            BufReader::with_capacity(1, Cursor::new(&input)),
+            Dataset::Full,
+            "2025-07-06",
+            &["example.org".into(), "missing.example".into()],
+        )
+        .unwrap();
+        assert_eq!(report.lines_read, 2);
+        assert_eq!(report.invalid_rows, 1);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.matches[0].listed, Some(true));
+        assert_eq!(report.matches[1].listed, None);
+        assert_eq!(report.bytes_read, input.len() as u64);
+    }
+
+    #[test]
+    fn bogus_dates_and_bad_targets_never_scan() {
+        for date in [
+            "2025-02-29",
+            "2025-13-01",
+            "2025-00-01",
+            "2025-01-00",
+            "0000-01-01",
+            "2025-1-01",
+        ] {
+            assert!(
+                scan(
+                    Cursor::new(b"example.com"),
+                    Dataset::Full,
+                    date,
+                    &["example.com".into()],
+                )
+                .is_err()
+            );
+        }
+        assert!(valid_date("2024-02-29"));
+        assert!(
+            scan(
+                Cursor::new(b"example.com"),
+                Dataset::Full,
+                "2025-07-06",
+                &["https://example.com".into()],
+            )
+            .is_err()
+        );
+        assert!(
+            scan(Cursor::new(b"example.com"), Dataset::Full, "2025-07-06", &[]).is_err()
+        );
+    }
+
+    #[test]
+    fn utf8_bom_is_recognised_only_at_file_start_and_hashed_verbatim() {
+        let r = inspect(
+            b"\xef\xbb\xbfExample.COM\nother.example\n",
+            &["example.com", "other.example"],
+        );
+        assert_eq!(r.valid_rows, 2);
+        assert_eq!(r.invalid_rows, 0);
+        assert_eq!(r.matches[0].listed, Some(true));
+        assert_eq!(
+            r.file_sha256,
+            "81672eed66ab830a0e5510dc5ada55b9eb822ab0106fe4bc6a702c615e00e198"
+        );
+        let invalid = inspect(b"example.com\n\xef\xbb\xbfother.example\n", &["example.com"]);
+        assert_eq!(invalid.valid_rows, 1);
+        assert_eq!(invalid.invalid_rows, 1);
+    }
+
+    #[test]
+    fn no_valid_rows_never_yield_negative_membership() {
+        for input in [
+            &b""[..],
+            &b"\n \r\n# supplier header\n"[..],
+            &b"not a valid domain\nhttps://example.com\n"[..],
+        ] {
+            let result = scan(
+                BufReader::with_capacity(1, Cursor::new(input)),
+                Dataset::Full,
+                "2025-07-06",
+                &["example.org".into()],
+            );
+            assert!(result.is_err(), "empty/invalid export accepted");
+        }
+    }
+
+    #[test]
+    fn exact_hash_agrees_with_known_sha256() {
+        let r = inspect(b"example.org\n", &["example.org"]);
+        assert_eq!(
+            r.file_sha256,
+            "04e512879df7acb18392404d982a1b179e94c20b53ee03b75538624863d89e96"
+        );
+    }
+}

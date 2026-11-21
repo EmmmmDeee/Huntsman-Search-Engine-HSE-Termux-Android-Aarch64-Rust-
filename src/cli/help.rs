@@ -97,6 +97,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "sources" => {
             "sources QUERY...\nClassify an indicator and print curated public/browser search routes. The rest of the line is the query, so a name needs no quotes. A person, organisation, email, handle, domain, IP address or ABN/ACN also gets one link per default keyless engine (Bing, Brave, Mojeek), built as query builds its requests. Every route is an unverified lead. Does not fetch those routes."
         }
+        "domain-feed" => huntsman_recon::domain_feed::USAGE,
         "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
         "people-discover" => huntsman_recon::people_discovery::PEOPLE_DISCOVER_HELP,
