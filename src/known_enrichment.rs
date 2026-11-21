@@ -86,7 +86,14 @@ fn route(kind: &str, raw: &str) -> Option<(&'static str, String)> {
     // Public infrastructure only. No personal identifiers or breach-derived
     // accounts automatically expand the frontier.
     if kind.eq_ignore_ascii_case("domain") {
-        return canonical_domain(raw).map(|name| ("domain", name));
+        return canonical_domain(raw)
+            .filter(|name| {
+                !crate::validation::is_placeholder_domain(name)
+                    && !name.ends_with(".internal")
+                    && !name.ends_with(".lan")
+                    && !name.ends_with(".home.arpa")
+            })
+            .map(|name| ("domain", name));
     }
     if kind.eq_ignore_ascii_case("ipaddress") || kind.eq_ignore_ascii_case("ip_address") {
         return canonical_selector(ScanKind::Ip, raw).map(|addr| ("ip", addr));
@@ -243,6 +250,18 @@ mod tests {
         let result = enrich_json(input.as_bytes()).unwrap();
         assert!(result.candidates.is_empty());
         assert_eq!(result.already_seen_in_lineage, 1);
+    }
+
+    #[test]
+    fn private_or_placeholder_domains_are_not_followed() {
+        let input = r#"{"accepted":[],"entities":[
+            {"kind":"Domain","value":"host.local","evidence":[{"provenance":{"source":"dns"}}]},
+            {"kind":"Domain","value":"host.internal","evidence":[{"provenance":{"source":"dns"}}]},
+            {"kind":"Domain","value":"example.org","evidence":[{"provenance":{"source":"dns"}}]}
+        ]}"#;
+        let report = enrich_json(input.as_bytes()).unwrap();
+        assert_eq!(report.candidates.len(), 1);
+        assert_eq!(report.candidates[0].selector, "example.org");
     }
 
     #[test]
