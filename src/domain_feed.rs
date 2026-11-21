@@ -344,6 +344,45 @@ mod tests {
     }
 
     #[test]
+    fn archive_detection_is_independent_of_small_read_buffers() {
+        for bytes in [
+            &b"PK\x03\x04payload"[..],
+            &b"PK\x05\x06empty"[..],
+            &b"PK\x07\x08descriptor"[..],
+            &b"\x1f\x8bcompressed"[..],
+        ] {
+            for capacity in [1, 2, 3, 4, 7] {
+                let reader = BufReader::with_capacity(capacity, Cursor::new(bytes));
+                let result = scan(
+                    reader,
+                    Dataset::Full,
+                    "2025-07-06",
+                    &["example.com".into()],
+                );
+                assert!(result.is_err(), "magic accepted with capacity {capacity}");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_rows_make_unmatched_domains_unresolved_not_absent() {
+        let report = inspect(
+            b"example.com\nhttps://another.example\n",
+            &["example.com", "missing.example"],
+        );
+        assert!(!report.file_parse_complete);
+        assert_eq!(report.invalid_rows, 1);
+        assert_eq!(report.matches[0].status, "present");
+        assert_eq!(
+            report.matches[1].status,
+            "unresolved_due_to_invalid_rows"
+        );
+        let clean = inspect(b"example.com\n", &["missing.example"]);
+        assert!(clean.file_parse_complete);
+        assert_eq!(clean.matches[0].status, "not_observed_in_supplied_file");
+    }
+
+    #[test]
     fn hashes_full_bytes_and_rejects_unstructured_rows() {
         let report = inspect(
             b"example.com\nhttps://example.com\nnone;detail\n\xff\n",
