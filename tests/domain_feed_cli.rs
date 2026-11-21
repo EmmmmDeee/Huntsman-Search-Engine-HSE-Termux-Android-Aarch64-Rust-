@@ -51,12 +51,32 @@ fn command_reports_membership_hash_and_explicit_unknowns() {
     assert_eq!(result["dataset"], "full");
     assert_eq!(result["as_of"], "2025-07-06");
     assert_eq!(result["valid_rows"], 3);
+    assert_eq!(result["file_parse_complete"], Value::Bool(true));
     assert_eq!(result["matches"][0]["occurrences"], 2);
     assert_eq!(result["matches"][1]["listed"], Value::Bool(false));
+    assert_eq!(
+        result["matches"][1]["status"],
+        "not_observed_in_supplied_file"
+    );
     assert_eq!(result["registration_status"], "unknown");
     assert_eq!(result["ownership"], "unknown");
     assert_eq!(result["site_active"], "unknown");
     assert_eq!(result["file_sha256"].as_str().unwrap().len(), 64);
+}
+
+#[test]
+fn malformed_rows_leave_absence_unresolved_in_cli_json() {
+    let output = with_feed(b"example.com\nnot/a/domain\n", |path| {
+        match_file(path, &["example.com", "missing.example"])
+    });
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["file_parse_complete"], Value::Bool(false));
+    assert_eq!(
+        report["matches"][1]["status"],
+        "unresolved_due_to_invalid_rows"
+    );
+    assert_eq!(report["matches"][0]["status"], "present");
 }
 
 #[test]
