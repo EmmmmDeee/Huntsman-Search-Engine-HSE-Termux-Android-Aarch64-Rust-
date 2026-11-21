@@ -88,6 +88,7 @@ struct Counts {
 }
 
 fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
+    let first_row = counts.lines == 0;
     counts.lines = counts.lines.saturating_add(1);
     if oversized {
         counts.invalid = counts.invalid.saturating_add(1);
@@ -96,6 +97,13 @@ fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
     let Ok(raw) = std::str::from_utf8(row) else {
         counts.invalid = counts.invalid.saturating_add(1);
         return;
+    };
+    // A UTF-8 BOM belongs to the file envelope, never a domain label.
+    // Strip it only from the first row; its bytes remain in the SHA-256.
+    let raw = if first_row {
+        raw.strip_prefix('\u{feff}').unwrap_or(raw)
+    } else {
+        raw
     };
     let raw = raw.trim();
     if raw.is_empty() || raw.starts_with('#') {
@@ -462,6 +470,24 @@ mod tests {
         assert!(
             scan(Cursor::new(b"example.com"), Dataset::Full, "2025-07-06", &[]).is_err()
         );
+    }
+
+    #[test]
+    fn utf8_bom_is_recognised_only_at_file_start_and_hashed_verbatim() {
+        let r = inspect(
+            b"\xef\xbb\xbfExample.COM\nother.example\n",
+            &["example.com", "other.example"],
+        );
+        assert_eq!(r.valid_rows, 2);
+        assert_eq!(r.invalid_rows, 0);
+        assert_eq!(r.matches[0].listed, Some(true));
+        assert_eq!(
+            r.file_sha256,
+            "81672eed66ab830a0e5510dc5ada55b9eb822ab0106fe4bc6a702c615e00e198"
+        );
+        let invalid = inspect(b"example.com\n\xef\xbb\xbfother.example\n", &["example.com"]);
+        assert_eq!(invalid.valid_rows, 1);
+        assert_eq!(invalid.invalid_rows, 1);
     }
 
     #[test]
