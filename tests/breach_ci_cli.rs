@@ -54,7 +54,7 @@ fn full_name_plan_preserves_all_name_tokens_without_breach_requests() {
 
 #[test]
 fn all_full_names_batch_retains_names_and_deduplicates_casefolds() {
-    let input = "# authorised scope\nJohn Albert Stephens\nJane Mary Smith\njohn albert stephens\n";
+    let input = "# authorised scope\nJordan Avery Example\nJane Mary Smith\njordan avery example\n";
     let output = with_file(input, |path| {
         run(&[
             "breach-ci",
@@ -68,7 +68,7 @@ fn all_full_names_batch_retains_names_and_deduplicates_casefolds() {
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["name_count"], 2);
     assert_eq!(report["duplicate_names"], 1);
-    assert_eq!(report["plans"][0]["checks"][0]["selector"], "John Albert Stephens");
+    assert_eq!(report["plans"][0]["checks"][0]["selector"], "Jordan Avery Example");
     assert_eq!(report["plans"][1]["checks"][0]["selector"], "Jane Mary Smith");
 }
 
