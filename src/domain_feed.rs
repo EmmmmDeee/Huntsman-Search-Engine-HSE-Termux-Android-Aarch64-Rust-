@@ -173,34 +173,11 @@ fn sha256_hex(digest: [u8; 32]) -> String {
     result
 }
 
-/// Inspect the entire file, computing its raw SHA-256 while keeping no more
-/// than one bounded row plus at most 1024 query names in RAM.
-///
-/// A match establishes only membership in the supplied file. A miss establishes
-/// only absence from that file, not global absence. This intentionally does
-/// not accept ZIP files: use the provider's documented `text` variant.
-///
-/// # Errors
-/// An invalid query/date, input I/O failure or byte-counter overflow.
-pub fn scan<R: BufRead>(
+/// Collect exact byte provenance and bounded records in a single streaming pass.
+fn scan_rows<R: BufRead>(
     mut reader: R,
-    dataset: Dataset,
-    as_of: &str,
-    targets: &[String],
-) -> Result<Report, String> {
-    if !valid_date(as_of) {
-        return Err("invalid --as-of date: use YYYY-MM-DD".into());
-    }
-    if targets.is_empty() || targets.len() > MAX_TARGETS {
-        return Err(format!("expected 1..={MAX_TARGETS} domain targets"));
-    }
-    let mut counts = Counts::default();
-    for name in targets {
-        let Some(domain) = canonical_domain(name) else {
-            return Err("invalid domain target".into());
-        };
-        counts.targets.entry(domain).or_insert(0);
-    }
+    counts: &mut Counts,
+) -> Result<(u64, [u8; 32]), String> {
     let mut digest = Sha256::new();
     let mut row = Vec::with_capacity(256);
     let mut oversized = false;
@@ -214,7 +191,7 @@ pub fn scan<R: BufRead>(
         let available = reader.fill_buf().map_err(|e| format!("feed read failed: {e}"))?;
         if available.is_empty() {
             if !row.is_empty() || oversized {
-                consume_row(&row, oversized, &mut counts);
+                consume_row(&row, oversized, counts);
             }
             break;
         }
@@ -229,7 +206,7 @@ pub fn scan<R: BufRead>(
                 return Err("gzip archive supplied: use a plain-text list".into());
             }
             if signature_len == 4
-                && signature[..2] == *b"PK"
+                && signature.starts_with(b"PK")
                 && matches!((signature[2], signature[3]), (3, 4) | (5, 6) | (7, 8))
             {
                 return Err("ZIP archive supplied: use a plain-text list".into());
@@ -257,11 +234,43 @@ pub fn scan<R: BufRead>(
             if row.last() == Some(&b'\r') {
                 row.pop();
             }
-            consume_row(&row, oversized, &mut counts);
+            consume_row(&row, oversized, counts);
             row.clear();
             oversized = false;
         }
     }
+    Ok((bytes_read, digest.finalize()))
+}
+
+/// Inspect the entire file, computing its raw SHA-256 while keeping no more
+/// than one bounded row plus at most 1024 query names in RAM.
+///
+/// A match establishes only membership in the supplied file. A miss establishes
+/// only absence from that file, not global absence. This intentionally does
+/// not accept ZIP files: use the provider's documented `text` variant.
+///
+/// # Errors
+/// An invalid query/date, input I/O failure or byte-counter overflow.
+pub fn scan<R: BufRead>(
+    reader: R,
+    dataset: Dataset,
+    as_of: &str,
+    targets: &[String],
+) -> Result<Report, String> {
+    if !valid_date(as_of) {
+        return Err("invalid --as-of date: use YYYY-MM-DD".into());
+    }
+    if targets.is_empty() || targets.len() > MAX_TARGETS {
+        return Err(format!("expected 1..={MAX_TARGETS} domain targets"));
+    }
+    let mut counts = Counts::default();
+    for name in targets {
+        let Some(domain) = canonical_domain(name) else {
+            return Err("invalid domain target".into());
+        };
+        counts.targets.entry(domain).or_insert(0);
+    }
+    let (bytes_read, digest) = scan_rows(reader, &mut counts)?;
     let file_parse_complete = counts.invalid == 0;
     let matches = counts
         .targets
@@ -285,7 +294,7 @@ pub fn scan<R: BufRead>(
         source_authenticated: false,
         dataset,
         as_of: as_of.to_owned(),
-        file_sha256: sha256_hex(digest.finalize()),
+        file_sha256: sha256_hex(digest),
         bytes_read,
         lines_read: counts.lines,
         valid_rows: counts.valid,
