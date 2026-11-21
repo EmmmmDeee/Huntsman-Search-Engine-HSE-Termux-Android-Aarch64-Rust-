@@ -437,7 +437,7 @@ mod tests {
         let r = inspect(&input, &["example.org"]);
         assert_eq!(r.lines_read, 2);
         assert_eq!(r.invalid_rows, 1);
-        assert!(r.matches[0].listed);
+        assert_eq!(r.matches[0].listed, Some(true));
         assert_eq!(r.bytes_read, input.len() as u64);
     }
 
