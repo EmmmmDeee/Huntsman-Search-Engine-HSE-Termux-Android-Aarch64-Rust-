@@ -8,9 +8,13 @@ use serde_json::Value;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-fn with_feed(input: &[u8], run: impl FnOnce(&std::path::Path) -> std::process::Output) -> std::process::Output {
+fn with_feed(
+    input: &[u8],
+    run: impl FnOnce(&std::path::Path) -> std::process::Output,
+) -> std::process::Output {
     let dir = std::env::temp_dir().join(format!(
-        "huntsman-domain-feed-{}-{}", std::process::id(),
+        "huntsman-domain-feed-{}-{}",
+        std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&dir).unwrap();
@@ -33,9 +37,14 @@ fn match_file(path: &std::path::Path, args: &[&str]) -> std::process::Output {
 
 #[test]
 fn command_reports_membership_hash_and_explicit_unknowns() {
-    let output = with_feed(b"EXAMPLE.COM\nexample.com\nother.com\n",
-        |path| match_file(path, &["example.com", "missing.test"]));
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let output = with_feed(b"EXAMPLE.COM\nexample.com\nother.com\n", |path| {
+        match_file(path, &["example.com", "missing.test"])
+    });
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["source_claim"], "domains-monitor.com");
     assert_eq!(result["source_authenticated"], Value::Bool(false));
@@ -66,8 +75,9 @@ fn invalid_snapshot_date_refuses_before_printing_json() {
 
 #[test]
 fn zip_input_never_becomes_a_false_zero_match() {
-    let output = with_feed(b"PK\x03\x04more-archive-data",
-        |path| match_file(path, &["example.com"]));
+    let output = with_feed(b"PK\x03\x04more-archive-data", |path| {
+        match_file(path, &["example.com"])
+    });
     assert_eq!(output.status.code(), Some(65));
     assert!(output.stdout.is_empty());
 }
@@ -79,7 +89,8 @@ fn invalid_kind_is_rejected() {
             .args(["domain-feed", "match", "bogus"])
             .arg(path)
             .args(["--as-of", "2025-07-06", "example.com"])
-            .output().unwrap()
+            .output()
+            .unwrap()
     });
     assert_eq!(output.status.code(), Some(64));
     assert!(output.stdout.is_empty());
