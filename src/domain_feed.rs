@@ -17,7 +17,12 @@ pub const SOURCE: &str = "domains-monitor.com";
 pub const MAX_TARGETS: usize = 1024;
 const MAX_ROW_BYTES: usize = 512;
 
-pub const USAGE: &str = "domain-feed match full|dailyupdate|dailyremove FILE --as-of YYYY-MM-DD DOMAIN [DOMAIN ...]\nRead a locally supplied Domains-Monitor text list in one bounded-memory pass. Prints JSON with SHA-256 evidence and matched domains. No HTTP calls. No claim of domain ownership or registration availability.";
+pub const USAGE: &str = concat!(
+    "domain-feed match full|dailyupdate|dailyremove FILE --as-of YYYY-MM-DD DOMAIN [DOMAIN ...]\n",
+    "Read a locally supplied Domains-Monitor text list in one bounded-memory pass. ",
+    "Prints JSON with SHA-256 evidence and matched domains. No HTTP calls. ",
+    "No claim of domain ownership or registration availability."
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -90,7 +95,13 @@ fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
         return;
     }
     // Never interpret a URL, e-mail, or delimited detailed record as a domain.
-    if raw.len() > 253 || raw.bytes().any(|b| b.is_ascii_control() || matches!(b, b'/' | b'@' | b':' | b';' | b'?' | b'#')) {
+    if raw.len() > 253
+        || raw.starts_with('.')
+        || raw.ends_with("..")
+        || raw.bytes().any(|b| {
+            b.is_ascii_control() || matches!(b, b'/' | b'@' | b':' | b';' | b'?' | b'#')
+        })
+    {
         counts.invalid = counts.invalid.saturating_add(1);
         return;
     }
@@ -110,17 +121,40 @@ fn consume_row(row: &[u8], oversized: bool, counts: &mut Counts) {
 #[must_use]
 pub fn valid_date(date: &str) -> bool {
     let b = date.as_bytes();
-    if b.len() != 10 || b[4] != b'-' || b[7] != b'-'
-        || b.iter().enumerate().any(|(i, c)| i != 4 && i != 7 && !c.is_ascii_digit())
+    if b.len() != 10
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b.iter()
+            .enumerate()
+            .any(|(i, c)| i != 4 && i != 7 && !c.is_ascii_digit())
     {
         return false;
     }
-    let Ok(year) = date[0..4].parse::<u32>() else { return false };
-    let Ok(month) = date[5..7].parse::<usize>() else { return false };
-    let Ok(day) = date[8..10].parse::<u32>() else { return false };
+    let Ok(year) = date[0..4].parse::<u32>() else {
+        return false;
+    };
+    let Ok(month) = date[5..7].parse::<usize>() else {
+        return false;
+    };
+    let Ok(day) = date[8..10].parse::<u32>() else {
+        return false;
+    };
     let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    year > 0 && (1..=12).contains(&month) && day >= 1 && day <= days[month.saturating_sub(1).min(11)]
+    let days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    year > 0 && (1..=12).contains(&month) && day >= 1 && day <= days[month - 1]
 }
 
 fn sha256_hex(digest: [u8; 32]) -> String {
@@ -184,7 +218,11 @@ pub fn scan<R: BufRead>(
             .checked_add(take as u64)
             .ok_or("feed byte counter overflow")?;
         digest.update(part);
-        let without_lf = if ending.is_some() { &part[..part.len() - 1] } else { part };
+        let without_lf = if ending.is_some() {
+            &part[..part.len() - 1]
+        } else {
+            part
+        };
         if !oversized {
             if row.len().saturating_add(without_lf.len()) > MAX_ROW_BYTES {
                 row.clear();
@@ -203,9 +241,15 @@ pub fn scan<R: BufRead>(
             oversized = false;
         }
     }
-    let matches = counts.targets.into_iter().map(|(domain, occurrences)| {
-        Match { domain, occurrences, listed: occurrences > 0 }
-    }).collect();
+    let matches = counts
+        .targets
+        .into_iter()
+        .map(|(domain, occurrences)| Match {
+            domain,
+            occurrences,
+            listed: occurrences > 0,
+        })
+        .collect();
     Ok(Report {
         schema_version: 1,
         source_claim: SOURCE,
@@ -221,7 +265,11 @@ pub fn scan<R: BufRead>(
         registration_status: "unknown",
         ownership: "unknown",
         site_active: "unknown",
-        interpretation: "Membership of this operator-supplied file only. No claim of global coverage, live registration, availability, ownership, or website activity.",
+        interpretation: concat!(
+            "Membership of this operator-supplied file only. ",
+            "No claim of global coverage, live registration, availability, ",
+            "ownership, or website activity."
+        ),
     })
 }
 
