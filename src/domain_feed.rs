@@ -388,7 +388,11 @@ mod tests {
                     "2025-07-06",
                     &["example.com".into()],
                 );
-                assert!(result.is_err(), "magic accepted with capacity {capacity}");
+                let error = result.expect_err("compressed signature must be rejected");
+                assert!(
+                    error.contains("archive"),
+                    "wrong failure for capacity {capacity}: {error}"
+                );
             }
         }
     }
