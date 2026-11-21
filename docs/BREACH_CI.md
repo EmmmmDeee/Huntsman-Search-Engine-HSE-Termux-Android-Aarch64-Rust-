@@ -95,6 +95,10 @@ Store case files privately. The CLI checks regular-file snapshots and
 rejects symlinks and common file-replacement races; it cannot authenticate
 the evidence contained in the file.
 
+## Source-cited relationship cluster analysis
+
+Run the offline command `huntsman-recon breach-ci clusters SOURCE_CITED_RELATIONSHIPS.json` to traverse only explicitly documented associations. It preserves every complete public HTTPS source URL, deduplicates original dataset roots, separates disputed links and weak co-mentions without joining them, keeps namesakes distinct, and returns deterministic full-name clusters and multi-hop paths ranked by uncalibrated CI. No inferred direct relationships, person ownership, criminal association or live breach requests. Full input contract and synthetic fixture: [RELATIONSHIP_CLUSTERS.md](RELATIONSHIP_CLUSTERS.md).
+
 ## Verification and limitations
 
 ```sh

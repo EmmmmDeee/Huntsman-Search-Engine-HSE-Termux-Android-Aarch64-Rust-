@@ -16,6 +16,7 @@ pub const USAGE: &str = concat!(
     "breach-ci names FILE.txt --purpose own-account|authorized-engagement|incident-response\n",
     "breach-ci rank FILE.json\n",
     "breach-ci enrich RECURSIVE_REPORT.json\n",
+    "breach-ci clusters SOURCE_CITED_RELATIONSHIPS.json\n",
     "Plan bounded exact provider checks plus conditional public OSINT pivots offline. ",
     "Rank analyst-supplied non-secret evidence metadata by heuristic Confidence Index (0-100). Propose only source-observed public infrastructure follow-ups from a bounded recursive report. ",
     "No network activity, breach records, credential values or automatic identity attribution."

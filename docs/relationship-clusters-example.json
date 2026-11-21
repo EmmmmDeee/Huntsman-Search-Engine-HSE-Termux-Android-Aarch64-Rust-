@@ -1,0 +1,48 @@
+{
+  "nodes": [
+    {
+      "id": "person-a",
+      "kind": "person",
+      "label": "Jordan Avery Example"
+    },
+    {
+      "id": "organisation-b",
+      "kind": "organisation",
+      "label": "Example Organisation"
+    },
+    {
+      "id": "person-c",
+      "kind": "person",
+      "label": "Jane Mary Example"
+    },
+    {
+      "id": "namesake-d",
+      "kind": "person",
+      "label": "Jane Mary Example"
+    }
+  ],
+  "links": [
+    {
+      "from_id": "person-a",
+      "to_id": "organisation-b",
+      "relation": "member_of",
+      "source_url": "https://example.org/public/register?record=123&year=2024",
+      "source_root": "synthetic-registry-a",
+      "primary_record": true,
+      "exact_identifier": true,
+      "temporal_consistency": true,
+      "contradicted": false
+    },
+    {
+      "from_id": "organisation-b",
+      "to_id": "person-c",
+      "relation": "documented_association",
+      "source_url": "https://example.net/public/case?id=456",
+      "source_root": "synthetic-registry-b",
+      "primary_record": true,
+      "exact_identifier": true,
+      "temporal_consistency": true,
+      "contradicted": false
+    }
+  ]
+}

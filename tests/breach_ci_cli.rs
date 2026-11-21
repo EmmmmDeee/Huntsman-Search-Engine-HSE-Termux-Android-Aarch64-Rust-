@@ -99,6 +99,55 @@ fn full_names_refuse_unvalidated_or_unscoped_identifiers() {
 }
 
 #[test]
+fn clusters_traverse_only_cited_relationships_and_preserve_full_source_urls() {
+    let input = r#"{
+        "nodes":[
+            {"id":"person-a","kind":"person","label":"Jordan Avery Example"},
+            {"id":"org-b","kind":"organisation","label":"Example Organisation"},
+            {"id":"person-c","kind":"person","label":"Jane Mary Example"}
+        ],
+        "links":[
+            {"from_id":"person-a","to_id":"org-b","relation":"member_of",
+             "source_url":"https://example.org/public/register?record=123&year=2024",
+             "source_root":"register-a","primary_record":true,"exact_identifier":true,
+             "temporal_consistency":true,"contradicted":false},
+            {"from_id":"org-b","to_id":"person-c","relation":"documented_association",
+             "source_url":"https://example.net/public/case?id=456",
+             "source_root":"register-b","primary_record":true,"exact_identifier":true,
+             "temporal_consistency":true,"contradicted":false}
+        ]
+    }"#;
+    let output = with_file(input, |path| {
+        run(&["breach-ci", "clusters", path.to_str().unwrap()])
+    });
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["clusters"].as_array().unwrap().len(), 1);
+    assert_eq!(value["clusters"][0]["full_names"].as_array().unwrap().len(), 2);
+    assert_eq!(value["clusters"][0]["traversal"].as_array().unwrap().len(), 3);
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("https://example.org/public/register?record=123&year=2024"));
+    assert_eq!(value["scope"], "operator-supplied source references only; no external records collected");
+}
+
+#[test]
+fn clusters_fail_closed_on_secret_bearing_url_and_unknown_relationship() {
+    let input = r#"{
+        "nodes":[{"id":"person-a","kind":"person","label":"Jordan Avery Example"}],
+        "links":[{"from_id":"person-a","to_id":"missing","relation":"reported_link",
+         "source_url":"https://example.org/case?token=secret-value",
+         "source_root":"registry","primary_record":true,"exact_identifier":true,
+         "temporal_consistency":true,"contradicted":false}]
+    }"#;
+    let output = with_file(input, |path| {
+        run(&["breach-ci", "clusters", path.to_str().unwrap()])
+    });
+    assert_eq!(output.status.code(), Some(65));
+    assert!(output.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-value"));
+}
+
+#[test]
 fn plan_is_offline_and_every_source_is_unqueried() {
     let output = run(&[
         "breach-ci",
