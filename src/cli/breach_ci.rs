@@ -64,7 +64,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             {
                 return fail(EX_NOINPUT, "rank input read failed");
             }
-            if bytes.len() as u64 > MAX_EVIDENCE_FILE_BYTES {
+            if bytes.len() > 256 * 1024 {
                 return fail(EX_DATAERR, "rank input exceeds 256 KiB");
             }
             let findings: Vec<FindingInput> = match serde_json::from_slice(&bytes) {
