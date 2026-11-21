@@ -8,11 +8,35 @@ use std::process::ExitCode;
 use huntsman_recon::breach_ci::{FindingInput, USAGE, plan, plan_full_name, plan_full_names, rank};
 use huntsman_recon::dehashed::{Field, Purpose};
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
+use huntsman_recon::known_enrichment;
 
 use super::{fail, terminal_json_pretty};
 
 const MAX_EVIDENCE_FILE_BYTES: u64 = 256 * 1024;
 const MAX_NAMES_FILE_BYTES: u64 = 16 * 1024;
+
+
+fn same_snapshot(first: &fs::Metadata, later: &fs::Metadata) -> bool {
+    if !first.is_file()
+        || !later.is_file()
+        || first.len() != later.len()
+        || first.modified().ok() != later.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        first.dev() == later.dev()
+            && first.ino() == later.ino()
+            && first.ctime() == later.ctime()
+            && first.ctime_nsec() == later.ctime_nsec()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
 
 pub(super) fn run(args: &[String]) -> ExitCode {
     match args {
@@ -120,6 +144,56 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(_) => fail(EX_DATAERR, "breach plan serialization failed"),
+            }
+        }
+        [command, path] if command == "enrich" => {
+            let path = Path::new(path);
+            let metadata = match fs::symlink_metadata(path) {
+                Ok(meta) => meta,
+                Err(_) => return fail(EX_NOINPUT, "recursive report unavailable"),
+            };
+            if !metadata.file_type().is_file()
+                || metadata.len() > known_enrichment::MAX_REPORT_BYTES
+            {
+                return fail(EX_DATAERR, "recursive report must be a regular file up to 1 MiB");
+            }
+            let file = match File::open(path) {
+                Ok(file) => file,
+                Err(_) => return fail(EX_NOINPUT, "recursive report unreadable"),
+            };
+            let opened = match file.metadata() {
+                Ok(meta) => meta,
+                Err(_) => return fail(EX_NOINPUT, "recursive report metadata unavailable"),
+            };
+            if !same_snapshot(&metadata, &opened) {
+                return fail(EX_DATAERR, "recursive report changed before reading");
+            }
+            let mut bytes = Vec::new();
+            if (&file)
+                .take(known_enrichment::MAX_REPORT_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .is_err()
+            {
+                return fail(EX_NOINPUT, "recursive report read failed");
+            }
+            let after_handle = file.metadata();
+            let after_path = fs::symlink_metadata(path);
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != metadata.len()
+                || !after_handle.is_ok_and(|meta| same_snapshot(&metadata, &meta))
+                || !after_path.is_ok_and(|meta| same_snapshot(&metadata, &meta))
+            {
+                return fail(EX_DATAERR, "recursive report changed while reading");
+            }
+            let report = match known_enrichment::enrich_json(&bytes) {
+                Ok(report) => report,
+                Err(reason) => return fail(EX_DATAERR, reason),
+            };
+            match terminal_json_pretty(&report) {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::SUCCESS
+                }
+                Err(_) => fail(EX_DATAERR, "recursive enrichment serialization failed"),
             }
         }
         [command, path] if command == "rank" => {
