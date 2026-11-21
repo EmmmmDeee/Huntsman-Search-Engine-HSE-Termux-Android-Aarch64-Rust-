@@ -11,6 +11,7 @@ use crate::canonical::canonical_domain;
 use crate::scan_route::{ScanKind, canonical_selector};
 use crate::people_discovery;
 use crate::union_find::UnionFind;
+use crate::value_syntax::percent_decode_strict;
 
 pub const MAX_CLUSTER_INPUT_BYTES: usize = 256 * 1024;
 const MAX_NODES: usize = 128;
@@ -180,19 +181,29 @@ fn valid_public_source_url(url: &str) -> bool {
     if authority.is_empty() || authority.contains('@') || authority.contains('[') {
         return false;
     }
-    let host = authority.split(':').next().unwrap_or("");
-    if canonical_domain(host).is_none() {
+    let Ok(parsed) = crate::http::parse_http_uri(url) else {
+        return false;
+    };
+    if parsed.scheme_str() != Some("https")
+        || !parsed.host().is_some_and(|host| canonical_domain(host).is_some())
+    {
         return false;
     }
-    let lower = url.to_ascii_lowercase();
-    for component in lower.split(['?', '&']) {
-        let name = component.split('=').next().unwrap_or("");
-        if matches!(
-            name,
-            "token" | "access_token" | "api_key" | "apikey" | "key" | "password"
-                | "secret" | "auth" | "authorization" | "signature" | "sig"
-        ) {
-            return false;
+    if let Some((_, query)) = url.split_once('?') {
+        let query = query.split('#').next().unwrap_or("");
+        for component in query.split('&') {
+            let key = component.split('=').next().unwrap_or("");
+            let Some(name) = percent_decode_strict(key) else {
+                return false;
+            };
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "token" | "access_token" | "api_key" | "apikey" | "key"
+                    | "password" | "secret" | "auth" | "authorization"
+                    | "signature" | "sig"
+            ) {
+                return false;
+            }
         }
     }
     true
@@ -333,6 +344,18 @@ pub fn analyze_json(bytes: &[u8]) -> Result<ClusterReport, &'static str> {
             admitted.push(observation);
         }
     }
+
+    // CI orders every evidence-bearing relationship, not just whole clusters.
+    let order = |a: &CitedRelation, b: &CitedRelation| {
+        b.confidence_index
+            .cmp(&a.confidence_index)
+            .then_with(|| a.from_id.cmp(&b.from_id))
+            .then_with(|| a.to_id.cmp(&b.to_id))
+            .then_with(|| a.relation.cmp(&b.relation))
+    };
+    admitted.sort_by(order);
+    disputed.sort_by(order);
+    non_connecting.sort_by(order);
 
     let mut clusters = Vec::new();
     for indices in union_find.groups() {
@@ -536,6 +559,7 @@ mod tests {
         for url in [
             "http://example.org/a",
             "https://example.org/a?token=secret",
+            "https://example.org/a?%74oken=secret",
             "https://user@example.org/data",
             "https://127.0.0.1/private",
         ] {
