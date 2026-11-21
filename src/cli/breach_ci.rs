@@ -9,6 +9,7 @@ use huntsman_recon::breach_ci::{FindingInput, USAGE, plan, plan_full_name, plan_
 use huntsman_recon::dehashed::{Field, Purpose};
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::known_enrichment;
+use huntsman_recon::known_relationship_clusters;
 
 use super::{fail, terminal_json_pretty};
 
@@ -144,6 +145,54 @@ pub(super) fn run(args: &[String]) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(_) => fail(EX_DATAERR, "breach plan serialization failed"),
+            }
+        }
+        [command, path] if command == "clusters" => {
+            let path = Path::new(path);
+            let metadata = match fs::symlink_metadata(path) {
+                Ok(meta) => meta,
+                Err(_) => return fail(EX_NOINPUT, "relationship package unavailable"),
+            };
+            if !metadata.file_type().is_file()
+                || metadata.len() > known_relationship_clusters::MAX_CLUSTER_INPUT_BYTES as u64
+            {
+                return fail(EX_DATAERR, "cluster package must be a regular file up to 256 KiB");
+            }
+            let file = match File::open(path) {
+                Ok(file) => file,
+                Err(_) => return fail(EX_NOINPUT, "relationship package unreadable"),
+            };
+            let opened = match file.metadata() {
+                Ok(meta) => meta,
+                Err(_) => return fail(EX_NOINPUT, "relationship package metadata unavailable"),
+            };
+            if !same_snapshot(&metadata, &opened) {
+                return fail(EX_DATAERR, "relationship package changed before reading");
+            }
+            let mut bytes = Vec::new();
+            if (&file)
+                .take(known_relationship_clusters::MAX_CLUSTER_INPUT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .is_err()
+            {
+                return fail(EX_NOINPUT, "relationship package read failed");
+            }
+            if bytes.len() as u64 != metadata.len()
+                || !file.metadata().is_ok_and(|after| same_snapshot(&metadata, &after))
+                || !fs::symlink_metadata(path).is_ok_and(|after| same_snapshot(&metadata, &after))
+            {
+                return fail(EX_DATAERR, "relationship package changed while reading");
+            }
+            let report = match known_relationship_clusters::analyze_json(&bytes) {
+                Ok(report) => report,
+                Err(reason) => return fail(EX_DATAERR, reason),
+            };
+            match terminal_json_pretty(&report) {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::SUCCESS
+                }
+                Err(_) => fail(EX_DATAERR, "relationship cluster serialization failed"),
             }
         }
         [command, path] if command == "enrich" => {
