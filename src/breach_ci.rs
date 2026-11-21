@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::dehashed::{Field, Purpose, QueryError, Selector};
-use crate::username_variants;
 use crate::people_discovery;
+use crate::username_variants;
 
 pub const USAGE: &str = concat!(
     "breach-ci plan email|username|domain|name VALUE --purpose own-account|authorized-engagement|incident-response|security-research\n",
@@ -251,6 +251,17 @@ pub struct NameBatch {
     pub provenance_policy: &'static str,
 }
 
+fn validate_full_name(name: &str) -> Result<String, &'static str> {
+    let canonical = people_discovery::checked_name(name)
+        .map_err(|_| "invalid full name: use two or more alphabetic tokens, at most 120 bytes")?;
+    if name.chars().any(|ch| {
+        !ch.is_alphabetic() && !matches!(ch, ' ' | '-' | '\'' | '’')
+    }) {
+        return Err("full name contains punctuation, digits or other non-name content");
+    }
+    Ok(canonical)
+}
+
 /// Validate one full personal name using the same rules as people-discover.
 /// No person identifier, account, email, or breach hit is inferred from it.
 ///
@@ -260,8 +271,7 @@ pub fn plan_full_name(name: &str, purpose: Purpose) -> Result<Plan, &'static str
     if purpose == Purpose::SecurityResearch {
         return Err("a full personal name requires own-account, authorised engagement or incident-response purpose");
     }
-    people_discovery::checked_name(name)
-        .map_err(|_| "invalid full name: use two or more alphabetic name tokens, at most 120 bytes")?;
+    validate_full_name(name)?;
     let display = name.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut checks = Vec::with_capacity(4);
     for (priority, provider, basis, requirement) in [
@@ -317,7 +327,7 @@ pub fn plan_full_names(input: &str, purpose: Purpose) -> Result<NameBatch, &'sta
         if name.is_empty() || name.starts_with('#') {
             continue;
         }
-        let canonical = people_discovery::checked_name(line)
+        let canonical = validate_full_name(line)
             .map_err(|_| "name-list contains an invalid full personal name")?;
         if !seen.insert(canonical) {
             duplicate_names += 1;
@@ -474,6 +484,21 @@ mod tests {
         assert_eq!(batch.duplicate_names, 1);
         assert_eq!(batch.plans[0].checks[0].selector, "Jordan Avery Example");
         assert_eq!(batch.plans[1].checks[0].selector, "Jane Mary Smith");
+    }
+
+    #[test]
+    fn full_name_rejects_ages_urls_and_mixed_record_fields() {
+        for value in [
+            "John Smith, 44",
+            "John Smith 44",
+            "John Smith@example.org",
+            "https://john.smith",
+            "Jane Smith / Brisbane",
+            "Jane Smith\\other",
+        ] {
+            assert!(plan_full_name(value, Purpose::AuthorizedEngagement).is_err());
+        }
+        assert!(plan_full_name("Anne-Marie O'Neill", Purpose::AuthorizedEngagement).is_ok());
     }
 
     #[test]
