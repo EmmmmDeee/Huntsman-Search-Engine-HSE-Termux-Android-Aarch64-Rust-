@@ -2,3 +2,6 @@
 - Registration status, ownership and website activity remain unknown: local-list membership is not authoritative proof, and the source claim is explicitly unauthenticated.
 - ZIP/binary input is rejected, symlinks are refused, and invalid dates and malformed records cannot silently create findings. No network access, token handling, new crates, or changes to existing scan output.
 - Includes offline unit/CLI regressions and `docs/DOMAINS_MONITOR.md`.
+- Reject empty, comment-only, all-invalid and HTML/error-page exports rather than claiming target absence; preserve tri-state `listed` semantics for partially parsed files.
+- Accept an optional first-row UTF-8 BOM without changing raw SHA-256, and support `--expect-sha256 HEX` to refuse an export whose bytes differ from a trusted independent manifest.
+- Extend negative, hash-mismatch, BOM and archive-specific regression fixtures; no authenticated upstream API request or new runtime dependency.
