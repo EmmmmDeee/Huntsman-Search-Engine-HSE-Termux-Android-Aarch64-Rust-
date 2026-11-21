@@ -17,11 +17,16 @@ matching.
 huntsman-recon domain-feed match full /path/to/domains.txt --as-of 2025-07-06 example.com other.example
 huntsman-recon domain-feed match dailyupdate /path/to/dailyupdate.txt --as-of 2026-11-20 example.com
 huntsman-recon domain-feed match dailyremove /path/to/dailyremove.txt --as-of 2026-11-20 example.com
+# The digest must come from a separately trusted manifest, not the same file:
+huntsman-recon domain-feed match full /path/to/domains.txt --as-of 2025-07-06 --expect-sha256 YOUR_64_HEX_DIGIT_HASH example.com
 ```
 
 Download **plain text**, not a ZIP or gzip archive. Known compressed
 signatures are rejected even when the reader exposes one byte at a time, to
-avoid misreporting absence. The `--as-of` date is operator-provided, not obtained or
+avoid misreporting absence. Files with zero valid domain records (including
+empty, comment-only and HTML/error-page files) are refused instead of being
+treated as negative search results. A UTF-8 byte-order mark is accepted only
+at the beginning of the first line, while its original bytes remain in the hash. The `--as-of` date is operator-provided, not obtained or
 verified from the file; use the date the provider actually assigns the export.
 The tool reads the whole file once with a constant-size row buffer, matches
 up to 1,024 deduplicated canonical query domains, and computes SHA-256 over
@@ -50,9 +55,12 @@ to avoid rescanning the multi-gigabyte file. The source file is read-only; no
 massive in-RAM index is built and no file is rewritten. The CLI checks the
 file's size, modification time and (on Unix/Android) device, inode and change
 time before and after reading, detecting many concurrent replacements or
-modifications. Those checks are **not** a cryptographic authenticity guarantee:
-compare the reported SHA-256 against an independently trusted manifest when
-available.
+modifications. Those checks are **not** a cryptographic authenticity guarantee.
+Use `--expect-sha256 HEX` to compare every original byte against an expected
+64-digit SHA-256 digest, supplied by a *separately trusted* source. Uppercase
+or lowercase hex is accepted. Invalid digests are rejected at argument parsing;
+a digest mismatch is a data error and emits no JSON findings. A digest copied
+from the same untrusted download is not an authenticity check.
 
 ## Verification and limitations
 
@@ -68,8 +76,9 @@ cargo test --test domain_feed_cli --locked
 Regression fixtures cover case-folding, duplicate rows, CRLF and final rows
 without newlines, a row longer than 512 bytes split across buffer boundaries,
 invalid UTF-8, detailed/URL rows, ZIP and gzip refusal (including one-byte
-read buffers), file-parse uncertainty, invalid dates, symlinks and stdout
-suppression on errors. The provider is not contacted in these tests.
+read buffers), UTF-8 BOM handling, empty/invalid exports, file-parse
+uncertainty, SHA-256 manifest matching/mismatch, invalid dates, symlinks and
+stdout suppression on errors. The provider is not contacted in these tests.
 
 This adapter does **not** yet implement authenticated API fetch, incremental
 checkpointed imports, persistent indexed matching, saved-scan evidence-graph
