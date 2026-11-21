@@ -466,13 +466,13 @@ mod tests {
     #[test]
     fn name_batch_keeps_all_unique_full_names_and_counts_duplicates() {
         let batch = plan_full_names(
-            "# reviewed scope\nJohn Albert Stephens\nJane Mary Smith\njohn albert stephens\n\n",
+            "# reviewed scope\nJordan Avery Example\nJane Mary Smith\njordan avery example\n\n",
             Purpose::AuthorizedEngagement,
         )
         .unwrap();
         assert_eq!(batch.name_count, 2);
         assert_eq!(batch.duplicate_names, 1);
-        assert_eq!(batch.plans[0].checks[0].selector, "John Albert Stephens");
+        assert_eq!(batch.plans[0].checks[0].selector, "Jordan Avery Example");
         assert_eq!(batch.plans[1].checks[0].selector, "Jane Mary Smith");
     }
 
