@@ -280,14 +280,21 @@ mod tests {
     use super::*;
 
     fn inspect(input: &[u8], names: &[&str]) -> Report {
-        scan(BufReader::with_capacity(3, Cursor::new(input)),
-            Dataset::Full, "2025-07-06",
-            &names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>()).unwrap()
+        scan(
+            BufReader::with_capacity(3, Cursor::new(input)),
+            Dataset::Full,
+            "2025-07-06",
+            &names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn exact_membership_is_deduplicated_and_not_live_registration() {
-        let report = inspect(b"Example.COM\r\nfoo.example.com\nexample.com\n", &["EXAMPLE.COM", "xample.com"]);
+        let report = inspect(
+            b"Example.COM\r\nfoo.example.com\nexample.com\n",
+            &["EXAMPLE.COM", "xample.com"],
+        );
         assert_eq!(report.lines_read, 3);
         assert_eq!(report.valid_rows, 3);
         assert_eq!(report.matches[0].occurrences, 2);
@@ -298,8 +305,19 @@ mod tests {
     }
 
     #[test]
+    fn leading_dot_is_not_silently_canonicalised_into_a_match() {
+        let report = inspect(b".example.com\nexample.com\n", &["example.com"]);
+        assert_eq!(report.valid_rows, 1);
+        assert_eq!(report.invalid_rows, 1);
+        assert_eq!(report.matches[0].occurrences, 1);
+    }
+
+    #[test]
     fn hashes_full_bytes_and_rejects_unstructured_rows() {
-        let report = inspect(b"example.com\nhttps://example.com\nnone;detail\n\xff\n", &["example.com"]);
+        let report = inspect(
+            b"example.com\nhttps://example.com\nnone;detail\n\xff\n",
+            &["example.com"],
+        );
         assert_eq!(report.bytes_read, 46);
         assert_eq!(report.valid_rows, 1);
         assert_eq!(report.invalid_rows, 3);
@@ -319,17 +337,45 @@ mod tests {
 
     #[test]
     fn bogus_dates_and_bad_targets_never_scan() {
-        for date in ["2025-02-29", "2025-13-01", "2025-00-01", "2025-01-00", "0000-01-01", "2025-1-01"] {
-            assert!(scan(Cursor::new(b"example.com"), Dataset::Full, date, &["example.com".into()]).is_err());
+        for date in [
+            "2025-02-29",
+            "2025-13-01",
+            "2025-00-01",
+            "2025-01-00",
+            "0000-01-01",
+            "2025-1-01",
+        ] {
+            assert!(
+                scan(
+                    Cursor::new(b"example.com"),
+                    Dataset::Full,
+                    date,
+                    &["example.com".into()],
+                )
+                .is_err()
+            );
         }
         assert!(valid_date("2024-02-29"));
-        assert!(scan(Cursor::new(b"example.com"), Dataset::Full, "2025-07-06", &["https://example.com".into()]).is_err());
-        assert!(scan(Cursor::new(b"example.com"), Dataset::Full, "2025-07-06", &[]).is_err());
+        assert!(
+            scan(
+                Cursor::new(b"example.com"),
+                Dataset::Full,
+                "2025-07-06",
+                &["https://example.com".into()],
+            )
+            .is_err()
+        );
+        assert!(
+            scan(Cursor::new(b"example.com"), Dataset::Full, "2025-07-06", &[]).is_err()
+        );
     }
 
     #[test]
     fn exact_hash_agrees_with_known_sha256() {
         let r = inspect(b"abc\n", &["example.org"]);
-        assert_eq!(r.file_sha256, "edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb");
+        assert_eq!(
+            r.file_sha256,
+            "edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb"
+        );
     }
 }
