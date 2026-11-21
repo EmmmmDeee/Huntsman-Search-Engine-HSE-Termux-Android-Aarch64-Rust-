@@ -167,6 +167,7 @@ fn help_and_version_are_available() {
         ("build-sha", "build-sha"),
         ("geo", "geo LAT,LON LAT,LON"),
         ("search", "search QUERY [DIR]"),
+        ("domain-feed", "domain-feed match full|dailyupdate|dailyremove FILE"),
         ("domain-lifecycle", "domain-lifecycle analyze INPUT.json"),
         ("people", "people NAME [--save FILE]"),
         ("phone", "phone NUMBER [--save FILE]"),
