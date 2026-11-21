@@ -118,7 +118,7 @@ pub fn valid_date(date: &str) -> bool {
     let Ok(year) = date[0..4].parse::<u32>() else { return false };
     let Ok(month) = date[5..7].parse::<usize>() else { return false };
     let Ok(day) = date[8..10].parse::<u32>() else { return false };
-    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
     let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     year > 0 && (1..=12).contains(&month) && day >= 1 && day <= days[month.saturating_sub(1).min(11)]
 }
@@ -174,7 +174,7 @@ pub fn scan<R: BufRead>(
             }
             break;
         }
-        let ending = available.iter().position(|b| *b == b'\n');
+        if bytes_read == 0 && available.starts_with(b"PK\\x03\\x04") {\n            return Err("ZIP archive supplied: use the provider's plain-text list".into());\n        }\n        let ending = available.iter().position(|b| *b == b'\n');
         let take = ending.map_or(available.len(), |n| n + 1);
         let part = &available[..take];
         bytes_read = bytes_read
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn hashes_full_bytes_and_rejects_unstructured_rows() {
         let report = inspect(b"example.com\nhttps://example.com\nnone;detail\n\xff\n", &["example.com"]);
-        assert_eq!(report.bytes_read, 48);
+        assert_eq!(report.bytes_read, 46);
         assert_eq!(report.valid_rows, 1);
         assert_eq!(report.invalid_rows, 3);
         assert_eq!(report.file_sha256.len(), 64);
