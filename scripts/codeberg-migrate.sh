@@ -118,6 +118,21 @@ read_refs "$destination" > "$work/destination.refs" || fail 'Could not read dest
 if ! diff -u "$work/source.refs" "$work/destination.refs"; then
   fail 'Destination branches/tags differ from the source snapshot. No automatic repair or force-push.'
 fi
+
+# Matching branch/tag refs do not establish a usable migrated repository.
+# An empty Codeberg repository may still advertise HEAD as refs/heads/master
+# after main was pushed, so a default clone/web checkout can fail while our
+# ref comparison would otherwise print VERIFIED. Require an explicit remote
+# symbolic HEAD pinned to the same canonical main object.
+head_advertisement=$(git -c credential.interactive=never ls-remote --symref "$destination" HEAD) ||
+  fail 'Destination HEAD could not be inspected; migration verification incomplete.'
+remote_default=$(printf '%s\n' "$head_advertisement" | awk '$1 == "ref:" && $3 == "HEAD" { print $2 }')
+remote_tip=$(printf '%s\n' "$head_advertisement" | awk '$2 == "HEAD" && $1 != "ref:" { print $1 }')
+main_tip=$(git -C "$work/clone.git" rev-parse refs/heads/main) ||
+  fail 'Cannot verify canonical main at the source snapshot.'
+if [[ "$remote_default" != refs/heads/main || "$remote_tip" != "$main_tip" ]]; then
+  fail "Destination refs match, but default HEAD is not canonical main (advertised: ${remote_default:-missing}; tip: ${remote_tip:-missing}). Set the destination default branch to main in Codeberg settings, then re-run verify; never force-push."
+fi
 printf 'VERIFIED: %s\n' "$destination"
 printf 'main SHA: %s\n' "$(git -C "$work/clone.git" rev-parse refs/heads/main)"
 printf 'refs: %s\n' "$(wc -l < "$work/source.refs" | tr -d ' ')"
