@@ -16,6 +16,7 @@ use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
+use huntsman_recon::osint_geo_case;
 use huntsman_recon::osint_matrix;
 use huntsman_recon::rhinser_catalog::Catalog;
 use huntsman_recon::rhinser_native;
@@ -25,9 +26,10 @@ use huntsman_recon::rhinser_tlv;
 use huntsman_recon::rhinser_workspace::{MAX_WORKSPACE_BYTES, Workspace};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-pub(super) const OSINT_HELP: &str = "osint matrix [--json] | osint native [--entities] FILE | osint demo SEED | osint nfc apdu|ndef|tlv HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|overlaps|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+pub(super) const OSINT_HELP: &str = "osint matrix [--json] | osint native [--entities] FILE | osint demo SEED | osint nfc apdu|ndef|tlv HEX | osint catalog [--json|--category ID|--find QUERY|--tool ID|--url ID|--query ID QUERY] | osint workspace FILE init|show|overlaps|case ID TITLE|note CASE TEXT|lead CASE ID URL SUMMARY|bookmark ID|favourite ID|recent ID|search QUERY|setting KEY VALUE | osint case FILE | osint geo-case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
   matrix: compiled Rust OSINT file groups, the reachable modules in each, synergies and explicitly unverified runtime status.\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
+  geo-case: Brisbane-prioritised, source-linked location leads; no verified person identity or location.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
   x: public search-engine indexed X leads (keyless; not Grok's private search).\n\
@@ -318,6 +320,15 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
         [mode, rest @ ..] if mode == "demo" => demo_cmd(rest),
         [mode, rest @ ..] if mode == "nfc" => nfc_cmd(rest),
         [mode, rest @ ..] if mode == "workspace" => workspace_cmd(rest),
+        [mode, path] if mode == "geo-case" => {
+            match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
+                Ok(data) => match osint_geo_case::inspect_json(&data) {
+                    Ok(report) => emit(&report, true),
+                    Err(error) => fail_error(&error),
+                },
+                Err(error) => fail_error(&error),
+            }
+        }
         [mode, path] if mode == "case" => {
             match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
                 Ok(data) => match osint_casework::review_json(&data) {
