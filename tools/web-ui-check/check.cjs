@@ -264,6 +264,49 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await ctx.close();
     }
 
+    // Telegram public-index UI must preserve quotes, use the guarded lookup
+    // request, and render only HTTPS URLs as links. All provider data is mocked.
+    {
+      const ctx = await browser.newContext(PHONE);
+      const page = await ctx.newPage();
+      await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
+      let requested = null;
+      await page.route('**/api/lookup?*', async route => {
+        const u = new URL(route.request().url());
+        if (u.searchParams.get('kind') !== 'telegram') {
+          await route.continue();
+          return;
+        }
+        requested = { kind: u.searchParams.get('kind'), q: u.searchParams.get('q') };
+        await route.fulfill({ json: {
+          route: 'public-osint',
+          entities: [
+            { kind: 'url', value: 'https://t.me/cheemscmnews/132' },
+            { kind: 'url', value: 'javascript:alert(1)' },
+          ],
+          outcomes: [{ module: 'telegram_index_telegram_bing', kind: 'success' }],
+        } });
+      });
+      await page.fill('#uresearch-q', '"Truong"');
+      await page.click('#utelegram-go');
+      await page.waitForFunction(() =>
+        document.getElementById('uresearch-status').textContent.includes('Unverified links')
+      );
+      const state = await page.evaluate(() => ({
+        status: document.getElementById('uresearch-status').textContent,
+        anchors: [...document.querySelectorAll('#uresearch-hits a')].map(a => a.href),
+        missionDisabled: document.getElementById('uresearch-mission').disabled,
+      }));
+      check('Telegram UI preserves an exact quoted query and uses guarded lookup',
+        requested?.kind === 'telegram' && requested?.q === '"Truong"', requested);
+      check('Telegram UI retains safe public URLs without linking unsafe schemes',
+        state.anchors.length === 1 &&
+          state.anchors[0] === 'https://t.me/cheemscmnews/132' &&
+          state.status.includes('no Telegram account ownership') && state.missionDisabled,
+        state);
+      await ctx.close();
+    }
+
     // A tab open across an upgrade: once health names another page than the one the tab loaded,
     // the page asks to be reloaded, and Reload brings the page the server now serves.
     {

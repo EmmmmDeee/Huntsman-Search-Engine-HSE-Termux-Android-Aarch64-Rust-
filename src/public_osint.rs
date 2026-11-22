@@ -37,7 +37,7 @@ pub struct Report {
     pub limitations: Vec<&'static str>,
 }
 
-fn checked_query(raw: &str) -> Result<String, &'static str> {
+fn checked_query(raw: &str, source: Source) -> Result<String, &'static str> {
     if raw.len() > MAX_PUBLIC_QUERY_BYTES {
         return Err("query must be between 1 and 160 UTF-8 bytes");
     }
@@ -45,7 +45,7 @@ fn checked_query(raw: &str) -> Result<String, &'static str> {
     // boundary evades the public-source query control-character gate.
     if raw
         .chars()
-        .any(|c| c.is_control() || matches!(c, '"' | '\\'))
+        .any(|c| c.is_control() || c == '\\' || (c == '"' && source != Source::Web))
     {
         return Err("query cannot contain controls, quotes or backslashes");
     }
@@ -488,6 +488,20 @@ fn web_search<T: Transport + ?Sized>(
     (entities, found.outcomes)
 }
 
+/// Compatibility entry point; all Telegram discovery logic lives in
+/// the telegram_index library module and uses the guarded web transport.
+///
+/// # Errors
+/// Invalid selectors fail before network activity.
+pub fn telegram_index_search<T: Transport + ?Sized>(
+    transport: &T,
+    raw_query: &str,
+    scan_id: &str,
+    now: u64,
+) -> Result<Report, &'static str> {
+    crate::telegram_index::search(transport, raw_query, scan_id, now)
+}
+
 /// Search official notices, recent news, existing keyless web engines, or all.
 /// A failure in one source never erases the other source's findings.
 ///
@@ -519,7 +533,7 @@ fn search_with_clock<T: Transport + ?Sized>(
     now: u64,
     clock: &dyn crate::deadline::Clock,
 ) -> Result<Report, &'static str> {
-    let query = checked_query(raw_query)?;
+    let query = checked_query(raw_query, source)?;
     let mut entities = Vec::new();
     let mut outcomes = Vec::new();
     for provider in match source {
@@ -644,6 +658,20 @@ mod tests {
             );
         }
         assert!(search(&silent, Source::All, &"x".repeat(161), "s", 1).is_err());
+    }
+
+    /// Exact-phrase web searches are safe for the existing guarded web-query layer.
+    /// GDELT and notice query grammars must continue refusing quote characters.
+    #[test]
+    fn exact_phrase_web_lookup_preserves_quotes_only_for_web() {
+        let quoted = r#"site:t.me/s "Kylie Truong""#;
+        assert_eq!(checked_query(quoted, Source::Web), Ok(quoted.to_owned()));
+        for source in [Source::News, Source::Notices, Source::All] {
+            assert!(checked_query(quoted, source).is_err());
+        }
+        for invalid in ["a\nb", "a\\b"] {
+            assert!(checked_query(invalid, Source::Web).is_err());
+        }
     }
 
     #[test]

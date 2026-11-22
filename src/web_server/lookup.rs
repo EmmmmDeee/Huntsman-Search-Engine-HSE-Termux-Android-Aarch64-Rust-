@@ -99,6 +99,14 @@ fn serialize_lookup(report: &LookupReport) -> Result<String, serde_json::Error> 
 /// after a server that stopped mid-lookup starts again; the answer names it. Without them the
 /// installed handler runs it and nothing is kept, as there is nowhere to keep it. Either way the
 /// request waits at most [`Lookups::wait`] and then answers `504`.
+/// The scan router does not implement these public-OSINT kinds.
+/// They must use the installed guarded lookup handler even when ordinary
+/// scan persistence is configured; routing them through ScanRequest would
+/// reject the kind before contacting their providers.
+fn direct_public_osint_kind(kind: &str) -> bool {
+    matches!(kind, "news" | "notices" | "web" | "dossier" | "telegram")
+}
+
 pub(super) fn lookup_response(
     parsed: &ParsedRequest<'_>,
     lookups: Option<&Lookups>,
@@ -120,7 +128,8 @@ pub(super) fn lookup_response(
         Err(message) => return json_error(400, message),
     };
     let until = Instant::now() + lookups.wait;
-    if let Some(scans) = scans {
+    let direct_public = direct_public_osint_kind(&query.kind);
+    if let Some(scans) = scans.filter(|_| !direct_public) {
         let service = Arc::clone(scans.service());
         // Reading and encoding the saved report needs more stack than a connection has.
         let worker = thread::Builder::new()
@@ -162,8 +171,12 @@ pub(super) fn lookup_response(
         }
         Err(RecvTimeoutError::Timeout) => json_error(
             504,
-            "the lookup is still running and this server keeps no saved scans, so its result \
-             will not be kept; set HOME or HUNTSMAN_HOME to keep lookups as saved scans",
+            if direct_public {
+                "public-OSINT lookup exceeded the response deadline; it is not persisted as a scan"
+            } else {
+                "the lookup is still running and this server keeps no saved scans, so its result \
+                 will not be kept; set HOME or HUNTSMAN_HOME to keep lookups as saved scans"
+            },
         ),
     }
 }
@@ -645,6 +658,19 @@ fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
 mod tests {
     use super::*;
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+
+    #[test]
+    fn public_osint_kinds_use_direct_lookup_instead_of_incompatible_saved_scan_router() {
+        for kind in ["news", "notices", "web", "dossier", "telegram"] {
+            assert!(direct_public_osint_kind(kind), "{kind}");
+        }
+        for kind in ["auto", "people", "username", "domain", "ip"] {
+            assert!(!direct_public_osint_kind(kind), "{kind}");
+        }
+        let query = parse_lookup_query("kind=telegram&q=%22Truong%22").unwrap();
+        assert_eq!(query.kind, "telegram");
+        assert_eq!(query.selector, r#""Truong""#);
+    }
 
     #[test]
     fn live_lookup_json_includes_canonical_source_join_without_mutating_evidence() {

@@ -45,9 +45,10 @@
 <label class="fl" for="uresearch-q">Universal Research</label>
 <input id="uresearch-q" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false">
 <button class="btn btn-primary" id="uresearch-go" type="submit">Research</button>
+<button class="btn" id="utelegram-go" type="button">Telegram public index</button>
 </form>
 <div class="toolbar"><button class="btn" id="uresearch-mission" type="button" disabled>Start bounded autonomous mission</button></div>
-<p class="help">Missions may use sources.</p>
+<p class="help">Missions may use sources. Telegram public-index results are unverified URL leads, not proof of a person, profile or message content.</p>
 <p class="help" id="uresearch-status" role="status"></p>
 <div id="uresearch-hits" class="help"></div>
 </div></div>
@@ -725,6 +726,41 @@ $('uresearch-q').oninput=()=>{
   researchVersion++;missionSeed=null;$('uresearch-mission').disabled=true;
   $('uresearch-go').disabled=false;$('uresearch-hits').replaceChildren();
   $('uresearch-status').textContent='';
+};
+$('utelegram-go').onclick=async()=>{
+  const q=$('uresearch-q').value.trim();
+  if(!q)return;
+  if(new TextEncoder().encode(q).length>120){
+    $('uresearch-status').textContent='Telegram query must be at most 120 UTF-8 bytes.';
+    return;
+  }
+  const version=++researchVersion;
+  missionSeed=null;$('uresearch-mission').disabled=true;
+  const b=$('utelegram-go');b.disabled=true;
+  $('uresearch-status').textContent='Searching public Telegram indexes…';
+  $('uresearch-hits').replaceChildren();
+  try{
+    const result=await api('/api/lookup?'+new URLSearchParams({kind:'telegram',q}));
+    if(version!==researchVersion)return;
+    const entities=Array.isArray(result.entities)?result.entities:[];
+    const links=entities.filter(e=>e.kind==='url'),items=el('ul');
+    for(const hit of links.slice(0,40)){
+      try{
+        const url=new URL(String(hit.value));
+        if(url.protocol!=='https:')continue;
+        const li=el('li'),link=el('a','link',hit.value);
+        link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';
+        li.append(link);items.append(li);
+      }catch(_){/* Invalid upstream URL is never a clickable link. */}
+    }
+    const safeCount=items.childElementCount;
+    $('uresearch-hits').replaceChildren(items);
+    const outcomes=Array.isArray(result.outcomes)?result.outcomes:[];
+    $('uresearch-status').textContent=safeCount+' public-index URL lead(s), '+outcomes.length+
+      ' source outcome(s). Unverified links only; no Telegram account ownership established.';
+  }catch(e){
+    if(version===researchVersion)$('uresearch-status').textContent='Telegram index error: '+e.message;
+  }finally{b.disabled=false}
 };
 $('uresearch-mission').onclick=async()=>{
   const q=$('uresearch-q').value.trim();if(!missionSeed||missionSeed!==q)return;
