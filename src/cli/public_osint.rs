@@ -47,7 +47,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     if mode == "scholarly" {
         let report = match scholarly_osint::search(&transport(), &query, &scan, now) {
             Ok(report) => report,
-            Err(reason) => return fail(EX_DATAERR, reason),
+            Err(reason) => return fail(EX_DATAERR, &reason.to_string()),
         };
         match terminal_json_pretty(&report) {
             Ok(rendered) => println!("{rendered}"),
