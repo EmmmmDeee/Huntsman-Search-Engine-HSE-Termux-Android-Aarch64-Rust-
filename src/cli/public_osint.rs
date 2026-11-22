@@ -8,10 +8,11 @@ use huntsman_recon::entity;
 use huntsman_recon::exit::{EX_DATAERR, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::public_osint::{self, Source};
+use huntsman_recon::scholarly_osint;
 use huntsman_recon::source_outcome::SourceReach;
 use huntsman_recon::web_server::{LookupError, LookupQuery, LookupReport};
 
-pub const HELP: &str = "public-osint news|notices|web|dossier QUERY...\nKeyless GDELT news, FBI wanted notices, and Huntsman's existing web engines. Read-only. Results are leads, not verified accusations.";
+pub const HELP: &str = "public-osint news|notices|web|dossier|scholarly QUERY...\nKeyless GDELT news, FBI wanted notices, public web discovery and OpenAlex/Crossref scholarly leads. Read-only. Search matches are not verified identities or authorship.";
 
 fn source_for(input: &str) -> Option<Source> {
     match input {
@@ -36,16 +37,32 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     let Some((mode, remainder)) = args.split_first() else {
         return fail(EX_USAGE, HELP);
     };
-    let Some(source) = source_for(mode) else {
-        return fail(EX_USAGE, HELP);
-    };
     if remainder.is_empty() {
         return fail(EX_USAGE, HELP);
     }
     let query = remainder.join(" ");
     let scan = entity::scan_id("public-osint", &query);
-    let report = match public_osint::search(&transport(), source, &query, &scan, clock::unix_now())
-    {
+    let now = clock::unix_now();
+
+    if mode == "scholarly" {
+        let report = match scholarly_osint::search(&transport(), &query, &scan, now) {
+            Ok(report) => report,
+            Err(reason) => return fail(EX_DATAERR, reason),
+        };
+        match terminal_json_pretty(&report) {
+            Ok(rendered) => println!("{rendered}"),
+            Err(_) => return fail(EX_DATAERR, "cannot serialize scholarly OSINT report"),
+        }
+        return match SourceReach::of(&report.outcomes) {
+            SourceReach::Answered => ExitCode::SUCCESS,
+            _ => ExitCode::from(EX_UNAVAILABLE),
+        };
+    }
+
+    let Some(source) = source_for(mode) else {
+        return fail(EX_USAGE, HELP);
+    };
+    let report = match public_osint::search(&transport(), source, &query, &scan, now) {
         Ok(report) => report,
         Err(reason) => return fail(EX_DATAERR, reason),
     };
@@ -59,33 +76,52 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     }
 }
 
-/// Bridges public-source collectors into the existing guarded /api/lookup
-/// handler. Other lookup kinds continue through the current scan router.
+/// Bridges public collectors into the existing guarded /api/lookup handler.
 pub(super) fn web_lookup(query: &LookupQuery) -> Option<Result<LookupReport, LookupError>> {
-    let source = source_for(&query.kind)?;
+    let scholarly = query.kind == "scholarly";
+    let source = if scholarly {
+        None
+    } else {
+        Some(source_for(&query.kind)?)
+    };
     let scan = entity::scan_id("public-osint", &query.selector);
     Some((|| {
-        let report = public_osint::search(
-            &transport(),
-            source,
-            &query.selector,
-            &scan,
-            clock::unix_now(),
-        )
-        .map_err(|message| LookupError {
-            status: 400,
-            message: message.into(),
-        })?;
-        let text = huntsman_recon::lookup_report::render(&report.entities, &report.outcomes)
+        let (entities, outcomes) = if let Some(source) = source {
+            let report = public_osint::search(
+                &transport(),
+                source,
+                &query.selector,
+                &scan,
+                clock::unix_now(),
+            )
+            .map_err(|message| LookupError {
+                status: 400,
+                message: message.into(),
+            })?;
+            (report.entities, report.outcomes)
+        } else {
+            let report = scholarly_osint::search(
+                &transport(),
+                &query.selector,
+                &scan,
+                clock::unix_now(),
+            )
+            .map_err(|message| LookupError {
+                status: 400,
+                message: message.to_string(),
+            })?;
+            (report.entities, report.outcomes)
+        };
+        let text = huntsman_recon::lookup_report::render(&entities, &outcomes)
             .map_err(|message| LookupError {
                 status: 500,
                 message,
             })?;
         Ok(LookupReport {
-            route: "public-osint",
+            route: if scholarly { "scholarly" } else { "public-osint" },
             text,
-            entities: report.entities,
-            outcomes: report.outcomes,
+            entities,
+            outcomes,
             scan: None,
             status: None,
         })
