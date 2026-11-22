@@ -15,6 +15,9 @@ git -C "$tmp/source" commit -qm 'create baseline'
 git -C "$tmp/source" branch review/test
 git -C "$tmp/source" tag -a baseline -m 'test tag'
 git init -q --bare "$tmp/destination.git"
+# A real forge must set its default branch to main; the default of a local
+# bare fixture is often master even though the only pushed branch is main.
+git --git-dir="$tmp/destination.git" symbolic-ref HEAD refs/heads/main
 
 export HUNTSMAN_MIGRATION_SOURCE="$tmp/source"
 export HUNTSMAN_MIGRATION_TEST_MODE=1
@@ -26,6 +29,17 @@ bash "$script" push fixture/huntsman > "$tmp/push.txt" 2>&1
 bash "$script" verify fixture/huntsman > "$tmp/verify.txt"
 grep -q 'VERIFIED:' "$tmp/push.txt"
 grep -q 'VERIFIED:' "$tmp/verify.txt"
+# Matching branch and tag SHA values are not enough if the destination still
+# advertises a missing/stale default branch; verify must refuse this case.
+git --git-dir="$tmp/destination.git" symbolic-ref HEAD refs/heads/master
+if bash "$script" verify fixture/huntsman > "$tmp/wrong-head.txt" 2>&1; then
+  printf 'verify accepted destination with invalid default HEAD\n' >&2
+  exit 1
+fi
+grep -q 'default HEAD is not canonical main' "$tmp/wrong-head.txt"
+git --git-dir="$tmp/destination.git" symbolic-ref HEAD refs/heads/main
+bash "$script" verify fixture/huntsman > "$tmp/head-recovered.txt"
+grep -q 'VERIFIED:' "$tmp/head-recovered.txt"
 if bash "$script" push fixture/huntsman > "$tmp/repeat.txt" 2>&1; then
   printf 'repeat push into nonempty destination unexpectedly succeeded\n' >&2
   exit 1
