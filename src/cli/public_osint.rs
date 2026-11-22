@@ -23,13 +23,24 @@ fn source_for(input: &str) -> Option<Source> {
     }
 }
 
-fn transport() -> UreqTransport {
+fn transport_with_timeout(seconds: u64) -> UreqTransport {
     let config = TransportConfig {
-        timeout: Duration::from_secs(16),
+        timeout: Duration::from_secs(seconds),
         max_body: 512 * 1024,
         ..TransportConfig::default()
     };
     UreqTransport::new(&config)
+}
+
+fn transport() -> UreqTransport {
+    transport_with_timeout(16)
+}
+
+fn telegram_transport() -> UreqTransport {
+    // Four sequential cohorts × three engines × at most two tries each.
+    // Five seconds per attempt bounds the normal worst case below the
+    // localhost lookup handler's 150-second response deadline.
+    transport_with_timeout(5)
 }
 
 pub(super) fn run(args: &[String]) -> ExitCode {
@@ -53,7 +64,7 @@ pub(super) fn run(args: &[String]) -> ExitCode {
             clock::unix_now(),
         ),
         None => public_osint::telegram_index_search(
-            &transport(),
+            &telegram_transport(),
             &query,
             &scan,
             clock::unix_now(),
@@ -91,7 +102,7 @@ pub(super) fn web_lookup(query: &LookupQuery) -> Option<Result<LookupReport, Loo
                 clock::unix_now(),
             ),
             None => public_osint::telegram_index_search(
-                &transport(),
+                &telegram_transport(),
                 &query.selector,
                 &scan,
                 clock::unix_now(),
