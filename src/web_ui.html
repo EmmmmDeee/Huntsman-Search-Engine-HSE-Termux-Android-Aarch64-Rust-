@@ -51,6 +51,16 @@
 <p class="help" id="uresearch-status" role="status"></p>
 <div id="uresearch-hits" class="help"></div>
 </div></div>
+<div class="panel"><div class="panel-body">
+<form id="scholarly-form" class="row">
+<label class="fl" for="scholarly-query">Scholarly OSINT</label>
+<input id="scholarly-query" maxlength="120" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Researcher or author name">
+<button class="btn" id="scholarly-go" type="submit">Search OpenAlex + Crossref</button>
+</form>
+<p class="help">Read-only bibliographic discovery. Name and queries go to OpenAlex and Crossref; results are not verified identity or authorship.</p>
+<p class="help" id="scholarly-status" role="status"></p>
+<pre id="scholarly-output"></pre>
+</div></div>
 <form id="newscan" novalidate>
 <div class="grid2">
 <div class="panel"><div class="panel-body">
@@ -765,6 +775,20 @@ $('uresearch').onsubmit=async ev=>{
     }
   }catch(e){if(version===researchVersion)$('uresearch-status').textContent='Error: '+e.message}
   finally{if(version===researchVersion)b.disabled=false}
+};
+$('scholarly-form').onsubmit=async ev=>{
+  ev.preventDefault();
+  const q=$('scholarly-query').value.trim();if(!q)return;
+  const b=$('scholarly-go');b.disabled=true;
+  $('scholarly-status').textContent='Searching scholarly catalogues…';
+  $('scholarly-output').textContent='';
+  try{
+    const result=await api('/api/lookup?'+new URLSearchParams({kind:'scholarly',q}));
+    $('scholarly-output').textContent=result.text||'No accepted scholarly leads.';
+    const outcomes=(result.outcomes||[]).map(o=>o.module+': '+o.kind);
+    $('scholarly-status').textContent=outcomes.join(' · ')||'No source execution outcome.';
+  }catch(e){$('scholarly-status').textContent='Error: '+e.message}
+  finally{b.disabled=false}
 };
 $('newscan').onsubmit=async ev=>{
   ev.preventDefault();

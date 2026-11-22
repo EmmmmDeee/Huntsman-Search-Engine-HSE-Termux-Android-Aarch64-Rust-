@@ -1,0 +1,2 @@
+- Add bounded, keyless OpenAlex author and Crossref work search to public-osint scholarly, preserving source-scoped, unverified leads and typed per-source failure outcomes.
+- Reuse the existing guarded HTTP transport, CLI and /api/lookup route; no new runtime dependencies or automatic name-based graph pivots.
