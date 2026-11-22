@@ -2,7 +2,7 @@
 //! Huntsman's existing Bing/Brave/Mojeek discovery. No proprietary backend.
 //! Findings are leads, not identity or culpability assertions.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -609,6 +609,29 @@ fn telegram_index_surface(url: &str) -> Option<IndexedTelegramUrl> {
     })
 }
 
+/// Retain every indexed sighting without turning duplicate URLs from the
+/// same discovery family into independent entity corroboration. Generic
+/// merge_by_uid intentionally accumulates the input entities' counters, so
+/// this path adds evidence directly to the already-seen URL entity instead.
+fn push_telegram_index_evidence(
+    entities: &mut Vec<Entity>,
+    positions: &mut BTreeMap<String, usize>,
+    parsed: &IndexedTelegramUrl,
+    evidence: Evidence,
+    scan_id: &str,
+) {
+    let mut entity = Entity::new(EntityKind::Url, &parsed.canonical, 0.20, scan_id);
+    if let Some(&index) = positions.get(&entity.uid) {
+        entities[index].add_evidence(evidence);
+    } else {
+        entity.tag("telegram_index_lead");
+        entity.tag("unverified");
+        entity.add_evidence(evidence);
+        positions.insert(entity.uid.clone(), entities.len());
+        entities.push(entity);
+    }
+}
+
 /// Keyless Telegram-focused *index* discovery, not a Telegram API session.
 /// All network traffic uses Huntsman's guarded web engines. A hit becomes an
 /// unverified URL entity only after it passes exact host and path checks.
@@ -634,6 +657,7 @@ pub fn telegram_index_search<T: Transport + ?Sized>(
         ("telemetr", "site:telemetr.io"),
     ];
     let mut entities = Vec::new();
+    let mut positions = BTreeMap::new();
     let mut outcomes = Vec::new();
     for (cohort, prefix) in COHORTS {
         let search = format!("{prefix} {query}");
@@ -669,19 +693,16 @@ pub fn telegram_index_search<T: Transport + ?Sized>(
                 .with_attr("surface", parsed.surface)
                 .with_attr("canonical_index_url", &parsed.canonical)
                 .with_attr("evidence_role", "indexed_url_only");
-                push_entity(
+                push_telegram_index_evidence(
                     &mut entities,
-                    EntityKind::Url,
-                    &parsed.canonical,
-                    0.20,
-                    scan_id,
+                    &mut positions,
+                    &parsed,
                     evidence,
-                    &["telegram_index_lead", "unverified"],
+                    scan_id,
                 );
             }
         }
     }
-    merge_by_uid(&mut entities);
     Ok(Report {
         query,
         entities,
@@ -936,6 +957,44 @@ mod tests {
         ] {
             assert_eq!(telegram_index_surface(url), None, "{url}");
         }
+    }
+
+    #[test]
+    fn telegram_index_duplicate_post_sightings_preserve_provenance_without_false_corroboration() {
+        let mut entities = Vec::new();
+        let mut positions = BTreeMap::new();
+        for (engine, raw) in [
+            ("bing", "https://telegram.me/CheemsCMNews/132"),
+            ("brave", "https://t.me/s/cheemscmnews/0132?single"),
+        ] {
+            let parsed = telegram_index_surface(raw).unwrap();
+            let evidence = Evidence::new(
+                EvidenceProvenance::for_scan("telegram_web_index", "s"),
+                "Indexed URL; message content and identity not verified",
+            )
+            .with_attr("source_url", raw)
+            .with_attr("discovered_by", engine);
+            push_telegram_index_evidence(
+                &mut entities,
+                &mut positions,
+                &parsed,
+                evidence,
+                "s",
+            );
+        }
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].value, "https://t.me/cheemscmnews/132");
+        assert_eq!(entities[0].corroboration, 1);
+        assert_eq!(entities[0].source_count(), 1);
+        assert_eq!(entities[0].evidence.len(), 2);
+        assert_eq!(
+            entities[0].evidence[0].attributes["source_url"],
+            "https://telegram.me/CheemsCMNews/132"
+        );
+        assert_eq!(
+            entities[0].evidence[1].attributes["source_url"],
+            "https://t.me/s/cheemscmnews/0132?single"
+        );
     }
 
     #[test]
