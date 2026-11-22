@@ -2,6 +2,34 @@
 
 This is a reversible Git-host migration for the canonical, public, MIT/Apache-licensed Huntsman engine. It does not deploy the Termux binary, change the canonical GitHub repository, or carry credentials across services.
 
+## Migration strategy — preserve the HSE evidence and engineering backlog
+
+**Prefer metadata-aware Codeberg `New Migration > GitHub` when the objective is
+to relocate the whole project.** The live GitHub repository currently contains
+dozens of unmerged review branches and open defect reports. A Git-only push
+preserves reachable branch/tag commits but **cannot** recreate issues, PR/MR
+reviews, milestones, wiki and release attachments. The Codeberg import screen
+allows selected metadata categories; independently inspect the imported item
+counts, review states and referenced commit SHAs before treating them as
+preserved. Importer support varies by item type and source permissions.
+
+There are two **mutually exclusive** first-transfer methods:
+
+- **Metadata-aware:** Create the destination through Codeberg's migration UI
+  with the GitHub source URL and a privately provided, least-privilege access
+  token; do not pre-create an empty repository. Verify imported commits,
+  branches, open proposals and issue records separately; revoke the token
+  after the import. Do **not** run this script's `push` against that repository.
+- **Git-history-only:** Create a truly empty Codeberg repository, then use
+  `plan`, `push` and `verify` below. Branch and tag SHAs are tested; PR and
+  issue metadata are intentionally out of scope. Keep the original GitHub
+  project readable for that context.
+
+Do not re-label a draft feature PR as validated during migration, change
+branch protections, import secrets as CI variables, or treat a mirrored source
+commit as an installed binary. The historical issue/pr links remain useful
+even after another forge becomes primary.
+
 ## Preparation (one-time user account step)
 
 1. Create or sign in to an account at https://codeberg.org . Confirm its terms permit your public free-software project.
@@ -19,7 +47,14 @@ bash scripts/codeberg-migrate.sh push YOUR_CODEBERG_USER/YOUR_REPO
 bash scripts/codeberg-migrate.sh verify YOUR_CODEBERG_USER/YOUR_REPO
 ```
 
-The script clones the *live public canonical* GitHub repository into a private temporary bare checkout, then pushes `main`, all ordinary branches, and all tags to the new empty Codeberg repository. It compares every branch/tag SHA after migration. It never force-pushes, deletes remote refs, updates GitHub, or reconfigures any checkout. It intentionally refuses a destination already containing branch/tag refs. Reruns use `verify`, not `push`. If a network failure interrupts the first transfer **after some refs have been created**, run `bash scripts/codeberg-migrate.sh resume YOUR_CODEBERG_USER/YOUR_REPO`: it only creates missing refs, verifies that all existing refs match the original source snapshot, and rejects unexpected or advanced branches/tags. The conditional-create lease rejects concurrent ref creation; it cannot overwrite existing refs. The optional 40-character `HUNTSMAN_MIGRATION_EXPECT_MAIN` stops the migration before writes if the source's `main` has changed since the reviewed SHA; **update it intentionally** once the canonical head changes. The normal mode also refuses noncanonical source-URL overrides. Never set `HUNTSMAN_MIGRATION_TEST_MODE` in a production migration. This is a Git-history migration, not a migration of issue conversations, repository settings, GitHub releases, secrets, workflows, or GitHub's internal pull-request refs. Git-LFS objects and Git submodule repositories are **not** copied by this command (pointers/submodule refs may be present); migrate those independently before declaring a complete transfer. The script does not create an on-host running service; Codeberg is the source host, while the Android binary remains local.
+The script clones the *live public canonical* GitHub repository into a private temporary bare checkout, then pushes `main`, all ordinary branches, and all tags to the new empty Codeberg repository. It compares every branch/tag SHA after migration, **and now refuses a
+destination whose advertised default `HEAD` is not the exact copied
+`refs/heads/main` commit**. A forge can otherwise possess identical named
+refs while its default clone checkout points to missing `master`.
+If `verify` reports a default-branch mismatch, use Codeberg's repository
+settings to set the default branch to `main`, then run `verify` again.
+This is a destination-setting fix, **not** a reason to force-push or
+rewrite any branch. It never force-pushes, deletes remote refs, updates GitHub, or reconfigures any checkout. It intentionally refuses a destination already containing branch/tag refs. Reruns use `verify`, not `push`. If a network failure interrupts the first transfer **after some refs have been created**, run `bash scripts/codeberg-migrate.sh resume YOUR_CODEBERG_USER/YOUR_REPO`: it only creates missing refs, verifies that all existing refs match the original source snapshot, and rejects unexpected or advanced branches/tags. The conditional-create lease rejects concurrent ref creation; it cannot overwrite existing refs. The optional 40-character `HUNTSMAN_MIGRATION_EXPECT_MAIN` stops the migration before writes if the source's `main` has changed since the reviewed SHA; **update it intentionally** once the canonical head changes. The normal mode also refuses noncanonical source-URL overrides. Never set `HUNTSMAN_MIGRATION_TEST_MODE` in a production migration. This is a Git-history migration, not a migration of issue conversations, repository settings, GitHub releases, secrets, workflows, or GitHub's internal pull-request refs. Git-LFS objects and Git submodule repositories are **not** copied by this command (pointers/submodule refs may be present); migrate those independently before declaring a complete transfer. The script does not create an on-host running service; Codeberg is the source host, while the Android binary remains local.
 
 If you need GitHub issues, release records, and metadata migrated too, use Codeberg's **New Migration > GitHub** importer *instead of* the empty-repo push path. That importer requires an operator-supplied GitHub access token to migrate metadata; revoke it after migration. See https://docs.codeberg.org/advanced/migrating-repos/ . Never run this script's `push` against an importer-created nonempty destination.
 
