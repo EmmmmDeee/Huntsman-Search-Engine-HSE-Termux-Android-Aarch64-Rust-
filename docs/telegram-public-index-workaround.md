@@ -223,3 +223,29 @@ Open `http://127.0.0.1:8080/#/newscan`, enter a public search term under
 Universal Research and press **Telegram public index**. The Web UI uses
 `GET /api/lookup?kind=telegram&q=...` with Huntsman's existing same-origin
 lookup header; it does not route this request through saved scans.
+
+## Termux acceptance modes
+
+The review branch's acceptance wrapper keeps offline Bash tests separate from
+actual Rust acceptance:
+
+```sh
+# No network, no Rust compilation:
+bash scripts/telegram-termux-acceptance.sh
+
+# Requires a working Rust toolchain; runs native Telegram unit/integration tests:
+CARGO_BUILD_JOBS=1 bash scripts/telegram-termux-acceptance.sh --native-check
+
+# Tests native Rust first, then builds/runs the exact checkout on a live public query:
+CARGO_BUILD_JOBS=1 bash scripts/telegram-termux-acceptance.sh --native-live '"Truong"'
+
+# The original keyless Bash web-index fallback, still supported:
+bash scripts/telegram-termux-acceptance.sh --live '"Truong"'
+```
+
+Without Cargo, `--native-check` refuses with exit 69 and
+`native_rust_tests=unavailable`; it never reports a Rust pass based on
+Bash mocks. A native live probe requires the operator to request it explicitly.
+
+Note that neither the native nor the fallback search is an authenticated
+Telegram global-search session; both query public web indexes.
