@@ -93,13 +93,41 @@ spends more than one provider's quota.
 | URLhaus (abuse.ch) | `HUNTSMAN_ABUSECH_KEY` | used by `ip` (IPv4 addresses only) and `domain` when set in the environment; the same free abuse.ch Auth-Key as `HUNTSMAN_THREATFOX_KEY` |
 | AlienVault OTX | `HUNTSMAN_OTX_KEY` | optional for `ip` and `domain`: OTX answers without a key at a lower limit; a free key raises it |
 | urlscan.io | `HUNTSMAN_URLSCAN_KEY` | optional for `ip` and `domain`: searches work without a key at a lower quota; a free key raises it |
-| IPinfo | `HUNTSMAN_IPINFO_KEY` | optional for `ip`: IPinfo answers without a token at a lower limit; a free token gives 50,000 lookups/month |
+| IPinfo Lite and legacy IPinfo | `HUNTSMAN_IPINFO_KEY` | Lite requires a token and gives unlimited country/continent/ASN lookups via `api.ipinfo.io/lite/` (Bearer header). The separate legacy endpoint at `ipinfo.io` also runs keyless at a lower limit; an optional token may be used there. Neither implies identity or precise physical location. |
 | Cert Spotter (SSLMate) | `HUNTSMAN_CERTSPOTTER_KEY` | optional for `domain`: Cert Spotter answers without a key at a lower limit; a free key raises it |
 | HackerTarget | `HUNTSMAN_HACKERTARGET_KEY` | optional for `ip` and `domain`: HackerTarget answers without a key at 50 queries a day; a membership key raises it |
 | OpenCelliD | `HUNTSMAN_OPENCELLID_KEY` | required for `network cell:MCC:MNC:AREA:CELL` and for the cell sites around a point in `network LAT,LON`: without it each OpenCelliD search is `not_configured` and sends nothing; free account key, 1,000 credits a day |
 | Censys Platform | `HUNTSMAN_CENSYS_TOKEN` | v3 IP host lookup (`ip`, `scan -k ip`, web UI); free accounts support host lookup with a Personal Access Token, account limits apply; a 404 means no host, failures remain explicit |
 | Censys Legacy | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | legacy slots retained for import/backward compatibility but not used by Platform v3; create a new PAT to use the active source |
 | X Recent Search | `HUNTSMAN_X_BEARER_TOKEN` | operator-owned official X API bearer token for `osint x-api` only; account limits and credits apply; `osint x` indexed discovery is keyless |
+
+## IPinfo Lite (native Huntsman integration)
+
+The canonical key slot is `HUNTSMAN_IPINFO_KEY` (not the `HSE_IPINFO_TOKEN`
+name used by an earlier standalone adapter example). The native `ipinfo_lite`
+leg is already registered for `ip` lookups. It reuses Huntsman's guarded
+HTTP transport; do not add a separate `reqwest` client or runtime.
+
+After rotating any exposed token, save the *new* token privately:
+
+```sh
+printf '%s' "$NEW_IPINFO_TOKEN" | huntsman-recon keys set HUNTSMAN_IPINFO_KEY --stdin
+unset NEW_IPINFO_TOKEN
+huntsman-recon credential-status
+```
+
+Lite sends the token through a Bearer authorization header to
+`https://api.ipinfo.io`, never in a query parameter. The legacy `ipinfo`
+provider is a separate lookup that retains its existing endpoint and
+configuration. Lite provides country/continent and ASN metadata only; a
+shared ASN or organisation is infrastructure context, not identity proof.
+Non-public addresses are not transmitted to Lite. A 2xx response containing
+only the queried IP, with no enrichment or anycast assertion, is an
+incomplete provider answer, not verified evidence.
+
+API: https://ipinfo.io/developers/lite-api
+Batch API (not wired to Huntsman's single-indicator dispatcher):
+https://ipinfo.io/developers/batch-enrichment-api
 
 ## Importing keys from Spiderfoot
 
