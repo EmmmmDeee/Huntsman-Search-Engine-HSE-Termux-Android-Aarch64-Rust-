@@ -68,3 +68,54 @@ The guarded Rust `public-osint web` path permits quotation marks for web-only se
 For substantially deeper Telegram searching, an operator-authenticated user session is needed for official `contacts.search`, `messages.searchGlobal` and `channels.searchPosts`. The last method may use limited free search slots or require Telegram Stars; no payment may occur without explicit approval. TGStat's `posts/search` is a separately entitled API, and defaults to the most recent 10 days when `startDate` is omitted. Neither capability is performed by this fallback script.
 
 Official reference: https://core.telegram.org/api/search and https://api.tgstat.ru/docs/ru/posts/search.html
+
+
+## Native Rust public-index mode (review branch)
+
+The branch now includes a native collector in `src/public_osint.rs`, exposed through
+`huntsman-recon public-osint telegram QUERY...` and the localhost `/api/lookup`
+request's `kind=telegram` route. This collector **does not** log in to Telegram
+or access its native message-search API. It asks the existing guarded web search
+engines for three bounded scope queries:
+
+- `site:t.me QUERY`
+- `site:tgstat.com QUERY`
+- `site:telemetr.io QUERY`
+
+Results are accepted only for exactly recognised HTTPS hostnames and safe,
+public paths. A direct `t.me/HANDLE` is classified as an *indexed handle link*
+and not as a verified user or family member. A `t.me/HANDLE/123` is an *indexed
+post URL*. A `t.me/s/HANDLE` is an *indexed public preview*. TGStat and Telemetr
+links are tagged as *third-party directory* entries. Private invite/forwarding
+paths and host-suffix, userinfo or non-HTTPS lookalikes are rejected.
+
+Each retained URL carries original index engine, exact query, URL, scan ID and
+`indexed_url_only` evidence role. All index sightings remain in a single
+`telegram_web_index` provenance family, so duplicate Bing/Brave/Mojeek
+sightings cannot masquerade as primary-source corroboration.
+
+```sh
+huntsman-recon public-osint telegram '"Truong"'
+huntsman-recon public-osint telegram '"Kylie Truong"'
+huntsman-recon public-osint telegram 'Trương'
+```
+
+For full authenticated Telegram search, official MTProto API calls
+(`contacts.search`, `messages.searchGlobal`, `channels.searchPosts`)
+still require their own separately reviewed implementation, user account
+authorisation and explicit paid-Star consent if a charge would apply.
+
+### Acceptance checklist
+
+- `cargo test --locked telegram_index` must pass on a real Rust toolchain
+- Full CI and static/security jobs must pass on the *exact PR head*
+- Run the native command with a non-sensitive public test selector in Termux
+- Verify strict hostname filters using the offline unit regressions
+- Verify the local web API's `kind=telegram` routing in the phone browser
+- Verify the command never reports an identity or relationship as established
+- Preserve original raw search-index URL and diagnostic outcomes
+
+This capability is **implemented on the draft branch only**, not yet accepted
+or merged into canonical main. In the current environment there is no
+`cargo`/`rustc`; the GitHub Actions jobs are failing before any runner steps,
+so the exact-head compile/Android gates have not been executed.
