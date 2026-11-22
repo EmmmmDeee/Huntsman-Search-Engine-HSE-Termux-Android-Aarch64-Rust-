@@ -100,25 +100,27 @@ pub(super) fn web_lookup(query: &LookupQuery) -> Option<Result<LookupReport, Loo
             })?;
             (report.entities, report.outcomes)
         } else {
-            let report = scholarly_osint::search(
-                &transport(),
-                &query.selector,
-                &scan,
-                clock::unix_now(),
-            )
-            .map_err(|message| LookupError {
-                status: 400,
-                message: message.to_string(),
-            })?;
+            let report =
+                scholarly_osint::search(&transport(), &query.selector, &scan, clock::unix_now())
+                    .map_err(|message| LookupError {
+                        status: 400,
+                        message: message.to_string(),
+                    })?;
             (report.entities, report.outcomes)
         };
-        let text = huntsman_recon::lookup_report::render(&entities, &outcomes)
-            .map_err(|message| LookupError {
-                status: 500,
-                message,
+        let text =
+            huntsman_recon::lookup_report::render(&entities, &outcomes).map_err(|message| {
+                LookupError {
+                    status: 500,
+                    message,
+                }
             })?;
         Ok(LookupReport {
-            route: if scholarly { "scholarly" } else { "public-osint" },
+            route: if scholarly {
+                "scholarly"
+            } else {
+                "public-osint"
+            },
             text,
             entities,
             outcomes,
