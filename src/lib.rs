@@ -242,6 +242,7 @@ pub mod routing_context;
 pub mod run_history;
 pub mod runtime;
 pub mod sanctions;
+pub mod scholarly_osint;
 pub mod scan_alert;
 pub mod scan_api;
 pub mod scan_artifact;
