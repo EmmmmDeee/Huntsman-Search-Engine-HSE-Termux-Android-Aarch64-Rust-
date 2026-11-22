@@ -91,3 +91,22 @@ GitLab can also host the repository; hosted GitLab shared CI runners may require
 - Source head on 22 November 2026: `9488c3e0b3941ade36f8d05ca5e4565f756f1bd6`
 - Existing Crossref draft PR #1840 remains unmerged: no changes from this migration are applied to `main` automatically.
 - `bash tests/codeberg_migration.sh` performs offline clone, push, SHA checks, safe resume, interrupted transfer recovery, foreign-ref/divergence refusals, pinned-source protection and nonempty-destination refusal against local bare Git repositories. It does **not** exercise the actual Codeberg service or SSH authentication.
+
+## Existing initialized Codeberg target (22 Nov 2026)
+
+The **publicly confirmed** repository at https://codeberg.org/EmmmmDeee/HuntsmanSearchEngine
+already has an unrelated initial commit at
+`6b38d016a4bbb18a5cc5ca84265f65eb01fe705a` on `main`, containing
+a `README.md`. The empty-repository `push` route intentionally refuses this
+target; do not force-push, reset, delete its default branch or claim that a
+one-file stub is a Huntsman migration.
+
+Use the separately gated `scripts/codeberg-adopt.sh` and
+`docs/CODEBERG-ADOPTION.md` to create a **fast-forward, two-parent adoption
+merge**, preserving the original Codeberg root and the entire canonical GitHub
+ancestry. This creates a new Codeberg `main` SHA; the exact original GitHub
+`main` SHA is retained at `github-main`. Adoption requires owner SSH write
+permissions and exact source/destination SHA pins. It does not migrate issue
+threads, binary releases, LFS objects or secrets. The ordinary ref-equality
+`codeberg-migrate.sh verify` is inapplicable to the adopted merge; use
+`codeberg-adopt.sh verify` instead.
