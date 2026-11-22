@@ -132,6 +132,7 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
             .or(body.asn.as_deref())
             .unwrap_or("network not given")
     ))
+    .attr("data_attribution", "IP address data powered by IPinfo (https://ipinfo.io)")
     .opt_attr("asn", body.asn.as_deref())
     .opt_attr("as_name", body.as_name.as_deref())
     .opt_attr("as_domain", body.as_domain.as_deref())
@@ -254,6 +255,9 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(finding.tags.contains(&"anycast"));
+        assert!(finding.attrs.iter().any(|(key, value)| {
+            *key == "data_attribution" && value.contains("https://ipinfo.io")
+        }));
     }
 
     #[test]
