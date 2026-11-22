@@ -403,8 +403,8 @@ pub const PROVIDERS: &[Provider] = &[
     },
     Provider {
         name: "IPinfo",
-        get_key_url: "https://ipinfo.io/account/token",
-        free_tier: "free token: 50,000 lookups/month; works keyless at a lower limit",
+        get_key_url: "https://ipinfo.io/dashboard/lite",
+        free_tier: "Lite: unlimited country/continent/ASN lookups with a token; legacy endpoint also works keyless at a lower limit",
         slots: &[crate::environment::IPINFO_KEY_ENV],
     },
     Provider {
