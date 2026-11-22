@@ -11,7 +11,7 @@ This is a reversible Git-host migration for the canonical, public, MIT/Apache-li
 ## Migrate the Git history (Termux, no root)
 
 ```sh
-pkg install git coreutils openssh
+pkg install git coreutils openssh gawk diffutils
 bash scripts/codeberg-migrate.sh plan YOUR_CODEBERG_USER/YOUR_REPO
 bash scripts/codeberg-migrate.sh push YOUR_CODEBERG_USER/YOUR_REPO
 bash scripts/codeberg-migrate.sh verify YOUR_CODEBERG_USER/YOUR_REPO
