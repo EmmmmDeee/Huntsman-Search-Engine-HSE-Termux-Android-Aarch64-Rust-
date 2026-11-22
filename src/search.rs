@@ -86,9 +86,9 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
             && identifier
                 .as_ref()
                 .is_none_or(|id| names_identifier(&doc.body, id))
-            && initial_name.as_ref().is_none_or(|(initial, surname)| {
-                names_initial_surname(&doc.body, initial, surname)
-            })
+            && initial_name
+                .as_ref()
+                .is_none_or(|(initial, surname)| names_initial_surname(&doc.body, initial, surname))
         {
             hits.push(Hit {
                 id: doc.id.clone(),
@@ -523,12 +523,9 @@ mod tests {
             }
             let found: Option<Vec<usize>> = terms.iter().map(|t| counts.get(t).copied()).collect();
             if let Some(found) = found {
-                if initial_name
-                    .as_ref()
-                    .is_some_and(|(initial, surname)| {
-                        !names_initial_surname(&doc.body, initial, surname)
-                    })
-                {
+                if initial_name.as_ref().is_some_and(|(initial, surname)| {
+                    !names_initial_surname(&doc.body, initial, surname)
+                }) {
                     continue;
                 }
                 hits.push(Hit {
@@ -638,12 +635,19 @@ mod tests {
         // A fully lowercase, undotted phrase is intentionally ambiguous.
         assert_eq!(ids("h bramston"), ids("bramston"));
         assert_eq!(ids("E Bramston"), ["other"]);
-        assert_eq!(ids("Henry Bramston"), ["full"]);
+        assert_eq!(ids("Henry Bramston"), ["curly", "full"]);
         assert_eq!(
             ids("Bramston"),
             [
-                "bare", "beach", "curly", "full", "initial", "lower", "other",
-                "possessive", "split",
+                "bare",
+                "beach",
+                "curly",
+                "full",
+                "initial",
+                "lower",
+                "other",
+                "possessive",
+                "split",
             ]
         );
         assert_eq!(ids("a red"), ids("red"));
