@@ -119,3 +119,33 @@ This capability is **implemented on the draft branch only**, not yet accepted
 or merged into canonical main. In the current environment there is no
 `cargo`/`rustc`; the GitHub Actions jobs are failing before any runner steps,
 so the exact-head compile/Android gates have not been executed.
+
+## URL canonicalisation and false-positive controls
+
+The native Rust collector now makes **four** separately logged index queries:
+`site:t.me/s`, `site:t.me`, `site:tgstat.com`, and `site:telemetr.io`.
+These are public-web search scopes, not calls to Telegram's authenticated API.
+
+After exact-host HTTPS validation, it recognises `t.me`, `telegram.me`,
+and the documented `telegram.dog` link host. It canonicalises case-insensitive
+usernames and public post IDs to a stable `https://t.me/<handle>/<id>` URL
+so that different browser-preview and alias links do **not** create separate
+post entities. The original URL and discovery engine are retained in evidence
+attributes. Handle links and public-preview pages remain different URL surfaces
+because a public handle can belong to a person, bot or channel; its category
+and owner have not been established.
+
+Third-party pages from TGStat and Telemetr are marked directory leads.
+Generic landing/search/ranking/catalogue pages and dot-segment paths are
+filtered rather than counted as entity leads. Invite-only link patterns,
+private `/c/` references, malicious lookalike domains, and URL userinfo or
+port tricks are refused. A valid URL shape is only an **indexed URL lead**:
+it is not proof of channel content, identity, timestamp, group membership,
+or personal association.
+
+Offline Rust regressions were added for canonical URL equivalence, direct
+and preview public posts, meaningful directory records, generic directory
+rejections, URL spoofing, private-invite rejection, and pre-network input
+validation. Those regressions still require a real `cargo test` run. The
+branch remains a **draft** until actual CI and rootless Android acceptance
+are available.
