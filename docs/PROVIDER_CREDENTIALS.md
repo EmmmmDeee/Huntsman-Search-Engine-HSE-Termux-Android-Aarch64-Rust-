@@ -123,7 +123,13 @@ configuration. Lite provides country/continent and ASN metadata only; a
 shared ASN or organisation is infrastructure context, not identity proof.
 Non-public addresses are not transmitted to Lite. A 2xx response containing
 only the queried IP, with no enrichment or anycast assertion, is an
-incomplete provider answer, not verified evidence.
+incomplete provider answer, not verified evidence. Lite findings also include
+the source-credit attribute `data_attribution` with a link to IPinfo so
+evidence records and exports retain provenance. IPinfo Lite requires
+attribution in products using its data; the Web UI should visibly present
+that link where Lite records are displayed (see https://ipinfo.io/attribution).
+The Lite dataset is offered under CC BY-SA 4.0; evaluate the attribution and
+share-alike terms before redistributing derived databases.
 
 API: https://ipinfo.io/developers/lite-api
 Batch API (not wired to Huntsman's single-indicator dispatcher):
