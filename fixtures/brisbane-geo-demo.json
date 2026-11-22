@@ -1,0 +1,41 @@
+{
+  "case_id": "brisbane_anchor_demo",
+  "observations": [
+    {
+      "id": "bne-01",
+      "subject": "Example Organisation",
+      "predicate": "business_location",
+      "value": "Brisbane, Queensland, Australia",
+      "source_url": "https://example.org/registry/1",
+      "source_root": "example-registry",
+      "observed_at_unix": 1795320000
+    },
+    {
+      "id": "bne-02",
+      "subject": "EXAMPLE ORGANISATION",
+      "predicate": "operates_in",
+      "value": "Dubai, United Arab Emirates",
+      "source_url": "https://example.net/directory/2",
+      "source_root": "example-directory",
+      "observed_at_unix": 1795320060
+    },
+    {
+      "id": "bne-03",
+      "subject": "Other Organisation",
+      "predicate": "business_location",
+      "value": "Gold Coast, QLD",
+      "source_url": "https://example.org/registry/3",
+      "source_root": "example-registry",
+      "observed_at_unix": 1795320120
+    },
+    {
+      "id": "bne-04",
+      "subject": "Other Organisation",
+      "predicate": "registered_in",
+      "value": "Perth, Western Australia",
+      "source_url": "https://example.net/registry/4",
+      "source_root": "example-directory",
+      "observed_at_unix": 1795320180
+    }
+  ]
+}
