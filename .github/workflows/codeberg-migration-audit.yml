@@ -1,0 +1,25 @@
+name: Codeberg migration audit contract
+
+on:
+  pull_request:
+    paths:
+      - scripts/codeberg-migration-audit.sh
+      - tests/codeberg_migration_audit.sh
+      - docs/CODEBERG_MIGRATION.md
+      - .github/workflows/codeberg-migration-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-ref-parity-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Syntax and offline read-only audit regressions
+        run: |
+          set -euo pipefail
+          bash -n scripts/codeberg-migration-audit.sh
+          bash -n tests/codeberg_migration_audit.sh
+          bash tests/codeberg_migration_audit.sh
