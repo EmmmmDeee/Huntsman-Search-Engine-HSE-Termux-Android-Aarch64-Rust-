@@ -1,0 +1,97 @@
+# HUNTSMAN/HSE: independent CI for the canonical Rust OSINT engine.
+# This config deliberately uses native CircleCI syntax, not partial translation
+# of GitHub Actions. It never deploys, pushes, or modifies branch protections.
+version: 2.1
+
+jobs:
+  hse-core-full:
+    docker:
+      - image: cimg/rust:1.99.1
+    resource_class: medium
+    environment:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - checkout
+      - run:
+          name: Verify exact HSE source revision and stable Rust toolchain
+          command: |
+            set -euo pipefail
+            test "$(git rev-parse --verify HEAD)" = "$CIRCLE_SHA1"
+            case "$(rustc --version)" in
+              'rustc 1.99.'*) ;;
+              *) echo 'FAIL: HSE stable gate requires Rust 1.99.x' >&2; exit 1 ;;
+            esac
+            rustup component add clippy rustfmt
+      - run:
+          name: Run canonical full HSE verification gate
+          no_output_timeout: 30m
+          command: cargo run --locked -p xtask -- gate full
+
+  hse-msrv:
+    docker:
+      - image: cimg/rust:1.99.1
+    resource_class: medium
+    environment:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - checkout
+      - run:
+          name: Verify exact HSE source revision and install declared Rust floor
+          command: |
+            set -euo pipefail
+            test "$(git rev-parse --verify HEAD)" = "$CIRCLE_SHA1"
+            rustup toolchain install 1.87.0 --profile minimal
+            rustup run 1.87.0 rustc --version | grep '^rustc 1\.87\.'
+      - run:
+          name: Run canonical full workspace tests at Rust 1.87
+          no_output_timeout: 30m
+          command: rustup run 1.87.0 cargo run --locked -p xtask -- gate msrv
+
+  hse-web-ui:
+    docker:
+      - image: cimg/rust:1.99.1-browsers
+    resource_class: medium
+    environment:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - checkout
+      - run:
+          name: Verify HSE commit and browser prerequisites
+          command: |
+            set -euo pipefail
+            test "$(git rev-parse --verify HEAD)" = "$CIRCLE_SHA1"
+            command -v node
+            command -v npm
+            command -v google-chrome || command -v chromium || command -v chromium-browser
+      - run:
+          name: Build the canonical huntsman-recon binary
+          no_output_timeout: 30m
+          command: cargo build --locked --bin huntsman-recon
+      - run:
+          name: Install pinned HSE browser-test dependencies
+          command: |
+            set -euo pipefail
+            cd tools/web-ui-check
+            npm install --no-package-lock --ignore-scripts
+      - run:
+          name: Exercise HSE Web UI in mobile-width Chromium
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            CHROME_PATH="${CHROME_BIN:-$(command -v google-chrome || command -v chromium || command -v chromium-browser)}" \
+              node tools/web-ui-check/check.cjs target/debug/huntsman-recon
+
+workflows:
+  hse-independent-ci:
+    jobs:
+      - hse-core-full
+      - hse-msrv
+      - hse-web-ui
