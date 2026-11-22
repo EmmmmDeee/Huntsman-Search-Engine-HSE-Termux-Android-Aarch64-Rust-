@@ -627,7 +627,8 @@ pub fn telegram_index_search<T: Transport + ?Sized>(
     if query.len() > 120 {
         return Err("Telegram index query exceeds the 120-byte bounded selector");
     }
-    const COHORTS: [(&str, &str); 3] = [
+    const COHORTS: [(&str, &str); 4] = [
+        ("telegram_preview", "site:t.me/s"),
         ("telegram", "site:t.me"),
         ("tgstat", "site:tgstat.com"),
         ("telemetr", "site:telemetr.io"),
@@ -896,6 +897,7 @@ mod tests {
             ("https://t.me/s/CheemsCMNews/132", "indexed_post_url"),
             ("https://tgstat.com/channel/123", "third_party_directory"),
             ("https://telemetr.io/en/channels/123", "third_party_directory"),
+            ("https://telegram.dog/cheemscmnews", "indexed_handle_url"),
         ] {
             assert_eq!(telegram_index_surface(raw).map(|parsed| parsed.surface), Some(expected), "{raw}");
         }
