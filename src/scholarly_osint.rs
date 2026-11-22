@@ -132,7 +132,7 @@ fn openalex<T: Transport + ?Sized>(
 ) -> Result<SourceReport, Error> {
     let url = append_query_param(
         &append_query_param(OPENALEX_API, "search", query),
-        "per-page",
+        "per_page",
         &LIMIT.to_string(),
     );
     let fetched = fetch(
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert!(urls[0].url.starts_with("https://api.openalex.org/authors?"));
         assert!(urls[1].url.starts_with("https://api.crossref.org/works?"));
-        assert!(urls[0].url.contains("per-page=5"));
+        assert!(urls[0].url.contains("per_page=5"));
         assert!(urls[1].url.contains("rows=5"));
     }
 
