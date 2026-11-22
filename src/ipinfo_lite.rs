@@ -13,7 +13,7 @@ pub const API: Api = Api {
     origin: "https://api.ipinfo.io:443",
     key: Some(KeyUse {
         slot: crate::environment::IPINFO_KEY_ENV,
-        place: KeyPlace::Query("token"),
+        place: KeyPlace::Bearer,
         required: true,
     }),
 };
@@ -26,9 +26,9 @@ pub const INTEL: Source = Source {
 #[derive(Deserialize)]
 struct Body {
     ip: String,
-    #[serde(default)]
+    #[serde(default, alias = "is_bogon")]
     bogon: bool,
-    #[serde(default)]
+    #[serde(default, alias = "is_anycast")]
     anycast: bool,
     #[serde(default)]
     asn: Option<String>,
@@ -66,6 +66,13 @@ pub fn lookup(
     let parsed = ip
         .parse::<std::net::IpAddr>()
         .map_err(|_| LegError::Decode("invalid IP selector".into()))?;
+    // The indicator is not an HTTP destination. An IP in a URL path still
+    // discloses the operator's local addresses to a third party.
+    if !crate::egress::is_public_ip(parsed) {
+        return Err(LegError::Refused(
+            "IPinfo Lite does not enrich non-public addresses".into(),
+        ));
+    }
     let body = api_leg::get(transport, &API, keys, &url(&parsed.to_string()), now_unix)?
         .body_or_unexpected()?;
     decode(&body, &parsed.to_string())
@@ -89,6 +96,34 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
     }
     if body.bogon {
         return Ok(None);
+    }
+    if let Some(asn) = body.asn.as_deref().filter(|asn| !asn.trim().is_empty()) {
+        if crate::textnorm::parse_asn(asn)
+            .and_then(|number| u32::try_from(number).ok())
+            .is_none()
+        {
+            return Err(LegError::Decode("IPinfo Lite returned an invalid ASN".into()));
+        }
+    }
+    // A successful HTTP 200 containing only the queried IP is *not* evidence
+    // of a country or network. Keep provider-incomplete distinct from a genuine
+    // negative so a missing-data response cannot invent an observed entity.
+    let has_metadata = [
+        body.asn.as_deref(),
+        body.as_name.as_deref(),
+        body.as_domain.as_deref(),
+        body.country.as_deref(),
+        body.country_code.as_deref(),
+        body.continent.as_deref(),
+        body.continent_code.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| !value.trim().is_empty());
+    if !has_metadata && !body.anycast {
+        return Err(LegError::Decode(
+            "IPinfo Lite response omitted enrichment data".into(),
+        ));
     }
     let mut finding = Finding::new(format!(
         "IPinfo Lite: {}",
@@ -180,5 +215,74 @@ mod tests {
     #[test]
     fn url_never_contains_token() {
         assert_eq!(url("8.8.8.8"), "https://api.ipinfo.io/lite/8.8.8.8");
+    }
+
+    #[test]
+    fn lite_uses_bearer_auth_without_a_token_in_the_url() {
+        assert_eq!(API.key.expect("Lite requires a key").place, KeyPlace::Bearer);
+        assert!(!url("8.8.8.8").contains("token"));
+    }
+
+    #[test]
+    fn incomplete_responses_cannot_invent_network_evidence() {
+        for body in [
+            br#"{"ip":"8.8.8.8"}"#.as_slice(),
+            br#"{"ip":"8.8.8.8","asn":"   ","country":" "}"#.as_slice(),
+        ] {
+            assert!(matches!(decode(body, "8.8.8.8"), Err(LegError::Decode(_))));
+        }
+        assert!(matches!(
+            decode(br#"{"ip":"8.8.8.8","asn":"ASAS15169"}"#, "8.8.8.8"),
+            Err(LegError::Decode(_))
+        ));
+        assert!(matches!(
+            decode(br#"{"ip":"8.8.8.8","asn":"AS4294967296"}"#, "8.8.8.8"),
+            Err(LegError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_lite_ip_type_aliases() {
+        assert_eq!(
+            decode(br#"{"ip":"10.0.0.1","is_bogon":true}"#, "10.0.0.1"),
+            Ok(None)
+        );
+        let finding = decode(
+            br#"{"ip":"8.8.8.8","is_anycast":true,"asn":"AS15169"}"#,
+            "8.8.8.8",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(finding.tags.contains(&"anycast"));
+    }
+
+    #[test]
+    fn non_public_addresses_are_refused_before_transport_or_credential_lookup() {
+        struct NoNetwork;
+        impl Transport for NoNetwork {
+            fn send(
+                &self,
+                _: &crate::http::Request,
+            ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+                panic!("non-public IP must never be sent");
+            }
+        }
+        let no_keys = Keys::parse("").expect("empty keys");
+        for address in [
+            "10.0.0.1",
+            "127.0.0.1",
+            "192.0.2.1",
+            "100.64.1.1",
+            "2001:db8::1",
+            "::1",
+        ] {
+            assert!(
+                matches!(
+                    lookup(&NoNetwork, &no_keys, Indicator::Ip(address), 0),
+                    Err(LegError::Refused(_))
+                ),
+                "{address}"
+            );
+        }
     }
 }
