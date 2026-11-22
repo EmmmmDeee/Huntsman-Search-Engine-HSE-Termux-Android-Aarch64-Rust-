@@ -7,7 +7,7 @@ umask 077
 export LC_ALL=C
 export GIT_TERMINAL_PROMPT=0
 
-if (( $# > 1 )) || [[ "\${1:-audit}" != audit ]]; then
+if (( $# > 1 )) || [[ "${1:-audit}" != audit ]]; then
   printf 'usage: bash scripts/codeberg-migration-audit.sh [audit]\n' >&2
   exit 2
 fi
@@ -16,14 +16,14 @@ command -v git >/dev/null 2>&1 || {
   exit 2
 }
 
-source_remote="\${HUNTSMAN_SOURCE_REMOTE:-https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git}"
-dest_remote="\${HUNTSMAN_DEST_REMOTE:-https://codeberg.org/EmmmmDeee/HuntsmanSearchEngine.git}"
+source_remote="${HUNTSMAN_SOURCE_REMOTE:-https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git}"
+dest_remote="${HUNTSMAN_DEST_REMOTE:-https://codeberg.org/EmmmmDeee/HuntsmanSearchEngine.git}"
 if [[ -z "$source_remote" || -z "$dest_remote" || "$source_remote" == "$dest_remote" ]]; then
   printf 'FAIL: distinct, non-empty source and destination remotes are required\n' >&2
   exit 2
 fi
 
-tmp="$(mktemp -d "\${TMPDIR:-/tmp}/hse-codeberg-audit.XXXXXXXX")" || exit 2
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hse-codeberg-audit.XXXXXXXX")" || exit 2
 trap 'rm -rf -- "$tmp"' EXIT
 
 # Only branch and tag refs matter for clone identity. --refs excludes annotated-tag
