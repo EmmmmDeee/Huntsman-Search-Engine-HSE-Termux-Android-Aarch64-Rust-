@@ -20,6 +20,12 @@ There are two **mutually exclusive** first-transfer methods:
   token; do not pre-create an empty repository. Verify imported commits,
   branches, open proposals and issue records separately; revoke the token
   after the import. Do **not** run this script's `push` against that repository.
+  You **may** run the read-only `bash scripts/codeberg-migrate.sh verify USER/REPO`
+  against an importer-created repository to compare Git refs and the default
+  branch. That command checks Git object identities only; it cannot attest to
+  imported PR comments, issue status, release assets or Codeberg permissions.
+  If the importer intentionally omits branches, it will fail with a visible
+  ref difference rather than falsely reporting complete migration.
 - **Git-history-only:** Create a truly empty Codeberg repository, then use
   `plan`, `push` and `verify` below. Branch and tag SHAs are tested; PR and
   issue metadata are intentionally out of scope. Keep the original GitHub
