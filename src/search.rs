@@ -59,8 +59,8 @@ fn is_word_char(c: char) -> bool {
 
 /// Every distinct query term must occur. Score is the total occurrence count. A query that is
 /// one email address or one domain must also occur as a whole name (see `names_identifier`).
-/// A two-word initial-and-surname query (such as `H Bramston`) must also name an
-/// adjacent initial or capitalized forename with that surname. Without this gate the
+/// A name-like two-word initial-and-surname query (such as `H Bramston` or
+/// `H. bramston`) must name an adjacent initial or capitalized forename with that surname. Without this gate the
 /// one-letter initial is discarded by [`tokenize`], and a place-name mention of the
 /// surname alone is incorrectly returned as a match.
 #[must_use]
@@ -106,9 +106,15 @@ pub fn search(docs: &[Document], query: &str) -> Vec<Hit> {
 /// forenames, place names, domains, and arbitrary phrases.
 fn initial_surname_query(query: &str) -> Option<(String, String)> {
     let mut words = query.split_whitespace();
-    let initial = words.next()?.trim_end_matches('.');
+    let raw_initial = words.next()?;
+    let explicit_initial = raw_initial.ends_with('.');
+    let initial = raw_initial.trim_end_matches('.');
     let surname = words.next()?.trim_end_matches('.');
+    // Only an explicit dotted initial or a title-cased surname signals a
+    // person-name query. A generic "a red" or "i phone" search must retain
+    // the old all-token search semantics, including lowercase single words.
     if words.next().is_some()
+        || (!explicit_initial && !surname.chars().next().is_some_and(char::is_uppercase))
         || initial.chars().count() != 1
         || !initial.chars().all(char::is_alphabetic)
         || surname.chars().count() < 2
@@ -129,6 +135,12 @@ fn names_initial_surname(text: &str, initial: &str, surname: &str) -> bool {
     let mut preceding_given_name = false;
     for raw in text.split_whitespace() {
         let raw = raw.trim_matches(|c: char| !is_word_char(c));
+        // Archival sources commonly write a person's surname in possessive
+        // form. Keep the trailing possessive from hiding a legitimate name.
+        let raw = raw
+            .strip_suffix("'s")
+            .or_else(|| raw.strip_suffix("’s"))
+            .unwrap_or(raw);
         if raw.is_empty() {
             preceding_given_name = false;
             continue;
@@ -607,6 +619,10 @@ mod tests {
             doc("lower", "h. Bramston is named in an archival index."),
             doc("other", "E. Bramston married in Queensland."),
             doc("split", "H wrote a note. Bramston is mentioned separately."),
+            doc("possessive", "H. Bramston's appointment is recorded."),
+            doc("curly", "Henry Bramston’s correspondence survives."),
+            doc("red", "a red car"),
+            doc("letter", "H approach section"),
         ];
         let ids = |query: &str| -> Vec<String> {
             search(&corpus, query)
@@ -614,15 +630,25 @@ mod tests {
                 .map(|hit| hit.id)
                 .collect()
         };
-        assert_eq!(ids("H Bramston"), ["bare", "full", "initial", "lower"]);
-        assert_eq!(ids("H. Bramston"), ["bare", "full", "initial", "lower"]);
-        assert_eq!(ids("h bramston"), ["bare", "full", "initial", "lower"]);
+        let expected = ["bare", "curly", "full", "initial", "lower", "possessive"];
+        assert_eq!(ids("H Bramston"), expected);
+        assert_eq!(ids("H. Bramston"), expected);
+        assert_eq!(ids("h Bramston"), expected);
+        assert_eq!(ids("H. bramston"), expected);
+        // A fully lowercase, undotted phrase is intentionally ambiguous.
+        assert_eq!(ids("h bramston"), ids("bramston"));
         assert_eq!(ids("E Bramston"), ["other"]);
         assert_eq!(ids("Henry Bramston"), ["full"]);
         assert_eq!(
             ids("Bramston"),
-            ["bare", "beach", "full", "initial", "lower", "other", "split"]
+            [
+                "bare", "beach", "curly", "full", "initial", "lower", "other",
+                "possessive", "split",
+            ]
         );
+        assert_eq!(ids("a red"), ids("red"));
+        assert_eq!(ids("i phone"), ids("phone"));
+        assert_eq!(ids("H approach"), ids("approach"));
         assert!(ids("H Smith").is_empty());
     }
 
