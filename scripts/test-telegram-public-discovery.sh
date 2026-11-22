@@ -36,8 +36,13 @@ bash "$script" --expanded --output "$base/extended" sample topic > "$base/extend
 [[ $(wc -l < "$base/extended/manifest.tsv") -eq 9 ]]
 [[ $(wc -l < "$MOCK_LOG") -eq 12 ]]
 grep -q 'searches=8' "$base/extended-out"
+# Exact-phrase quoting must be preserved end-to-end for Telegram name searches.
+bash "$script" --output "$base/phrase" '"Kylie Truong"' > "$base/phrase-out"
+[[ $(wc -l < "$MOCK_LOG") -eq 16 ]]
+grep -Fq 'site:t.me/s "Kylie Truong"' "$MOCK_LOG"
+grep -Fq 'site:t.me/s "Kylie Truong"' "$base/phrase/manifest.tsv"
 # Bad input, overlong Unicode byte strings, and invalid budgets are rejected before I/O.
-for input in $'bad\ninput' $'bad\tinput' 'bad"input' 'bad\input' "$(printf 'a%.0s' {1..121})" "$(printf 'é%.0s' {1..70})"; do
+for input in $'bad\ninput' $'bad\tinput' 'bad\input' "$(printf 'a%.0s' {1..121})" "$(printf 'é%.0s' {1..70})"; do
   if bash "$script" --output "$base/unsafe" "$input" > /dev/null 2>&1; then exit 1; fi
   [[ ! -e "$base/unsafe" ]]
 done
