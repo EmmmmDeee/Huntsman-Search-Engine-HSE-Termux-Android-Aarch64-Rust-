@@ -103,6 +103,7 @@ pub mod evidence;
 pub mod evidence_ancestry;
 pub mod evidence_register;
 pub mod evm_rpc;
+pub mod europe_pmc;
 pub mod exa;
 pub mod exif;
 pub mod exit;
