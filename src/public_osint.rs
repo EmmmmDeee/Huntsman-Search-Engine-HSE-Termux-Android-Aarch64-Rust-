@@ -490,67 +490,118 @@ fn web_search<T: Transport + ?Sized>(
 
 /// The safe public Telegram surface indicated by an *indexed URL*, not by
 /// reading Telegram itself. It cannot establish who owns a profile or post.
-fn telegram_index_surface(url: &str) -> Option<&'static str> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedTelegramUrl {
+    /// A stable URL for URL-level de-duplication, not proof that a page exists.
+    canonical: String,
+    surface: &'static str,
+}
+
+/// Canonicalise only unambiguous *public URL shapes*. No web fetch or identity
+/// resolution occurs here. Rejecting a URL never proves the target is absent.
+/// The hot path borrows path segments and allocates only after validation.
+fn telegram_index_surface(url: &str) -> Option<IndexedTelegramUrl> {
     if url.len() > 2048
         || !url.starts_with("https://")
-        || url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+        || url
+            .bytes()
+            .any(|b| b.is_ascii_control() || b.is_ascii_whitespace() || b == b'\\')
     {
         return None;
     }
     let rest = url.strip_prefix("https://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
-    // Exact authority checks reject userinfo, non-default ports, lookalikes,
-    // suffix subdomains, percent-encoded hosts and schemeless redirects.
-    match authority {
-        "tgstat.com" | "www.tgstat.com" | "telemetr.io" | "www.telemetr.io" => {
-            let path = rest.strip_prefix(authority)?.split(['?', '#']).next()?;
-            return (path.starts_with('/') && path.len() > 1).then_some("third_party_directory");
+    let suffix = rest.strip_prefix(authority)?;
+    let path = suffix.split(['?', '#']).next()?;
+
+    if matches!(
+        authority,
+        "tgstat.com" | "www.tgstat.com" | "telemetr.io" | "www.telemetr.io"
+    ) {
+        // A catalogue landing page, general search form, or leaderboard is
+        // not a specific record and must not inflate the discovery count.
+        if path.len() > 300 || !path.starts_with('/') || path.contains('%') {
+            return None;
         }
-        "t.me" | "telegram.me" => {}
-        _ => return None,
+        let mut segments = path.strip_prefix('/')?.split('/');
+        let first = segments.next()?;
+        let second = segments.next()?;
+        if first.is_empty() || second.is_empty() || path.split('/').any(|part| part == "." || part == ".." || part.is_empty() && path != "/") {
+            return None;
+        }
+        if first.eq_ignore_ascii_case("search")
+            || first.eq_ignore_ascii_case("ratings")
+            || first.eq_ignore_ascii_case("catalog")
+            || second.eq_ignore_ascii_case("search")
+            || second.eq_ignore_ascii_case("catalog")
+        {
+            return None;
+        }
+        let host = if authority.contains("tgstat.com") {
+            "tgstat.com"
+        } else {
+            "telemetr.io"
+        };
+        return Some(IndexedTelegramUrl {
+            canonical: format!("https://{host}{path}"),
+            surface: "third_party_directory",
+        });
     }
-    let path = rest.strip_prefix(authority)?.strip_prefix('/')?;
-    let path = path.split(['?', '#']).next().unwrap_or("");
-    let parts: Vec<&str> = path.split('/').collect();
-    if parts.is_empty() || parts.len() > 3 {
+
+    if !matches!(authority, "t.me" | "telegram.me" | "telegram.dog") {
         return None;
     }
-    let (handle, message) = if parts[0] == "s" {
-        if parts.len() < 2 {
-            return None;
-        }
-        (parts[1], parts.get(2).copied())
-    } else {
-        if parts.len() > 2 {
-            return None;
-        }
-        (parts[0], parts.get(1).copied())
-    };
-    // Public handles are not personal identities. Private /c/ and +invites,
-    // one-click sharing and administrative paths are never discovery evidence.
-    let reserved = [
+    let mut segments = path.strip_prefix('/')?.split('/');
+    let first = segments.next()?;
+    let preview = first == "s";
+    let handle = if preview { segments.next()? } else { first };
+    let message = segments.next();
+    if segments.next().is_some() {
+        return None;
+    }
+
+    // 5..32 ASCII chars and a leading Latin letter are Telegram's public
+    // username grammar. These are handles, not names of people.
+    const RESERVED: &[&str] = &[
         "c", "joinchat", "share", "addstickers", "proxy", "socks",
         "iv", "login", "boost", "setlanguage", "bg", "invoice",
     ];
-    if handle.len() < 5
-        || handle.len() > 32
-        || reserved.iter().any(|r| handle.eq_ignore_ascii_case(r))
-        || !handle.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    if !(5..=32).contains(&handle.len())
         || !handle.as_bytes()[0].is_ascii_alphabetic()
+        || !handle.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        || RESERVED.iter().any(|r| handle.eq_ignore_ascii_case(r))
     {
         return None;
     }
-    if let Some(id) = message {
-        if id.is_empty() || id.len() > 19 || !id.bytes().all(|b| b.is_ascii_digit()) {
+
+    let handle = handle.to_ascii_lowercase();
+    if let Some(raw_id) = message {
+        // Post zero, blank/negative, extremely long or overflowing numeric
+        // tokens are not usable message IDs.
+        if raw_id.is_empty()
+            || raw_id.len() > 19
+            || !raw_id.bytes().all(|b| b.is_ascii_digit())
+        {
             return None;
         }
-        return Some("indexed_post_url");
+        let id = raw_id.parse::<u64>().ok().filter(|id| *id > 0)?;
+        return Some(IndexedTelegramUrl {
+            canonical: format!("https://t.me/{handle}/{id}"),
+            surface: "indexed_post_url",
+        });
     }
-    if parts[0] == "s" {
-        Some("indexed_public_preview")
-    } else {
-        Some("indexed_handle_url")
-    }
+    Some(IndexedTelegramUrl {
+        canonical: if preview {
+            format!("https://t.me/s/{handle}")
+        } else {
+            format!("https://t.me/{handle}")
+        },
+        surface: if preview {
+            "indexed_public_preview"
+        } else {
+            "indexed_handle_url"
+        },
+    })
 }
 
 /// Keyless Telegram-focused *index* discovery, not a Telegram API session.
@@ -601,7 +652,7 @@ pub fn telegram_index_search<T: Transport + ?Sized>(
         // The index did not prove page content, account ownership, family
         // relationships or whether the query occurs on the target page.
         for hit in observations.into_iter().take(75) {
-            if let Some(surface) = telegram_index_surface(&hit.url) {
+            if let Some(parsed) = telegram_index_surface(&hit.url) {
                 let evidence = Evidence::new(
                     EvidenceProvenance::for_scan("telegram_web_index", scan_id),
                     "Public-index URL lead; Telegram page and identity not verified",
@@ -609,12 +660,13 @@ pub fn telegram_index_search<T: Transport + ?Sized>(
                 .with_attr("source_url", &hit.url)
                 .with_attr("discovered_by", &hit.engine)
                 .with_attr("query", &search)
-                .with_attr("surface", surface)
+                .with_attr("surface", parsed.surface)
+                .with_attr("canonical_index_url", &parsed.canonical)
                 .with_attr("evidence_role", "indexed_url_only");
                 push_entity(
                     &mut entities,
                     EntityKind::Url,
-                    &hit.url,
+                    &parsed.canonical,
                     0.20,
                     scan_id,
                     evidence,
@@ -840,7 +892,42 @@ mod tests {
             ("https://tgstat.com/channel/123", "third_party_directory"),
             ("https://telemetr.io/en/channels/123", "third_party_directory"),
         ] {
-            assert_eq!(telegram_index_surface(raw), Some(expected), "{raw}");
+            assert_eq!(telegram_index_surface(raw).map(|parsed| parsed.surface), Some(expected), "{raw}");
+        }
+    }
+
+    #[test]
+    fn telegram_index_canonicalises_aliases_and_preview_post_urls() {
+        let urls = [
+            "https://t.me/CheemsCMNews/00132?single",
+            "https://t.me/s/cheemscmnews/132#x",
+            "https://telegram.me/CHEEMSCMNEWS/132",
+            "https://telegram.dog/cheemscmnews/132",
+        ];
+        for url in urls {
+            let parsed = telegram_index_surface(url).expect(url);
+            assert_eq!(parsed.canonical, "https://t.me/cheemscmnews/132");
+            assert_eq!(parsed.surface, "indexed_post_url");
+        }
+        let handle = telegram_index_surface("https://telegram.me/TRUONG?start=1").unwrap();
+        assert_eq!(handle.canonical, "https://t.me/truong");
+        assert_eq!(handle.surface, "indexed_handle_url");
+    }
+
+    #[test]
+    fn telegram_index_never_turns_generic_directory_pages_into_entity_leads() {
+        for url in [
+            "https://tgstat.com/channels/search",
+            "https://tgstat.com/ratings/posts",
+            "https://tgstat.com/search",
+            "https://telemetr.io/en/catalog",
+            "https://telemetr.io/en/catalog/global",
+            "https://tgstat.com/channel/../../admin",
+            "https://t.me/TRUONG/0",
+            "https://t.me/TRUONG/18446744073709551616",
+            "https://t.me/TRUONG/",
+        ] {
+            assert_eq!(telegram_index_surface(url), None, "{url}");
         }
     }
 
