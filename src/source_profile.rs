@@ -134,6 +134,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("crates_io", C::Code, None),
     row("cross_scan_corroboration", C::Other, None),
     row("cross_scan_history", C::Other, None),
+    row("crossref_works", C::Other, Some(C::Search)),
     row("crtsh", C::Other, Some(C::Infra)),
     row("cybercrimetracker", C::Other, None),
     row("dehashed", C::Breach, None),
@@ -209,6 +210,7 @@ pub const PROFILES: &[SourceProfile] = &[
     row("opencellid", C::Other, Some(C::Rf)),
     row("opendns", C::Infra, None),
     // A community-edited catalogue searched by name: never an independent family.
+    row("openalex_author", C::Other, Some(C::Search)),
     row("openlibrary_author", C::Other, None),
     row("openpgp_keys", C::EmailIntel, None),
     row("openphish", C::Other, None),
