@@ -10,7 +10,7 @@ From the canonical Huntsman repository with `huntsman-recon` installed:
 # Four default site-filtered search cohorts, 3 built-in engines per cohort.
 bash scripts/telegram-public-discovery.sh --output "$HOME/telegram-case-1" example topic
 
-# Eight opt-in cohorts: four default + Telegraph, TelegramChannels and Reddit catalogues.
+# Eight opt-in cohorts: four default + Telegraph, TelegramChannels, search-t.me and TgramSearch catalogues.
 bash scripts/telegram-public-discovery.sh --expanded --output "$HOME/telegram-case-2" example topic
 
 # Offline verification first; live search is explicitly opt-in.
@@ -54,3 +54,17 @@ bash scripts/telegram-termux-acceptance.sh
 ```
 
 The above are **offline shell tests**; they do not establish that public providers are reachable. Physical Termux acceptance (`--live`), strict Rust workspace gates and GitHub Actions exact-head checks must be run separately before integration. Current draft PR #1845 is not cleared to merge. CI failures at multiple unrelated heads are pre-runner (`runner_id=0`, no executed steps), with exact account cause unresolved; do not bypass branch protection.
+
+## Exact-name searches and native Telegram search
+
+For precise name searches, preserve the quotation marks:
+
+```sh
+bash scripts/telegram-public-discovery.sh --expanded --output "$HOME/telegram-kylie-case" '"Kylie Truong"'
+```
+
+The guarded Rust `public-osint web` path permits quotation marks for web-only search, but the news, notice, and mixed dossier modes retain their stricter query grammar. These public search-engine results remain unverified indexed leads.
+
+For substantially deeper Telegram searching, an operator-authenticated user session is needed for official `contacts.search`, `messages.searchGlobal` and `channels.searchPosts`. The last method may use limited free search slots or require Telegram Stars; no payment may occur without explicit approval. TGStat's `posts/search` is a separately entitled API, and defaults to the most recent 10 days when `startDate` is omitted. Neither capability is performed by this fallback script.
+
+Official reference: https://core.telegram.org/api/search and https://api.tgstat.ru/docs/ru/posts/search.html
