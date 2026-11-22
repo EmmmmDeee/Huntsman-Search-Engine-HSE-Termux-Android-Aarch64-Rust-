@@ -11,7 +11,7 @@ use huntsman_recon::public_osint::{self, Source};
 use huntsman_recon::source_outcome::SourceReach;
 use huntsman_recon::web_server::{LookupError, LookupQuery, LookupReport};
 
-pub const HELP: &str = "public-osint news|notices|web|dossier QUERY...\nKeyless GDELT news, FBI wanted notices, and Huntsman's existing web engines. Read-only. Results are leads, not verified accusations.";
+pub const HELP: &str = "public-osint news|notices|web|telegram|dossier QUERY...\nKeyless GDELT news, FBI notices, web meta-search, and guarded Telegram public-index discovery. Results are unverified leads, not identity proofs.";
 
 fn source_for(input: &str) -> Option<Source> {
     match input {
@@ -36,16 +36,30 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     let Some((mode, remainder)) = args.split_first() else {
         return fail(EX_USAGE, HELP);
     };
-    let Some(source) = source_for(mode) else {
+    if mode != "telegram" && source_for(mode).is_none() {
         return fail(EX_USAGE, HELP);
-    };
+    }
     if remainder.is_empty() {
         return fail(EX_USAGE, HELP);
     }
     let query = remainder.join(" ");
     let scan = entity::scan_id("public-osint", &query);
-    let report = match public_osint::search(&transport(), source, &query, &scan, clock::unix_now())
-    {
+    let report = match source_for(mode) {
+        Some(source) => public_osint::search(
+            &transport(),
+            source,
+            &query,
+            &scan,
+            clock::unix_now(),
+        ),
+        None => public_osint::telegram_index_search(
+            &transport(),
+            &query,
+            &scan,
+            clock::unix_now(),
+        ),
+    };
+    let report = match report {
         Ok(report) => report,
         Err(reason) => return fail(EX_DATAERR, reason),
     };
@@ -62,16 +76,27 @@ pub(super) fn run(args: &[String]) -> ExitCode {
 /// Bridges public-source collectors into the existing guarded /api/lookup
 /// handler. Other lookup kinds continue through the current scan router.
 pub(super) fn web_lookup(query: &LookupQuery) -> Option<Result<LookupReport, LookupError>> {
-    let source = source_for(&query.kind)?;
+    let source = source_for(&query.kind);
+    if source.is_none() && query.kind != "telegram" {
+        return None;
+    }
     let scan = entity::scan_id("public-osint", &query.selector);
     Some((|| {
-        let report = public_osint::search(
-            &transport(),
-            source,
-            &query.selector,
-            &scan,
-            clock::unix_now(),
-        )
+        let report = match source {
+            Some(source) => public_osint::search(
+                &transport(),
+                source,
+                &query.selector,
+                &scan,
+                clock::unix_now(),
+            ),
+            None => public_osint::telegram_index_search(
+                &transport(),
+                &query.selector,
+                &scan,
+                clock::unix_now(),
+            ),
+        }
         .map_err(|message| LookupError {
             status: 400,
             message: message.into(),
