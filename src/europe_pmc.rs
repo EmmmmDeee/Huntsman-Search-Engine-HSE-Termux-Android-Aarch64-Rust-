@@ -346,6 +346,38 @@ mod tests {
     }
 
     #[test]
+    fn a_result_for_a_different_query_never_creates_an_entity() {
+        let rows = r#"[{"id":"1","source":"MED","title":"Unrelated Result"}]"#;
+        let mismatch = search(
+            &OneResponse::json(200, &body(rows, 1)),
+            "different query",
+            "scan-epmc",
+            10,
+        )
+        .expect("search");
+        assert!(mismatch.entities.is_empty());
+        assert_eq!(mismatch.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+    }
+
+    #[test]
+    fn upstream_error_envelopes_are_not_valid_zero_results() {
+        let error = r#"{"errCode":500,"errMsg":"upstream temporarily unavailable",
+            "hitCount":0,
+            "request":{"queryString":"gene editing","resultType":"lite","pageSize":8},
+            "resultList":{"result":[]}}"#;
+        let report = search(
+            &OneResponse::json(200, error),
+            "gene editing",
+            "scan-epmc",
+            10,
+        )
+        .expect("search");
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SemanticDrift);
+        assert!(!report.outcomes[0].kind.is_accepted());
+    }
+
+    #[test]
     fn raw_input_controls_are_rejected_before_trimming() {
         assert!(checked_query("\n gene editing").is_err());
         assert!(checked_query("gene\t editing").is_err());
