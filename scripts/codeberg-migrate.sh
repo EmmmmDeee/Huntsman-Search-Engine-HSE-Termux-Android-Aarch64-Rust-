@@ -27,6 +27,8 @@ fi
 
 command -v git >/dev/null || fail 'git is required: pkg install git (on Termux)'
 command -v sort >/dev/null || fail 'sort is required: pkg install coreutils (on Termux)'
+command -v awk >/dev/null || fail 'awk is required: pkg install gawk (on Termux)'
+command -v diff >/dev/null || fail 'diff is required: pkg install diffutils (on Termux)'
 
 if [[ "$mode" == plan ]]; then
   printf 'Source: %s\nDestination: %s\n' "$source_url" "$destination"
