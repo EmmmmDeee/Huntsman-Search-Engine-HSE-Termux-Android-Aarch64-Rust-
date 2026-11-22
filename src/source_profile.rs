@@ -207,10 +207,10 @@ pub const PROFILES: &[SourceProfile] = &[
     row("numverify", C::Other, None),
     row("oathnet", C::Breach, None),
     row("official_x_recent_search", C::Search, None),
+    row("openalex_author", C::Other, Some(C::Search)),
     row("opencellid", C::Other, Some(C::Rf)),
     row("opendns", C::Infra, None),
     // A community-edited catalogue searched by name: never an independent family.
-    row("openalex_author", C::Other, Some(C::Search)),
     row("openlibrary_author", C::Other, None),
     row("openpgp_keys", C::EmailIntel, None),
     row("openphish", C::Other, None),
