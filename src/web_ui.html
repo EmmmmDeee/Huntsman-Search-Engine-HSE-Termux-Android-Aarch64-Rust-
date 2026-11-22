@@ -753,9 +753,10 @@ $('utelegram-go').onclick=async()=>{
         li.append(link);items.append(li);
       }catch(_){/* Invalid upstream URL is never a clickable link. */}
     }
+    const safeCount=items.childElementCount;
     $('uresearch-hits').replaceChildren(items);
     const outcomes=Array.isArray(result.outcomes)?result.outcomes:[];
-    $('uresearch-status').textContent=links.length+' public-index URL lead(s), '+outcomes.length+
+    $('uresearch-status').textContent=safeCount+' public-index URL lead(s), '+outcomes.length+
       ' source outcome(s). Unverified links only; no Telegram account ownership established.';
   }catch(e){
     if(version===researchVersion)$('uresearch-status').textContent='Telegram index error: '+e.message;
