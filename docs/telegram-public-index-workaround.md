@@ -149,3 +149,22 @@ rejections, URL spoofing, private-invite rejection, and pre-network input
 validation. Those regressions still require a real `cargo test` run. The
 branch remains a **draft** until actual CI and rootless Android acceptance
 are available.
+
+
+### Duplicate evidence cannot increase corroboration
+
+The native collector now keeps a `BTreeMap` of canonical URL entity UIDs
+within each bounded run. An additional index sighting adds an evidence record
+directly to the existing URL entity; it **does not merge a second Entity**
+with a new corroboration counter. This avoids the normal entity merge
+incrementing `corroboration` for Bing/Brave/Mojeek duplicate sightings.
+
+Regression fixtures use distinct `telegram.me/<handle>/<id>` and
+`t.me/s/<handle>/<id>` URLs referencing the same post, and require a
+single canonical entity, `corroboration = 1`, `source_count = 1`, and
+both original source URLs preserved in the separate evidence records.
+These Rust assertions are authored but **not executed** until a runner or
+the operator's Termux toolchain can run `cargo test --locked telegram_index`.
+
+The query still returns only indexed-link candidates, never a verified
+Telegram message, account owner, group membership, or identity relation.
