@@ -725,7 +725,10 @@ fn aliases(item: &Value) -> Vec<String> {
 /// `lat,lon` coordinate, a timestamp, an item reference, a quantity or a monolingual text.
 /// `None` for a `novalue`/`somevalue` snak or an unreadable shape. **Pure.**
 fn rendered_value(value: &Value) -> Option<String> {
-    if value.get("type").and_then(Value::as_str) == Some("novalue") {
+    // Only an explicit snak value carries an observed datum. A malformed
+    // somevalue/novalue envelope must not become a pivot merely because it
+    // also contains a syntactically plausible `content` field.
+    if value.get("type").and_then(Value::as_str) != Some("value") {
         return None;
     }
     let content = value.get("content")?;
@@ -806,7 +809,7 @@ fn qualifiers_all(statement: &Value, allowed: impl Fn(&str, &Value) -> bool) -> 
                     !items.is_empty()
                         && items.iter().all(|item| {
                             let value = item.get("value").unwrap_or(item);
-                            allowed(pid, value)
+                            is_value(value) && allowed(pid, value)
                         })
                 })
             }),
@@ -1613,6 +1616,64 @@ mod tests {
             assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Person));
         }
     }
+    #[test]
+    fn malformed_snak_with_content_cannot_become_a_claim_or_pivot() {
+        // Malformed upstream records can carry a content field even when the
+        // declared snak type disclaims an actual value. Retain its JSON, never
+        // interpret it as a factual identity, relationship or website.
+        let item = serde_json::json!({
+            "type": "item", "id": "Q88", "labels": {"en": "Uncertain Example"},
+            "statements": {
+                "P31": [{"value": {"type": "somevalue", "content": "Q5"}}],
+                "P22": [{"value": {"type": "novalue", "content": "Q1"}}],
+                "P26": [{"value": {"content": "Q2"}}],
+                "P856": [{"value": {"type": "somevalue",
+                                    "content": "https://invalid.example/"}}]
+            }
+        });
+        let report = decode(&item, "Q88", None, "scan-wd", 1, 200);
+        let subject = entity(&report, &EntityKind::Other, "Uncertain Example");
+        assert_eq!(report.entities.len(), 1, "malformed values seeded pivots");
+        let evidence = &subject.evidence[0];
+        for key in ["instance_of", "father", "spouse", "official_website"] {
+            assert!(!evidence.attributes.contains_key(key), "{key} was fabricated");
+        }
+        let claims: Vec<_> = evidence.attr_values("claim").collect();
+        for fake in ["P31=Q5", "P22=Q1", "P26=Q2", "P856=https://invalid.example/"] {
+            assert!(!claims.contains(&fake), "{fake} was rendered as evidence");
+        }
+        assert_eq!(evidence.attr_values("statement_json").count(), 4);
+    }
+
+    #[test]
+    fn malformed_legacy_qualifier_values_do_not_bypass_eligibility() {
+        let good = serde_json::json!({
+            "rank": "normal",
+            "value": {"type": "value", "content": "Q5"},
+            "qualifiers": {"P805": [{"value": {"type": "value", "content": "Q11"}}]}
+        });
+        assert!(eligible_for_classification(&good));
+        for malformed in [
+            serde_json::json!({"value": {"type": "novalue", "content": "Q11"}}),
+            serde_json::json!({"value": {"type": "somevalue", "content": "Q11"}}),
+            serde_json::json!({"value": {"content": "Q11"}}),
+            serde_json::json!({"value": "Q11"})
+        ] {
+            let mut bad = good.clone();
+            bad["qualifiers"]["P805"] = serde_json::json!([malformed]);
+            assert!(!eligible_for_classification(&bad), "{bad}");
+        }
+        let bad_account = serde_json::json!({
+            "rank": "normal",
+            "value": {"type": "value", "content": "ExampleHandle"},
+            "qualifiers": {
+                "P580": [{"value": {"type": "somevalue",
+                                   "content": {"time": "+2020-01-01T00:00:00Z"}}}]
+            }
+        });
+        assert!(!eligible_for_account_pivot(&bad_account));
+    }
+
     #[test]
     fn p805_qualifier_map_remains_supported_and_malformed_qualifiers_are_rejected() {
         let old = serde_json::json!({
