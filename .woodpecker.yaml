@@ -14,4 +14,8 @@ steps:
       - rustc --version
       - cargo --version
       - rustup component add clippy rustfmt
+      - bash -n scripts/codeberg-migrate.sh
+      - bash -n scripts/codeberg-adopt.sh
+      - bash tests/codeberg_migration.sh
+      - bash tests/codeberg_adopt.sh
       - cargo run --locked -p xtask -- gate fast
