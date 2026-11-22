@@ -526,7 +526,12 @@ fn telegram_index_surface(url: &str) -> Option<IndexedTelegramUrl> {
         let mut segments = path.strip_prefix('/')?.split('/');
         let first = segments.next()?;
         let second = segments.next()?;
-        if first.is_empty() || second.is_empty() || path.split('/').any(|part| part == "." || part == ".." || part.is_empty() && path != "/") {
+        if first.is_empty()
+            || second.is_empty()
+            || matches!(first, "." | "..")
+            || matches!(second, "." | "..")
+            || segments.any(|part| part.is_empty() || matches!(part, "." | ".."))
+        {
             return None;
         }
         if first.eq_ignore_ascii_case("search")
