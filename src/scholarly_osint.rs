@@ -23,9 +23,13 @@ const MAX_QUERY_BYTES: usize = 120;
 /// Check the original bytes, before trimming, so controls cannot vanish.
 fn checked_query(raw: &str) -> Result<&str, Error> {
     if raw.len() > MAX_QUERY_BYTES
-        || raw.chars().any(|c| c.is_control() || matches!(c, '"' | '\\' | '<' | '>'))
+        || raw
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '"' | '\\' | '<' | '>'))
     {
-        return Err(Error::invalid("scholarly query must be 1..120 UTF-8 bytes without controls, quotes or HTML delimiters"));
+        return Err(Error::invalid(
+            "scholarly query must be 1..120 UTF-8 bytes without controls, quotes or HTML delimiters",
+        ));
     }
     let query = raw.trim();
     if query.is_empty() {
@@ -51,8 +55,14 @@ pub fn search<T: Transport + ?Sized>(
     let query = checked_query(raw_query)?;
     let mut result = LookupReport::default();
     for (source, leg) in [
-        (OPENALEX_SOURCE, openalex(transport, query, scan_id, now_unix)),
-        (CROSSREF_SOURCE, crossref(transport, query, scan_id, now_unix)),
+        (
+            OPENALEX_SOURCE,
+            openalex(transport, query, scan_id, now_unix),
+        ),
+        (
+            CROSSREF_SOURCE,
+            crossref(transport, query, scan_id, now_unix),
+        ),
     ] {
         match leg {
             Ok(report) => {
@@ -116,8 +126,8 @@ fn page_result(
             outcome: kind.with_http_status(status),
         };
     }
-    let mut outcome = SourceExecutionOutcome::success(source, now_unix, count)
-        .with_http_status(status);
+    let mut outcome =
+        SourceExecutionOutcome::success(source, now_unix, count).with_http_status(status);
     if total > page_rows as u64 {
         outcome = outcome.with_detail("first bounded page only; more catalogue matches exist");
     }
@@ -158,15 +168,28 @@ fn interpret_openalex(
     let total = body.pointer("/meta/count").and_then(Value::as_u64);
     let rows = body.get("results").and_then(Value::as_array);
     let (Some(total), Some(rows)) = (total, rows) else {
-        return Err(drift(OPENALEX_SOURCE, now_unix, status, "missing OpenAlex count or results"));
+        return Err(drift(
+            OPENALEX_SOURCE,
+            now_unix,
+            status,
+            "missing OpenAlex count or results",
+        ));
     };
     if rows.len() > LIMIT || total < rows.len() as u64 {
-        return Err(drift(OPENALEX_SOURCE, now_unix, status, "inconsistent OpenAlex result counts"));
+        return Err(drift(
+            OPENALEX_SOURCE,
+            now_unix,
+            status,
+            "inconsistent OpenAlex result counts",
+        ));
     }
     if rows.is_empty() && total > 0 {
         return Err(SourceExecutionOutcome::failed(
-            OPENALEX_SOURCE, now_unix, SourceOutcomeKind::ZeroYieldAnomaly,
-            Some(status), "OpenAlex reports matches but returned an empty page",
+            OPENALEX_SOURCE,
+            now_unix,
+            SourceOutcomeKind::ZeroYieldAnomaly,
+            Some(status),
+            "OpenAlex reports matches but returned an empty page",
         ));
     }
     let mut entities = Vec::with_capacity(rows.len());
@@ -174,16 +197,27 @@ fn interpret_openalex(
         let id = row.get("id").and_then(Value::as_str);
         let label = row.get("display_name").and_then(Value::as_str);
         let (Some(id), Some(label)) = (id, label) else {
-            return Err(drift(OPENALEX_SOURCE, now_unix, status, "OpenAlex author missing id or name"));
+            return Err(drift(
+                OPENALEX_SOURCE,
+                now_unix,
+                status,
+                "OpenAlex author missing id or name",
+            ));
         };
         let author_id = id.strip_prefix("https://openalex.org/A");
-        let valid_id = author_id.is_some_and(|n| {
-            (1..=20).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit())
-        });
-        if !valid_id || label.trim().is_empty() || label.len() > 240
+        let valid_id = author_id
+            .is_some_and(|n| (1..=20).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()));
+        if !valid_id
+            || label.trim().is_empty()
+            || label.len() > 240
             || label.chars().any(char::is_control)
         {
-            return Err(drift(OPENALEX_SOURCE, now_unix, status, "invalid OpenAlex author id or name"));
+            return Err(drift(
+                OPENALEX_SOURCE,
+                now_unix,
+                status,
+                "invalid OpenAlex author id or name",
+            ));
         }
         let mut evidence = Evidence::new(
             EvidenceProvenance::for_scan(OPENALEX_SOURCE, scan_id),
@@ -215,7 +249,12 @@ fn interpret_openalex(
         );
     }
     Ok(page_result(
-        OPENALEX_SOURCE, now_unix, status, total, rows.len(), entities,
+        OPENALEX_SOURCE,
+        now_unix,
+        status,
+        total,
+        rows.len(),
+        entities,
     ))
 }
 
@@ -249,17 +288,19 @@ fn crossref<T: Transport + ?Sized>(
 fn doi_url(raw: &str) -> Option<String> {
     let (prefix, suffix) = raw.split_once('/')?;
     let number = prefix.strip_prefix("10.")?;
-    if !(4..=12).contains(&number.len()) || !number.bytes().all(|b| b.is_ascii_digit())
-        || suffix.is_empty() || suffix.len() > 240
+    if !(4..=12).contains(&number.len())
+        || !number.bytes().all(|b| b.is_ascii_digit())
+        || suffix.is_empty()
+        || suffix.len() > 240
         || suffix.chars().any(char::is_control)
     {
         return None;
     }
-    let components: Vec<String> = suffix
+    let components: Vec<String> = suffix.split('/').map(percent_encode_unreserved).collect();
+    if suffix
         .split('/')
-        .map(percent_encode_unreserved)
-        .collect();
-    if suffix.split('/').any(|segment| segment.is_empty() || segment == "." || segment == "..") {
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
         return None;
     }
     Some(format!("https://doi.org/{prefix}/{}", components.join("/")))
@@ -272,37 +313,69 @@ fn interpret_crossref(
     now_unix: u64,
 ) -> Result<SourceReport, SourceExecutionOutcome> {
     let (body, status) = read_json(fetched, CROSSREF_SOURCE, "Crossref", now_unix)?;
-    let total = body.pointer("/message/total-results").and_then(Value::as_u64);
+    let total = body
+        .pointer("/message/total-results")
+        .and_then(Value::as_u64);
     let rows = body.pointer("/message/items").and_then(Value::as_array);
     let (Some(total), Some(rows)) = (total, rows) else {
-        return Err(drift(CROSSREF_SOURCE, now_unix, status, "missing Crossref count or items"));
+        return Err(drift(
+            CROSSREF_SOURCE,
+            now_unix,
+            status,
+            "missing Crossref count or items",
+        ));
     };
     if body.get("status").and_then(Value::as_str) != Some("ok")
-        || rows.len() > LIMIT || total < rows.len() as u64
+        || rows.len() > LIMIT
+        || total < rows.len() as u64
     {
-        return Err(drift(CROSSREF_SOURCE, now_unix, status, "inconsistent Crossref result envelope"));
+        return Err(drift(
+            CROSSREF_SOURCE,
+            now_unix,
+            status,
+            "inconsistent Crossref result envelope",
+        ));
     }
     if rows.is_empty() && total > 0 {
         return Err(SourceExecutionOutcome::failed(
-            CROSSREF_SOURCE, now_unix, SourceOutcomeKind::ZeroYieldAnomaly,
-            Some(status), "Crossref reports matches but returned an empty page",
+            CROSSREF_SOURCE,
+            now_unix,
+            SourceOutcomeKind::ZeroYieldAnomaly,
+            Some(status),
+            "Crossref reports matches but returned an empty page",
         ));
     }
     let mut entities = Vec::with_capacity(rows.len());
     for row in rows {
         let Some(doi) = row.get("DOI").and_then(Value::as_str) else {
-            return Err(drift(CROSSREF_SOURCE, now_unix, status, "Crossref work missing DOI"));
+            return Err(drift(
+                CROSSREF_SOURCE,
+                now_unix,
+                status,
+                "Crossref work missing DOI",
+            ));
         };
         let Some(url) = doi_url(doi) else {
-            return Err(drift(CROSSREF_SOURCE, now_unix, status, "Crossref work contains invalid DOI"));
+            return Err(drift(
+                CROSSREF_SOURCE,
+                now_unix,
+                status,
+                "Crossref work contains invalid DOI",
+            ));
         };
-        let title = row.get("title")
+        let title = row
+            .get("title")
             .and_then(Value::as_array)
             .and_then(|titles| titles.first())
             .and_then(Value::as_str)
             .unwrap_or("Untitled Crossref work");
         if title.len() > 1000 || title.chars().any(char::is_control) {
-            return Err(drift(CROSSREF_SOURCE, now_unix, status, "Crossref work has invalid title"));
+            return Err(drift(
+                CROSSREF_SOURCE,
+                now_unix,
+                status,
+                "Crossref work has invalid title",
+            ));
         }
         let evidence = Evidence::new(
             EvidenceProvenance::for_scan(CROSSREF_SOURCE, scan_id),
@@ -324,7 +397,12 @@ fn interpret_crossref(
         );
     }
     Ok(page_result(
-        CROSSREF_SOURCE, now_unix, status, total, rows.len(), entities,
+        CROSSREF_SOURCE,
+        now_unix,
+        status,
+        total,
+        rows.len(),
+        entities,
     ))
 }
 
@@ -345,9 +423,19 @@ mod tests {
         let report = search(&transport, "Alex Example", "academic-scan", 123).unwrap();
         assert_eq!(report.entities.len(), 2);
         assert_eq!(report.outcomes.len(), 2);
-        assert!(report.outcomes.iter().all(|o| o.kind == SourceOutcomeKind::Success));
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|o| o.kind == SourceOutcomeKind::Success)
+        );
         assert!(report.outcomes.iter().all(|o| o.detail.is_some()));
-        assert!(report.entities.iter().all(|e| e.tags.contains(&crate::tags::NAME_SEARCH_LEAD.to_string())));
+        assert!(
+            report
+                .entities
+                .iter()
+                .all(|e| e.tags.contains(&crate::tags::NAME_SEARCH_LEAD.to_string()))
+        );
         let urls = transport.seen.borrow();
         assert_eq!(urls.len(), 2);
         assert!(urls[0].url.starts_with("https://api.openalex.org/authors?"));
@@ -359,9 +447,18 @@ mod tests {
     #[test]
     fn only_complete_zero_envelopes_prove_zero_catalogue_matches() {
         let oa = OneResponse::json(200, r#"{"meta":{"count":0},"results":[]}"#);
-        let cr = OneResponse::json(200, r#"{"status":"ok","message":{"total-results":0,"items":[]}}"#);
-        assert_eq!(openalex(&oa, "Alex Example", "s", 1).unwrap().outcome.kind, SourceOutcomeKind::ValidZero);
-        assert_eq!(crossref(&cr, "Alex Example", "s", 1).unwrap().outcome.kind, SourceOutcomeKind::ValidZero);
+        let cr = OneResponse::json(
+            200,
+            r#"{"status":"ok","message":{"total-results":0,"items":[]}}"#,
+        );
+        assert_eq!(
+            openalex(&oa, "Alex Example", "s", 1).unwrap().outcome.kind,
+            SourceOutcomeKind::ValidZero
+        );
+        assert_eq!(
+            crossref(&cr, "Alex Example", "s", 1).unwrap().outcome.kind,
+            SourceOutcomeKind::ValidZero
+        );
         for body in [
             r#"{"meta":{"count":4},"results":[]}"#,
             r#"{"meta":{},"results":[]}"#,
@@ -395,7 +492,14 @@ mod tests {
     #[test]
     fn invalid_query_never_reaches_the_network() {
         let transport = ScriptedTransport::new(Vec::new());
-        for input in ["", " ", "Alex\nExample", "Alex\tExample", "Alex <Example>", "Alex \"Example\""] {
+        for input in [
+            "",
+            " ",
+            "Alex\nExample",
+            "Alex\tExample",
+            "Alex <Example>",
+            "Alex \"Example\"",
+        ] {
             assert!(search(&transport, input, "s", 1).is_err());
         }
         assert!(transport.seen.borrow().is_empty());
