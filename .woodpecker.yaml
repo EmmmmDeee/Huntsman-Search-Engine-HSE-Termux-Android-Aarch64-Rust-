@@ -1,0 +1,17 @@
+# Codeberg Woodpecker: opt-in hosted CI after Codeberg approves access.
+# No paid APIs, no source secrets, no privileged container or Docker socket.
+# The Codeberg host offers linux/amd64 only; Android acceptance remains a separate gate.
+when:
+  - event: [push, pull_request]
+steps:
+  - name: rust-fast-gate
+    image: rust:1.99-bookworm
+    environment:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    commands:
+      - rustc --version
+      - cargo --version
+      - rustup component add clippy rustfmt
+      - cargo run --locked -p xtask -- gate fast
