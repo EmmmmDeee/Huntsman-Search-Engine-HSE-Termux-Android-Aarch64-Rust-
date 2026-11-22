@@ -50,51 +50,56 @@ fn telegram_index_surface(url: &str) -> Option<IndexedTelegramUrl> {
     }
     let rest = url.strip_prefix("https://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
-    let suffix = rest.strip_prefix(authority)?;
-    let path = suffix.split(['?', '#']).next()?;
+    let path = rest.strip_prefix(authority)?.split(['?', '#']).next()?;
 
-    if matches!(
-        authority,
-        "tgstat.com" | "www.tgstat.com" | "telemetr.io" | "www.telemetr.io"
-    ) {
-        // A catalogue landing page, general search form, or leaderboard is
-        // not a specific record and must not inflate the discovery count.
-        if path.len() > 300 || !path.starts_with('/') || path.contains('%') {
-            return None;
+    match authority {
+        "tgstat.com" | "www.tgstat.com" | "telemetr.io" | "www.telemetr.io" => {
+            parse_directory_url(authority, path)
         }
-        let mut segments = path.strip_prefix('/')?.split('/');
-        let first = segments.next()?;
-        let second = segments.next()?;
-        if first.is_empty()
-            || second.is_empty()
-            || matches!(first, "." | "..")
-            || matches!(second, "." | "..")
-            || segments.any(|part| part.is_empty() || matches!(part, "." | ".."))
-        {
-            return None;
-        }
-        if first.eq_ignore_ascii_case("search")
-            || first.eq_ignore_ascii_case("ratings")
-            || first.eq_ignore_ascii_case("catalog")
-            || second.eq_ignore_ascii_case("search")
-            || second.eq_ignore_ascii_case("catalog")
-        {
-            return None;
-        }
-        let host = if authority.contains("tgstat.com") {
-            "tgstat.com"
-        } else {
-            "telemetr.io"
-        };
-        return Some(IndexedTelegramUrl {
-            canonical: format!("https://{host}{path}"),
-            surface: "third_party_directory",
-        });
+        "t.me" | "telegram.me" | "telegram.dog" => parse_public_telegram_url(path),
+        _ => None,
     }
+}
 
-    if !matches!(authority, "t.me" | "telegram.me" | "telegram.dog") {
+/// A third-party *page* is just a directory lead, never a Telegram observation.
+/// Reject broad search/rank/catalogue endpoints and unsafe path components.
+fn parse_directory_url(authority: &str, path: &str) -> Option<IndexedTelegramUrl> {
+    if path.len() > 300 || !path.starts_with('/') || path.contains('%') {
         return None;
     }
+    let mut segments = path.strip_prefix('/')?.split('/');
+    let first = segments.next()?;
+    let second = segments.next()?;
+    if first.is_empty()
+        || second.is_empty()
+        || matches!(first, "." | "..")
+        || matches!(second, "." | "..")
+        || segments.any(|part| part.is_empty() || matches!(part, "." | ".."))
+    {
+        return None;
+    }
+    if first.eq_ignore_ascii_case("search")
+        || first.eq_ignore_ascii_case("ratings")
+        || first.eq_ignore_ascii_case("catalog")
+        || second.eq_ignore_ascii_case("search")
+        || second.eq_ignore_ascii_case("catalog")
+    {
+        return None;
+    }
+    let host = if matches!(authority, "tgstat.com" | "www.tgstat.com") {
+        "tgstat.com"
+    } else {
+        "telemetr.io"
+    };
+    Some(IndexedTelegramUrl {
+        canonical: format!("https://{host}{path}"),
+        surface: "third_party_directory",
+    })
+}
+
+/// Accept only public handle/preview/post link shapes, not internal chat links,
+/// join invites, admin actions or message ID lookalikes.
+fn parse_public_telegram_url(path: &str) -> Option<IndexedTelegramUrl> {
     let mut segments = path.strip_prefix('/')?.split('/');
     let first = segments.next()?;
     let preview = first == "s";
@@ -104,8 +109,6 @@ fn telegram_index_surface(url: &str) -> Option<IndexedTelegramUrl> {
         return None;
     }
 
-    // 5..32 ASCII chars and a leading Latin letter are Telegram's public
-    // username grammar. These are handles, not names of people.
     const RESERVED: &[&str] = &[
         "c", "joinchat", "share", "addstickers", "proxy", "socks",
         "iv", "login", "boost", "setlanguage", "bg", "invoice",
@@ -117,11 +120,8 @@ fn telegram_index_surface(url: &str) -> Option<IndexedTelegramUrl> {
     {
         return None;
     }
-
     let handle = handle.to_ascii_lowercase();
     if let Some(raw_id) = message {
-        // Post zero, blank/negative, extremely long or overflowing numeric
-        // tokens are not usable message IDs.
         if raw_id.is_empty()
             || raw_id.len() > 19
             || !raw_id.bytes().all(|b| b.is_ascii_digit())
