@@ -25,8 +25,8 @@ done
 query="$*"
 # The longest site prefix is 34 bytes: 120 + 1 + 34 <= Huntsman's 160-byte limit.
 if (( ${#query} > 120 )) || [[ -z ${query//[[:space:]]/} ]] ||
-   [[ $query =~ [[:cntrl:]] ]] || [[ $query == *\"* ]] || [[ $query == *\\* ]]; then
-  printf 'Invalid query: 1-120 UTF-8 bytes without control characters, quotes or backslashes.\n' >&2
+   [[ $query =~ [[:cntrl:]] ]] || [[ $query == *\\* ]]; then
+  printf 'Invalid query: 1-120 UTF-8 bytes without control characters or backslashes.\n' >&2
   exit 64
 fi
 
@@ -61,8 +61,8 @@ fi
 labels=(telegram_public_channels telegram_public_links tgstat_index telemetr_index)
 filters=('site:t.me/s' 'site:t.me' 'site:tgstat.com' 'site:telemetr.io')
 if ((expanded)); then
-  labels+=(telegraph_articles telegramchannels_directory reddit_channels reddit_groups)
-  filters+=('site:telegra.ph' 'site:telegramchannels.me' 'site:reddit.com/r/TelegramChannels' 'site:reddit.com/r/TelegramGroups')
+  labels+=(telegraph_articles telegramchannels_directory telegram_directory_alt telegram_search_directory)
+  filters+=('site:telegra.ph' 'site:telegramchannels.me' 'site:search-t.me' 'site:tgramsearch.com')
 fi
 
 manifest="$output/manifest.tsv"
