@@ -18,7 +18,7 @@ bash scripts/telegram-termux-acceptance.sh
 bash scripts/telegram-termux-acceptance.sh --live example topic
 ```
 
-Default source filters are `site:t.me/s`, `site:t.me`, `site:tgstat.com`, and `site:telemetr.io`. `--expanded` adds `site:telegra.ph`, `site:telegramchannels.me`, `site:reddit.com/r/TelegramChannels`, and `site:reddit.com/r/TelegramGroups`. An index may ignore the `site:` operator; *neither the domain nor content of returned URLs is independently validated by this wrapper*. Cross-engine overlap is not independent corroboration.
+Default source filters are `site:t.me/s`, `site:t.me`, `site:tgstat.com`, and `site:telemetr.io`. `--expanded` adds `site:telegra.ph`, `site:telegramchannels.me`, `site:search-t.me`, and `site:tgramsearch.com`. An index may ignore the `site:` operator; *neither the domain nor content of returned URLs is independently validated by this wrapper*. Cross-engine overlap is not independent corroboration.
 
 ## Resource and data integrity limits
 
@@ -72,12 +72,13 @@ Official reference: https://core.telegram.org/api/search and https://api.tgstat.
 
 ## Native Rust public-index mode (review branch)
 
-The branch now includes a native collector in `src/public_osint.rs`, exposed through
+The native Rust collector now lives in `src/telegram_index.rs`, with a compatibility adapter in `src/public_osint.rs`; it is exposed through
 `huntsman-recon public-osint telegram QUERY...` and the localhost `/api/lookup`
 request's `kind=telegram` route. This collector **does not** log in to Telegram
 or access its native message-search API. It asks the existing guarded web search
-engines for three bounded scope queries:
+engines for four bounded scope queries:
 
+- `site:t.me/s QUERY`
 - `site:t.me QUERY`
 - `site:tgstat.com QUERY`
 - `site:telemetr.io QUERY`
@@ -168,3 +169,57 @@ the operator's Termux toolchain can run `cargo test --locked telegram_index`.
 
 The query still returns only indexed-link candidates, never a verified
 Telegram message, account owner, group membership, or identity relation.
+
+
+## End-to-end native pipeline
+
+The reviewed implementation is split by ownership:
+
+| Component | Role |
+| --- | --- |
+| `src/telegram_index.rs` | Input policy, 4 bounded web-index cohorts, strict URL parsing, canonicalisation, indexed-lead provenance, non-inflating duplicates, typed outcomes |
+| `src/public_osint.rs` | Compatibility delegation to the Telegram module; news/notices/web semantics unchanged |
+| `src/cli/public_osint.rs` | CLI and local HTTP lookup dispatch; Telegram uses the shared HTTP transport with 5-second per-attempt timeout |
+| `src/web_server/lookup.rs` | Routes Telegram and other special public-OSINT kinds to the guarded lookup handler rather than the incompatible saved-scan `ScanKind` router |
+| `src/web_ui.html` | Mobile-facing Telegram public-index search action and safe HTTPS URL rendering |
+| `tools/web-ui-check/check.cjs` | Mocked browser test asserting exact quoted query, safe link rendering, and no identity attribution |
+
+**Persistence contract:** Special public-OSINT lookups use the direct HTTP
+lookup handler, even on a server with normal saved scans enabled. Results
+are **not automatically saved as scans**; record or export the returned report
+yourself if long-term persistence is required. Do not infer that a Telegram
+public-index lookup has a durable scan ID.
+
+**Outcome contract:** A web engine that returns only unrelated or untrusted
+URLs is classified as `inconclusive`, rather than successful Telegram
+discovery. Positive search-engine results remain unverified URL leads.
+Index overlap is never evidence of account ownership or independent
+corroboration. Searches do not access private Telegram messages, APIs,
+credentials or Telegram Stars.
+
+**Resource envelope:** 4 scopes × 3 web engines × at most 2 requests per
+engine = at most 24 transport attempts. With 5 seconds per attempt, the
+configured request-timeout component is at most 120 seconds; circuit
+pacing, scheduling and parsing add overhead, so a strict end-to-end
+150-second completion guarantee has **not been measured**.
+
+**Tests added:** Pure URL-parser tests, duplicate-evidence tests, two
+full collector tests using scripted HTTP responses, server saved-scan
+dispatch tests and a mocked mobile browser regression. These newly
+authored Rust and browser tests require execution on a working CI runner
+and Android acceptance; previously passed local Bash wrapper tests
+remain separate.
+
+### Native CLI
+
+```sh
+huntsman-recon public-osint telegram '"Truong"'
+huntsman-recon public-osint telegram '"Kylie Truong"'
+```
+
+### Local Web UI
+
+Open `http://127.0.0.1:8080/#/newscan`, enter a public search term under
+Universal Research and press **Telegram public index**. The Web UI uses
+`GET /api/lookup?kind=telegram&q=...` with Huntsman's existing same-origin
+lookup header; it does not route this request through saved scans.
