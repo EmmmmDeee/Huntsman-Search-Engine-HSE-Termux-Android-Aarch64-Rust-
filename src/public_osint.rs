@@ -488,6 +488,154 @@ fn web_search<T: Transport + ?Sized>(
     (entities, found.outcomes)
 }
 
+/// The safe public Telegram surface indicated by an *indexed URL*, not by
+/// reading Telegram itself. It cannot establish who owns a profile or post.
+fn telegram_index_surface(url: &str) -> Option<&'static str> {
+    if url.len() > 2048
+        || !url.starts_with("https://")
+        || url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+    {
+        return None;
+    }
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    // Exact authority checks reject userinfo, non-default ports, lookalikes,
+    // suffix subdomains, percent-encoded hosts and schemeless redirects.
+    match authority {
+        "tgstat.com" | "www.tgstat.com" | "telemetr.io" | "www.telemetr.io" => {
+            let path = rest.strip_prefix(authority)?.split(['?', '#']).next()?;
+            return (path.starts_with('/') && path.len() > 1).then_some("third_party_directory");
+        }
+        "t.me" | "telegram.me" => {}
+        _ => return None,
+    }
+    let path = rest.strip_prefix(authority)?.strip_prefix('/')?;
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.is_empty() || parts.len() > 3 {
+        return None;
+    }
+    let (handle, message) = if parts[0] == "s" {
+        if parts.len() < 2 {
+            return None;
+        }
+        (parts[1], parts.get(2).copied())
+    } else {
+        if parts.len() > 2 {
+            return None;
+        }
+        (parts[0], parts.get(1).copied())
+    };
+    // Public handles are not personal identities. Private /c/ and +invites,
+    // one-click sharing and administrative paths are never discovery evidence.
+    let reserved = [
+        "c", "joinchat", "share", "addstickers", "proxy", "socks",
+        "iv", "login", "boost", "setlanguage", "bg", "invoice",
+    ];
+    if handle.len() < 5
+        || handle.len() > 32
+        || reserved.iter().any(|r| handle.eq_ignore_ascii_case(r))
+        || !handle.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        || !handle.as_bytes()[0].is_ascii_alphabetic()
+    {
+        return None;
+    }
+    if let Some(id) = message {
+        if id.is_empty() || id.len() > 19 || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        return Some("indexed_post_url");
+    }
+    if parts[0] == "s" {
+        Some("indexed_public_preview")
+    } else {
+        Some("indexed_handle_url")
+    }
+}
+
+/// Keyless Telegram-focused *index* discovery, not a Telegram API session.
+/// All network traffic uses Huntsman's guarded web engines. A hit becomes an
+/// unverified URL entity only after it passes exact host and path checks.
+/// Search-index agreement remains one discovery family, never identity proof.
+///
+/// # Errors
+/// Invalid selectors fail before any request; provider failures retain typed
+/// outcome rows and never turn into claims that a person is absent.
+pub fn telegram_index_search<T: Transport + ?Sized>(
+    transport: &T,
+    raw_query: &str,
+    scan_id: &str,
+    now: u64,
+) -> Result<Report, &'static str> {
+    let query = checked_query(raw_query, Source::Web)?;
+    if query.len() > 120 {
+        return Err("Telegram index query exceeds the 120-byte bounded selector");
+    }
+    const COHORTS: [(&str, &str); 3] = [
+        ("telegram", "site:t.me"),
+        ("tgstat", "site:tgstat.com"),
+        ("telemetr", "site:telemetr.io"),
+    ];
+    let mut entities = Vec::new();
+    let mut outcomes = Vec::new();
+    for (cohort, prefix) in COHORTS {
+        let search = format!("{prefix} {query}");
+        let found = crate::web_query::search_with_provenance(
+            transport,
+            &search,
+            now,
+            crate::web_query::EngineSet::Default,
+        );
+        let Ok((report, observations)) = found else {
+            outcomes.push(SourceExecutionOutcome::inconclusive(
+                format!("telegram_index_{cohort}"),
+                now,
+                "web-query boundary could not execute this cohort",
+            ));
+            continue;
+        };
+        for mut outcome in report.outcomes {
+            outcome.module = format!("telegram_index_{cohort}_{}", outcome.module);
+            outcomes.push(outcome);
+        }
+        // The index did not prove page content, account ownership, family
+        // relationships or whether the query occurs on the target page.
+        for hit in observations.into_iter().take(75) {
+            if let Some(surface) = telegram_index_surface(&hit.url) {
+                let evidence = Evidence::new(
+                    EvidenceProvenance::for_scan("telegram_web_index", scan_id),
+                    "Public-index URL lead; Telegram page and identity not verified",
+                )
+                .with_attr("source_url", &hit.url)
+                .with_attr("discovered_by", &hit.engine)
+                .with_attr("query", &search)
+                .with_attr("surface", surface)
+                .with_attr("evidence_role", "indexed_url_only");
+                push_entity(
+                    &mut entities,
+                    EntityKind::Url,
+                    &hit.url,
+                    0.20,
+                    scan_id,
+                    evidence,
+                    &["telegram_index_lead", "unverified"],
+                );
+            }
+        }
+    }
+    merge_by_uid(&mut entities);
+    Ok(Report {
+        query,
+        entities,
+        outcomes,
+        limitations: vec![
+            "Search engines index only a subset of Telegram; no results do not prove absence.",
+            "Indexed links are not proof of a post's text or a handle's human owner.",
+            "Third-party directories are not independent Telegram primary evidence.",
+        ],
+    })
+}
+
 /// Search official notices, recent news, existing keyless web engines, or all.
 /// A failure in one source never erases the other source's findings.
 ///
@@ -658,6 +806,51 @@ mod tests {
         for invalid in ["a\nb", "a\\b"] {
             assert!(checked_query(invalid, Source::Web).is_err());
         }
+    }
+
+    #[test]
+    fn telegram_index_rejects_spoofed_private_and_noncanonical_links() {
+        for raw in [
+            "https://t.me@evil.example/truong",
+            "https://t.me.evil.example/truong",
+            "https://t.me:443/truong",
+            "http://t.me/truong",
+            "https://t.me/+PrivateInvite",
+            "https://t.me/joinchat/SomeInvite",
+            "https://t.me/c/100000/123",
+            "https://t.me/share/url",
+            "https://t.me/s/",
+            "https://t.me/truong/abc",
+            "https://t.me/truong/123/456",
+            "https://evil.example/?site=t.me/truong",
+            "https://tgstat.com.evil.example/channel/1",
+            "https://telemetr.io",
+        ] {
+            assert_eq!(telegram_index_surface(raw), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn telegram_index_distinguishes_public_link_surfaces_without_owner_attribution() {
+        for (raw, expected) in [
+            ("https://t.me/TRUONG", "indexed_handle_url"),
+            ("https://t.me/s/CheemsCMNews", "indexed_public_preview"),
+            ("https://t.me/CheemsCMNews/132", "indexed_post_url"),
+            ("https://t.me/s/CheemsCMNews/132", "indexed_post_url"),
+            ("https://tgstat.com/channel/123", "third_party_directory"),
+            ("https://telemetr.io/en/channels/123", "third_party_directory"),
+        ] {
+            assert_eq!(telegram_index_surface(raw), Some(expected), "{raw}");
+        }
+    }
+
+    #[test]
+    fn telegram_index_rejects_invalid_query_before_fetch() {
+        let silent = crate::test_support::Silent;
+        for query in ["", "bad\nname", "bad\\name"] {
+            assert!(telegram_index_search(&silent, query, "s", 1).is_err());
+        }
+        assert!(telegram_index_search(&silent, &"x".repeat(121), "s", 1).is_err());
     }
 
     #[test]
