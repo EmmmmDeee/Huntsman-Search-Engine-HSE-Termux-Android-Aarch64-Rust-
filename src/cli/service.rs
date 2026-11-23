@@ -1,7 +1,9 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
 use std::env;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::time::Duration;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -281,6 +283,113 @@ fn web_radar() -> Result<huntsman_recon::wifi_radar::WifiScan, LookupError> {
     })
 }
 
+/// Read one JSON response from the independently installed HSE BLE Radar Android app.
+/// Its HTTP API listens on port 8080. Huntsman must use a *different* local port.
+/// Only explicitly enabled, local-only servers install this sensor route.
+fn web_ble() -> Result<serde_json::Value, LookupError> {
+    const MAX_BYTES: usize = 128 * 1024;
+    let unavailable = |reason: &str| LookupError {
+        status: 503,
+        message: format!("BLE companion unavailable: {reason} (start HSE BLE Radar on port 8080)"),
+    };
+    let address = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
+        .map_err(|_| unavailable("loopback connection refused or timed out"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .map_err(|_| unavailable("could not set response timeout"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|_| unavailable("could not set request timeout"))?;
+    stream
+        .write_all(b"GET /api/devices HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAccept: application/json\r\nConnection: close\r\n\r\n")
+        .map_err(|_| unavailable("could not request snapshot"))?;
+    let mut bytes = Vec::new();
+    stream
+        .take((MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unavailable("snapshot read failed or timed out"))?;
+    if bytes.len() > MAX_BYTES {
+        return Err(LookupError { status: 502, message: "BLE companion response exceeded 128 KiB".into() });
+    }
+    parse_ble_companion_http(&bytes)
+}
+
+/// Validate the fixed loopback collaborator's HTTP framing and minimal device schema,
+/// rather than blindly proxying a potentially unrelated service on port 8080.
+fn parse_ble_companion_http(bytes: &[u8]) -> Result<serde_json::Value, LookupError> {
+    let invalid = |message: &str| LookupError {
+        status: 502,
+        message: format!("invalid BLE companion snapshot: {message}"),
+    };
+    let separator = bytes.windows(4).position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| invalid("missing HTTP header terminator"))?;
+    let head = std::str::from_utf8(&bytes[..separator])
+        .map_err(|_| invalid("invalid HTTP header encoding"))?;
+    if !head.starts_with("HTTP/1.1 200 ") && !head.starts_with("HTTP/1.0 200 ") {
+        return Err(invalid("companion did not respond HTTP 200"));
+    }
+    let mut json_content_type = false;
+    let mut announced_length = None;
+    for line in head.split("\r\n").skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-type") {
+                json_content_type = value.trim().to_ascii_lowercase().starts_with("application/json");
+            } else if name.eq_ignore_ascii_case("content-length") {
+                if announced_length.is_some() { return Err(invalid("repeated Content-Length")); }
+                announced_length = Some(value.trim().parse::<usize>().map_err(|_| invalid("invalid Content-Length"))?);
+            } else if name.eq_ignore_ascii_case("transfer-encoding") {
+                return Err(invalid("unexpected transfer encoding"));
+            }
+        }
+    }
+    if !json_content_type { return Err(invalid("unexpected content type")); }
+    let body = &bytes[separator + 4..];
+    if announced_length != Some(body.len()) { return Err(invalid("Content-Length mismatch")); }
+    let value: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| invalid("malformed JSON"))?;
+    let devices = value.get("devices").and_then(serde_json::Value::as_array)
+        .ok_or_else(|| invalid("missing devices array"))?;
+    if devices.len() > 256 { return Err(invalid("more than 256 devices")); }
+    if value.get("scanning").and_then(serde_json::Value::as_bool).is_none()
+        || value.get("native_available").and_then(serde_json::Value::as_bool).is_none()
+        || value.get("timestamp_ms").and_then(serde_json::Value::as_u64).is_none() {
+        return Err(invalid("missing scan metadata"));
+    }
+    for device in devices {
+        let Some(id) = device.get("address").and_then(serde_json::Value::as_str) else {
+            return Err(invalid("device has no address"));
+        };
+        if id.is_empty() || id.len() > 64 || id.chars().any(char::is_control) {
+            return Err(invalid("invalid device address"));
+        }
+        if let Some(rssi) = device.get("rssi_dbm") {
+            if !rssi.is_null()
+                && !rssi.as_i64().is_some_and(|value| (-127..=0).contains(&value))
+            {
+                return Err(invalid("invalid BLE RSSI"));
+            }
+        }
+        if let Some(distance) = device.get("distance_m") {
+            if !distance.is_null()
+                && !distance.as_f64().is_some_and(|value| value.is_finite() && (0.0..=1_000_000.0).contains(&value))
+            {
+                return Err(invalid("invalid distance estimate"));
+            }
+        }
+    }
+    // Preserve the companion's own provenance and estimates. A local port alone does
+    // not cryptographically establish the identity of the app which served it.
+    Ok(serde_json::json!({
+        "source": "local_ble_companion_unverified",
+        "acquisition": "companion_snapshot_not_active_scan_request",
+        "devices": devices,
+        "scanning": value["scanning"],
+        "native_available": value["native_available"],
+        "timestamp_ms": value["timestamp_ms"],
+    }))
+}
+
 /// Mobile radar reads exactly the same Termux cell report as `radar cells`.
 fn web_cells() -> Result<huntsman_recon::cell_radar::CellScan, LookupError> {
     super::radar::capture_cells().map_err(|message| LookupError {
@@ -442,6 +551,10 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
+    let ble_enabled = env::var("HUNTSMAN_BLE_RADAR").ok().as_deref() == Some("1");
+    if ble_enabled && (!config.bind.ip().is_loopback() || config.bind.port() == 8080) {
+        return fail(EX_USAGE, "HUNTSMAN_BLE_RADAR=1 requires a loopback Huntsman bind on a port other than 8080; use --bind 127.0.0.1:8090 because the BLE companion owns 127.0.0.1:8080");
+    }
     let config_needs_token = config.needs_token();
     let analyze_history = history.clone();
     // Read before anything binds, so a wrong setting ends serve before it announces an address.
@@ -465,6 +578,11 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
                 .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
                     web_analyze(seeds, analyze_history.as_deref())
                 }));
+            let server = if ble_enabled {
+                server.with_radar_ble(std::sync::Arc::new(web_ble))
+            } else {
+                server
+            };
             let server = match scans {
                 Some(scans) => server.with_scans(scans),
                 None => server,
@@ -500,9 +618,34 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{rule_error_line, web_inspect, web_investigate};
+    use super::{parse_ble_companion_http, rule_error_line, web_inspect, web_investigate};
     use huntsman_recon::entity::{Entity, EntityKind};
     use huntsman_recon::source_outcome::SourceOutcomeKind;
+
+    #[test]
+    fn ble_companion_snapshot_is_framed_validated_and_labeled_unverified() {
+        let body = r#"{"devices":[{"address":"B0:11:22:33:44:55","name":"test","rssi_dbm":-65,"freshness":"LIVE"}],"scanning":true,"native_available":true,"timestamp_ms":1760000000000}"#;
+        let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let value = parse_ble_companion_http(reply.as_bytes()).expect("valid companion response");
+        assert_eq!(value["source"], "local_ble_companion_unverified");
+        assert_eq!(value["acquisition"], "companion_snapshot_not_active_scan_request");
+        assert_eq!(value["devices"][0]["rssi_dbm"], -65);
+        assert_eq!(value["scanning"], true);
+
+        let wrong_rssi = r#"{"devices":[{"address":"AA:BB","rssi_dbm":"invalid"}],"scanning":true,"native_available":true,"timestamp_ms":1760000000000}"#;
+        let wrong_response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", wrong_rssi.len(), wrong_rssi);
+        assert!(parse_ble_companion_http(wrong_response.as_bytes()).is_err());
+
+        for bad in [
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+        ] {
+            assert!(parse_ble_companion_http(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
 
     /// The page's text goes through the same extraction as `investigate TEXT...`: every actionable
     /// entity in it, with the classifier's signal as evidence, rendered as the command prints it;

@@ -9,7 +9,46 @@
 <title>Huntsman Search Engine</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#7a879a;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e6736e;--badd:rgba(230,115,110,.15);--g0:#38bdf8;--g1:#4ade80;--g2:#fbbf24;--g3:#f87171;--g4:#a78bfa;--g5:#f472b6;--g6:#22d3ee;--g7:#fb923c;--g8:#94a3b8;--g9:#a3e635;--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}@media (prefers-color-scheme:light){:root:not(.dark){--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}}*,*::before,*::after{box-sizing:border-box}[hidden]{display:none!important}html{-webkit-text-size-adjust:100%}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.appbar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:10px;height:calc(52px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(8px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));background:var(--el);border-bottom:1px solid var(--line);box-shadow:var(--sh)}.brand{display:flex;align-items:center;gap:7px;min-width:0;min-height:44px;color:var(--fg);text-decoration:none}.brand svg.i{width:20px;height:20px;color:var(--acc)}.brand-text{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sep{color:var(--acc);margin:0 4px}.ver{font:10.5px var(--mono);color:var(--dim);white-space:nowrap}.bar-end{display:flex;align-items:center;gap:4px;margin-left:auto}.pill{font:600 10px/1 var(--sans);padding:5px 9px;border-radius:999px;background:var(--el2);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}.pill.ok{background:var(--okd);color:var(--ok)}.pill.warn{background:var(--warnd);color:var(--warn)}.pill.bad{background:var(--badd);color:var(--bad)}.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border:0;border-radius:var(--r);background:none;color:var(--muted);cursor:pointer}.iconbtn:hover,.iconbtn[aria-current]{background:var(--hover);color:var(--fg)}.navbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;background:var(--el);border-top:1px solid var(--line);padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-shadow:0 -1px 2px rgba(0,0,0,.4)}.navlink{position:relative;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;color:var(--dim);font-size:11px;font-weight:500;text-decoration:none;-webkit-tap-highlight-color:transparent}.navlink svg.i{width:20px;height:20px}.navlink:hover{color:var(--muted)}.navlink.active{color:var(--acc)}.navlink.active::before{content:"";position:absolute;top:0;width:26px;height:2px;background:var(--acc);border-radius:0 0 2px 2px}main{max-width:1240px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}h1{display:flex;align-items:center;gap:8px;min-width:0;font-size:17px;font-weight:600;margin:0 0 12px;overflow-wrap:anywhere}h1 svg.i{color:var(--acc)}.head{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;margin:0 0 12px}.head h1{margin:0}.panel{background:var(--el);border:1px solid var(--line);border-radius:var(--r);margin:0 0 14px;box-shadow:var(--sh);overflow:hidden}.panel-heading{display:flex;align-items:center;gap:8px;min-height:44px;padding:4px 4px 4px 14px;background:var(--el2);border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600}.panel-body{padding:14px}.badge{display:inline-block;min-width:20px;padding:1px 7px;border-radius:999px;background:var(--bg);color:var(--muted);font:600 10.5px/1.6 var(--mono);text-align:center}.help{margin:10px 0 0;color:var(--muted);font-size:12.5px}.grid2{display:grid;grid-template-columns:minmax(0,1fr);gap:0 14px}@media (min-width:768px){.grid2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}form.row{display:grid;grid-template-columns:1fr;gap:8px}@media (min-width:640px){#analyze{grid-template-columns:1fr auto;align-items:start}}input,select,textarea{min-height:44px;width:100%;padding:8px 12px;border:1px solid var(--line2);border-radius:var(--r);background:var(--bg);color:var(--fg);font:15px var(--sans)}input[type=checkbox],input[type=radio]{width:18px;height:18px;min-height:0;margin:0;padding:0;accent-color:var(--acc);flex:none}.mono,#seeds,#token,#scq{font-family:var(--mono)}textarea{resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--accd)}::placeholder{color:var(--dim)}.fl{display:block;margin:12px 0 4px;color:var(--muted);font-size:12.5px;font-weight:600}.fl:first-child{margin-top:0}.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:8px 14px;border:1px solid var(--line2);border-radius:var(--r);background:var(--el2);color:var(--fg);font:500 13.5px var(--sans);cursor:pointer;white-space:nowrap;text-decoration:none}.btn:hover{background:var(--hover)}.btn:disabled{opacity:.5;cursor:not-allowed}.btn[aria-pressed=true]{border-color:var(--acc);color:var(--acc);background:var(--accd)}.btn-primary{background:var(--acc);border-color:var(--acc);color:var(--acct);font-weight:600}.btn-primary:hover{background:var(--acc2);border-color:var(--acc2)}.btn-danger{color:var(--bad);border-color:var(--bad)}.btn-ghost{border-color:transparent;background:none;color:var(--acc);font-size:12.5px}.panel-heading .btn{margin-left:auto}.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px}.toolbar .grow{flex:1 1 12em;width:auto}.toolbar select{width:auto;flex:0 1 auto}.seg{display:inline-flex}.seg .btn:first-child{border-radius:var(--r) 0 0 var(--r)}.seg .btn+.btn{border-radius:0 var(--r) var(--r) 0;margin-left:-1px}.chk{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 6px;cursor:pointer;font-size:13px}.chk input{margin:13px}.cb{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;margin:-8px -6px -8px -12px;cursor:pointer;flex:none}.pick{display:flex;align-items:flex-start;gap:4px;min-width:0}.pick>details{flex:1 1 auto;min-width:0}.pick>.link{flex:0 1 auto;min-width:44px;overflow-wrap:anywhere}.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(15em,1fr));gap:0 12px}.link{display:inline-flex;align-items:center;min-height:44px;min-width:44px;color:var(--acc);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;cursor:pointer}.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:0 8px;margin:-8px 0 4px;color:var(--muted);font-size:13px}.tabs{display:flex;flex-wrap:wrap;gap:0 2px;margin:0 0 12px;border-bottom:1px solid var(--line)}.tab{flex:none;display:inline-flex;align-items:center;min-height:44px;padding:0 13px;border:0;border-bottom:2px solid transparent;background:none;color:var(--muted);font:500 13px var(--sans);text-decoration:none;cursor:pointer;white-space:nowrap}.tab:hover{color:var(--fg)}.tab[aria-current=page],.tab[aria-selected=true]{color:var(--acc);border-bottom-color:var(--acc)}.counters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px}@media (min-width:480px){.counters{grid-template-columns:repeat(4,minmax(0,1fr))}}.counter{min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r);background:var(--el2)}.lab{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600}.val{font:600 19px/1.35 var(--mono);color:var(--fg);overflow-wrap:anywhere}.val.ok,.counter.ok .val{color:var(--ok)}.val.bad,.counter.bad .val{color:var(--bad)}.val.warn,.counter.warn .val{color:var(--warn)}.counter.info .val{color:var(--acc)}#cstatus{font-size:14px}.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}@media (min-width:768px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}.stat{min-width:0;padding:10px 14px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh)}.bars{padding:6px 0}.bar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 12px;min-height:44px;padding:6px 14px;color:var(--fg);text-decoration:none}.bar:hover{background:var(--hover)}.bar-l{font-size:12.5px;overflow-wrap:anywhere}.bar-n{font:600 12px var(--mono);color:var(--muted)}.bar-t{grid-column:1/-1;height:8px;border-radius:4px;background:var(--el2);overflow:hidden}.bar-f{display:block;height:100%;min-width:2px;border-radius:4px;background:var(--acc)}.alert{margin:0 0 14px;padding:10px 14px;border:1px solid var(--bad);border-radius:var(--r);background:var(--badd);color:var(--bad);font-size:13px;overflow-wrap:anywhere}.alert.warn{border-color:var(--warn);background:var(--warnd);color:var(--warn)}.alert.upgrade:not([hidden]){display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between}.when{margin:0 0 12px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12.5px}th{padding:8px 12px;text-align:left;background:var(--el2);color:var(--dim);border-bottom:1px solid var(--line);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.sortable th{cursor:pointer}th[aria-sort=ascending]::after{content:" ▲"}th[aria-sort=descending]::after{content:" ▼"}td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}tbody tr:nth-child(even){background:var(--el2)}tbody tr:last-child td{border-bottom:0}tr.err td{background:var(--badd)}td.none{color:var(--dim)}.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--hover);color:var(--muted);font:600 10.5px/1.5 var(--mono)}.label.ok{background:var(--okd);color:var(--ok)}.label.info{background:var(--accd);color:var(--acc)}.label.warn{background:var(--warnd);color:var(--warn)}.label.bad{background:var(--badd);color:var(--bad)}.risks{display:inline-flex;gap:3px}.acts{display:flex;flex-wrap:wrap;gap:4px}.nw,#log td:first-child{white-space:nowrap}.tree,.tree ul{margin:0;padding:0;list-style:none}.tree{padding:8px 14px;font-size:12.5px}.tree ul{margin-left:6px;padding-left:10px;border-left:1px solid var(--line)}.tree li{padding:3px 0}.tree .label{margin-right:2px}.tree .hit>.data{font-weight:700;color:var(--fg)}.acts .btn{min-width:44px;padding:6px 10px;font-size:12.5px}pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}.data{font:12.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}.note{margin:0;padding:8px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}.note:empty,#cnote:empty{display:none}details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:12.5px;font-weight:600;background:var(--el2)}details[open] summary{border-bottom:1px solid var(--line)}.raw summary,.corr summary{gap:8px;padding:0;background:none;font-weight:400;list-style:none}.raw[open] summary,.corr[open] summary{border-bottom:0}.raw summary .data{min-width:0}.raw summary .label{flex:none}.raw summary::-webkit-details-marker,.corr summary::-webkit-details-marker,.menu summary::-webkit-details-marker{display:none}.raw summary::before,.corr summary::before{content:"";flex:none;width:7px;height:7px;margin:0 3px;border:solid var(--dim);border-width:0 2px 2px 0;transform:rotate(-45deg)}.raw[open] summary::before,.corr[open] summary::before{transform:rotate(45deg)}.corr summary{font-weight:600}.filter{padding:8px 14px;border-bottom:1px solid var(--line)}.ent-b{padding:4px 0 8px 15px;font-size:12.5px}.ent-b .pivot{margin-top:8px}.ent-m{margin:0 0 6px;color:var(--muted)}dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2px 10px;margin:4px 0 0;font-size:12px}dt{color:var(--dim);overflow-wrap:break-word}dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}dd dl{margin:0}.kv{gap:0;margin:0;font-size:12.5px;grid-template-columns:fit-content(45%) minmax(0,1fr)}.kv dt,.kv dd{padding:7px 14px;border-bottom:1px solid var(--line)}.kv dt{background:var(--el2);font-weight:600}.types{gap:1px 10px}.types dd{color:var(--muted)}.more{width:100%;border-width:1px 0 0;border-radius:0}.menu{position:relative}.menu summary{list-style:none}.menu-list.end{left:auto;right:0}.menu-list{position:absolute;top:100%;left:0;z-index:5;display:flex;flex-direction:column;min-width:10em;margin-top:4px;padding:4px;background:var(--el);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 4px 14px rgba(0,0,0,.35)}.menu-list button{min-height:44px;padding:0 12px;border:0;border-radius:4px;background:none;color:var(--fg);font:13.5px var(--sans);text-align:left;cursor:pointer}.menu-list button:hover{background:var(--hover)}.uc td{vertical-align:middle}.uc td:first-child{width:44px;padding-right:0}.uc .cb{margin:-8px 0}.uc td:only-child{width:auto;padding:7px 14px}.help.pad{margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}.uc label{display:block;cursor:pointer}.uc b{display:block}.uc label .help{display:block;margin:4px 0 0}.spin{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.spin{animation:none}}.graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}.graph svg{display:block;width:100%;height:100%;touch-action:none;cursor:grab}#gedges path{fill:none;stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke}#gnodes path{fill:none;stroke:currentColor;stroke-width:10px;stroke-linecap:round;vector-effect:non-scaling-stroke}#gnodes .grim{color:var(--el);stroke-width:12px}#gnodes .groot{stroke-width:18px}#gnodes .gring{color:var(--fg);stroke-width:16px}#gnodes .gring.groot{stroke-width:24px}.groot{color:var(--fg)}.g0{color:var(--g0)}.g1{color:var(--g1)}.g2{color:var(--g2)}.g3{color:var(--g3)}.g4{color:var(--g4)}.g5{color:var(--g5)}.g6{color:var(--g6)}.g7{color:var(--g7)}.g8{color:var(--g8)}.g9{color:var(--g9)}.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 14px;font-size:12px;color:var(--muted)}.legend span{display:inline-flex;align-items:center;gap:6px}.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;background:currentColor}@media (max-width:420px){.brand-sub{display:none}}@media (max-width:767px){.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:auto}.table-wrap thead{display:none}.table-wrap tbody tr,.table-wrap tbody tr:nth-child(even){padding:4px 0;background:none;border-bottom:1px solid var(--line)}.table-wrap tbody tr:last-child{border-bottom:0}.table-wrap tbody tr.err{background:var(--badd)}.table-wrap tr.err td{background:none}.table-wrap td{display:flex;gap:4px 12px;padding:4px 14px;border:0}.table-wrap td::before{content:attr(data-label);flex:0 0 32%;padding-top:2px;color:var(--dim);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.table-wrap td:not([data-label])::before,.table-wrap td.none::before{display:none}.table-wrap td:empty{display:none}.table-wrap td>details{flex:1 1 auto;min-width:0}.table-wrap td.wide{flex-wrap:wrap}.table-wrap td.wide::before{flex-basis:100%}.table-wrap td.wide>.pick{flex:1 1 100%}.ent-b{padding-left:0}.ent-b dl{grid-template-columns:minmax(0,1fr);gap:0}.ent-b dd{padding:0 0 4px 10px;border-left:1px solid var(--line)}}@media (min-width:768px){
-.navbar{top:calc(52px + env(safe-area-inset-top));bottom:auto;gap:2px;padding:0 12px;border-top:0;border-bottom:1px solid var(--line);box-shadow:var(--sh)}.navlink{flex:0 0 auto;flex-direction:row;gap:7px;min-height:42px;padding:0 14px;font-size:13px}.navlink svg.i{width:15px;height:15px}.navlink.active{background:var(--accd)}.navlink.active::before{top:auto;bottom:0;width:100%;height:2px;border-radius:2px 2px 0 0}main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}.acts{flex-wrap:nowrap}}.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}#kimp label{font:13px var(--sans)}.osint-report{white-space:pre-wrap;overflow-wrap:anywhere}</style>
+.navbar{top:calc(52px + env(safe-area-inset-top));bottom:auto;gap:2px;padding:0 12px;border-top:0;border-bottom:1px solid var(--line);box-shadow:var(--sh)}.navlink{flex:0 0 auto;flex-direction:row;gap:7px;min-height:42px;padding:0 14px;font-size:13px}.navlink svg.i{width:15px;height:15px}.navlink.active{background:var(--accd)}.navlink.active::before{top:auto;bottom:0;width:100%;height:2px;border-radius:2px 2px 0 0}main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}.acts{flex-wrap:nowrap}}.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}#kimp label{font:13px var(--sans)}.osint-report{white-space:pre-wrap;overflow-wrap:anywhere}
+/* Mobile radar — screenshot reference, theme-aware and isolated from other screens. */
+#view-radar{--radar-purple:#7657b5;--radar-pale:#ebe2fc;--radar-green:#459b77;--radar-blue:#278ec8;--radar-gold:#9b6900}
+:root.dark #view-radar{--radar-purple:#b9a2ee;--radar-pale:#3b2d55;--radar-green:#6bac8c;--radar-blue:#68bce9;--radar-gold:#ffce63}
+@media(prefers-color-scheme:dark){:root:not(.light) #view-radar{--radar-purple:#b9a2ee;--radar-pale:#3b2d55;--radar-green:#6bac8c;--radar-blue:#68bce9;--radar-gold:#ffce63}}
+.radar-strip{display:flex;align-items:center;gap:7px;margin:0 0 11px;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;padding:2px 0 6px;scrollbar-width:thin}
+.radar-pill{flex:0 0 auto;min-height:44px;min-width:67px;border-radius:999px;background:var(--el);padding:7px 13px}
+.radar-primary{background:var(--radar-purple);border-color:var(--radar-purple);color:#fff}
+.radar-primary:hover{background:var(--radar-purple);filter:brightness(1.08)}
+:root.dark #view-radar .radar-primary{color:#1c1530}
+@media(prefers-color-scheme:dark){:root:not(.light) #view-radar .radar-primary{color:#1c1530}}
+.radar-pill.selected{background:var(--radar-pale);border-color:var(--radar-pale);font-weight:600}
+.radar-pill:focus-visible{outline:3px solid var(--radar-purple);outline-offset:2px}
+.radar-label{flex:0 0 42px;width:42px;font-size:13px;font-weight:600}
+.radar-counts{font-size:13px;margin:3px 0 13px;line-height:1.6}
+.radar-status,.radar-explain{font-size:12px;line-height:1.5;color:var(--muted);margin:4px 0 9px;overflow-wrap:anywhere}
+.radar-plot{width:100%;max-width:580px;aspect-ratio:1;margin:2px auto 0}
+.radar-plot svg{width:100%;height:100%;display:block}
+.radar-ring{fill:none;stroke:var(--radar-green);stroke-width:1.1;opacity:.7}
+.radar-axis{fill:none;stroke:var(--line2);stroke-width:.6;opacity:.4}
+.radar-sweep{fill:none;stroke:#59e89d;stroke-width:1.6}
+.radar-origin{fill:var(--radar-gold)}
+.radar-dot{fill:var(--el);stroke:var(--radar-blue);stroke-width:2.8}
+.radar-candidate{fill:var(--el);stroke:var(--radar-gold);stroke-width:3}.radar-ble-dot{fill:var(--el);stroke:var(--radar-gold);stroke-width:3}
+.radar-legend{display:flex;flex-wrap:wrap;gap:6px 13px;margin:9px 0;color:var(--muted);font-size:11.5px}
+.radar-devices{border-top:1px solid var(--line);margin:8px 0 0}
+.radar-device{display:flex;align-items:center;gap:9px;min-height:71px;padding:10px 0;border-bottom:1px solid var(--line)}
+.radar-device-icon{font-size:16px;color:var(--radar-blue);flex:none}
+.radar-device-text{min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
+.radar-device-text b{font-size:14px;display:block}
+.radar-device-text small{display:block;color:var(--muted);font-size:12px}
+.radar-device-actions{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.radar-device-actions .btn{min-height:44px}
+.radar-signal{width:54px;height:5px;border-radius:4px;background:var(--line2);overflow:hidden}
+.radar-signal span{display:block;height:100%;background:var(--radar-blue)}
+.radar-empty{color:var(--muted);font-size:13px;padding:12px 0}
+.radar-evidence{margin-top:18px}
+.radar-evidence>summary{border:1px solid var(--line);border-radius:6px}
+.radar-evidence[open]>summary{margin-bottom:12px}
+</style>
 <header class="appbar">
 <a class="brand" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
 <div class="bar-end"><span class="pill" id="state">connecting</span><button class="iconbtn" id="theme" type="button" aria-label="Toggle dark mode"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z"/></svg></button><a class="iconbtn" id="nav-about" href="#/about" aria-label="About and server status"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></a></div>
@@ -89,10 +128,50 @@
 </section>
 <section id="view-radar" hidden>
 <h1>Radar</h1>
-<p class="help">Reads Android's last cached Wi-Fi scan and the cells it reports through Termux:API; nothing here triggers an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location. Log a sweep now and then as you move to notice a device that moves with you.</p>
-<div class="toolbar"><button class="btn btn-primary" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rcread" type="button">Read cells</button><button class="btn" id="rtrack" type="button">Log a sweep</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
+<div class="radar-strip" role="group" aria-label="Radar actions">
+<button class="btn radar-pill radar-primary" id="rread" type="button">Scan</button>
+<button class="btn radar-pill" id="rstop" type="button" disabled title="Stop repeated radar reads; does not stop the companion scanner">Stop</button>
+<button class="btn radar-pill" id="rdownload" type="button" disabled>JSON</button>
+<button class="btn radar-pill" id="rcsv" type="button" disabled>CSV</button>
+<button class="btn radar-pill" id="rcread" type="button">Cells</button>
+<button class="btn radar-pill" id="rtrack" type="button">Log sweep</button>
+</div>
+<div id="rcounts" class="radar-counts" role="status">📶 — wifi · ᛒ — ble · ◉ — bt · ⚠ — tracking candidates</div>
+<div class="radar-strip" role="group" aria-label="Cache read frequency"><span class="radar-label">Mode</span>
+<button class="btn radar-pill selected" data-rate="60000" aria-pressed="true" type="button">Low</button>
+<button class="btn radar-pill" data-rate="30000" aria-pressed="false" type="button">Balanced</button>
+<button class="btn radar-pill" data-rate="15000" aria-pressed="false" type="button">Fast</button>
+</div>
+<div class="radar-strip" role="group" aria-label="Device type"><span class="radar-label">Show</span>
+<button class="btn radar-pill selected" data-kind="all" aria-pressed="true" type="button">all</button>
+<button class="btn radar-pill" data-kind="wifi" aria-pressed="false" type="button">wifi</button>
+<button class="btn radar-pill" data-kind="ble" disabled aria-pressed="false" title="BLE companion not connected" type="button">ble</button>
+<button class="btn radar-pill" data-kind="bt" disabled aria-pressed="false" title="BT scan not provided by this runtime" type="button">bt</button>
+<button class="btn radar-pill" data-kind="trackers" aria-pressed="false" type="button">trackers</button>
+</div>
+<div class="radar-strip" role="group" aria-label="Sort observations"><span class="radar-label">Sort</span>
+<button class="btn radar-pill selected" data-order="signal" aria-pressed="true" type="button">signal</button>
+<button class="btn radar-pill" data-order="relative" aria-pressed="false" title="RSSI relative rank; no distance is measured" type="button">relative</button>
+<button class="btn radar-pill" data-order="last" aria-pressed="false" type="button">last seen</button>
+<button class="btn radar-pill" data-order="name" aria-pressed="false" type="button">name</button>
+</div>
 <p class="alert" id="rerror" role="alert" hidden></p>
-<p class="note" id="rstatus" role="status">No observations requested. Termux:API and Android location permission are required on the phone.</p>
+<p class="radar-status" id="rstatus" role="status">Tap Scan to read Android's cached Wi-Fi results. Termux:API and location permission are required.</p><p class="radar-status" id="rble-status" role="status">BLE companion not connected; enable the bridge and run the companion scanner separately.</p>
+<div class="radar-plot" role="img" aria-label="Illustrative radar: ring radius is a relative signal indicator; angle does not represent location or direction">
+<svg viewBox="0 0 360 360" aria-hidden="true" focusable="false">
+<circle class="radar-ring" cx="180" cy="180" r="42"/>
+<circle class="radar-ring" cx="180" cy="180" r="84"/>
+<circle class="radar-ring" cx="180" cy="180" r="126"/>
+<circle class="radar-ring" cx="180" cy="180" r="164"/>
+<path class="radar-axis" d="M180 16V344M16 180H344"/>
+<path class="radar-sweep" d="M180 180L18 157"/>
+<g id="rmarkers"></g>
+<circle class="radar-origin" cx="180" cy="180" r="6"/><circle cx="180" cy="180" r="2" fill="var(--el)"/>
+</svg></div>
+<p class="radar-explain">Visualisation only: angle is a stable arrangement, not a detected direction. Ring radius ranks RSSI, not metres. Scan reads the Android Wi-Fi cache and, if enabled, the BLE companion snapshot; it does not start a radio scan. Start BLE scanning in the companion app. Stop ends Huntsman refreshes only. Low / Balanced / Fast repeat reads every 60 / 30 / 15 seconds.</p>
+<div class="radar-legend"><span>□ Wi-Fi</span><span>● BLE (companion)</span><span>◉ BT unavailable</span><span>⚠ Recurrence is not confirmed tracking</span></div>
+<div class="radar-devices" id="rdevices" role="list" aria-label="Observed devices"><p class="radar-empty" role="listitem">No Wi-Fi observations loaded.</p></div>
+<details class="radar-evidence" open><summary>Detailed Wi-Fi, cellular and recurrence evidence</summary>
 <div class="panel" id="rresult" hidden>
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
@@ -112,6 +191,8 @@
 <div class="panel-heading">Heard in two or more sweeps <span class="badge" id="rrrows-n"></span></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>Vendor</th><th>Sweeps</th><th>First</th><th>Last</th></tr></thead><tbody id="rrrows"></tbody></table></div>
 </div>
+
+</details>
 </section>
 <section id="view-inspect" hidden>
 <h1>File metadata</h1>
@@ -428,6 +509,7 @@ function route(){
   const parts=location.hash.replace(/^#\/?/,'').split('/').map(p=>{try{return decodeURIComponent(p)}catch(_){return p}});
   let v=({lookup:'newscan',status:'about'})[parts[0]]||parts[0];
   if(!VIEWS.includes(v)||(v==='scan'&&!parts[1])||(v==='compare'&&!parts[2]))v='scans';
+  if(view==='radar'&&v!=='radar')radarStop(true);
   gen++;clearTimeout(timer);resume=null;view=v;dropGraph();
   for(const x of VIEWS)$('view-'+x).hidden=x!==v;
   const nav=v==='scan'||v==='compare'?'scans':v;
@@ -493,7 +575,7 @@ $('rread').onclick=async()=>{
     :'Reading Android OS scan cache…';
   try{
     const scan=await api('/api/radar/wifi');
-    radarLast=scan;radarReadAt=new Date();$('rdownload').disabled=false;$('rresult').hidden=false;
+    radarLast=scan;radarReadAt=new Date();$('rdownload').disabled=false;$('rcsv').disabled=false;$('rresult').hidden=false;
     const observations=Array.isArray(scan.observations)?scan.observations:[];
     fill('rrows',observations,o=>[
       o.sighting?.network_id||'',
@@ -579,6 +661,147 @@ $('rtrack').onclick=async()=>{
   }
   finally{b.disabled=false}
 };
+
+/* Radar presentation uses only live API data: no simulated BLE, BT, range or bearings. */
+let radarLive=false,radarTimer=0,radarRate=60000,radarKind='all',radarOrder='signal',radarBleLast=null;
+function radarStop(silent=false){
+  radarLive=false;clearTimeout(radarTimer);radarTimer=0;$('rstop').disabled=true;
+  if(!silent)$('rstatus').textContent='Stopped repeated cache reads; a request already in progress may finish.';
+}
+function radarHash(value){
+  let h=2166136261;
+  for(const c of value){h=Math.imul(h^c.charCodeAt(0),16777619)>>>0}
+  return h;
+}
+function radarStrength(o){
+  const n=Number(o.sighting?.signal_dbm);
+  return o.sighting?.signal_dbm==null||!Number.isFinite(n)?null:n;
+}
+function radarDraw(){
+  const all=Array.isArray(radarLast?.observations)?radarLast.observations:[],
+    candidates=new Set((trackLast?.followers||[]).map(f=>String(f.mac||'').toLowerCase()));
+  $('rcounts').textContent='📶 '+(radarLast?all.length:'—')+' wifi  ·  ᛒ '+(radarBleLast?radarBleLast.devices.length:'—')+' ble  ·  ◉ — bt  ·  ⚠ '+(trackLast?(trackLast.followers||[]).length:'—')+' tracking candidates';
+  const observations=all.filter(o=>radarKind!=='ble'&&(radarKind!=='trackers'||candidates.has(String(o.sighting?.network_id||'').toLowerCase())));
+  observations.sort((x,y)=>{
+    if(radarOrder==='name')return String(x.sighting?.name||'').localeCompare(String(y.sighting?.name||''))||String(x.sighting?.network_id||'').localeCompare(String(y.sighting?.network_id||''));
+    if(radarOrder==='last')return (x.age_secs==null?Infinity:Number(x.age_secs))-(y.age_secs==null?Infinity:Number(y.age_secs));
+    return (radarStrength(y)??-Infinity)-(radarStrength(x)??-Infinity);
+  });
+  const markers=$('rmarkers'),list=$('rdevices'),ns='http://www.w3.org/2000/svg';
+  markers.replaceChildren();list.replaceChildren();
+  for(const o of observations.slice(0,180)){
+    const id=String(o.sighting?.network_id||''),dbm=radarStrength(o),
+      radius=25+137*(dbm==null?.75:Math.max(0,Math.min(1,(-dbm-30)/65))),
+      angle=(radarHash(id)%360)*Math.PI/180,x=180+Math.cos(angle)*radius,y=180+Math.sin(angle)*radius,
+      tracked=candidates.has(id.toLowerCase()),node=document.createElementNS(ns,tracked?'circle':'rect');
+    if(tracked){node.setAttribute('cx',x.toFixed(2));node.setAttribute('cy',y.toFixed(2));node.setAttribute('r','4.3')}
+    else{node.setAttribute('x',(x-3.8).toFixed(2));node.setAttribute('y',(y-3.8).toFixed(2));node.setAttribute('width','7.6');node.setAttribute('height','7.6')}
+    node.setAttribute('class',tracked?'radar-candidate':'radar-dot');
+    const tip=document.createElementNS(ns,'title');tip.textContent=(o.sighting?.name||id)+' · '+(dbm==null?'RSSI unknown':dbm+' dBm');
+    node.append(tip);markers.append(node);
+  }
+  for(const o of observations){
+    const id=String(o.sighting?.network_id||''),dbm=radarStrength(o),row=el('div','radar-device'),
+      info=el('div','radar-device-text'),action=el('div','radar-device-actions'),
+      name=el('b','',o.sighting?.name||'(hidden network)'),
+      meta=el('small','',['wifi',o.band||'band unknown',dbm==null?'RSSI unknown':dbm+' dBm',o.freshness||'freshness unknown',o.age_secs==null?'age unknown':Math.round(o.age_secs)+' s'].join(' · ')),
+      strength=el('div','radar-signal'),bar=el('span');
+    bar.style.width=(dbm==null?0:Math.round(Math.max(0,Math.min(100,(dbm+100)*100/70))))+'%';
+    strength.setAttribute('aria-label',dbm==null?'Signal unknown':'Signal '+dbm+' dBm');
+    strength.append(bar);info.append(name,meta,el('small','',id));
+    action.append(strength);
+    const pivot=radarPivot(o);if(pivot)action.append(pivot);
+    row.append(el('span','radar-device-icon',candidates.has(id.toLowerCase())?'⚠':'▣'),info,action);
+    row.setAttribute('role','listitem');row.dataset.name=o.sighting?.name||'';row.dataset.signal=dbm??-999;row.dataset.age=o.age_secs??Infinity;list.append(row);
+  }
+  radarAppendBle(markers,list);
+  const ordered=[...list.children].sort((a,b)=>radarOrder==='name'?a.dataset.name.localeCompare(b.dataset.name):radarOrder==='last'?Number(a.dataset.age)-Number(b.dataset.age):Number(b.dataset.signal)-Number(a.dataset.signal));
+  list.append(...ordered);
+  if(!list.childElementCount){const empty=el('p','radar-empty',radarKind==='trackers'?'No visible observations match recorded recurrence candidates.':'No observations in this filter.');empty.setAttribute('role','listitem');list.append(empty)}
+}
+
+function radarAppendBle(markers,list){
+  if(radarKind!=='all'&&radarKind!=='ble')return;
+  const devices=Array.isArray(radarBleLast?.devices)?[...radarBleLast.devices]:[];
+  devices.sort((a,b)=>radarOrder==='name'?String(a.name||'').localeCompare(String(b.name||'')):
+    radarOrder==='last'?(a.last_seen_ago_ms??Infinity)-(b.last_seen_ago_ms??Infinity):
+    (b.rssi_dbm??-Infinity)-(a.rssi_dbm??-Infinity));
+  const ns='http://www.w3.org/2000/svg';
+  for(const d of devices){
+    const id=String(d.address||'');if(!id)continue;
+    const rawRssi=d.rssi_dbm==null?null:Number(d.rssi_dbm),
+      rssi=Number.isFinite(rawRssi)&&rawRssi<0&&rawRssi>=-127?rawRssi:null,
+      age=d.last_seen_ago_ms==null||!Number.isFinite(Number(d.last_seen_ago_ms))?'unknown':Math.max(0,Math.round(Number(d.last_seen_ago_ms)/1000))+' s ago',
+      distance=d.distance_m==null?null:Number(d.distance_m),
+      range=distance==null||!Number.isFinite(distance)||distance<0?'':' · ≈'+distance.toFixed(1)+' m (RSSI estimate)';
+    if(markers.childElementCount<180){
+      const radius=25+137*(rssi==null?.75:Math.max(0,Math.min(1,(-rssi-30)/65))),
+        angle=(radarHash('ble:'+id)%360)*Math.PI/180,node=document.createElementNS(ns,'circle');
+      node.setAttribute('cx',(180+Math.cos(angle)*radius).toFixed(2));
+      node.setAttribute('cy',(180+Math.sin(angle)*radius).toFixed(2));
+      node.setAttribute('r','4.3');node.setAttribute('class','radar-ble-dot');
+      const tip=document.createElementNS(ns,'title');tip.textContent='BLE '+(d.name||id)+' · '+(rssi??'?')+' dBm';node.append(tip);markers.append(node);
+    }
+    const row=el('div','radar-device'),info=el('div','radar-device-text'),
+      signal=el('div','radar-signal'),fill=el('span');
+    fill.style.width=(rssi==null?0:Math.round(Math.max(0,Math.min(100,(rssi+100)*100/70))))+'%';
+    signal.setAttribute('aria-label',rssi==null?'BLE RSSI unknown':'BLE RSSI '+rssi+' dBm');
+    signal.append(fill);
+    info.append(el('b','',d.name||d.manufacturer||'(unnamed BLE device)'),
+      el('small','','ble · '+(d.manufacturer||'unknown manufacturer')+' · '+(d.proximity||'unknown')+range+' · '+(rssi==null?'RSSI unknown':rssi+' dBm')+' · '+(d.freshness||'UNKNOWN')+' · '+age),
+      el('small','',id));
+    const right=el('div','radar-device-actions');right.append(signal);
+    row.setAttribute('role','listitem');row.dataset.name=d.name||d.manufacturer||'';row.dataset.signal=rssi??-999;row.dataset.age=d.last_seen_ago_ms==null?Infinity:Number(d.last_seen_ago_ms)/1000;row.append(el('span','radar-device-icon','ᛒ'),info,right);list.append(row);
+  }
+}
+async function radarReadBle(){
+  try{
+    const snapshot=await api('/api/radar/ble');
+    if(!Array.isArray(snapshot?.devices))throw Error('missing devices array');
+    radarBleLast=snapshot;$('rdownload').disabled=false;$('rcsv').disabled=false;
+    $('view-radar').querySelector('[data-kind=ble]').disabled=false;
+    $('rble-status').textContent='BLE companion snapshot · '+snapshot.devices.length+' devices · scanning '+(snapshot.scanning?'yes':'no')+' · timestamp from companion clock (unverified)';
+  }catch(e){
+    radarBleLast=null;$('view-radar').querySelector('[data-kind=ble]').disabled=true;
+    if(radarKind==='ble'){
+      radarKind='all';for(const x of document.querySelectorAll('[data-kind]')){const on=x.dataset.kind==='all';x.classList.toggle('selected',on);x.setAttribute('aria-pressed',String(on))}
+    }
+    $('rble-status').textContent='BLE unavailable: '+e.message+'. No BLE detections inferred.';
+  }
+}
+function radarSchedule(){
+  clearTimeout(radarTimer);radarTimer=0;
+  if(radarLive&&view==='radar'&&!document.hidden)radarTimer=setTimeout(radarRead,radarRate);
+}
+const radarOriginalRead=$('rread').onclick;
+async function radarRead(){
+  if(!radarLive)return;
+  await Promise.all([radarOriginalRead(),radarReadBle()]);radarDraw();radarSchedule();
+}
+$('rread').onclick=()=>{if(radarLive)return;radarLive=true;$('rstop').disabled=false;radarRead()};
+$('rstop').onclick=()=>radarStop();
+const radarOriginalTrack=$('rtrack').onclick;
+$('rtrack').onclick=async()=>{await radarOriginalTrack();radarDraw()};
+for(const b of document.querySelectorAll('[data-rate]'))b.onclick=()=>{
+  radarRate=Number(b.dataset.rate);
+  for(const x of document.querySelectorAll('[data-rate]')){const on=x===b;x.classList.toggle('selected',on);x.setAttribute('aria-pressed',String(on))}
+  if(radarLive)radarSchedule();
+};
+for(const attr of ['kind','order'])for(const b of document.querySelectorAll('[data-'+attr+']'))b.onclick=()=>{
+  if(attr==='kind')radarKind=b.dataset.kind;else radarOrder=b.dataset.order;
+  for(const x of document.querySelectorAll('[data-'+attr+']')){const on=x===b;x.classList.toggle('selected',on);x.setAttribute('aria-pressed',String(on))}
+  radarDraw();
+};
+$('rcsv').onclick=()=>{
+  if(!radarLast)return;
+  const rows=[['radio','address','name','RSSI_dBm','band','frequency_mhz','security_or_manufacturer','age_secs','freshness']];
+  for(const o of radarLast?.observations||[])rows.push(['wifi',o.sighting?.network_id||'',o.sighting?.name||'',o.sighting?.signal_dbm??'',o.band||'',o.frequency_mhz??'',o.capabilities||o.sighting?.encryption||'',o.age_secs??'',o.freshness||'']);
+  for(const d of radarBleLast?.devices||[])rows.push(['ble',d.address||'',d.name||'',d.rssi_dbm??'','','',d.manufacturer||'',d.last_seen_ago_ms==null?'':Number(d.last_seen_ago_ms)/1000,d.freshness||'']);
+  const content=rows.map(row=>row.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  download(new Blob(['\uFEFF'+content],{type:'text/csv;charset=utf-8'}),'huntsman-radar-'+Date.now()+'.csv');
+};
+$('rdownload').onclick=()=>{if(radarLast||radarBleLast)save({...radarLast,ble_companion:radarBleLast},'huntsman-radar')};
+radarDraw();
 let inspectLast=null;
 const inspectFailed=why=>{$('istatus').textContent=inspectLast?'Failed; the tables show the PREVIOUS file.':'No file inspected.';fail('ierror',why)};
 $('inspect').onsubmit=async ev=>{
@@ -1698,6 +1921,6 @@ function liveStream(){
   stream.onerror=()=>{};// the browser reconnects on its own after the bounded stream closes
 }
 const started=health();route();liveStream();
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&radarLive)radarStop(true);if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
 </script>
 </html>
