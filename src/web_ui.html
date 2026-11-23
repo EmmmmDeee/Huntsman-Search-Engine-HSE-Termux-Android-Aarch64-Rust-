@@ -128,7 +128,7 @@
 <h1>Radar</h1>
 <div class="radar-strip" role="group" aria-label="Radar actions">
 <button class="btn radar-pill radar-primary" id="rread" type="button">Scan</button>
-<button class="btn radar-pill" id="rstop" type="button" disabled>Stop</button>
+<button class="btn radar-pill" id="rstop" type="button" disabled title="Stop repeated radar reads; does not stop the companion scanner">Stop</button>
 <button class="btn radar-pill" id="rdownload" type="button" disabled>JSON</button>
 <button class="btn radar-pill" id="rcsv" type="button" disabled>CSV</button>
 <button class="btn radar-pill" id="rcread" type="button">Cells</button>
@@ -166,7 +166,7 @@
 <g id="rmarkers"></g>
 <circle class="radar-origin" cx="180" cy="180" r="6"/><circle cx="180" cy="180" r="2" fill="var(--el)"/>
 </svg></div>
-<p class="radar-explain">Visualisation only: angle is a stable arrangement, not a detected direction. Ring radius ranks RSSI, not metres. Scan reads the Android OS cache; it does not trigger an active radio scan. Low / Balanced / Fast repeat reads every 60 / 30 / 15 seconds.</p>
+<p class="radar-explain">Visualisation only: angle is a stable arrangement, not a detected direction. Ring radius ranks RSSI, not metres. Scan reads the Android Wi-Fi cache and, if enabled, the BLE companion snapshot; it does not start a radio scan. Start BLE scanning in the companion app. Stop ends Huntsman refreshes only. Low / Balanced / Fast repeat reads every 60 / 30 / 15 seconds.</p>
 <div class="radar-legend"><span>□ Wi-Fi</span><span>● BLE (companion)</span><span>◉ BT unavailable</span><span>⚠ Recurrence is not confirmed tracking</span></div>
 <div class="radar-devices" id="rdevices" role="list" aria-label="Observed devices"><p class="radar-empty" role="listitem">No Wi-Fi observations loaded.</p></div>
 <details class="radar-evidence" open><summary>Detailed Wi-Fi, cellular and recurrence evidence</summary>
