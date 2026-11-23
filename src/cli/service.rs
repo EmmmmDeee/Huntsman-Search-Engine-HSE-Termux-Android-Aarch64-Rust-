@@ -363,6 +363,20 @@ fn parse_ble_companion_http(bytes: &[u8]) -> Result<serde_json::Value, LookupErr
         if id.is_empty() || id.len() > 64 || id.chars().any(char::is_control) {
             return Err(invalid("invalid device address"));
         }
+        if let Some(rssi) = device.get("rssi_dbm") {
+            if !rssi.is_null()
+                && !rssi.as_i64().is_some_and(|value| (-127..=0).contains(&value))
+            {
+                return Err(invalid("invalid BLE RSSI"));
+            }
+        }
+        if let Some(distance) = device.get("distance_m") {
+            if !distance.is_null()
+                && !distance.as_f64().is_some_and(|value| value.is_finite() && (0.0..=1_000_000.0).contains(&value))
+            {
+                return Err(invalid("invalid distance estimate"));
+            }
+        }
     }
     // Preserve the companion's own provenance and estimates. A local port alone does
     // not cryptographically establish the identity of the app which served it.
@@ -617,6 +631,10 @@ mod tests {
         assert_eq!(value["acquisition"], "companion_snapshot_not_active_scan_request");
         assert_eq!(value["devices"][0]["rssi_dbm"], -65);
         assert_eq!(value["scanning"], true);
+
+        let wrong_rssi = r#"{"devices":[{"address":"AA:BB","rssi_dbm":"invalid"}],"scanning":true,"native_available":true,"timestamp_ms":1760000000000}"#;
+        let wrong_response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", wrong_rssi.len(), wrong_rssi);
+        assert!(parse_ble_companion_http(wrong_response.as_bytes()).is_err());
 
         for bad in [
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 2\r\n\r\n{}",
