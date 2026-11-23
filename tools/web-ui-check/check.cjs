@@ -316,6 +316,16 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
           os_timestamp_us: 1234567890, age_secs: 900, freshness: 'stale'
         }]
       };
+      const bleFixture = {
+        source: 'local_ble_companion_unverified', scanning: true, native_available: true,
+        timestamp_ms: 1760000000000,
+        devices: [{address:'AA:BB:CC:DD:EE:FF',name:'Test Beacon',manufacturer:'Test Vendor',
+          rssi_dbm:-70,proximity:'NEAR',distance_m:3.2,freshness:'LIVE',last_seen_ago_ms:1500}]
+      };
+      let bleCalls = 0;
+      await page.route('**/api/radar/ble', route => { bleCalls++; return route.fulfill({
+        status:200,contentType:'application/json',body:JSON.stringify(bleFixture)
+      }); });
       let radarCalls = 0, lookupHeader = false;
       const countRadar = request => { if (new URL(request.url()).pathname === '/api/radar/wifi') radarCalls++; };
       page.on('request', countRadar);
@@ -325,12 +335,31 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       });
       await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
       check(`${scheme}: Radar is a reachable mobile view`, await page.isVisible('#view-radar'), 'missing');
-      check(`${scheme}: Radar never queries the sensor merely because it opened`, radarCalls === 0, radarCalls);
+      check(`${scheme}: Radar never queries the sensor merely because it opened`, radarCalls === 0 && bleCalls === 0, {radarCalls,bleCalls});
       await audit(page, `${scheme} radar`);
       await page.click('#rread');
       await page.waitForSelector('#rresult:not([hidden])', { timeout: 10000 }).catch(() => {});
-      check(`${scheme}: Radar requests an OS-cache observation only once after explicit action`,
-        radarCalls === 1 && lookupHeader, { radarCalls, lookupHeader });
+      check(`${scheme}: Radar requests sensors only once after explicit action`,
+        radarCalls === 1 && bleCalls === 1 && lookupHeader, { radarCalls, bleCalls, lookupHeader });
+      await page.waitForFunction(() => document.querySelector('#rble-status').textContent.includes('BLE companion snapshot'),{timeout:10000}).catch(()=>{});
+      check(`${scheme}: BLE companion fixture is plotted as an actual source-tagged observation`,
+        await page.locator('#rmarkers circle.radar-ble-dot').count() === 1 &&
+        await page.isEnabled('[data-kind="ble"]') &&
+        (await page.textContent('#rcounts')).includes('1 ble') &&
+        (await page.textContent('#rdevices')).includes('Test Beacon') &&
+        (await page.textContent('#rdevices')).includes('RSSI estimate'),
+        await page.textContent('#rdevices'));
+      await page.click('[data-kind="ble"]');
+      check(`${scheme}: BLE radio filter hides Wi-Fi cards`,
+        (await page.textContent('#rdevices')).includes('Test Beacon') &&
+        !(await page.textContent('#rdevices')).includes('fixture'),
+        await page.textContent('#rdevices'));
+      await page.click('[data-kind="wifi"]');
+      check(`${scheme}: Wi-Fi filter excludes BLE cards`,
+        (await page.textContent('#rdevices')).includes('fixture') &&
+        !(await page.textContent('#rdevices')).includes('Test Beacon'),
+        await page.textContent('#rdevices'));
+      await page.click('[data-kind="all"]');
       const radarText = await page.textContent('#rrows');
       check(`${scheme}: Radar shows cached values and stale labels without inventing positions`,
         await page.isHidden('#rerror') && radarText.includes('3c:5a:b4:11:22:33') &&
@@ -343,9 +372,11 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         page.waitForEvent('download', { timeout: 10000 }), page.click('#rdownload')
       ]);
       const exported = JSON.parse(fs.readFileSync(await radarDownload.path(), 'utf8'));
-      check(`${scheme}: exported Wi-Fi cache preserves source and uncertainty`,
+      check(`${scheme}: exported combined radar preserves both source claims and uncertainty`,
         exported.source === 'termux-wifi-scaninfo' && exported.status === 'stale_only' &&
-        exported.observations[0].age_secs === 900, exported);
+        exported.observations[0].age_secs === 900 &&
+        exported.ble_companion?.source === 'local_ble_companion_unverified' &&
+        exported.ble_companion?.devices[0]?.rssi_dbm === -70, exported);
 
       // The screenshot-inspired view plots actual cached observations only and keeps raw export intact.
       check(`${scheme}: Radar map and device list use actual Wi-Fi readings without fabricated BT counts`,
@@ -358,7 +389,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       ]);
       const radarCsv = fs.readFileSync(await radarCsvDownload.path(), 'utf8');
       check(`${scheme}: Radar CSV contains source identifiers, RSSI and freshness`,
-        radarCsv.includes('3c:5a:b4:11:22:33') && radarCsv.includes('-58') && radarCsv.includes('stale'), radarCsv);
+        radarCsv.includes('3c:5a:b4:11:22:33') && radarCsv.includes('-58') && radarCsv.includes('stale') && radarCsv.includes('AA:BB:CC:DD:EE:FF') && radarCsv.includes('-70'), radarCsv);
       await page.click('#rstop');
       check(`${scheme}: Stop terminates repeated cached reads without clearing evidence`,
         await page.isDisabled('#rstop') && (await page.textContent('#rrows')).includes('fixture'),
@@ -386,6 +417,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         radarScanPosts === 0, radarScanPosts);
       page.off('request', countScanPost);
       await page.unroute('**/api/radar/wifi');
+      await page.unroute('**/api/radar/ble');
       page.off('request', countRadar);
 
       // The cells Android reports and the track log, read from the same tab on a press only.
