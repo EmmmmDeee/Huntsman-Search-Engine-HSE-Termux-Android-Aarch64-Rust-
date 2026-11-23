@@ -411,6 +411,8 @@ fn classify_document(
 ) -> (Vec<Entity>, SourceExecutionOutcome) {
     let label = name(source);
     let unvisited = unvisited_notice_rows(source, document);
+    let no_notice_total =
+        source == Source::Notices && document.get("total").and_then(Value::as_u64).is_none();
     match parse(source, document, query, scan_id) {
         Ok(Parsed {
             entities, skipped, ..
@@ -428,6 +430,9 @@ fn classify_document(
                     "{missing} additional FBI notices were not inspected; result is not exhaustive"
                 ));
             }
+            if no_notice_total {
+                details.push("FBI notice total missing; completeness unverified".into());
+            }
             if !details.is_empty() {
                 outcome = outcome.with_detail(details.join("; "));
             }
@@ -438,6 +443,18 @@ fn classify_document(
             other_people,
             ..
         }) => {
+            if no_notice_total {
+                return (
+                    Vec::new(),
+                    SourceExecutionOutcome::failed(
+                        label,
+                        now,
+                        SourceOutcomeKind::Inconclusive,
+                        Some(200),
+                        "FBI notice total missing; cannot verify that the first page is exhaustive",
+                    ),
+                );
+            }
             if let Some(missing) = unvisited {
                 return (
                     Vec::new(),
@@ -848,6 +865,17 @@ mod tests {
         let report = search(&fake, Source::Notices, "Ruja Ignatova", "s", 1).unwrap();
         assert!(report.entities.is_empty());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    }
+
+    #[test]
+    fn fbi_missing_total_cannot_certify_absence() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"items":[{"title":"JANE DOE","url":"https://www.fbi.gov/wanted/a"}]}"#,
+        );
+        let report = search(&fake, Source::Notices, "Ruja Ignatova", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
     }
 
     #[test]
