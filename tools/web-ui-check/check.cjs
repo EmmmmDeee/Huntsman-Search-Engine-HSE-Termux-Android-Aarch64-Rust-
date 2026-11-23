@@ -39,7 +39,8 @@ const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isM
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter; four more the
 // Radar tab's cell intelligence (PCI, site, timing advance, neighbours, anomaly indicators).
 // Six more KiB cover the read-only Rhinser source directory.
-const PAGE_BUDGET = 144 * 1024;
+// Sixteen more KiB accommodates the mobile radar map, filters and accessible device cards.
+const PAGE_BUDGET = 160 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -345,6 +346,23 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check(`${scheme}: exported Wi-Fi cache preserves source and uncertainty`,
         exported.source === 'termux-wifi-scaninfo' && exported.status === 'stale_only' &&
         exported.observations[0].age_secs === 900, exported);
+
+      // The screenshot-inspired view plots actual cached observations only and keeps raw export intact.
+      check(`${scheme}: Radar map and device list use actual Wi-Fi readings without fabricated BT counts`,
+        await page.locator('#rmarkers rect').count() === 1 &&
+        (await page.textContent('#rdevices')).includes('fixture') &&
+        (await page.textContent('#rcounts')).includes('— ble') &&
+        await page.isEnabled('#rcsv'), await page.textContent('#rdevices'));
+      const [radarCsvDownload] = await Promise.all([
+        page.waitForEvent('download', { timeout: 10000 }), page.click('#rcsv')
+      ]);
+      const radarCsv = fs.readFileSync(await radarCsvDownload.path(), 'utf8');
+      check(`${scheme}: Radar CSV contains source identifiers, RSSI and freshness`,
+        radarCsv.includes('3c:5a:b4:11:22:33') && radarCsv.includes('-58') && radarCsv.includes('stale'), radarCsv);
+      await page.click('#rstop');
+      check(`${scheme}: Stop terminates repeated cached reads without clearing evidence`,
+        await page.isDisabled('#rstop') && (await page.textContent('#rrows')).includes('fixture'),
+        await page.textContent('#rstatus'));
 
       // A local cached BSSID is a lead for Huntsman's existing network lookup,
       // not permission to spend network egress or operator keys automatically.
