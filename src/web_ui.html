@@ -710,9 +710,11 @@ function radarDraw(){
     action.append(strength);
     const pivot=radarPivot(o);if(pivot)action.append(pivot);
     row.append(el('span','radar-device-icon',candidates.has(id.toLowerCase())?'⚠':'▣'),info,action);
-    row.setAttribute('role','listitem');list.append(row);
+    row.setAttribute('role','listitem');row.dataset.name=o.sighting?.name||'';row.dataset.signal=dbm??-999;row.dataset.age=o.age_secs??Infinity;list.append(row);
   }
   radarAppendBle(markers,list);
+  const ordered=[...list.children].sort((a,b)=>radarOrder==='name'?a.dataset.name.localeCompare(b.dataset.name):radarOrder==='last'?Number(a.dataset.age)-Number(b.dataset.age):Number(b.dataset.signal)-Number(a.dataset.signal));
+  list.append(...ordered);
   if(!list.childElementCount){const empty=el('p','radar-empty',radarKind==='trackers'?'No visible observations match recorded recurrence candidates.':'No observations in this filter.');empty.setAttribute('role','listitem');list.append(empty)}
 }
 
@@ -746,14 +748,14 @@ function radarAppendBle(markers,list){
       el('small','','ble · '+(d.manufacturer||'unknown manufacturer')+' · '+(d.proximity||'unknown')+range+' · '+(rssi==null?'RSSI unknown':rssi+' dBm')+' · '+(d.freshness||'UNKNOWN')+' · '+age),
       el('small','',id));
     const right=el('div','radar-device-actions');right.append(signal);
-    row.setAttribute('role','listitem');row.append(el('span','radar-device-icon','ᛒ'),info,right);list.append(row);
+    row.setAttribute('role','listitem');row.dataset.name=d.name||d.manufacturer||'';row.dataset.signal=rssi??-999;row.dataset.age=d.last_seen_ago_ms==null?Infinity:Number(d.last_seen_ago_ms)/1000;row.append(el('span','radar-device-icon','ᛒ'),info,right);list.append(row);
   }
 }
 async function radarReadBle(){
   try{
     const snapshot=await api('/api/radar/ble');
     if(!Array.isArray(snapshot?.devices))throw Error('missing devices array');
-    radarBleLast=snapshot;
+    radarBleLast=snapshot;$('rdownload').disabled=false;$('rcsv').disabled=false;
     $('view-radar').querySelector('[data-kind=ble]').disabled=false;
     $('rble-status').textContent='BLE companion snapshot · '+snapshot.devices.length+' devices · scanning '+(snapshot.scanning?'yes':'no')+' · timestamp from companion clock (unverified)';
   }catch(e){
@@ -789,8 +791,9 @@ for(const attr of ['kind','order'])for(const b of document.querySelectorAll('[da
 };
 $('rcsv').onclick=()=>{
   if(!radarLast)return;
-  const rows=[['BSSID','SSID','RSSI_dBm','band','frequency_mhz','security','age_secs','freshness']];
-  for(const o of radarLast.observations||[])rows.push([o.sighting?.network_id||'',o.sighting?.name||'',o.sighting?.signal_dbm??'',o.band||'',o.frequency_mhz??'',o.capabilities||o.sighting?.encryption||'',o.age_secs??'',o.freshness||'']);
+  const rows=[['radio','address','name','RSSI_dBm','band','frequency_mhz','security_or_manufacturer','age_secs','freshness']];
+  for(const o of radarLast?.observations||[])rows.push(['wifi',o.sighting?.network_id||'',o.sighting?.name||'',o.sighting?.signal_dbm??'',o.band||'',o.frequency_mhz??'',o.capabilities||o.sighting?.encryption||'',o.age_secs??'',o.freshness||'']);
+  for(const d of radarBleLast?.devices||[])rows.push(['ble',d.address||'',d.name||'',d.rssi_dbm??'','','',d.manufacturer||'',d.last_seen_ago_ms==null?'':Number(d.last_seen_ago_ms)/1000,d.freshness||'']);
   const content=rows.map(row=>row.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
   download(new Blob(['\uFEFF'+content],{type:'text/csv;charset=utf-8'}),'huntsman-radar-'+Date.now()+'.csv');
 };
