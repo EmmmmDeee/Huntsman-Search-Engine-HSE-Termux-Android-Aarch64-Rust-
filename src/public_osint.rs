@@ -193,6 +193,16 @@ fn parse(source: Source, body: &Value, query: &str, scan_id: &str) -> Result<Par
         .get(key)
         .and_then(Value::as_array)
         .ok_or("missing result array")?;
+    // The FBI reports a total across all pages. A smaller count than the current
+    // page is contradictory upstream data, not evidence of absence.
+    if source == Source::Notices
+        && body
+            .get("total")
+            .and_then(Value::as_u64)
+            .is_some_and(|total| total < rows.len() as u64)
+    {
+        return Err("FBI notice total is smaller than the returned page");
+    }
     let mut entities = Vec::new();
     let mut seen = BTreeSet::new();
     let mut skipped = rows.len().saturating_sub(MAX_ROWS);
@@ -380,6 +390,17 @@ fn collect<T: Transport + ?Sized>(
     classify_document(source, &document, query, scan_id, now)
 }
 
+/// Number of FBI search results not examined because the provider returned only
+/// the first page. A missing total is not interpreted as zero.
+fn unvisited_notice_rows(source: Source, document: &Value) -> Option<u64> {
+    if source != Source::Notices {
+        return None;
+    }
+    let returned = document.get("items")?.as_array()?.len() as u64;
+    let total = document.get("total")?.as_u64()?;
+    total.checked_sub(returned).filter(|missing| *missing > 0)
+}
+
 // Preserves source-level failures and refuses to convert schema drift into zero findings.
 fn classify_document(
     source: Source,
@@ -389,16 +410,26 @@ fn classify_document(
     now: u64,
 ) -> (Vec<Entity>, SourceExecutionOutcome) {
     let label = name(source);
+    let unvisited = unvisited_notice_rows(source, document);
     match parse(source, document, query, scan_id) {
         Ok(Parsed {
             entities, skipped, ..
         }) if !entities.is_empty() => {
             let mut outcome =
                 SourceExecutionOutcome::success(label, now, entities.len()).with_http_status(200);
+            let mut details = Vec::new();
             if skipped > 0 {
-                outcome = outcome.with_detail(format!(
+                details.push(format!(
                     "{skipped} invalid, duplicate, or over-limit records omitted"
                 ));
+            }
+            if let Some(missing) = unvisited {
+                details.push(format!(
+                    "{missing} additional FBI notices were not inspected; result is not exhaustive"
+                ));
+            }
+            if !details.is_empty() {
+                outcome = outcome.with_detail(details.join("; "));
             }
             (entities, outcome)
         }
@@ -407,6 +438,20 @@ fn classify_document(
             other_people,
             ..
         }) => {
+            if let Some(missing) = unvisited {
+                return (
+                    Vec::new(),
+                    SourceExecutionOutcome::failed(
+                        label,
+                        now,
+                        SourceOutcomeKind::Inconclusive,
+                        Some(200),
+                        format!(
+                            "{missing} additional FBI notices were not inspected; first-page nonmatch is not an exhaustive zero"
+                        ),
+                    ),
+                );
+            }
             let total = document.get("total").and_then(Value::as_u64).unwrap_or(0);
             if skipped == 0 && (total == 0 || other_people > 0) {
                 let mut zero = SourceExecutionOutcome::valid_zero(label, now).with_http_status(200);
@@ -545,6 +590,7 @@ fn search_with_clock<T: Transport + ?Sized>(
         limitations: vec![
             "News and search results are leads, not independently verified event reports.",
             "Official notices can be amended or withdrawn; consult the issuing agency.",
+            "FBI notice search is limited to its first page (20 rows); totals above returned rows are incomplete.",
             "Search-result agreement does not prove real-world identity or culpability.",
         ],
     })
@@ -753,6 +799,66 @@ mod tests {
         assert!(!report.entities.is_empty());
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
         assert!(!report.outcomes[1].kind.is_accepted());
+    }
+
+    /// False zero: the first page only contains unrelated names, while the
+    /// upstream FBI total says additional results exist on unseen pages.
+    #[test]
+    fn fbi_unvisited_pages_prevent_false_valid_zero() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"total":21,"items":[{"title":"JANE DOE","url":"https://www.fbi.gov/wanted/a"}]}"#,
+        );
+        let report = search(&fake, Source::Notices, "Ruja Ignatova", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+        assert!(
+            report.outcomes[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("20 additional FBI notices"))
+        );
+    }
+
+    /// Findings from the first page remain usable leads, but the report must
+    /// explicitly disclose that further records were not checked.
+    #[test]
+    fn fbi_first_page_hits_disclose_partial_coverage() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"total":30,"items":[{"title":"RUJA IGNATOVA","url":"https://www.fbi.gov/wanted/topten/ruja-ignatova"}]}"#,
+        );
+        let report = search(&fake, Source::Notices, "Ruja Ignatova", "s", 1).unwrap();
+        assert_eq!(report.entities.len(), 1);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
+        assert!(
+            report.outcomes[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("29 additional FBI notices"))
+        );
+    }
+
+    #[test]
+    fn fbi_complete_page_of_other_names_is_valid_zero() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"total":1,"items":[{"title":"JANE DOE","url":"https://www.fbi.gov/wanted/a"}]}"#,
+        );
+        let report = search(&fake, Source::Notices, "Ruja Ignatova", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+    }
+
+    #[test]
+    fn fbi_contradictory_total_is_schema_drift() {
+        let fake = OneResponse::json(
+            200,
+            r#"{"total":0,"items":[{"title":"RUJA IGNATOVA","url":"https://www.fbi.gov/wanted/a"}]}"#,
+        );
+        let report = search(&fake, Source::Notices, "Ruja Ignatova", "s", 1).unwrap();
+        assert!(report.entities.is_empty());
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
     }
 
     /// The FBI's full-text search answers a name with every notice sharing one of its words. Only
