@@ -674,6 +674,40 @@ fn wifi_radar_requires_same_origin_lookup_header_and_public_bind_token() {
 }
 
 #[test]
+fn ble_companion_route_is_absent_by_default_and_requires_sensor_security_guards() {
+    let config = ServeConfig::parse("127.0.0.1:8090", None).unwrap();
+    let routes = Routes {
+        ble: Some(Sensor {
+            handler: Arc::new(|| Ok(serde_json::json!({
+                "source": "local_ble_companion_unverified",
+                "devices": [{"address": "B0:11:22:33:44:55", "rssi_dbm": -65}],
+                "scanning": true,
+            }))),
+            live: Arc::new(AtomicUsize::new(0)),
+        }),
+        ..Routes::default()
+    };
+    let ask = |method: &str, headers: &str| {
+        text(respond(
+            &format!("{method} /api/radar/ble HTTP/1.1\r\nHost: 127.0.0.1:8090\r\n{headers}\r\n"),
+            &config,
+            &routes,
+        ))
+    };
+    assert!(ask("GET", "").starts_with("HTTP/1.1 403"));
+    assert!(ask("GET", "X-Huntsman-Lookup: 1\r\nSec-Fetch-Site: cross-site\r\n").starts_with("HTTP/1.1 403"));
+    assert!(ask("POST", "X-Huntsman-Lookup: 1\r\n").starts_with("HTTP/1.1 405"));
+    let response = ask("GET", "X-Huntsman-Lookup: 1\r\nSec-Fetch-Site: same-origin\r\n");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("local_ble_companion_unverified"), "{response}");
+    let missing = text(respond(
+        "GET /api/radar/ble HTTP/1.1\r\nHost: 127.0.0.1:8090\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+        &config, &Routes::default(),
+    ));
+    assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+}
+
+#[test]
 fn wifi_radar_busy_and_adapter_error_are_failures_not_empty_scans() {
     let config = ServeConfig::parse("127.0.0.1:8080", None).unwrap();
     let live = Arc::new(AtomicUsize::new(1));
