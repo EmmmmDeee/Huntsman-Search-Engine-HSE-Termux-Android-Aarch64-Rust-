@@ -168,8 +168,8 @@
 </svg></div>
 <p class="radar-explain">Visualisation only: angle is a stable arrangement, not a detected direction. Ring radius ranks RSSI, not metres. Scan reads the Android OS cache; it does not trigger an active radio scan. Low / Balanced / Fast repeat reads every 60 / 30 / 15 seconds.</p>
 <div class="radar-legend"><span>□ Wi-Fi</span><span>ᛒ BLE unavailable</span><span>◉ BT unavailable</span><span>⚠ Recurrence is not confirmed tracking</span></div>
-<div class="radar-devices" id="rdevices" role="list" aria-label="Observed devices"><p class="radar-empty">No Wi-Fi observations loaded.</p></div>
-<details class="radar-evidence"><summary>Detailed Wi-Fi, cellular and recurrence evidence</summary>
+<div class="radar-devices" id="rdevices" role="list" aria-label="Observed devices"><p class="radar-empty" role="listitem">No Wi-Fi observations loaded.</p></div>
+<details class="radar-evidence" open><summary>Detailed Wi-Fi, cellular and recurrence evidence</summary>
 <div class="panel" id="rresult" hidden>
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
@@ -712,7 +712,7 @@ function radarDraw(){
     row.append(el('span','radar-device-icon',candidates.has(id.toLowerCase())?'⚠':'▣'),info,action);
     row.setAttribute('role','listitem');list.append(row);
   }
-  if(!observations.length)list.append(el('p','radar-empty',radarKind==='trackers'?'No visible observations match recorded recurrence candidates.':radarLast?'No cached Wi-Fi observations returned.':'No Wi-Fi observations loaded.'));
+  if(!observations.length){const empty=el('p','radar-empty',radarKind==='trackers'?'No visible observations match recorded recurrence candidates.':radarLast?'No cached Wi-Fi observations returned.':'No Wi-Fi observations loaded.');empty.setAttribute('role','listitem');list.append(empty)}
 }
 function radarSchedule(){
   clearTimeout(radarTimer);radarTimer=0;
