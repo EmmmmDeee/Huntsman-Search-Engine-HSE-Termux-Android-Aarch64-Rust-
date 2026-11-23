@@ -604,9 +604,30 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{rule_error_line, web_inspect, web_investigate};
+    use super::{parse_ble_companion_http, rule_error_line, web_inspect, web_investigate};
     use huntsman_recon::entity::{Entity, EntityKind};
     use huntsman_recon::source_outcome::SourceOutcomeKind;
+
+    #[test]
+    fn ble_companion_snapshot_is_framed_validated_and_labeled_unverified() {
+        let body = r#"{"devices":[{"address":"B0:11:22:33:44:55","name":"test","rssi_dbm":-65,"freshness":"LIVE"}],"scanning":true,"native_available":true,"timestamp_ms":1760000000000}"#;
+        let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let value = parse_ble_companion_http(reply.as_bytes()).expect("valid companion response");
+        assert_eq!(value["source"], "local_ble_companion_unverified");
+        assert_eq!(value["acquisition"], "companion_snapshot_not_active_scan_request");
+        assert_eq!(value["devices"][0]["rssi_dbm"], -65);
+        assert_eq!(value["scanning"], true);
+
+        for bad in [
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+        ] {
+            assert!(parse_ble_companion_http(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
 
     /// The page's text goes through the same extraction as `investigate TEXT...`: every actionable
     /// entity in it, with the classifier's signal as evidence, rendered as the command prints it;
