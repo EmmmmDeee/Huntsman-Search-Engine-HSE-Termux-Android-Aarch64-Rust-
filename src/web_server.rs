@@ -126,6 +126,8 @@ const RHINSER_NATIVE_PATH: &str = "/api/rhinser/native";
 const RHINSER_OVERLAPS_PATH: &str = "/api/rhinser/overlaps";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
+/// Read-only, explicitly enabled, loopback-only BLE companion snapshot.
+const BLE_PATH: &str = "/api/radar/ble";
 /// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
 /// `investigate` command for text pasted in the browser. The text is the body, read whole within
 /// [`MAX_FORM_BYTES`]; a longer text is for `investigate --file` in Termux.
@@ -267,6 +269,9 @@ struct Upload {
 /// Installed by the process boundary; the server library owns no sensor subprocess.
 pub type RadarHandler = Arc<dyn Fn() -> Result<WifiScan, LookupError> + Send + Sync>;
 
+/// One bounded BLE observation snapshot from the independently installed Android companion.
+pub type BleHandler = Arc<dyn Fn() -> Result<serde_json::Value, LookupError> + Send + Sync>;
+
 /// One bounded, no-root read of the cells Android reports, as `radar cells` reads them.
 pub type CellsHandler = Arc<dyn Fn() -> Result<CellScan, LookupError> + Send + Sync>;
 
@@ -300,6 +305,7 @@ struct Routes {
     research: Option<Research>,
     people_discover: Option<PeopleDiscover>,
     radar: Option<Radar>,
+    ble: Option<Sensor<serde_json::Value>>,
     cells: Option<Sensor<CellScan>>,
     track: Option<Sensor<TrackReport>>,
     analyze: Option<AnalyzeHandler>,
@@ -427,6 +433,17 @@ impl Server {
     #[must_use]
     pub fn with_radar(mut self, handler: RadarHandler) -> Self {
         self.routes.radar = Some(Radar {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
+        self
+    }
+
+    /// Bridge GET /api/radar/ble to the loopback BLE Android companion when explicitly enabled.
+    /// The external device scanner remains the independent, canonical owner of BLE capture.
+    #[must_use]
+    pub fn with_radar_ble(mut self, handler: BleHandler) -> Self {
+        self.routes.ble = Some(Sensor {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
@@ -1453,6 +1470,7 @@ fn protected_path(path: &str) -> bool {
             | "/evidence"
             | "/api/radar/wifi"
             | "/api/radar/cells"
+            | BLE_PATH
             | TRACK_PATH
             | KEYS_PATH
             | INSPECT_PATH
@@ -1553,6 +1571,7 @@ fn route(
         "/api/radar/cells" => {
             sensor_response(parsed, routes.cells.as_ref(), "cell radar", Method::Get)
         }
+        BLE_PATH => sensor_response(parsed, routes.ble.as_ref(), "BLE companion", Method::Get),
         TRACK_PATH => sensor_response(parsed, routes.track.as_ref(), "radar track", Method::Post),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
         "/evidence" => dossier_page_response(parsed, config),
