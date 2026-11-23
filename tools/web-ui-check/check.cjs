@@ -39,8 +39,8 @@ const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isM
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter; four more the
 // Radar tab's cell intelligence (PCI, site, timing advance, neighbours, anomaly indicators).
 // Six more KiB cover the read-only Rhinser source directory.
-// Sixteen more KiB accommodates the mobile radar map, filters and accessible device cards.
-const PAGE_BUDGET = 160 * 1024;
+// Twenty-four more KiB accommodates the mobile radar map, real BLE companion readings, filters and accessible device cards.
+const PAGE_BUDGET = 168 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
