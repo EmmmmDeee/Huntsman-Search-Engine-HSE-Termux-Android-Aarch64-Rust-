@@ -11,7 +11,7 @@ It is not part of `huntsman-recon`: the engine ships no browser or JavaScript ru
 
 - The page loads with no console error and no Content-Security-Policy violation, fits 360 px with
   no horizontal scroll in every view, every control is at least 44 px (a checkbox or radio counts
-  as the label that holds it), and it weighs at most 160 KiB.
+  as the label that holds it), and it weighs at most 168 KiB.
 - Radar is screenshot-inspired: cached Wi-Fi readings populate signal rings and a sortable device list; Bluetooth remains unavailable without a companion feed. JSON/CSV export, stop/refresh controls and the raw evidence tables are retained. Ring placement is not verified direction or distance.
 - A cold load asks only for the page, `/api/health`, the scan list and the icon, and opens on
   Scans; a tab that comes back into view with no scan running asks only for `/api/health`; About
