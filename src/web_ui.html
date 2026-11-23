@@ -729,8 +729,9 @@ function radarAppendBle(markers,list){
   const ns='http://www.w3.org/2000/svg';
   for(const d of devices){
     const id=String(d.address||'');if(!id)continue;
-    const rssi=d.rssi_dbm==null?null:Number(d.rssi_dbm),
-      age=d.last_seen_ago_ms==null?'unknown':Math.round(Number(d.last_seen_ago_ms)/1000)+' s ago',
+    const rawRssi=d.rssi_dbm==null?null:Number(d.rssi_dbm),
+      rssi=Number.isFinite(rawRssi)&&rawRssi<0&&rawRssi>=-127?rawRssi:null,
+      age=d.last_seen_ago_ms==null||!Number.isFinite(Number(d.last_seen_ago_ms))?'unknown':Math.max(0,Math.round(Number(d.last_seen_ago_ms)/1000))+' s ago',
       distance=d.distance_m==null?null:Number(d.distance_m),
       range=distance==null||!Number.isFinite(distance)||distance<0?'':' · ≈'+distance.toFixed(1)+' m (RSSI estimate)';
     if(markers.childElementCount<180){
