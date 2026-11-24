@@ -12,8 +12,8 @@
 //! of distinct source labels, so two mirrors of one dump counted twice. The canonical
 //! ancestry path now boosts only from mutually proven-independent routes; merely
 //! disjoint labels remain one route, and bounded-search truncation is non-strengthening.
-//! Non-finite or out-of-range confidence is clamped to [0, 1] (NaN is 0), so a bad
-//! input can never raise a tier. Depth decay refuses a base above 1, which would have
+//! Non-finite confidence is treated as zero; finite out-of-range confidence is
+//! clamped to [0, 1] for compatibility. Depth decay refuses a base above 1, which would have
 //! amplified confidence.
 
 use std::fmt;
@@ -96,12 +96,13 @@ pub enum VerificationMethod {
 }
 
 fn unit(x: f64) -> f64 {
-    if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) }
+    if x.is_finite() { x.clamp(0.0, 1.0) } else { 0.0 }
 }
 
 /// Effective confidence for `confidence` backed by `sources` independent sources.
 /// Zero sources is floored to one: a lone observation is one source. The result is
-/// in [`confidence`, 1], never below the input, and non-decreasing in `sources`.
+/// in [normalised confidence, 1] and non-decreasing in `sources`.
+/// Non-finite input normalises to zero, never to a verified score.
 #[must_use]
 pub fn effective(confidence: f64, sources: u32) -> f64 {
     let c = unit(confidence);
@@ -282,7 +283,7 @@ mod tests {
         assert_eq!(effective(f64::NAN, 5), 0.0);
         assert_eq!(effective(-3.0, 5), 0.0);
         assert_eq!(effective(7.0, 1), 1.0);
-        assert_eq!(effective(f64::INFINITY, 1), 1.0);
+        assert_eq!(effective(f64::INFINITY, 1), 0.0);
         assert_eq!(effective(f64::NEG_INFINITY, 9), 0.0);
         assert_eq!(effective(0.0, 0), 0.0, "zero confidence stays zero");
         assert_eq!(
@@ -295,6 +296,23 @@ mod tests {
             Classification::from_effective(f64::NAN),
             Classification::Candidate
         );
+    }
+
+    #[test]
+    fn non_finite_inputs_cannot_be_promoted_by_corroboration_or_decay() {
+        for input in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for sources in [0, 1, 2, 100, u32::MAX] {
+                let score = effective(input, sources);
+                assert_eq!(score, 0.0);
+                assert_eq!(
+                    Classification::from_effective(score),
+                    Classification::Candidate
+                );
+            }
+            for generation in [0, 1, u32::MAX] {
+                assert_eq!(depth_decayed(input, 0.9, generation), Some(0.0));
+            }
+        }
     }
 
     #[test]
