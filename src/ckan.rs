@@ -22,7 +22,6 @@ pub struct Response {
 pub struct ResultSet {
     #[serde(default)]
     pub total: Option<u64>,
-    #[serde(default)]
     pub records: Vec<Map<String, Value>>,
 }
 
@@ -30,7 +29,12 @@ impl ResultSet {
     /// Why this page is not the whole answer, or `None` when it is.
     #[must_use]
     pub fn truncation(&self) -> Option<String> {
-        let total = self.total?;
+        let Some(total) = self.total else {
+            return Some(
+                "partial: CKAN total is unknown; absence of a record here is not evidence of absence"
+                    .to_owned(),
+            );
+        };
         (total > self.records.len() as u64).then(|| {
             format!(
                 "partial: read the first {} of {total} matching records; absence of a record \
@@ -70,16 +74,32 @@ pub fn datastore_search_url(action_base: &str, resource_id: &str, q: &str, limit
 
 /// # Errors
 ///
-/// Returns [`crate::Error::Invalid`] when the CKAN envelope explicitly reports
-/// `success=false`.
+/// Returns [`crate::Error::Invalid`] when success is not explicit or the result count
+/// contradicts the number of returned records.
 pub fn check_envelope(response: Response, module: &str) -> Result<Option<ResultSet>, crate::Error> {
-    if response.success == Some(false) {
-        Err(crate::Error::Invalid(format!(
-            "{module}: CKAN datastore_search returned success=false (bad resource id or portal error)"
-        )))
-    } else {
-        Ok(response.result)
+    match response.success {
+        Some(true) => {}
+        Some(false) => {
+            return Err(crate::Error::Invalid(format!(
+                "{module}: CKAN datastore_search returned success=false (bad resource id or portal error)"
+            )));
+        }
+        None => {
+            return Err(crate::Error::Invalid(format!(
+                "{module}: CKAN datastore_search omitted explicit success"
+            )));
+        }
     }
+    if response.result.as_ref().is_some_and(|result| {
+        result
+            .total
+            .is_some_and(|total| total < result.records.len() as u64)
+    }) {
+        return Err(crate::Error::Invalid(format!(
+            "{module}: CKAN total is smaller than the returned record count"
+        )));
+    }
+    Ok(response.result)
 }
 
 /// The records one register's search returned, after [`parse_datastore`].
@@ -167,13 +187,14 @@ pub fn parse_datastore(
             "CKAN response had no result envelope".to_owned(),
         ),
         Ok(Some(result)) => {
-            let outcome = if result.records.is_empty() {
+            let partial = result.truncation();
+            let outcome = if result.records.is_empty() && partial.is_none() {
                 SourceExecutionOutcome::valid_zero(module, now_unix)
             } else {
                 SourceExecutionOutcome::success(module, now_unix, result.records.len())
             }
             .with_http_status(response.status);
-            let outcome = match result.truncation() {
+            let outcome = match partial {
                 Some(note) => outcome.with_detail(note),
                 None => outcome,
             };
@@ -255,9 +276,97 @@ mod tests {
         assert!(msg.contains("ckan_test"));
         assert!(msg.contains("success=false"));
 
-        for body in [r#"{"success":true}"#, r"{}"] {
-            let response: Response = serde_json::from_str(body).expect("response");
-            assert!(check_envelope(response, "ckan_test").expect("ok").is_none());
+        let response: Response =
+            serde_json::from_str(r#"{"success":true}"#).expect("response");
+        assert!(check_envelope(response, "ckan_test").expect("ok").is_none());
+
+        let response: Response = serde_json::from_str(r"{}").expect("response");
+        assert!(check_envelope(response, "ckan_test").is_err());
+    }
+
+    fn parse_body(body: &str) -> (SourceExecutionOutcome, Records) {
+        parse_datastore(
+            "ckan_test",
+            1,
+            Fetched {
+                outcome: SourceExecutionOutcome::success("ckan_test", 1, 0),
+                response: Some(http::Response {
+                    status: 200,
+                    headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+                    body: body.as_bytes().to_vec(),
+                    truncated: false,
+                }),
+                final_url: "https://example.org/api".to_owned(),
+                redirects: 0,
+                credential_sent: None,
+                redirect_refused: None,
+                not_sent_hop: None,
+            },
+        )
+    }
+
+    #[test]
+    fn incomplete_and_inconsistent_envelopes_are_not_accepted() {
+        for (body, expected) in [
+            (
+                r#"{"result":{"total":0,"records":[]}}"#,
+                SourceOutcomeKind::SchemaDrift,
+            ),
+            (
+                r#"{"success":true,"result":{"total":0}}"#,
+                SourceOutcomeKind::ParserDrift,
+            ),
+            (
+                r#"{"success":true,"result":{"total":0,"records":[{}]}}"#,
+                SourceOutcomeKind::SchemaDrift,
+            ),
+            (
+                r#"{"success":true,"result":{"records":[]}}"#,
+                SourceOutcomeKind::Inconclusive,
+            ),
+            (
+                r#"{"success":true,"result":{"total":5,"records":[]}}"#,
+                SourceOutcomeKind::Inconclusive,
+            ),
+        ] {
+            let (outcome, records) = parse_body(body);
+            assert_eq!(outcome.kind, expected, "{body}");
+            assert!(records.is_empty(), "{body}");
+            assert!(!reconcile_matches(outcome, 0, "ckan_test", 1).kind.is_accepted());
+        }
+    }
+
+    #[test]
+    fn complete_and_partial_pages_preserve_their_distinct_meanings() {
+        let (outcome, records) =
+            parse_body(r#"{"success":true,"result":{"total":0,"records":[]}}"#);
+        assert_eq!(outcome.kind, SourceOutcomeKind::ValidZero);
+        assert!(records.is_empty());
+
+        let (outcome, records) =
+            parse_body(r#"{"success":true,"result":{"total":1,"records":[{}]}}"#);
+        assert_eq!(outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            reconcile_matches(outcome, 0, "ckan_test", 1).kind,
+            SourceOutcomeKind::ValidZero
+        );
+
+        for body in [
+            r#"{"success":true,"result":{"records":[{}]}}"#,
+            r#"{"success":true,"result":{"total":5,"records":[{}]}}"#,
+        ] {
+            let (outcome, records) = parse_body(body);
+            assert_eq!(outcome.kind, SourceOutcomeKind::Success);
+            assert_eq!(records.len(), 1);
+            assert!(outcome.detail.is_some());
+            assert_eq!(
+                reconcile_matches(outcome.clone(), 0, "ckan_test", 1).kind,
+                SourceOutcomeKind::Inconclusive
+            );
+            let positive = reconcile_matches(outcome, 1, "ckan_test", 1);
+            assert_eq!(positive.kind, SourceOutcomeKind::Success);
+            assert!(positive.detail.is_some());
         }
     }
 
@@ -275,7 +384,7 @@ mod tests {
             )
         );
         assert_eq!(page(Some(100), 100).truncation(), None);
-        assert_eq!(page(None, 100).truncation(), None);
+        assert!(page(None, 100).truncation().is_some());
         assert_eq!(page(Some(0), 0).truncation(), None);
     }
 }
