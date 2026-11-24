@@ -204,12 +204,12 @@ pub struct CoverageVerdict {
 impl CoverageVerdict {
     #[must_use]
     pub const fn all_available_providers_answered(self) -> bool {
-        self.unavailable_count == 0
+        self.provider_count > 0 && self.unavailable_count == 0
     }
 
     #[must_use]
     pub const fn is_exhaustive(self) -> bool {
-        self.unavailable_count == 0 && self.out_of_scope_count == 0
+        self.all_available_providers_answered() && self.out_of_scope_count == 0
     }
 }
 
@@ -240,6 +240,24 @@ mod tests {
             ts: 0,
             kind,
         }
+    }
+
+    #[test]
+    fn empty_coverage_does_not_establish_completion() {
+        let verdict = coverage_verdict(&[]);
+        assert_eq!(verdict.provider_count, 0);
+        assert!(!verdict.all_available_providers_answered());
+        assert!(!verdict.is_exhaustive());
+    }
+
+    #[test]
+    fn termination_without_provider_observations_is_not_exhaustive() {
+        let events = [module_event(EventKind::ExpansionStop {
+            reason: "budget".to_string(),
+        })];
+        let rows = provider_coverage_from_events(&events);
+        assert!(rows.is_empty());
+        assert!(!coverage_verdict(&rows).is_exhaustive());
     }
 
     #[test]
