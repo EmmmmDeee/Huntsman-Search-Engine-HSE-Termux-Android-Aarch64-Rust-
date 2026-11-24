@@ -286,6 +286,7 @@ impl HibpCommand {
         let mut out = header("api-v3-domain-summary", HIBP_ATTRIBUTION, counts.len());
         line(&mut out, "domain", &domain);
         line(&mut out, "coverage", "provider coverage only; no match is not proof of absence");
+        line(&mut out, "completeness", "unknown; subscription restrictions may limit results");
         line(&mut out, "independent_sources", 1);
         // Prioritise the authorised exposure query. Skip catalogue I/O for zero results.
         let catalogue = if counts.is_empty() {
@@ -303,14 +304,13 @@ impl HibpCommand {
                 }
             }
         };
+        let index = index_audit_catalogue(&catalogue);
         for (name, count) in counts {
             line(&mut out, "breach", &name);
             line(&mut out, "alias_rows", count);
-            let mut matches = catalogue.iter().filter(|model| model.name == name);
-            let first = matches.next();
-            if matches.next().is_some() {
+            if matches!(index.get(name.as_str()), Some(None)) {
                 line(&mut out, "metadata_status", "duplicate_catalogue_identifier");
-            } else if let Some(model) = first {
+            } else if let Some(Some(model)) = index.get(name.as_str()) {
                 line(&mut out, "metadata_status", "same_provider");
                 line_opt(&mut out, "breach_date", model.breach_date.as_ref());
                 line_opt(&mut out, "added_date", model.added_date.as_ref());
@@ -357,6 +357,9 @@ fn aggregate_domain(
     let mut remaining = limits.max_relations;
     let mut counts = std::collections::BTreeMap::new();
     for names in data.values() {
+        if names.is_empty() {
+            return Err(HibpError::Decode("unexpected empty domain audit row".into()));
+        }
         remaining = remaining.checked_sub(names.len()).ok_or_else(|| {
             HibpError::Decode("domain audit relation budget exceeded".into())
         })?;
@@ -374,6 +377,21 @@ fn aggregate_domain(
         }
     }
     Ok(counts)
+}
+
+// Borrow catalogue records, avoiding repeated scans and extra model allocations.
+// None marks an ambiguous identifier; no arbitrary duplicate is selected.
+fn index_audit_catalogue(
+    catalogue: &[BreachModel],
+) -> std::collections::BTreeMap<&str, Option<&BreachModel>> {
+    let mut index = std::collections::BTreeMap::new();
+    for model in catalogue {
+        index
+            .entry(model.name.as_str())
+            .and_modify(|entry| *entry = None)
+            .or_insert(Some(model));
+    }
+    index
 }
 
 /// One line of stdin without its terminator. The error text never includes
@@ -621,6 +639,27 @@ mod tests {
                 .map(|i| (i.to_string(), Vec::new()))
                 .collect();
         assert!(aggregate_domain(&too_many).is_err());
+    }
+
+    #[test]
+    fn domain_summary_detects_ambiguous_catalogue_ids() {
+        let models: Vec<BreachModel> = serde_json::from_str(
+            r#"[{"Name":"Example"},{"Name":"Example"},{"Name":"Other"}]"#,
+        )
+        .unwrap();
+        let index = index_audit_catalogue(&models);
+        assert!(matches!(index.get("Example"), Some(None)));
+        assert!(matches!(index.get("Other"), Some(Some(_))));
+        assert!(!index.contains_key("Missing"));
+    }
+
+    #[test]
+    fn domain_summary_rejects_empty_alias_rows() {
+        let data = super::super::types::BreachedDomain::from([
+            ("test-a".into(), Vec::new()),
+        ]);
+        assert!(aggregate_domain(&data).is_err());
+        assert!(aggregate_domain(&Default::default()).unwrap().is_empty());
     }
 
     #[test]
