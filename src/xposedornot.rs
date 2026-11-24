@@ -100,9 +100,11 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     }
     // A provider error is never evidence of a clean email. A historical
     // "Not found" marker can accompany actual hits, which remain positive.
-    if body.error.as_deref().is_some_and(|error| {
-        !error.eq_ignore_ascii_case("not found")
-    }) {
+    if body
+        .error
+        .as_deref()
+        .is_some_and(|error| !error.eq_ignore_ascii_case("not found"))
+    {
         return Err(LegError::Decode("provider returned an error".into()));
     }
     let has_miss_marker = body.error.is_some();
