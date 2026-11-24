@@ -714,3 +714,78 @@ fn t1589_001_binary_password_from_stdin_is_not_echoed_on_bad_input() {
     assert!(!text.contains("s3cret-"), "{text}");
     let _ = fs::remove_dir_all(&home);
 }
+
+#[test]
+fn domain_summary_cli_aggregates_without_disclosing_aliases() {
+    let (cmd, fake) = command(Some(KEY));
+    fake.push(
+        200,
+        r#"{"synthetic-alias-a":["Example","Example"],"synthetic-alias-b":["Example","Other"]}"#,
+        &[],
+    );
+    fake.push(200, r#"[{"Name":"Example","BreachDate":"2020-01-01"}]"#, &[]);
+    let out = run(&cmd, &["domain-summary", " EXAMPLE.COM "], "");
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_attributed(&out.stdout, 2);
+    assert!(out.stdout.contains("domain=example.com\n"));
+    assert!(out.stdout.contains("breach=Example\nalias_rows=2\n"));
+    assert!(out.stdout.contains("breach=Other\nalias_rows=1\n"));
+    assert!(out.stdout.contains("metadata_status=unresolved\n"));
+    assert!(out.stdout.contains("independent_sources=1\n"));
+    for value in [KEY, "synthetic-alias-a", "synthetic-alias-b"] {
+        assert_never_shown(&out, value);
+    }
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].url.ends_with("/breacheddomain/example.com"));
+    assert!(requests[1].url.ends_with("/breaches"));
+    assert!(requests[1].header_value("hibp-api-key").is_none());
+}
+
+#[test]
+fn domain_summary_cli_zero_skips_catalogue() {
+    for (status, body) in [(200, "{}"), (404, "")] {
+        let (cmd, fake) = command(Some(KEY));
+        fake.push(status, body, &[]);
+        let out = run(&cmd, &["domain-summary", "example.com"], "");
+        assert_eq!(out.code, 0, "{}", out.stderr);
+        assert_attributed(&out.stdout, 0);
+        assert!(out.stdout.contains("catalogue_status=not_needed\n"));
+        assert!(out.stdout.contains("completeness=unknown"));
+        assert_eq!(fake.requests().len(), 1);
+    }
+}
+
+#[test]
+fn domain_summary_cli_primary_failure_is_not_zero_results() {
+    for (status, body, expected) in [
+        (403, "", 77),
+        (429, "", 69),
+        (503, "", 69),
+        (200, r#"{"synthetic-alias":42}"#, 69),
+    ] {
+        let (cmd, fake) = command(Some(KEY));
+        fake.push(status, body, &[]);
+        let out = run(&cmd, &["domain-summary", "example.com"], "");
+        assert_eq!(out.code, expected, "{}", out.stderr);
+        assert!(out.stdout.is_empty());
+        assert_eq!(fake.requests().len(), 1);
+        assert_never_shown(&out, KEY);
+        assert_never_shown(&out, "synthetic-alias");
+    }
+}
+
+#[test]
+fn domain_summary_cli_catalogue_failure_preserves_aggregate_evidence() {
+    let (cmd, fake) = command(Some(KEY));
+    fake.push(200, r#"{"synthetic-alias":["Example"]}"#, &[]);
+    fake.push(503, "", &[]);
+    let out = run(&cmd, &["domain-summary", "example.com"], "");
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_attributed(&out.stdout, 1);
+    assert!(out.stdout.contains("catalogue_status=unavailable\n"));
+    assert!(out.stdout.contains("breach=Example\nalias_rows=1\n"));
+    assert!(out.stdout.contains("metadata_status=unresolved\n"));
+    assert_never_shown(&out, "synthetic-alias");
+    assert_eq!(fake.requests().len(), 2);
+}
