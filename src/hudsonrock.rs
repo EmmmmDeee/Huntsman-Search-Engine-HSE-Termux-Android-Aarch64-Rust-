@@ -127,6 +127,15 @@ fn lookup_email(
     decode_email(&body)
 }
 
+/// A populated provider error field is never a negative exposure result.
+fn populated_error_marker(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(false) => false,
+        serde_json::Value::String(message) => !message.trim().is_empty(),
+        _ => true,
+    }
+}
+
 /// Decode one domain answer. **Pure.**
 ///
 /// All three counts zero is a clean negative. Otherwise the finding keeps them, their `total`,
@@ -143,6 +152,12 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    if ["error", "Error"]
+        .iter()
+        .any(|field| value.get(*field).is_some_and(populated_error_marker))
+    {
+        return Err(LegError::Decode("provider returned an error".into()));
+    }
     let count = |key: &str| {
         value
             .get(key)
@@ -207,6 +222,10 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
 #[derive(Deserialize)]
 struct EmailAnswer {
     #[serde(default)]
+    error: Option<serde_json::Value>,
+    #[serde(default, rename = "Error")]
+    legacy_error: Option<serde_json::Value>,
+    #[serde(default)]
     stealers: Option<Vec<StealerRecord>>,
     #[serde(default)]
     total_corporate_services: Option<u64>,
@@ -231,6 +250,11 @@ struct StealerRecord {
 /// clean negative.
 pub fn decode_email(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let answer: EmailAnswer = api_leg::decode(body)?;
+    if answer.error.as_ref().is_some_and(populated_error_marker)
+        || answer.legacy_error.as_ref().is_some_and(populated_error_marker)
+    {
+        return Err(LegError::Decode("provider returned an error".into()));
+    }
     let Some(stealers) = answer.stealers else {
         return Err(LegError::Decode("missing stealers list".into()));
     };
@@ -493,6 +517,30 @@ mod tests {
                 "leaked {planted}: {finding:?}"
             );
         }
+    }
+
+    #[test]
+    fn provider_error_cannot_hide_behind_valid_zero_counts_or_empty_stealers() {
+        for body in [
+            br#"{"employees":0,"users":0,"third_parties":0,"error":"rate limited"}"#.as_slice(),
+            br#"{"employees":3,"users":0,"third_parties":0,"Error":"upstream failure"}"#.as_slice(),
+        ] {
+            assert!(matches!(decode(body), Err(LegError::Decode(_))));
+        }
+        for body in [
+            br#"{"stealers":[],"error":"quota exhausted"}"#.as_slice(),
+            br#"{"stealers":[{"stealer_family":"RedLine"}],"Error":"backend failed"}"#.as_slice(),
+        ] {
+            assert!(matches!(decode_email(body), Err(LegError::Decode(_))));
+        }
+        assert!(matches!(
+            decode(br#"{"employees":0,"users":0,"third_parties":0,"error":null}"#),
+            Ok(None)
+        ));
+        assert!(matches!(
+            decode_email(br#"{"stealers":[],"error":false}"#),
+            Ok(None)
+        ));
     }
 
     #[test]
