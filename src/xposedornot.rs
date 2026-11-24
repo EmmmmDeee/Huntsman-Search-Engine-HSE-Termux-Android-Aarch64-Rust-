@@ -98,6 +98,14 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     if body.is_miss() {
         return Ok(None);
     }
+    // A provider error is never evidence of a clean email. A historical
+    // "Not found" marker can accompany actual hits, which remain positive.
+    if body.error.as_deref().is_some_and(|error| {
+        !error.eq_ignore_ascii_case("not found")
+    }) {
+        return Err(LegError::Decode("provider returned an error".into()));
+    }
+    let has_miss_marker = body.error.is_some();
     let Some(breaches) = body.breaches else {
         return Err(LegError::Decode(
             "answer has neither breaches nor a miss".into(),
@@ -114,6 +122,13 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     }
     let total = names.len();
     if total == 0 {
+        // An actual empty nested array is a valid zero. A nonempty array
+        // whose names all fail cleaning is malformed, not evidence of absence.
+        if has_miss_marker || breaches.iter().any(|group| !group.is_empty()) {
+            return Err(LegError::Decode(
+                "contradictory miss marker or unusable breach names".into(),
+            ));
+        }
         return Ok(None);
     }
     Ok(Some(
@@ -190,6 +205,23 @@ mod tests {
             url("a+b@example.com"),
             "https://api.xposedornot.com/v1/check-email/a%2Bb%40example.com"
         );
+    }
+
+    #[test]
+    fn provider_errors_do_not_become_false_clean_results() {
+        for body in [
+            r#"{"breaches":[[]],"Error":"rate limited"}"#,
+            r#"{"breaches":[["A"]],"Error":"upstream failed"}"#,
+            r#"{"breaches":[[]],"Error":"Not found"}"#,
+            r#"{"breaches":[[" ",""]]}"#,
+        ] {
+            assert!(matches!(decode(body.as_bytes()), Err(LegError::Decode(_))), "{body}");
+        }
+        assert!(matches!(decode(br#"{"breaches":[[]]}"#), Ok(None)));
+        assert!(matches!(
+            decode(br#"{"Error":"Not found","email":null}"#),
+            Ok(None)
+        ));
     }
 
     #[test]
