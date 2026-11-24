@@ -11,6 +11,7 @@
 //! | `password-range PREFIX` | [`HibpClient::pwned_passwords_range`] (SHA-1, padded) | no |
 //! | `password` | [`HibpClient::check_password`] (SHA-1) | no |
 //! | `subscription` | [`HibpClient::subscription_status`] | yes |
+//! | `domain-summary DOMAIN` | Verified-domain aggregate exposure counts | yes |
 //!
 //! Requests go through the client, so through the guarded fetch boundary
 //! (`hibp::send`) with redirects off. Keys come from [`KeyLoader::default_chain`]
@@ -43,9 +44,9 @@ use crate::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, E
 use crate::textnorm::is_escaped;
 
 /// Usage for `huntsman-recon hibp`.
-pub const HIBP_USAGE: &str = "usage: huntsman-recon hibp [breach NAME | breaches [--domain DOMAIN] | account EMAIL | pastes EMAIL | password-range PREFIX | password | subscription | help]";
+pub const HIBP_USAGE: &str = "usage: huntsman-recon hibp [breach NAME | breaches [--domain DOMAIN] | account EMAIL | pastes EMAIL | password-range PREFIX | password | subscription | domain-summary DOMAIN | help]";
 
-const SUBCOMMANDS: [&str; 8] = [
+const SUBCOMMANDS: [&str; 9] = [
     "breach",
     "breaches",
     "account",
@@ -53,6 +54,7 @@ const SUBCOMMANDS: [&str; 8] = [
     "password-range",
     "password",
     "subscription",
+    "domain-summary",
     "help",
 ];
 
@@ -184,6 +186,7 @@ impl HibpCommand {
             ["password-range", prefix] => self.password_range(prefix),
             ["password"] => self.password(stdin),
             ["subscription"] => self.subscription(),
+            ["domain-summary", domain] => self.domain_summary(domain),
             [] => Err(Failure::usage("hibp: missing subcommand")),
             [sub, ..] if SUBCOMMANDS.contains(sub) => {
                 Err(Failure::usage(&format!("hibp: bad arguments for `{sub}`")))
@@ -269,6 +272,56 @@ impl HibpCommand {
         Ok(out)
     }
 
+    /// Explicit, verified-domain audit. No alias, password, hash or account-level edge
+    /// leaves this command. The catalogue is the same provider, not corroboration.
+    fn domain_summary(&self, domain: &str) -> Outcome {
+        let domain = domain.trim().to_ascii_lowercase();
+        if !valid_audit_domain(&domain) {
+            return Err(HibpError::InvalidInput("expected an ASCII DNS domain".into()).into());
+        }
+        let (client, _) = self.keyed()?;
+        let data = client.breached_domain(&domain)?;
+        let counts = aggregate_domain(&data)?;
+        drop(data);
+        let mut out = header("api-v3-domain-summary", HIBP_ATTRIBUTION, counts.len());
+        line(&mut out, "domain", &domain);
+        line(&mut out, "coverage", "provider coverage only; no match is not proof of absence");
+        line(&mut out, "independent_sources", 1);
+        // Prioritise the authorised exposure query. Skip catalogue I/O for zero results.
+        let catalogue = if counts.is_empty() {
+            line(&mut out, "catalogue_status", "not_needed");
+            Vec::new()
+        } else {
+            match self.public().breaches(&BreachesFilter::default()) {
+                Ok(models) => {
+                    line(&mut out, "catalogue_status", "returned");
+                    models
+                }
+                Err(_) => {
+                    line(&mut out, "catalogue_status", "unavailable");
+                    Vec::new()
+                }
+            }
+        };
+        for (name, count) in counts {
+            line(&mut out, "breach", &name);
+            line(&mut out, "alias_rows", count);
+            let mut matches = catalogue.iter().filter(|model| model.name == name);
+            let first = matches.next();
+            if matches.next().is_some() {
+                line(&mut out, "metadata_status", "duplicate_catalogue_identifier");
+            } else if let Some(model) = first {
+                line(&mut out, "metadata_status", "same_provider");
+                line_opt(&mut out, "breach_date", model.breach_date.as_ref());
+                line_opt(&mut out, "added_date", model.added_date.as_ref());
+                line_opt(&mut out, "modified_date", model.modified_date.as_ref());
+            } else {
+                line(&mut out, "metadata_status", "unresolved");
+            }
+        }
+        Ok(out)
+    }
+
     fn subscription(&self) -> Outcome {
         let (client, origin) = self.keyed()?;
         let status = client.subscription_status()?;
@@ -277,6 +330,50 @@ impl HibpCommand {
         write_subscription(&mut out, &status);
         Ok(out)
     }
+}
+
+// Reject malformed domains before the client makes an authorised request.
+fn valid_audit_domain(domain: &str) -> bool {
+    domain.len() <= 253
+        && domain.contains('.')
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+// Exact provider identifiers only. Count alias rows, not persons; duplicate names
+// within a row contribute once. Do not persist or correlate aliases.
+fn aggregate_domain(
+    data: &super::types::BreachedDomain,
+) -> Result<std::collections::BTreeMap<String, usize>, HibpError> {
+    let limits = crate::pipeline_limits::PipelineLimits::default();
+    if data.len() > limits.max_entities {
+        return Err(HibpError::Decode("domain audit row budget exceeded".into()));
+    }
+    let mut remaining = limits.max_relations;
+    let mut counts = std::collections::BTreeMap::new();
+    for names in data.values() {
+        remaining = remaining.checked_sub(names.len()).ok_or_else(|| {
+            HibpError::Decode("domain audit relation budget exceeded".into())
+        })?;
+        let mut seen = std::collections::BTreeSet::new();
+        for name in names {
+            if name.is_empty()
+                || name.len() > 128
+                || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            {
+                return Err(HibpError::Decode("unexpected breach identifier shape".into()));
+            }
+            if seen.insert(name) {
+                *counts.entry(name.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    Ok(counts)
 }
 
 /// One line of stdin without its terminator. The error text never includes
@@ -500,6 +597,39 @@ fn line(out: &mut String, key: &str, value: impl Display) {
 mod tests {
     use super::*;
     use crate::test_support::unexpected_controls;
+
+    #[test]
+    fn domain_summary_deduplicates_without_merging_aliases() {
+        let data = super::super::types::BreachedDomain::from([
+            ("test-a".into(), vec!["Example".into(), "Example".into()]),
+            ("test-b".into(), vec!["Example".into(), "Other".into()]),
+        ]);
+        let counts = aggregate_domain(&data).unwrap();
+        assert_eq!(counts.get("Example"), Some(&2));
+        assert_eq!(counts.get("Other"), Some(&1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn domain_summary_rejects_invalid_identifiers_and_excess_rows() {
+        let bad = super::super::types::BreachedDomain::from([
+            ("test-a".into(), vec!["unexpected@example.com".into()]),
+        ]);
+        assert!(aggregate_domain(&bad).is_err());
+        let too_many: super::super::types::BreachedDomain =
+            (0..=crate::pipeline_limits::PipelineLimits::default().max_entities)
+                .map(|i| (i.to_string(), Vec::new()))
+                .collect();
+        assert!(aggregate_domain(&too_many).is_err());
+    }
+
+    #[test]
+    fn domain_summary_validates_dns_names() {
+        assert!(valid_audit_domain("example.com"));
+        for invalid in ["https://example.com", "x@example.com", "x..com", "-x.com"] {
+            assert!(!valid_audit_domain(invalid));
+        }
+    }
 
     #[test]
     fn a_paste_title_cannot_drive_the_terminal_or_start_a_line() {
