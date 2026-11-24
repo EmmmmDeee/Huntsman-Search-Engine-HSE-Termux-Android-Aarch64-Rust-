@@ -542,16 +542,18 @@ mod tests {
 
     #[test]
     fn provider_error_cannot_hide_behind_valid_zero_counts_or_empty_stealers() {
-        for body in [
-            br#"{"employees":0,"users":0,"third_parties":0,"error":"rate limited"}"#.as_slice(),
-            br#"{"employees":3,"users":0,"third_parties":0,"Error":"upstream failure"}"#.as_slice(),
-        ] {
+        let domain_errors: &[&[u8]] = &[
+            br#"{"employees":0,"users":0,"third_parties":0,"error":"rate limited"}"#,
+            br#"{"employees":3,"users":0,"third_parties":0,"Error":"upstream failure"}"#,
+        ];
+        for &body in domain_errors {
             assert!(matches!(decode(body), Err(LegError::Decode(_))));
         }
-        for body in [
-            br#"{"stealers":[],"error":"quota exhausted"}"#.as_slice(),
-            br#"{"stealers":[{"stealer_family":"RedLine"}],"Error":"backend failed"}"#.as_slice(),
-        ] {
+        let email_errors: &[&[u8]] = &[
+            br#"{"stealers":[],"error":"quota exhausted"}"#,
+            br#"{"stealers":[{"stealer_family":"RedLine"}],"Error":"backend failed"}"#,
+        ];
+        for &body in email_errors {
             assert!(matches!(decode_email(body), Err(LegError::Decode(_))));
         }
         assert!(matches!(
