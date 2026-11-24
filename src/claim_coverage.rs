@@ -172,7 +172,11 @@ impl CoverageRequirement {
         observation.claim_id == *claim_id
             && observation.evidence_classes.contains(&self.evidence_class)
             && observation.query_scope == self.query_scope
-            && temporal_covers(&observation.temporal, &self.temporal)
+            && if matches!(observation.outcome, CoverageOutcome::Positive) {
+                temporal_intersects(&observation.temporal, &self.temporal)
+            } else {
+                temporal_covers(&observation.temporal, &self.temporal)
+            }
     }
 }
 
@@ -188,4 +192,19 @@ fn temporal_covers(observed: &TemporalValidity, required: &TemporalValidity) -> 
         (Some(observed_end), Some(required_end)) => observed_end >= required_end,
     };
     covers_start && covers_end
+}
+
+/// A positive in any part of an absence window defeats the negative conclusion.
+/// Bounds are inclusive; missing bounds are open-ended. Inverted observations
+/// are not valid intervals.
+fn temporal_intersects(left: &TemporalValidity, right: &TemporalValidity) -> bool {
+    let start = left
+        .not_before_unix
+        .unwrap_or(i64::MIN)
+        .max(right.not_before_unix.unwrap_or(i64::MIN));
+    let end = left
+        .not_after_unix
+        .unwrap_or(i64::MAX)
+        .min(right.not_after_unix.unwrap_or(i64::MAX));
+    start <= end
 }

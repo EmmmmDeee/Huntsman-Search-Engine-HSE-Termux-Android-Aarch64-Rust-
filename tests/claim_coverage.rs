@@ -278,3 +278,37 @@ fn an_unnamed_provider_cannot_vouch_for_absence_but_still_blocks_it() {
         BTreeSet::from([CoverageBlocker::PositiveObservation])
     );
 }
+
+#[test]
+fn positive_interval_intersection_blocks_complete_negative() {
+    let negative = observation(
+        "provider-negative",
+        CoverageOutcome::CleanNegative,
+        CoverageCompleteness::Complete,
+    );
+    for (start, end, blocks) in [
+        (Some(1_750_000_000), Some(1_750_000_000), true),
+        (Some(1_600_000_000), Some(1_700_000_000), true),
+        (Some(1_800_000_000), None, true),
+        (None, Some(1_699_999_999), false),
+        (Some(1_800_000_001), None, false),
+        (Some(1_780_000_000), Some(1_720_000_000), false),
+    ] {
+        let mut positive = observation(
+            "provider-positive",
+            CoverageOutcome::Positive,
+            CoverageCompleteness::Partial,
+        );
+        positive.temporal = TemporalValidity {
+            not_before_unix: start,
+            not_after_unix: end,
+        };
+        let assessment =
+            requirement().evaluate(&ClaimId::from("claim-1"), &[negative.clone(), positive]);
+        assert_eq!(assessment.negative_admissible, !blocks, "{start:?} {end:?}");
+        assert_eq!(
+            assessment.blockers.contains(&CoverageBlocker::PositiveObservation),
+            blocks
+        );
+    }
+}
