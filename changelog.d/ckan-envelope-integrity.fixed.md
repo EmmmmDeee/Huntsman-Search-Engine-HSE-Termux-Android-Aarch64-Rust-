@@ -1,0 +1,1 @@
+Require explicit CKAN success and a returned records array, reject inconsistent totals, and preserve unknown or incomplete totals as inconclusive for absence. Shared government-register queries no longer treat missing records or empty partial pages as validated zero results.
