@@ -168,6 +168,15 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let users = count("users")?;
     let third_parties = count("third_parties")?;
     if employees == 0 && users == 0 && third_parties == 0 {
+        if value
+            .get("total")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|total| total > 0)
+        {
+            return Err(LegError::Decode(
+                "nonzero total contradicts zero domain aggregates".into(),
+            ));
+        }
         return Ok(None);
     }
     let text_of = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
@@ -517,6 +526,18 @@ mod tests {
                 "leaked {planted}: {finding:?}"
             );
         }
+    }
+
+    #[test]
+    fn nonzero_domain_total_cannot_be_a_clean_negative() {
+        assert!(matches!(
+            decode(br#"{"employees":0,"users":0,"third_parties":0,"total":5}"#),
+            Err(LegError::Decode(_))
+        ));
+        assert!(matches!(
+            decode(br#"{"employees":0,"users":0,"third_parties":0,"total":0}"#),
+            Ok(None)
+        ));
     }
 
     #[test]
